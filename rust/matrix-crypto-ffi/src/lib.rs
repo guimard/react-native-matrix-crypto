@@ -111,12 +111,19 @@ pub enum IdentityFfiError {
     MalformedIdentifier { detail: String },
 }
 
-/// A plain `async fn`, exactly like `probe` above: `OlmMachine::new`'s only
-/// non-CPU-bound dependency is an in-memory store, and matrix-sdk-crypto's own
-/// Cargo.toml restricts its (non-test) `tokio` dependency to the `sync` feature
-/// only -- no `rt`/`time`/`net` -- so nothing on this path needs a reactor.
-/// Verified empirically on-device for the M1b task; see the spec and task-14
-/// report for the reasoning and the confirmation that no panic occurred.
+/// A plain `async fn`, matching `probe`: this function's own path --
+/// `OlmMachine::new` plus an in-memory store -- calls no `spawn` and needs no
+/// reactor, confirmed by reading the vendored source and by clean device runs
+/// (iOS simulator and a physical Android device, no panic).
+///
+/// That is scoped to this one function, not a resolution for
+/// `matrix-sdk-crypto` as a whole. `matrix-sdk-common`, a mandatory
+/// dependency, enables tokio's `rt` feature on every native target and
+/// re-exports `tokio::task::spawn`; `matrix-sdk-crypto` calls it from
+/// production code this crate does not yet expose, including
+/// `OlmMachine::share_room_key` (the Megolm key-sharing entry point a later
+/// milestone needs). See spec section 5.1: the async-runtime question is
+/// scoped to what this task exercised, not closed for the crate.
 #[uniffi::export]
 pub async fn device_identity_keys(
     user_id: String,
