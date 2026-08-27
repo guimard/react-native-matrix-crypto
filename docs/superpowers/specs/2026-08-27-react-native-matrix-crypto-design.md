@@ -383,6 +383,14 @@ is that same check applied to the encryption format.
 Cross-implementation testing (Synapse ↔ Continuwuity, per crypto spec §14) is a third
 level, later still, and gated on both level 1 and level 2.
 
+An intermediate option was considered during M1b and deliberately declined: exposing the
+crypto machine's outgoing requests so the example app could publish device keys to a real
+homeserver via `/keys/upload` and read them back. It would have been achievable before M2
+and would have shown that a real server accepts our cryptographic identity. It was skipped
+because it proves nothing about encryption, which is the part that actually needs
+independent confirmation, and because the transport work it requires is done properly once
+at level 2 rather than twice. Recorded so it is not re-proposed as an easy win.
+
 ### 8.1 The agility test is pulled forward
 
 Crypto spec §14 requires a compatibility test proving a Megolm to MLS swap does not
