@@ -12,6 +12,7 @@ export type CryptoErrorKind =
   | 'undecryptable'
   | 'store_corrupt'
   | 'rejected'
+  | 'malformed_identifier'
   | 'not_implemented'
   | 'unknown'
   | (string & {})
@@ -36,6 +37,7 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   ['RevokedDevice', 'revoked_device'],
   ['Undecryptable', 'undecryptable'],
   ['StoreCorrupt', 'store_corrupt'],
+  ['MalformedIdentifier', 'malformed_identifier'],
 ])
 
 const RETRIABLE: ReadonlySet<CryptoErrorKind> = new Set(['missing_key', 'unshared_session'])
@@ -89,15 +91,18 @@ function stringField(source: Record<string, unknown>, field: string): string | u
 /**
  * Normalizes anything thrown by the generated layer into a CryptoError.
  *
- * Only `reason` is ever copied into the message. Payload content and
- * ciphertext are never read, so they cannot reach a crash report.
+ * Only `reason` (falling back to `detail`, e.g. `IdentityFfiError.
+ * MalformedIdentifier`'s field) is ever copied into the message. Both are
+ * fixed diagnostics the Rust side deliberately chose to expose, never
+ * caller-supplied payload or ciphertext content, so this stays safe to
+ * surface without reaching a crash report.
  */
 export function toCryptoError(raw: unknown): CryptoError {
   const source = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
   const name = typeof source.name === 'string' ? source.name : ''
   const kind =
     KIND_BY_NAME.get(name) ?? KIND_BY_NAME.get(variantNameFromMessage(source.message) ?? '') ?? 'unknown'
-  const reason = stringField(source, 'reason')
+  const reason = stringField(source, 'reason') ?? stringField(source, 'detail')
 
   const err = new Error(reason ?? `crypto error: ${kind}`) as CryptoError
   err.name = 'CryptoError'
