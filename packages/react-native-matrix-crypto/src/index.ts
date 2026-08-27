@@ -31,13 +31,14 @@ export { onCryptoSignal } from './signals'
 export type { ProbeResult } from './probe'
 export { runProbe } from './probe'
 
-export type { CryptoMachineConfig, DeviceStatus } from './facade'
+export type { CryptoMachineConfig, DeviceStatus, IdentityKeys } from './facade'
 export {
   confirmVerification,
   createCryptoMachine,
   decryptEvent,
   encryptEvent,
   exportSecrets,
+  getDeviceIdentityKeys,
   getDeviceStatuses,
   getSupportedAlgorithms,
   importSecrets,

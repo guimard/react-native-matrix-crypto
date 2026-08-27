@@ -1,5 +1,6 @@
 import type { CryptoAlgorithm, CryptoScopeId, EventEnvelope, TrustState } from './types'
 import { toCryptoError } from './errors'
+import { deviceIdentityKeys as nativeDeviceIdentityKeys } from './generated/matrix_crypto'
 
 function notImplemented(name: string): Promise<never> {
   return Promise.reject(toCryptoError({ name: 'NotImplemented', reason: `${name} is not implemented yet` }))
@@ -71,4 +72,20 @@ export function importSecrets(_bundle: Uint8Array, _passphrase: string): Promise
 /** Algorithms this build can carry. Open by design; see spec section 6. */
 export function getSupportedAlgorithms(): CryptoAlgorithm[] {
   return ['megolm', 'olm']
+}
+
+// M1b: the first genuine cryptographic value to cross the whole chain, not the
+// probe's echo. Everything else above remains a NotImplemented stub until M2.
+
+export interface IdentityKeys {
+  curve25519: string
+  ed25519: string
+}
+
+export async function getDeviceIdentityKeys(userId: string, deviceId: string): Promise<IdentityKeys> {
+  try {
+    return await nativeDeviceIdentityKeys(userId, deviceId)
+  } catch (e) {
+    throw toCryptoError(e)
+  }
 }
