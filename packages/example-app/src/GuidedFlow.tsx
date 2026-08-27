@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react'
-import { StyleSheet, Text, View } from 'react-native'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { Pressable, StyleSheet, Text, View } from 'react-native'
 import {
   asCryptoScopeId,
   encryptEvent,
@@ -7,6 +7,7 @@ import {
   isCryptoError,
   onCryptoSignal,
   runProbe,
+  type Unsubscribe,
 } from 'react-native-matrix-crypto'
 import { FLOW_STEPS, type FlowStep } from './steps'
 
@@ -19,6 +20,14 @@ import { FLOW_STEPS, type FlowStep } from './steps'
  * check. This component exists to explain the bridge to a person; it must
  * never become the thing CI depends on, and it must never gate ProbeHarness
  * behind its own mount -- see App.tsx for how the two are kept independent.
+ *
+ * The mount effect below always runs the full flow automatically and
+ * unconditionally -- that first run is never gated behind a tap, and never
+ * becomes conditional on one. "Run all" and each card's "Re-run this step"
+ * only ever repeat a run that has already happened once on its own; neither
+ * control is required for a single line of this screen's own output to
+ * exist. Removing every button from this file would not change what
+ * appears on first launch.
  */
 
 // Deliberately fictional Matrix identifiers, `example.org`-shaped, so they
@@ -35,25 +44,42 @@ interface Outcome {
   detail?: string
 }
 
+type Commit = (id: FlowStep['id'], outcome: Outcome) => void
+
+/**
+ * Mutable state shared across steps within one run, and carried forward
+ * between runs: the subscription from step 1 and the signal log step 3
+ * reads. Re-running step 1 replaces the previous subscription rather than
+ * stacking a second one on top of it, and starts its log fresh -- a new
+ * subscription only ever sees what arrives after it exists, same as a real
+ * consumer's would.
+ */
+interface RunContext {
+  unsubscribe: Unsubscribe | null
+  signals: string[]
+}
+
 function bytesToText(bytes: Uint8Array): string {
   return `[${Array.from(bytes).join(', ')}]`
 }
 
-async function runFlow(commit: (id: FlowStep['id'], outcome: Outcome) => void): Promise<void> {
-  const signals: string[] = []
-
-  // Step 1: subscribe. Registered before any call is made, the way a real
-  // consumer would -- step 3 reads whatever this listener catches.
+// Step 1: subscribe. Registered before any call is made, the way a real
+// consumer would -- step 3 reads whatever this listener catches.
+async function runSubscribe(ctx: RunContext, commit: Commit): Promise<void> {
   try {
-    onCryptoSignal((s) => {
-      signals.push(s.kind)
+    ctx.unsubscribe?.()
+    ctx.signals = []
+    ctx.unsubscribe = onCryptoSignal(s => {
+      ctx.signals = [...ctx.signals, s.kind]
     })
     commit('subscribe', { status: 'ok', headline: 'Listening for signals' })
   } catch (e) {
     commit('subscribe', { status: 'unexpected', headline: `Unexpected: ${String(e)}` })
   }
+}
 
-  // Step 2: the round trip.
+// Step 2: the round trip.
+async function runCall(_ctx: RunContext, commit: Commit): Promise<void> {
   try {
     const report = await runProbe('hello', new Uint8Array([1, 2, 3]))
     commit('call', {
@@ -64,23 +90,29 @@ async function runFlow(commit: (id: FlowStep['id'], outcome: Outcome) => void): 
   } catch (e) {
     commit('call', { status: 'unexpected', headline: `Unexpected: ${String(e)}` })
   }
+}
 
-  // Step 3: the signal from step 2 has already arrived, since Rust invokes
-  // the step 1 observer callback before the awaited call resolves.
+// Step 3: reports whatever step 1's listener has captured so far. Making no
+// call of its own is the point -- re-running this step in isolation only
+// re-reads the current log; it takes a fresh call (step 2) or a fresh
+// subscription (step 1) to change what it finds.
+async function runSignal(ctx: RunContext, commit: Commit): Promise<void> {
   // Deduplicated for display: a dev-mode double-mount (React or Fast
   // Refresh remounting this screen) can leave an earlier instance's
   // in-flight call still delivering to the current listener, which is
   // harmless -- the check below only asks whether the expected kind
   // arrived -- but would otherwise print the same kind twice.
-  const seen = [...new Set(signals)]
+  const seen = [...new Set(ctx.signals)]
   commit(
     'signal',
     seen.includes('probe_started')
       ? { status: 'ok', headline: `Received signal: ${seen.join(', ')}` }
       : { status: 'unexpected', headline: 'Unexpected: no signal received' },
   )
+}
 
-  // Step 4: deliberately triggers the typed-error path.
+// Step 4: deliberately triggers the typed-error path.
+async function runTypedError(_ctx: RunContext, commit: Commit): Promise<void> {
   try {
     await runProbe('', new Uint8Array())
     commit('typedError', { status: 'unexpected', headline: 'Unexpected: resolved instead of rejecting' })
@@ -97,8 +129,10 @@ async function runFlow(commit: (id: FlowStep['id'], outcome: Outcome) => void): 
         : { status: 'unexpected', headline: `Unexpected error shape: ${String(e)}` },
     )
   }
+}
 
-  // Step 5: real cryptography.
+// Step 5: real cryptography.
+async function runIdentity(_ctx: RunContext, commit: Commit): Promise<void> {
   try {
     const keys = await getDeviceIdentityKeys(DEMO_USER_ID, DEMO_DEVICE_ID)
     const wellFormed = keys.curve25519.length === 43 && keys.ed25519.length === 43
@@ -112,8 +146,10 @@ async function runFlow(commit: (id: FlowStep['id'], outcome: Outcome) => void): 
   } catch (e) {
     commit('identity', { status: 'unexpected', headline: `Unexpected: ${String(e)}` })
   }
+}
 
-  // Step 6: deliberately triggers the not-implemented path.
+// Step 6: deliberately triggers the not-implemented path.
+async function runNotYet(_ctx: RunContext, commit: Commit): Promise<void> {
   try {
     await encryptEvent(asCryptoScopeId(DEMO_SCOPE), 'm.room.message', { body: 'hello' })
     commit('notYet', { status: 'unexpected', headline: 'Unexpected: resolved instead of rejecting' })
@@ -130,13 +166,36 @@ async function runFlow(commit: (id: FlowStep['id'], outcome: Outcome) => void): 
         : { status: 'unexpected', headline: `Unexpected error shape: ${String(e)}` },
     )
   }
+}
 
-  // Step 7: closing tally. Purely local -- everything above already
-  // crossed all five layers; this just names them.
+// Step 7: closing tally. Purely local -- everything above already crossed
+// all five layers; this just names them.
+async function runLayers(_ctx: RunContext, commit: Commit): Promise<void> {
   commit('layers', {
     status: 'ok',
     headline: 'TypeScript facade -> generated bindings -> JSI Turbo Module -> UniFFI scaffolding -> Rust core',
   })
+}
+
+const STEP_RUNNERS: Record<FlowStep['id'], (ctx: RunContext, commit: Commit) => Promise<void>> = {
+  subscribe: runSubscribe,
+  call: runCall,
+  signal: runSignal,
+  typedError: runTypedError,
+  identity: runIdentity,
+  notYet: runNotYet,
+  layers: runLayers,
+}
+
+// The order FLOW_STEPS itself declares, not a second, hand-maintained list
+// that could drift from it.
+const STEP_ORDER: FlowStep['id'][] = FLOW_STEPS.map(step => step.id)
+
+/** Runs every step once, in order -- exactly what the mount effect below does, and exactly what "Run all" repeats. There is only one implementation of the sequence. */
+async function runFlow(ctx: RunContext, commit: Commit): Promise<void> {
+  for (const id of STEP_ORDER) {
+    await STEP_RUNNERS[id](ctx, commit)
+  }
 }
 
 function pillStyle(status: OutcomeStatus) {
@@ -159,7 +218,17 @@ function StatusPill({ status }: { status: OutcomeStatus }) {
   )
 }
 
-function StepCard({ step, outcome }: { step: FlowStep; outcome: Outcome | undefined }) {
+function StepCard({
+  step,
+  outcome,
+  disabled,
+  onRerun,
+}: {
+  step: FlowStep
+  outcome: Outcome | undefined
+  disabled: boolean
+  onRerun: () => void
+}) {
   const resolved: Outcome = outcome ?? { status: 'pending', headline: 'running…' }
   return (
     <View style={styles.card}>
@@ -178,37 +247,95 @@ function StepCard({ step, outcome }: { step: FlowStep; outcome: Outcome | undefi
         {resolved.headline}
       </Text>
       {resolved.detail ? <Text style={styles.detail}>{resolved.detail}</Text> : null}
+      <Pressable
+        accessibilityRole="button"
+        disabled={disabled}
+        onPress={onRerun}
+        style={[styles.rerunButton, disabled && styles.buttonDisabled]}
+      >
+        <Text style={styles.rerunText}>Re-run this step</Text>
+      </Pressable>
     </View>
   )
 }
 
 export function GuidedFlow() {
   const [outcomes, setOutcomes] = useState<Partial<Record<FlowStep['id'], Outcome>>>({})
+  // Starts true: the automatic run below begins the instant this component
+  // mounts, before any button could possibly be pressed. This flag only
+  // ever disables controls while a run -- automatic or manual -- is
+  // in flight, so two runs can never overlap and race on the shared
+  // subscription in ctxRef.
+  const [busy, setBusy] = useState(true)
+  const mountedRef = useRef(true)
+  const ctxRef = useRef<RunContext>({ unsubscribe: null, signals: [] })
 
-  useEffect(() => {
-    let cancelled = false
-
-    function commit(id: FlowStep['id'], outcome: Outcome) {
-      if (cancelled) return
-      setOutcomes((prev) => ({ ...prev, [id]: outcome }))
-    }
-
-    runFlow(commit)
-
-    return () => {
-      cancelled = true
-    }
+  const commit = useCallback<Commit>((id, outcome) => {
+    if (!mountedRef.current) return
+    setOutcomes(prev => ({ ...prev, [id]: outcome }))
   }, [])
+
+  // Automatic, unconditional run on mount -- never gated behind a tap, and
+  // not affected by anything below. This is what makes PROBE-style
+  // unattended verification possible for this screen too: every result a
+  // cold launch needs is already produced here, before a person could
+  // touch anything.
+  useEffect(() => {
+    const ctx = ctxRef.current
+    runFlow(ctx, commit).finally(() => {
+      if (mountedRef.current) setBusy(false)
+    })
+    return () => {
+      mountedRef.current = false
+      ctx.unsubscribe?.()
+    }
+  }, [commit])
+
+  const handleRunAll = useCallback(() => {
+    if (busy) return
+    setOutcomes({})
+    setBusy(true)
+    runFlow(ctxRef.current, commit).finally(() => {
+      if (mountedRef.current) setBusy(false)
+    })
+  }, [busy, commit])
+
+  const handleRerunStep = useCallback(
+    (id: FlowStep['id']) => {
+      if (busy) return
+      setOutcomes(prev => ({ ...prev, [id]: undefined }))
+      setBusy(true)
+      STEP_RUNNERS[id](ctxRef.current, commit).finally(() => {
+        if (mountedRef.current) setBusy(false)
+      })
+    },
+    [busy, commit],
+  )
 
   return (
     <View style={styles.container}>
       <Text style={styles.intro}>
         Seven steps through this library's public API, from a bare connectivity check to real cryptography, ending
         honestly on what is not built yet. Every result below is live: computed by this build, on this device, right
-        now -- not a canned example.
+        now -- not a canned example. The steps below already ran once, automatically, when this screen opened;
+        "Run all" and each card's own re-run button only repeat that.
       </Text>
-      {FLOW_STEPS.map((step) => (
-        <StepCard key={step.id} step={step} outcome={outcomes[step.id]} />
+      <Pressable
+        accessibilityRole="button"
+        disabled={busy}
+        onPress={handleRunAll}
+        style={[styles.runAllButton, busy && styles.buttonDisabled]}
+      >
+        <Text style={styles.runAllText}>{busy ? 'Running…' : 'Run all'}</Text>
+      </Pressable>
+      {FLOW_STEPS.map(step => (
+        <StepCard
+          key={step.id}
+          step={step}
+          outcome={outcomes[step.id]}
+          disabled={busy}
+          onRerun={() => handleRerunStep(step.id)}
+        />
       ))}
     </View>
   )
@@ -223,6 +350,19 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     marginBottom: 16,
     opacity: 0.8,
+  },
+  runAllButton: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#0969da',
+    borderRadius: 6,
+    marginBottom: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  runAllText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
   },
   card: {
     borderWidth: StyleSheet.hairlineWidth,
@@ -305,5 +445,22 @@ const styles = StyleSheet.create({
   pillText: {
     fontSize: 11,
     fontWeight: '600',
+  },
+  rerunButton: {
+    alignSelf: 'flex-start',
+    borderColor: '#8888',
+    borderRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    marginTop: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  rerunText: {
+    fontSize: 12,
+    fontWeight: '600',
+    opacity: 0.8,
+  },
+  buttonDisabled: {
+    opacity: 0.4,
   },
 })
