@@ -27,21 +27,21 @@ export interface CryptoError extends Error {
 
 const BRAND = Symbol.for('react-native-matrix-crypto.CryptoError')
 
-const KIND_BY_NAME: Record<string, CryptoErrorKind> = {
-  Rejected: 'rejected',
-  NotImplemented: 'not_implemented',
-  MissingKey: 'missing_key',
-  UnsharedSession: 'unshared_session',
-  UnknownDevice: 'unknown_device',
-  RevokedDevice: 'revoked_device',
-  Undecryptable: 'undecryptable',
-  StoreCorrupt: 'store_corrupt',
-}
+const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
+  ['Rejected', 'rejected'],
+  ['NotImplemented', 'not_implemented'],
+  ['MissingKey', 'missing_key'],
+  ['UnsharedSession', 'unshared_session'],
+  ['UnknownDevice', 'unknown_device'],
+  ['RevokedDevice', 'revoked_device'],
+  ['Undecryptable', 'undecryptable'],
+  ['StoreCorrupt', 'store_corrupt'],
+])
 
 const RETRIABLE: ReadonlySet<CryptoErrorKind> = new Set(['missing_key', 'unshared_session'])
 
 export function isCryptoError(e: unknown): e is CryptoError {
-  return typeof e === 'object' && e !== null && BRAND in e
+  return e instanceof Error && BRAND in e
 }
 
 /**
@@ -53,7 +53,7 @@ export function isCryptoError(e: unknown): e is CryptoError {
 export function toCryptoError(raw: unknown): CryptoError {
   const source = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
   const name = typeof source.name === 'string' ? source.name : ''
-  const kind = KIND_BY_NAME[name] ?? 'unknown'
+  const kind = KIND_BY_NAME.get(name) ?? 'unknown'
   const reason = typeof source.reason === 'string' ? source.reason : undefined
 
   const err = new Error(reason ?? `crypto error: ${kind}`) as CryptoError

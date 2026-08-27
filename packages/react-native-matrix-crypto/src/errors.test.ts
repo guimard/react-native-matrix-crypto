@@ -31,4 +31,27 @@ describe('toCryptoError', () => {
     expect(isCryptoError(toCryptoError(new Error('x')))).toBe(true)
     expect(isCryptoError(new Error('x'))).toBe(false)
   })
+
+  it('rejects bare objects that are not Error instances', () => {
+    const fakeErr = { [Symbol.for('react-native-matrix-crypto.CryptoError')]: true }
+    expect(isCryptoError(fakeErr)).toBe(false)
+  })
+
+  it('maps prototype collision name "constructor" to unknown, not a function', () => {
+    const err = toCryptoError({ name: 'constructor' })
+    expect(err.kind).toBe('unknown')
+    expect(typeof err.kind).toBe('string')
+  })
+
+  it('maps prototype collision name "toString" to unknown, not a function', () => {
+    const err = toCryptoError({ name: 'toString' })
+    expect(err.kind).toBe('unknown')
+    expect(typeof err.kind).toBe('string')
+  })
+
+  it('maps prototype collision name "__proto__" to unknown, not an object', () => {
+    const err = toCryptoError({ name: '__proto__' })
+    expect(err.kind).toBe('unknown')
+    expect(typeof err.kind).toBe('string')
+  })
 })
