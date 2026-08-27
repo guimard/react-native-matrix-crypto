@@ -840,6 +840,19 @@ describe('toCryptoError', () => {
     expect(err.retriable).toBe(false)
   })
 
+  // Names that collide with Object.prototype members. An object-literal lookup
+  // would return an inherited function here instead of undefined, so `kind`
+  // would stop being a string. These cases fail loudly if anyone refactors
+  // KIND_BY_NAME back to an object literal.
+  it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty'])(
+    'maps the prototype-colliding name %s to unknown',
+    (name) => {
+      const err = toCryptoError({ name })
+      expect(err.kind).toBe('unknown')
+      expect(typeof err.kind).toBe('string')
+    },
+  )
+
   it('carries the sender verbatim when present, per spec section 10', () => {
     const err = toCryptoError({ name: 'MissingKey', sender: '@b:server2' })
     expect(err.kind).toBe('missing_key')
@@ -896,21 +909,27 @@ export interface CryptoError extends Error {
 
 const BRAND = Symbol.for('react-native-matrix-crypto.CryptoError')
 
-const KIND_BY_NAME: Record<string, CryptoErrorKind> = {
-  Rejected: 'rejected',
-  NotImplemented: 'not_implemented',
-  MissingKey: 'missing_key',
-  UnsharedSession: 'unshared_session',
-  UnknownDevice: 'unknown_device',
-  RevokedDevice: 'revoked_device',
-  Undecryptable: 'undecryptable',
-  StoreCorrupt: 'store_corrupt',
-}
+// A Map, not an object literal. An object literal's prototype is
+// Object.prototype, so `KIND_BY_NAME['constructor']` would resolve through the
+// prototype chain and return a function rather than undefined, defeating the
+// `?? 'unknown'` fallback and putting a non-string into `kind`. A Map has no
+// prototype-chain lookup, which removes the class of bug rather than guarding
+// one instance of it. It also matches RETRIABLE, which is already a Set.
+const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
+  ['Rejected', 'rejected'],
+  ['NotImplemented', 'not_implemented'],
+  ['MissingKey', 'missing_key'],
+  ['UnsharedSession', 'unshared_session'],
+  ['UnknownDevice', 'unknown_device'],
+  ['RevokedDevice', 'revoked_device'],
+  ['Undecryptable', 'undecryptable'],
+  ['StoreCorrupt', 'store_corrupt'],
+])
 
 const RETRIABLE: ReadonlySet<CryptoErrorKind> = new Set(['missing_key', 'unshared_session'])
 
 export function isCryptoError(e: unknown): e is CryptoError {
-  return typeof e === 'object' && e !== null && BRAND in e
+  return e instanceof Error && BRAND in e
 }
 
 /**
@@ -922,7 +941,7 @@ export function isCryptoError(e: unknown): e is CryptoError {
 export function toCryptoError(raw: unknown): CryptoError {
   const source = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
   const name = typeof source.name === 'string' ? source.name : ''
-  const kind = KIND_BY_NAME[name] ?? 'unknown'
+  const kind = KIND_BY_NAME.get(name) ?? 'unknown'
   const reason = typeof source.reason === 'string' ? source.reason : undefined
 
   const err = new Error(reason ?? `crypto error: ${kind}`) as CryptoError
