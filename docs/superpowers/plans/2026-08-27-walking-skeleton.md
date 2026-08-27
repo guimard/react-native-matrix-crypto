@@ -1438,8 +1438,33 @@ DTS=$(find "$OUT" -name '*.d.ts' -not -path '*/generated/*' -exec cat {} +)
 # because the union is open. A Megolm-specific IDENTIFIER is not.
 IDENTIFIERS=$(printf '%s' "$DTS" | sed "s/'[^']*'//g; s/\"[^\"]*\"//g")
 
-if printf '%s' "$IDENTIFIERS" | grep -nEi '\b(megolm|olm)\b|[Rr]oom[A-Za-z]*'; then
+# Split identifiers into components on case transitions and underscores, then
+# reject any component that IS a forbidden word.
+#
+# Do NOT use a word-boundary regex here. `\bmegolm\b` never fires inside a
+# camelCase or PascalCase identifier, because there is no word-character to
+# non-word-character transition: `MegolmSession`, `encryptMegolmEvent` and
+# `MegolmSessionInternal` all slip straight through. That is the normal way
+# TypeScript names things, so such a gate passes for the wrong reason and gives
+# false assurance indefinitely.
+#
+# Dropping the anchors instead is equally wrong in the other direction: bare
+# `olm` matches inside Holmes, volume, column and solmization. Component
+# splitting resolves both directions at once.
+VIOLATIONS=$(printf '%s' "$IDENTIFIERS" | python3 -c '
+import re, sys
+FORBIDDEN = {"megolm", "olm", "room"}
+bad = []
+for ident in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", sys.stdin.read()):
+    parts = re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+", ident)
+    if any(p.lower() in FORBIDDEN for p in parts):
+        bad.append(ident)
+print("\n".join(sorted(set(bad))))
+')
+
+if [ -n "$VIOLATIONS" ]; then
   echo "FAIL: a Megolm-, Olm-, or room-specific identifier reached the public API."
+  echo "$VIOLATIONS"
   echo "      Spec section 6 requires the facade stay algorithm-agnostic."
   exit 1
 fi
@@ -1455,13 +1480,31 @@ chmod +x scripts/assert-facade-agility.sh
 ```
 Expected: `PASS: facade agility`.
 
-Prove it bites:
+Prove it bites, and prove it does not over-fire. Both directions matter: a gate
+that flags `getColumnCount` gets switched off within a week, which is a worse
+outcome than the bug it was meant to catch.
+
 ```bash
-printf '\nexport function encryptMegolmRoomEvent(): void {}\n' >> packages/react-native-matrix-crypto/src/facade.ts
-./scripts/assert-facade-agility.sh || echo "guardrail correctly rejected the identifier"
+# Must FAIL -- each of these is a camelCase case the old word-boundary regex missed.
+for violation in \
+  'export interface MegolmSession { id: string }' \
+  'export function encryptMegolmEvent(): void {}' \
+  'export type OlmHandle = string'
+do
+  printf '\n%s\n' "$violation" >> packages/react-native-matrix-crypto/src/facade.ts
+  ./scripts/assert-facade-agility.sh && echo "GATE FAILED TO CATCH: $violation"
+  git checkout -- packages/react-native-matrix-crypto/src/facade.ts
+done
+
+# Must PASS -- legitimate names that merely contain the letters.
+printf '\nexport type MlsGroupId = string\nexport function getColumnCount(): number { return 0 }\n' \
+  >> packages/react-native-matrix-crypto/src/facade.ts
+./scripts/assert-facade-agility.sh || echo "GATE OVER-FIRED on a legitimate identifier"
 git checkout -- packages/react-native-matrix-crypto/src/facade.ts
 ```
-Expected: FAIL message, then the confirmation line.
+Expected: a FAIL naming the offending identifier for each of the three violations,
+no "GATE FAILED TO CATCH" line, then `PASS: facade agility` with the legitimate
+names present and no "GATE OVER-FIRED" line.
 
 - [ ] **Step 7: Commit**
 
