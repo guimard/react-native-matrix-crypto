@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["matrix-crypto-core"]
+members = ["matrix-crypto-core", "matrix-crypto-ffi"]
 
 [workspace.package]
 version = "0.1.0"

@@ -1,0 +1,23 @@
+[package]
+name = "matrix-crypto-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "lib"]
+name = "matrix_crypto_ffi"
+
+[dependencies]
+matrix-crypto-core = { path = "../matrix-crypto-core" }
+# Must stay within 0.31.x: uniffi 0.32.0 exists and breaks ubrn 0.31.0-5.
+uniffi = { version = "0.31", features = ["cli"] }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
+
+[build-dependencies]
+uniffi = { version = "0.31", features = ["build"] }
