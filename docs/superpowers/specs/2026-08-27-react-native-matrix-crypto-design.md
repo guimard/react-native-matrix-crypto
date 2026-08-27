@@ -77,9 +77,32 @@ Established by inspecting `uniffi-bindgen-react-native@0.31.0-5` directly on
 - `#[uniffi::export]` on a plain `async fn` already yields a Promise. The
   `async_runtime = "tokio"` attribute is only required when the future needs a
   specific reactor, so §5.1 no longer assumes it.
-- ubrn compiles its own binary from Rust source on first invocation. It is
-  therefore a `devDependency` only; in `dependencies` it would break the
-  no-Rust-toolchain guarantee of §4bis.2.
+- ubrn compiles its own binary from Rust source on first invocation. The
+  planning-time conclusion here was that this makes it a `devDependency`
+  only, since putting it in `dependencies` would seem to break the
+  no-Rust-toolchain guarantee of §4bis.2. **That conclusion was itself wrong,
+  corrected once the generated output was committed and a real consumer
+  install was tested:** the committed `MatrixCrypto.podspec` declares
+  `s.dependency "uniffi-bindgen-react-native", "0.31.0-5"`, and the committed
+  `android/CMakeLists.txt` shells out to
+  `require.resolve('uniffi-bindgen-react-native/package.json')` to locate its
+  bundled C++ headers. Both require the package resolvable in a **consumer's**
+  own install, not just ours, and a `devDependency` of this package is never
+  installed into a consumer's `node_modules` -- leaving it dev-only lets the
+  package install cleanly and then fail at native-build time, the worst
+  failure mode because it passes every gate this project has. The shipped
+  `package.json` therefore carries `uniffi-bindgen-react-native` in
+  `dependencies`, and the no-Rust-toolchain guarantee still holds regardless:
+  this package defines no `postinstall`, and a `prepare` script -- it defines
+  none either -- would not run for a registry install even if it did. ubrn's
+  bundled Rust CLI only compiles when something actually invokes
+  `ubrn`/`uniffi-bindgen-react-native`, which a consumer never does; a
+  consumer builds against this package's own generated, committed bindings.
+  Proven directly by the `cold-consume` CI job, which installs the packed
+  tarball with `cargo`/`rustc` unreachable on `PATH` and still resolves the
+  package successfully. A future implementer who finds `dependencies` here
+  and "fixes" it back to `devDependency` would break every consumer's native
+  build; do not revert this without re-running that job.
 
 ## 2. Frozen decisions
 
