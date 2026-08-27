@@ -7,7 +7,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# matrix-sdk-crypto does not re-export `ruma` itself; matrix-sdk-common does, and
+# matrix-sdk-crypto 0.18.0 already requires matrix-sdk-common = "0.18.0" transitively.
+# Depending on it directly at the same version reaches ruma's types through that
+# re-export instead of adding a second, independently versioned `ruma`. See the
+# comment in src/identity.rs.
+matrix-sdk-common = "0.18.0"
+matrix-sdk-crypto = "0.18.0"
 thiserror = "2"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
