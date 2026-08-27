@@ -18,8 +18,16 @@ pub struct ProbeReport {
 
 impl From<CoreProbeReport> for ProbeReport {
     fn from(r: CoreProbeReport) -> Self {
-        let CoreProbeReport { echoed, payload, core_version } = r;
-        Self { echoed, payload, core_version }
+        let CoreProbeReport {
+            echoed,
+            payload,
+            core_version,
+        } = r;
+        Self {
+            echoed,
+            payload,
+            core_version,
+        }
     }
 }
 

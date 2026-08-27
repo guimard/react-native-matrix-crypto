@@ -72,7 +72,12 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert_eq!(err, ProbeError::Rejected { reason: "input must not be empty".to_string() });
+        assert_eq!(
+            err,
+            ProbeError::Rejected {
+                reason: "input must not be empty".to_string()
+            }
+        );
         assert!(recorder.seen.lock().unwrap().is_empty());
     }
 }

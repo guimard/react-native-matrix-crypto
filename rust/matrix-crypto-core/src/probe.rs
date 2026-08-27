@@ -50,13 +50,20 @@ mod tests {
 
     #[tokio::test]
     async fn preserves_non_utf8_bytes() {
-        let report = probe("x".to_string(), vec![0x00, 0xff, 0xfe]).await.unwrap();
+        let report = probe("x".to_string(), vec![0x00, 0xff, 0xfe])
+            .await
+            .unwrap();
         assert_eq!(report.payload, vec![0xfe, 0xff, 0x00]);
     }
 
     #[tokio::test]
     async fn rejects_empty_input() {
         let err = probe(String::new(), vec![]).await.unwrap_err();
-        assert_eq!(err, ProbeError::Rejected { reason: "input must not be empty".to_string() });
+        assert_eq!(
+            err,
+            ProbeError::Rejected {
+                reason: "input must not be empty".to_string()
+            }
+        );
     }
 }
