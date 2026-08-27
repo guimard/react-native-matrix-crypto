@@ -1813,7 +1813,12 @@ git commit -m "test: Add guardrail rejecting any logger in the bridge"
 cd packages
 npx @react-native-community/cli@latest init ExampleApp --version 0.87.1 --directory example-app --skip-install
 cd example-app
-yarn add file:../react-native-matrix-crypto
+# Do NOT use `yarn add file:../react-native-matrix-crypto`. From a workspace
+# subpackage it either fails on relative-path resolution or, once corrected,
+# installs a non-hoisted COPY that shadows the workspace symlink -- so the app
+# would keep loading a stale library and never see a rebuilt xcframework.
+# Declare the matching version and let yarn workspace hoisting do the linking.
+yarn add react-native-matrix-crypto@0.1.0
 ```
 
 The app must remain neutral: nothing Messagr-specific, per spec §12.
@@ -2359,6 +2364,20 @@ node -e '
   const mb = kb => (kb / 1024).toFixed(1) + " MB";
   console.log("xcframework:", mb(base.xcframeworkKB), "->", mb(now.xcframeworkKB));
   console.log("tarball:    ", mb(base.tarballKB),     "->", mb(now.tarballKB));
+  // Assert the tarball actually CONTAINS the binaries before judging its size.
+  // Without this the gate passes for the wrong reason: a packaging regression
+  // that dropped the artifacts would produce a tiny tarball, sail under the
+  // threshold, and be reported as "packing binaries is viable" while shipping
+  // none. Task 11 hit exactly that -- the published tarball was 40 kB with no
+  // xcframework at all -- which is why these flags exist.
+  if (!now.tarballIncludesXcframework || !now.tarballIncludesAar) {
+    console.log("\nSIZE GATE INVALID: the measured tarball is missing a binary.");
+    console.log("  xcframework present:", now.tarballIncludesXcframework);
+    console.log("  aar present:        ", now.tarballIncludesAar);
+    console.log("Its size says nothing about the published package. Fix packaging first.");
+    process.exit(1);
+  }
+
   if (now.tarballKB > 150 * 1024) {
     console.log("\nSIZE GATE TRIPPED: tarball exceeds 150 MB.");
     console.log("Spec section 10 requires re-opening the binary distribution decision.");
