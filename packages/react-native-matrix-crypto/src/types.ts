@@ -7,7 +7,10 @@
  */
 export type CryptoScopeId = string & { readonly __brand: unique symbol }
 
-/** The only way to construct a CryptoScopeId. */
+/**
+ * The only way to construct a CryptoScopeId.
+ * Note: this performs no runtime validation — the guarantee is compile-time only.
+ */
 export function asCryptoScopeId(raw: string): CryptoScopeId {
   return raw as CryptoScopeId
 }
