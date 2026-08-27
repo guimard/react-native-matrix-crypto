@@ -194,6 +194,21 @@ the UI. Therefore:
   becomes `#[uniffi::export(async_runtime = "tokio")]` and the runtime is owned by
   the FFI crate and nowhere else. Resolved in M1b, not assumed now.
 
+**That attribute has a second consequence, discovered while building the signal
+channel and not anticipated here.** UniFFI callback methods that must return a value
+synchronously are dispatched through `UniffiCallInvoker::invokeBlocking`, which really
+does block the calling native thread on a promise whenever that thread is not already
+the JS thread. Today the cost is zero, because the exported functions carry no
+`async_runtime` and therefore already run on the JS thread. The moment a tokio runtime
+is introduced, every signal delivery becomes a genuine cross-thread blocking
+round-trip.
+
+For a crypto bridge this is not a micro-optimisation: signals fire on key events, and
+§7.3 requires them to be silent and cheap. Whichever change first adds
+`async_runtime = "tokio"` must re-examine the signal channel deliberately rather than
+inheriting this by accident — the likely answer is a non-blocking delivery path for
+callbacks whose return value nothing reads.
+
 This is committed to in M1a deliberately. Retrofitting async through an established
 UniFFI surface is a rewrite, not a change.
 

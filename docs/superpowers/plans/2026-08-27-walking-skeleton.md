@@ -1165,7 +1165,20 @@ export function onCryptoSignal(cb: (s: CryptoSignal) => void): Unsubscribe {
 
 /** Internal. Called by the shim when the native observer fires. */
 export function emitCryptoSignal(signal: CryptoSignal): void {
-  for (const listener of listeners) listener(signal)
+  // Snapshot before dispatch: a listener that subscribes while we are
+  // iterating must not receive the signal that triggered its own
+  // registration. Unsubscribing mid-dispatch is safe either way.
+  for (const listener of [...listeners]) {
+    try {
+      listener(signal)
+    } catch {
+      // Isolate. One throwing listener must never starve the others: this
+      // channel carries trust_changed, unexpected_device and key_missing, and
+      // a buggy UI listener must not be able to suppress them. Deliberately
+      // silent, because the bridge has no logger (see Global Constraints) --
+      // do not reach for console.error here.
+    }
+  }
 }
 ```
 
@@ -2182,7 +2195,20 @@ pub async fn device_identity_keys(
 }
 ```
 
-Build for a device target and run the example app. **If it panics at runtime with a message about no reactor running**, `matrix-sdk-crypto`'s futures need a tokio reactor: change the attribute to `#[uniffi::export(async_runtime = "tokio")]` and add `tokio = { version = "1", features = ["rt-multi-thread"] }` to the FFI crate's `[dependencies]`. Record which was needed in the spec's §5.1, which currently over-specifies this.
+Build for a device target and run the example app. **If it panics at runtime with a message about no reactor running**, `matrix-sdk-crypto`'s futures need a tokio reactor: change the attribute to `#[uniffi::export(async_runtime = "tokio")]` and add `tokio = { version = "1", features = ["rt-multi-thread"] }` to the FFI crate's `[dependencies]`. Record which was needed in the spec's §5.1.
+
+**If you add `async_runtime = "tokio"`, stop and report before going further.** Task 8
+established that UniFFI callback methods returning a value synchronously are dispatched
+via `UniffiCallInvoker::invokeBlocking`, which blocks the calling native thread on a
+promise whenever that thread is not the JS thread. Without a tokio runtime this costs
+nothing, because exported functions already run on the JS thread. With one, every signal
+delivery becomes a real cross-thread blocking round-trip — on a channel the spec requires
+to be silent and cheap, firing on key events.
+
+That is a design decision, not an implementation detail, and it is not this task's to
+make. Add the attribute if the reactor is genuinely required, verify the probe and the
+signal still work, and then report the threading consequence explicitly so it can be
+ruled on.
 
 - [ ] **Step 7: Surface it and regenerate**
 
