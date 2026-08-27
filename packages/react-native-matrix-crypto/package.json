@@ -3,12 +3,22 @@
   "version": "0.1.0",
   "description": "A React Native bridge for Matrix cryptography",
   "license": "Apache-2.0",
+  "homepage": "https://github.com/linagora/react-native-matrix-crypto",
+  "author": "Linagora",
   "repository": {
     "type": "git",
-    "url": "https://github.com/linagora/react-native-matrix-crypto"
+    "url": "https://github.com/linagora/react-native-matrix-crypto.git"
   },
   "main": "src/index.ts",
   "files": ["src", "cpp", "interop", "android", "ios", "*.podspec", "LICENSE"],
+  "codegenConfig": {
+    "name": "RNNativeModuleSpec",
+    "type": "modules",
+    "jsSrcsDir": "src",
+    "android": {
+      "javaPackageName": "com.matrixcrypto"
+    }
+  },
   "peerDependencies": {
     "react": "^19.2.3",
     "react-native": "^0.87.0"
