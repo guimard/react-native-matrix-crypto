@@ -37,6 +37,15 @@ export interface InteropCheck {
  *   from a `finally` block replaces whatever the try/catch was about to
  *   produce, discarding every check already collected -- exactly the
  *   all-or-nothing failure this function exists to avoid.
+ *
+ * A third path needs no separate guard, but is worth naming: if
+ * `binding.errorKind` or `binding.isCryptoError` throws while building the
+ * 'typed_error' check, that throw escapes the inner catch and lands in the
+ * outer one, same as any failure inside the main try block. The run still
+ * resolves with a 'fatal' check rather than rejecting, but the 'typed_error'
+ * and 'signal' checks that would otherwise have run are lost along with it.
+ * Safe, but lossier than the two paths above -- a known, acceptable limit,
+ * not a bug.
  */
 export async function runInteropSuite(binding: BridgeBinding): Promise<InteropCheck[]> {
   const checks: InteropCheck[] = []
