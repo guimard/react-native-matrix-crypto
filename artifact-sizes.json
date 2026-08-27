@@ -30,5 +30,13 @@
     "tarballKB": 104832,
     "tarballIncludesXcframework": true,
     "tarballIncludesAar": true
+  },
+  {
+    "label": "m1b-four-abi",
+    "xcframeworkKB": 152856,
+    "aarKB": 31488,
+    "tarballKB": 128031,
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
   }
 ]
