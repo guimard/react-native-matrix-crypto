@@ -13,13 +13,24 @@ name = "matrix_crypto_ffi"
 [dependencies]
 matrix-crypto-core = { path = "../matrix-crypto-core" }
 # Must stay within 0.31.x: uniffi 0.32.0 exists and breaks ubrn 0.31.0-5.
-# No "cli" feature: ubrn reads our compiled artifact from the outside (via
-# goblin, in ubrn's own dependency tree) and never links or invokes anything
-# from this crate's dependency graph. "cli" pulled in the entire bindgen
-# toolchain (uniffi_bindgen, askama, clap, goblin, weedle) for a build mode
-# (a standalone uniffi_bindgen_main() binary) this crate never uses.
-# Confirmed via A/B test: removing it produces byte-identical codegen output.
-# See task-5-report.md, controller instruction 3.
+# No "cli" feature and no [build-dependencies]: both were unused. This crate
+# is pure proc-macro mode (uniffi::setup_scaffolding!) with no build.rs, and
+# `ubrn` is a separate binary (its own crate, compiled once under
+# node_modules/uniffi-bindgen-react-native/) that reads our compiled
+# artifact from the outside via `goblin` rather than linking against this
+# crate's dependency tree.
+#
+# Removing them took the bindgen toolchain out of THIS CRATE'S BUILD GRAPH:
+# `cargo tree -p matrix-crypto-ffi --edges normal` matches none of
+# uniffi_bindgen/askama/goblin/weedle2/clap. It did NOT remove all of them
+# from Cargo.lock: `clap` (and its subtree: clap_builder, clap_derive,
+# clap_lex, anstyle, strsim) and `uniffi_build` left the lockfile entirely,
+# but `uniffi_bindgen`, `askama`, `goblin` and `weedle2` are still listed
+# there as resolvable-but-unbuilt entries (other workspace/dependency edges
+# still reference them). Cargo.lock is therefore NOT where you'd confirm
+# this removal -- `cargo tree` is. Confirmed via A/B test: removing them
+# produces byte-identical codegen output. See task-5-report.md, controller
+# instruction 3.
 uniffi = { version = "0.31" }
 thiserror = "2"
 
