@@ -14,5 +14,13 @@
     "tarballKB": 44765,
     "tarballIncludesXcframework": true,
     "tarballIncludesAar": true
+  },
+  {
+    "label": "m1b-with-matrix-sdk-crypto",
+    "xcframeworkKB": 152852,
+    "aarKB": 22740,
+    "tarballKB": 104830,
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
   }
 ]
