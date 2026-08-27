@@ -64,6 +64,23 @@ intention". A parameter named `roomId` is that assumption.
 
 **Consequence:** the facade takes an opaque branded scope identifier. See §6.
 
+### 1.5 Three tool facts corrected during planning
+
+Established by inspecting `uniffi-bindgen-react-native@0.31.0-5` directly on
+2026-08-27.
+
+- Bridge spec §4bis.2 step 2 names `ubrn generate all`. **That command does not
+  exist.** The real surface is `ubrn generate jsi turbo-module` and
+  `ubrn generate jsi bindings`.
+- ubrn's default output directories are `src/generated` for TypeScript and
+  `cpp/generated` for C++, not a single `generated/`. §3 now matches the tool.
+- `#[uniffi::export]` on a plain `async fn` already yields a Promise. The
+  `async_runtime = "tokio"` attribute is only required when the future needs a
+  specific reactor, so §5.1 no longer assumes it.
+- ubrn compiles its own binary from Rust source on first invocation. It is
+  therefore a `devDependency` only; in `dependencies` it would break the
+  no-Rust-toolchain guarantee of §4bis.2.
+
 ## 2. Frozen decisions
 
 Bridge spec §15 requires these be frozen early.
@@ -103,7 +120,8 @@ react-native-matrix-crypto/
 ├── packages/
 │   ├── react-native-matrix-crypto/
 │   │   ├── src/                   hand-written facade: brands, error mapping
-│   │   ├── generated/             ubrn output (.ts/.cpp/.h), committed
+│   │   ├── src/generated/         ubrn TypeScript output, committed
+│   │   ├── cpp/generated/         ubrn C++ output, committed
 │   │   ├── ios/                   podspec and generated glue
 │   │   ├── android/               build.gradle and generated glue
 │   │   └── package.json
@@ -167,9 +185,14 @@ the JS thread. A synchronous decrypt of a key backlog on that thread would block
 the UI. Therefore:
 
 - `matrix-crypto-core` exposes `async fn`;
-- `matrix-crypto-ffi` re-exports under `#[uniffi::export(async_runtime = "tokio")]`;
-- every generated TypeScript function returns a Promise;
-- the tokio runtime is owned by the FFI crate and nowhere else.
+- `matrix-crypto-ffi` re-exports under plain `#[uniffi::export]`; UniFFI maps the
+  future to a Promise on its own, and no runtime attribute is required until the
+  core's futures need a specific reactor;
+- every generated TypeScript function returns a Promise, and accepts an optional
+  `{ signal: AbortSignal }` final argument for cancellation;
+- if `matrix-sdk-crypto` turns out to require a tokio reactor, the attribute
+  becomes `#[uniffi::export(async_runtime = "tokio")]` and the runtime is owned by
+  the FFI crate and nowhere else. Resolved in M1b, not assumed now.
 
 This is committed to in M1a deliberately. Retrofitting async through an established
 UniFFI surface is a rewrite, not a change.
@@ -335,7 +358,7 @@ Every job is a gate. None are advisory.
 | Job | Asserts |
 |---|---|
 | `core` | `cargo test -p matrix-crypto-core`; no direct `uniffi` dependency |
-| `drift` | `ubrn generate all` then `git diff --exit-code` |
+| `drift` | `ubrn generate jsi turbo-module` then `git diff --exit-code` |
 | `no-logger` | Grep the shipped surface for logging tokens |
 | `lint` | `cargo fmt --check`, `clippy -D warnings`, `tsc --noEmit`, eslint |
 | `agility` | §8.1 |
