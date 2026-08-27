@@ -48,29 +48,41 @@ type Commit = (id: FlowStep['id'], outcome: Outcome) => void
 
 /**
  * Mutable state shared across steps within one run, and carried forward
- * between runs: the subscription from step 1 and the signal log step 3
- * reads. Re-running step 1 replaces the previous subscription rather than
- * stacking a second one on top of it, and starts its log fresh -- a new
- * subscription only ever sees what arrives after it exists, same as a real
- * consumer's would.
+ * between runs.
+ *
+ * `unsubscribe` is step 1's subscription to the real, product-facing
+ * `onCryptoSignal` channel (spec section 7.3: `trust_changed`,
+ * `unexpected_device`, `key_missing`). `probeSignals` is unrelated: it is
+ * fed only by step 2's own call to `runProbe`, via the per-call callback
+ * `runProbe` accepts directly -- never by step 1's listener. The two are
+ * deliberately different channels; step 3 explains why.
+ *
+ * Re-running step 1 replaces the previous subscription rather than
+ * stacking a second one on top of it. Re-running step 2 replaces
+ * `probeSignals` with that call's own result rather than accumulating
+ * across calls -- a fresh call only ever reports its own signal.
  */
 interface RunContext {
   unsubscribe: Unsubscribe | null
-  signals: string[]
+  probeSignals: string[]
 }
 
 function bytesToText(bytes: Uint8Array): string {
   return `[${Array.from(bytes).join(', ')}]`
 }
 
-// Step 1: subscribe. Registered before any call is made, the way a real
-// consumer would -- step 3 reads whatever this listener catches.
+// Step 1: subscribe to the real crypto-signal channel. Registered before any
+// call is made, the way a real consumer would. Nothing arrives on it during
+// this walkthrough -- no trust logic exists yet in this milestone -- so this
+// step is left running to show the API's shape; step 3 demonstrates a
+// different channel entirely, not this one.
 async function runSubscribe(ctx: RunContext, commit: Commit): Promise<void> {
   try {
     ctx.unsubscribe?.()
-    ctx.signals = []
-    ctx.unsubscribe = onCryptoSignal(s => {
-      ctx.signals = [...ctx.signals, s.kind]
+    ctx.unsubscribe = onCryptoSignal(() => {
+      // Never invoked today: see the comment above. Kept as a real,
+      // running subscription rather than removed, so this step continues
+      // to prove `onCryptoSignal` itself works, independent of runProbe.
     })
     commit('subscribe', { status: 'ok', headline: 'Listening for signals' })
   } catch (e) {
@@ -78,10 +90,15 @@ async function runSubscribe(ctx: RunContext, commit: Commit): Promise<void> {
   }
 }
 
-// Step 2: the round trip.
-async function runCall(_ctx: RunContext, commit: Commit): Promise<void> {
+// Step 2: the round trip. Also captures this call's own diagnostic signal,
+// via the callback runProbe accepts directly -- not via step 1's listener --
+// for step 3 to report.
+async function runCall(ctx: RunContext, commit: Commit): Promise<void> {
   try {
-    const report = await runProbe('hello', new Uint8Array([1, 2, 3]))
+    ctx.probeSignals = []
+    const report = await runProbe('hello', new Uint8Array([1, 2, 3]), signal => {
+      ctx.probeSignals = [...ctx.probeSignals, signal.kind]
+    })
     commit('call', {
       status: 'ok',
       headline: `Echoed "${report.echoed}" -- core v${report.coreVersion}`,
@@ -92,17 +109,18 @@ async function runCall(_ctx: RunContext, commit: Commit): Promise<void> {
   }
 }
 
-// Step 3: reports whatever step 1's listener has captured so far. Making no
+// Step 3: reports whatever step 2's own callback has captured. Making no
 // call of its own is the point -- re-running this step in isolation only
-// re-reads the current log; it takes a fresh call (step 2) or a fresh
-// subscription (step 1) to change what it finds.
+// re-reads the current log; it takes a fresh call (step 2) to change what
+// it finds. Deliberately NOT step 1's channel: see this step's `why` text
+// on screen for what that separation proves.
 async function runSignal(ctx: RunContext, commit: Commit): Promise<void> {
   // Deduplicated for display: a dev-mode double-mount (React or Fast
   // Refresh remounting this screen) can leave an earlier instance's
-  // in-flight call still delivering to the current listener, which is
+  // in-flight call still resolving into the current context, which is
   // harmless -- the check below only asks whether the expected kind
   // arrived -- but would otherwise print the same kind twice.
-  const seen = [...new Set(ctx.signals)]
+  const seen = [...new Set(ctx.probeSignals)]
   commit(
     'signal',
     seen.includes('probe_started')
@@ -268,7 +286,7 @@ export function GuidedFlow() {
   // subscription in ctxRef.
   const [busy, setBusy] = useState(true)
   const mountedRef = useRef(true)
-  const ctxRef = useRef<RunContext>({ unsubscribe: null, signals: [] })
+  const ctxRef = useRef<RunContext>({ unsubscribe: null, probeSignals: [] })
 
   const commit = useCallback<Commit>((id, outcome) => {
     if (!mountedRef.current) return

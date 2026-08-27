@@ -2,10 +2,11 @@
  * Static description of each step in the guided flow: the exact call, what
  * physically crosses the JS/native boundary, and why the step exists.
  *
- * Execution lives in GuidedFlow.tsx, not here: several steps depend on
- * state an earlier one produced (step 3 reads a signal that step 1's
- * listener caught and step 2's call caused Rust to emit), which a purely
- * static list cannot express on its own.
+ * Execution lives in GuidedFlow.tsx, not here: some steps depend on state
+ * an earlier one produced (step 3 reads the signal step 2's own call
+ * caught, via the callback runProbe accepts directly -- not step 1's
+ * listener, which is a separate channel demonstrated for its own sake),
+ * which a purely static list cannot express on its own.
  */
 export interface FlowStep {
   id: 'subscribe' | 'call' | 'signal' | 'typedError' | 'identity' | 'notYet' | 'layers'
@@ -24,24 +25,24 @@ export const FLOW_STEPS: FlowStep[] = [
     title: '1. Subscribe to signals',
     call: "import { onCryptoSignal } from 'react-native-matrix-crypto';\n\nconst unsubscribe = onCryptoSignal(signal => {\n  console.log(signal.kind);\n});",
     crosses:
-      'Nothing yet. This registers a listener for events that belong to no call in flight -- a real consumer subscribes before making calls, not after.',
-    why: 'Sets up the channel step 3 reads from. In production this same channel carries trust changes and key gaps, not just this probe.',
+      'Nothing yet. This registers a listener for state changes that belong to no call in flight -- a real consumer subscribes before making calls, not after.',
+    why: "The channel that will carry trust changes and key gaps once that logic lands. Nothing arrives on it in this walkthrough -- this milestone has no trust logic yet -- and it never carries a single call's own diagnostic either: step 3 uses a different channel, on purpose.",
   },
   {
     id: 'call',
     title: '2. Round-trip a record and bytes',
-    call: "import { runProbe } from 'react-native-matrix-crypto';\n\nconst result = await runProbe('hello', new Uint8Array([1, 2, 3]));",
+    call: "import { runProbe } from 'react-native-matrix-crypto';\n\nconst result = await runProbe(\n  'hello',\n  new Uint8Array([1, 2, 3]),\n  signal => console.log(signal.kind),\n);",
     crosses:
-      'A string and three bytes cross via JSI into the Rust core, which reverses the bytes and reports its own crate version -- proof this is the real crate replying, not a mock echoing its input back unread.',
+      'A string and three bytes cross via JSI into the Rust core, which reverses the bytes and reports its own crate version -- proof this is the real crate replying, not a mock echoing its input back unread. The third argument also receives a callback invocation from Rust while the call is still running -- step 3 reports what it caught.',
     why: 'The most basic proof this library does anything at all: a call reaches Rust and comes back.',
   },
   {
     id: 'signal',
     title: '3. Observe the signal that arrived',
-    call: '// No call here -- this reads what step 2 already caused Rust to\n// emit back across the boundary, through the listener from step 1.',
+    call: "// No call here -- this reads what step 2's own callback\n// already caught while that call was still running.",
     crosses:
-      'Rust invoked the step 1 callback across the boundary while the step 2 call was still running; the binding turned it into a typed signal and dispatched it to every subscriber.',
-    why: "Requests aren't the only channel. This is the same push mechanism that carries trust changes and key gaps in production, proven here with the probe's own signal.",
+      "Rust invoked the callback passed into step 2's runProbe call, directly across the boundary, while that call was still in flight -- scoped to that one call, never dispatched anywhere else.",
+    why: "Requests aren't the only direction data crosses this boundary -- this proves the UniFFI callback interface works in reverse too (native code calling back into JS). Deliberately not step 1's channel: broadcasting a single call's own diagnostic to every subscriber is exactly what would make two independent screens see each other's signal.",
   },
   {
     id: 'typedError',

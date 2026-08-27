@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { Text, View } from 'react-native'
-import { getDeviceIdentityKeys, isCryptoError, onCryptoSignal, runProbe } from 'react-native-matrix-crypto'
+import { getDeviceIdentityKeys, isCryptoError, runProbe } from 'react-native-matrix-crypto'
 import {
   runInteropSuite,
   type BridgeBinding,
@@ -11,11 +11,18 @@ import {
  * Adapts the shipped JSI binding to the shared contract from Task 9b.
  * The checks themselves live in the suite, so the device run and the Node
  * run cannot drift apart.
+ *
+ * `runProbe`'s own signal callback is forwarded directly -- not read via
+ * `onCryptoSignal` -- so this harness's 'signal' check only ever sees the
+ * signal from its own call, never `GuidedFlow`'s. Both mount as siblings
+ * in App.tsx and both call `runProbe`; before this, the shared global
+ * channel meant one's probe call showed up in the other's check too.
  */
 function jsiBinding(): BridgeBinding {
   return {
-    runProbe,
-    onCryptoSignal: (cb) => onCryptoSignal((s) => cb({ kind: s.kind })),
+    runProbe(input, payload, onSignal) {
+      return runProbe(input, payload, onSignal && ((signal) => onSignal(signal.kind)))
+    },
     isCryptoError,
     errorKind: (e) => (isCryptoError(e) ? e.kind : undefined),
   }
