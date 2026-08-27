@@ -9,10 +9,6 @@ export interface ProbeResult {
 }
 
 /**
- * Round-trips a string and bytes through the whole chain, emitting one signal.
- * Exists to prove the binding chain works. It has no cryptographic meaning.
- */
-/**
  * The generated binding speaks `ArrayBuffer`; the public API speaks
  * `Uint8Array`, which is the idiomatic React Native shape for binary data and
  * what `EventEnvelope.ciphertext` uses. The shim converts in both directions.
@@ -27,6 +23,10 @@ function toArrayBuffer(view: Uint8Array): ArrayBuffer {
   return isWholeBuffer ? (view.buffer as ArrayBuffer) : view.slice().buffer
 }
 
+/**
+ * Round-trips a string and bytes through the whole chain, emitting one signal.
+ * Exists to prove the binding chain works. It has no cryptographic meaning.
+ */
 export async function runProbe(input: string, payload: Uint8Array): Promise<ProbeResult> {
   try {
     const report = await probeWithObserver(input, toArrayBuffer(payload), {
