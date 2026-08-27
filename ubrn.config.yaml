@@ -1,0 +1,7 @@
+name: react-native-matrix-crypto
+rust:
+  directory: ../../rust
+  manifestPath: matrix-crypto-ffi/Cargo.toml
+bindings:
+  ts: src/generated
+  cpp: cpp/generated

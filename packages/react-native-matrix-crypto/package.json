@@ -1,0 +1,25 @@
+{
+  "name": "react-native-matrix-crypto",
+  "version": "0.1.0",
+  "description": "A React Native bridge for Matrix cryptography",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/linagora/react-native-matrix-crypto"
+  },
+  "main": "src/index.ts",
+  "files": ["src", "cpp", "interop", "android", "ios", "*.podspec", "LICENSE"],
+  "dependencies": {
+    "@ubjs/core": "0.31.0-5"
+  },
+  "devDependencies": {
+    "uniffi-bindgen-react-native": "0.31.0-5",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "scripts": {
+    "codegen": "cargo build --quiet --manifest-path ../../rust/matrix-crypto-ffi/Cargo.toml && (cd ../../rust/matrix-crypto-ffi && ubrn generate jsi bindings ../target/debug/libmatrix_crypto_ffi.a --library --ts-dir ../../packages/react-native-matrix-crypto/src/generated --cpp-dir ../../packages/react-native-matrix-crypto/cpp/generated) && ubrn generate jsi turbo-module matrix_crypto --config ../../ubrn.config.yaml",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  }
+}
