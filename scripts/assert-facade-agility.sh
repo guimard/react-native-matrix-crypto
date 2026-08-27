@@ -36,6 +36,25 @@ trap 'rm -rf "$OUT"' EXIT
 # Concatenate the public .d.ts, excluding anything generated.
 DTS=$(find "$OUT" -name '*.d.ts' -not -path '*/generated/*' -exec cat {} +)
 
+# Spec section 5: no internal Rust structure may leak through the public
+# facade. The exclusion above only keeps a *generated* declaration file's own
+# content out of $DTS -- it says nothing about a public, hand-written file
+# (e.g. index.d.ts) that re-exports straight from one, which is exactly the
+# leak section 5 forbids and is invisible to the Megolm/Olm/room scan below
+# (a name like `ProbeReport` or `IdentityKeys` contains none of those
+# substrings). Every ubrn-generated module lives under a path containing
+# "/generated" (src/generated/*.ts), so any surviving public declaration
+# still naming one -- an import/export specifier such as
+# `from "./generated/matrix_crypto"` -- is that leak, caught here with its
+# own message, distinct from the agility FAIL below.
+GENERATED_REFS=$(printf '%s' "$DTS" | grep -oE "['\"][^'\"]*/generated[^'\"]*['\"]" || true)
+if [ -n "$GENERATED_REFS" ]; then
+  echo "FAIL: a public declaration references ./generated directly."
+  echo "$GENERATED_REFS"
+  echo "      Spec section 5 forbids re-exporting internal Rust structure through the facade."
+  exit 1
+fi
+
 # Strip string literals: 'megolm' as a VALUE is allowed and expected,
 # because the union is open. A Megolm-specific IDENTIFIER is not.
 IDENTIFIERS=$(printf '%s' "$DTS" | sed "s/'[^']*'//g; s/\"[^\"]*\"//g")
