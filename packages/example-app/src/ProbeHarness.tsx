@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { Text, View } from 'react-native'
-import { isCryptoError, onCryptoSignal, runProbe } from 'react-native-matrix-crypto'
+import { getDeviceIdentityKeys, isCryptoError, onCryptoSignal, runProbe } from 'react-native-matrix-crypto'
 import {
   runInteropSuite,
   type BridgeBinding,
@@ -25,7 +25,20 @@ export function ProbeHarness() {
   const [checks, setChecks] = useState<InteropCheck[]>([])
 
   useEffect(() => {
-    runInteropSuite(jsiBinding()).then((results) => {
+    runInteropSuite(jsiBinding()).then(async (results) => {
+      // M1b-specific: proves a genuine cryptographic value crosses the same
+      // chain the probe proved in M1a.
+      try {
+        const keys = await getDeviceIdentityKeys('@a:server1', 'DEVICE1')
+        results.push({
+          name: 'real_crypto',
+          ok: keys.ed25519.length === 43 && keys.curve25519.length === 43,
+          detail: `${keys.ed25519.length}/${keys.curve25519.length}`,
+        })
+      } catch (e) {
+        results.push({ name: 'real_crypto', ok: false, detail: String(e) })
+      }
+
       setChecks(results)
       for (const c of results) {
         // Machine-readable line scraped by CI. The example app is not the
