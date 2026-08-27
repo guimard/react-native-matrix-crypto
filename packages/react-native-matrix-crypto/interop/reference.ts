@@ -12,7 +12,18 @@ export function referenceBinding(): BridgeBinding {
   return {
     async runProbe(input, payload) {
       if (input === '') {
-        throw toCryptoError({ name: 'Rejected', reason: 'input must not be empty' })
+        // UniFFI-shaped, not a convenient fiction: `@ubjs/core`'s `UniffiError`
+        // base class (confirmed by reading its source) never sets `.name` --
+        // it stays the inherited "Error" -- and always sets `.message` to
+        // exactly "<EnumTypeName>.<VariantName>", with the variant's payload
+        // nested under `.inner`. A `{ name: 'Rejected', reason: '...' }`
+        // fixture here once satisfied `toCryptoError`'s old, wrong reading of
+        // that shape and hid a real production bug (Task 11) from every Node
+        // test. See src/errors.ts's `variantNameFromMessage`/`stringField`.
+        const uniffiShapedError = Object.assign(new Error('ProbeFfiError.Rejected'), {
+          inner: { reason: 'input must not be empty' },
+        })
+        throw toCryptoError(uniffiShapedError)
       }
       for (const l of listeners) l({ kind: 'probe_started' })
       return {
