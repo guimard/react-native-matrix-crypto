@@ -5,4 +5,3 @@ Pods/
 *.xcframework
 *.aar
 .DS_Store
-artifact-sizes.json
