@@ -6,9 +6,21 @@
 // resolves `uniffi-bindgen-react-native` -- via `require.resolve`, which
 // walks up parent node_modules directories and finds a hoisted package
 // regardless of where Yarn actually placed it.
-pluginManagement { includeBuild(new File(["node", "--print", "require.resolve('@react-native/gradle-plugin/package.json')"].execute(null, rootDir).text.trim()).parentFile.toString()) }
+//
+// Resolved once, inside pluginManagement {}, and stashed on `gradle.ext`
+// for the plain includeBuild() below to reuse -- rather than shelling out
+// to node twice for the same answer. A plain `def` computed before
+// pluginManagement {} (the more obvious dedup, and the pattern
+// app/build.gradle's sibling fix uses) does not work here: Gradle requires
+// pluginManagement {} to be the first statement in a settings script,
+// confirmed empirically ("The pluginManagement {} block must appear
+// before any other statements in the script").
+pluginManagement {
+  gradle.ext.reactNativeGradlePluginDir = new File(["node", "--print", "require.resolve('@react-native/gradle-plugin/package.json')"].execute(null, rootDir).text.trim()).parentFile.toString()
+  includeBuild(gradle.ext.reactNativeGradlePluginDir)
+}
 plugins { id("com.facebook.react.settings") }
 extensions.configure(com.facebook.react.ReactSettingsExtension){ ex -> ex.autolinkLibrariesFromCommand() }
 rootProject.name = 'ExampleApp'
 include ':app'
-includeBuild(new File(["node", "--print", "require.resolve('@react-native/gradle-plugin/package.json')"].execute(null, rootDir).text.trim()).parentFile.toString())
+includeBuild(gradle.ext.reactNativeGradlePluginDir)
