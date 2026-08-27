@@ -4,4 +4,8 @@ build/
 Pods/
 *.xcframework
 *.aar
+*.apk
+.gradle/
+.cxx/
+jniLibs/
 .DS_Store
