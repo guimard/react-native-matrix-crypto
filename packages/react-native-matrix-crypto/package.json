@@ -18,7 +18,7 @@
     "vitest": "^2.1.0"
   },
   "scripts": {
-    "codegen": "cargo build --quiet --manifest-path ../../rust/matrix-crypto-ffi/Cargo.toml && (cd ../../rust/matrix-crypto-ffi && ubrn generate jsi bindings ../target/debug/libmatrix_crypto_ffi.a --library --ts-dir ../../packages/react-native-matrix-crypto/src/generated --cpp-dir ../../packages/react-native-matrix-crypto/cpp/generated) && ubrn generate jsi turbo-module matrix_crypto --config ../../ubrn.config.yaml",
+    "codegen": "./scripts/codegen.sh",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   }
