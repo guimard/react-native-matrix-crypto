@@ -1,0 +1,145 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: '.nvmrc', cache: yarn }
+      - run: yarn install --frozen-lockfile
+      - run: yarn gate:workspaces
+      - run: yarn gate:boundary
+      - run: yarn gate:drift
+      - run: yarn gate:logger
+      - run: yarn gate:agility
+      - run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+      - run: cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+      # gate:boundary already runs matrix-crypto-core's own tests as part of
+      # the boundary check, but `cargo clippy --all-targets` above only
+      # compiles matrix-crypto-ffi/tests/exports.rs, it never executes it.
+      # Run the whole workspace explicitly so both crates' tests (8 total)
+      # actually run on every PR, not just the core crate's 6.
+      - run: cargo test --manifest-path rust/Cargo.toml
+      - run: yarn --cwd packages/react-native-matrix-crypto typecheck
+      - run: yarn --cwd packages/react-native-matrix-crypto test
+
+  cold-consume:
+    # The only real proof of spec section 4bis.2: the consumer installs no
+    # Rust toolchain. GitHub's hosted ubuntu-latest runner ships a Rust
+    # toolchain by default, so cargo/rustc are scrubbed from PATH for this
+    # job rather than left alone -- otherwise this job would prove nothing.
+    #
+    # PATH is scrubbed rather than deleting the runner's toolchain from disk
+    # (e.g. `sudo rm -f $(command -v cargo)`): deletion is destructive --
+    # it would wreck a self-hosted runner or a local `act` run -- and PATH
+    # manipulation proves the identical property (cargo is unreachable)
+    # without it. Every directory that carries a cargo or rustc binary is
+    # excluded, rather than one hardcoded path, so this does not depend on
+    # exactly where the runner happens to install Rust.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: '.nvmrc' }
+      - name: Prove the consumer installs with no Rust toolchain reachable
+        run: |
+          NEW_PATH=""
+          IFS=':' read -ra DIRS <<< "$PATH"
+          for d in "${DIRS[@]}"; do
+            if [ -x "$d/cargo" ] || [ -x "$d/rustc" ]; then
+              echo "Scrubbing $d from PATH (carries cargo/rustc)"
+              continue
+            fi
+            NEW_PATH="${NEW_PATH:+$NEW_PATH:}$d"
+          done
+          export PATH="$NEW_PATH"
+
+          # A bare `! command -v cargo` looks like the obvious assertion,
+          # but under bash's errexit (the default for Actions run steps), a
+          # `!`-negated command is explicitly exempt from triggering exit-on-
+          # failure (POSIX/bash documented behaviour). If cargo were somehow
+          # still reachable, that line would silently do nothing instead of
+          # failing the job -- exactly the case this step exists to catch.
+          # An explicit if/exit does not have that hole.
+          if command -v cargo >/dev/null 2>&1; then
+            echo "FAIL: cargo is still reachable at $(command -v cargo)"
+            exit 1
+          fi
+          if command -v rustc >/dev/null 2>&1; then
+            echo "FAIL: rustc is still reachable at $(command -v rustc)"
+            exit 1
+          fi
+          echo "Confirmed: cargo and rustc are unreachable"
+
+          TARBALL=$(cd packages/react-native-matrix-crypto && npm pack --silent)
+          mkdir -p /tmp/consumer && cd /tmp/consumer
+          npm init -y >/dev/null
+          npm install "$GITHUB_WORKSPACE/packages/react-native-matrix-crypto/$TARBALL"
+          node -e "require.resolve('react-native-matrix-crypto'); console.log('resolved with no Rust toolchain')"
+
+  build-ios:
+    # On pull requests this leg builds only the simulator slice, because
+    # macOS runners are the cost centre. The full cross-compile matrix
+    # (device + simulator + all architectures) belongs to the tag-triggered
+    # release workflow, not here.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: '.nvmrc', cache: yarn }
+      - run: yarn install --frozen-lockfile
+      # rust-toolchain.toml pins the channel and lists this target, and
+      # rustup auto-installs both from the toolchain file on first use --
+      # this is belt-and-suspenders, cheap, and a no-op if already present.
+      - run: rustup target add aarch64-apple-ios-sim
+      - name: Build the iOS simulator slice
+        run: |
+          # `yarn --cwd packages/react-native-matrix-crypto exec ubrn -- ...`
+          # does NOT change the child process's working directory in this
+          # yarn 1.x install (empirically confirmed: `yarn --cwd "$PKG" exec
+          # -- pwd` prints the workspace root, not "$PKG" -- the same quirk
+          # scripts/assert-facade-agility.sh already works around). Without
+          # this `cd`, `--config ../../ubrn.config.yaml` resolves from the
+          # wrong directory and ubrn fails with "File ../../ubrn.config.yaml
+          # does not exist". A real `cd` sidesteps the quirk entirely.
+          cd packages/react-native-matrix-crypto
+          yarn exec ubrn -- build ios \
+            --config ../../ubrn.config.yaml \
+            --targets aarch64-apple-ios-sim \
+            --release --and-generate
+      - run: ./scripts/measure-artifacts.sh ci-ios
+      - uses: actions/upload-artifact@v4
+        with: { name: artifact-sizes-ios, path: artifact-sizes.json }
+
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: '.nvmrc', cache: yarn }
+      - run: yarn install --frozen-lockfile
+      - run: rustup target add x86_64-linux-android
+      # cargo-ndk is a separate cargo plugin, not part of any Rust toolchain
+      # and not bundled with ubrn or preinstalled on GitHub-hosted runners --
+      # confirmed directly against uniffi-bindgen-react-native's own
+      # pre-installation docs (node_modules/uniffi-bindgen-react-native/
+      # docs/src/guides/rn/pre-installation.md): "cargo install cargo-ndk"
+      # is a required, explicit prerequisite for `ubrn build android`.
+      - run: cargo install cargo-ndk
+      - name: Build the x86_64 Android slice
+        run: |
+          # Same yarn --cwd + exec quirk as build-ios; see that job's comment.
+          cd packages/react-native-matrix-crypto
+          yarn exec ubrn -- build android \
+            --config ../../ubrn.config.yaml \
+            --targets x86_64-linux-android \
+            --release --and-generate
+      - run: ./scripts/measure-artifacts.sh ci-android
+      - uses: actions/upload-artifact@v4
+        with: { name: artifact-sizes-android, path: artifact-sizes.json }
