@@ -13,11 +13,15 @@ name = "matrix_crypto_ffi"
 [dependencies]
 matrix-crypto-core = { path = "../matrix-crypto-core" }
 # Must stay within 0.31.x: uniffi 0.32.0 exists and breaks ubrn 0.31.0-5.
-uniffi = { version = "0.31", features = ["cli"] }
+# No "cli" feature: ubrn reads our compiled artifact from the outside (via
+# goblin, in ubrn's own dependency tree) and never links or invokes anything
+# from this crate's dependency graph. "cli" pulled in the entire bindgen
+# toolchain (uniffi_bindgen, askama, clap, goblin, weedle) for a build mode
+# (a standalone uniffi_bindgen_main() binary) this crate never uses.
+# Confirmed via A/B test: removing it produces byte-identical codegen output.
+# See task-5-report.md, controller instruction 3.
+uniffi = { version = "0.31" }
 thiserror = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
-
-[build-dependencies]
-uniffi = { version = "0.31", features = ["build"] }
