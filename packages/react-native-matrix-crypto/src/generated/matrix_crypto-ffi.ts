@@ -12,93 +12,225 @@ import {
   type UniffiGcObject,
   type UniffiRustFutureContinuationCallback as RuntimeUniffiRustFutureContinuationCallback,
   type UniffiResult,
- } from '@ubjs/core';
+} from "@ubjs/core";
 
 interface NativeModuleInterface {
-    ubrn_uniffi_internal_fn_func_ffi__string_to_byte_length(string: string, uniffi_out_err: UniffiRustCallStatus): number;
-    ubrn_uniffi_internal_fn_func_ffi__string_to_buffer(string: string, uniffi_out_err: UniffiRustCallStatus): Uint8Array;
-    ubrn_uniffi_internal_fn_func_ffi__string_from_buffer(buffer: Uint8Array, uniffi_out_err: UniffiRustCallStatus): string;
-    ubrn_uniffi_internal_fn_func_ffi__read_string_from_buffer(buffer: any, offset: number, length: number): string;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_poll_u8(handle: bigint, callback: UniffiRustFutureContinuationCallback, callbackData: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_u8(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_complete_u8(handle: bigint, uniffi_out_err: UniffiRustCallStatus): number;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_free_u8(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_poll_i8(handle: bigint, callback: UniffiRustFutureContinuationCallback, callbackData: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_i8(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_complete_i8(handle: bigint, uniffi_out_err: UniffiRustCallStatus): number;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_free_i8(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_poll_u16(handle: bigint, callback: UniffiRustFutureContinuationCallback, callbackData: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_u16(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_complete_u16(handle: bigint, uniffi_out_err: UniffiRustCallStatus): number;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_free_u16(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_poll_i16(handle: bigint, callback: UniffiRustFutureContinuationCallback, callbackData: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_i16(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_complete_i16(handle: bigint, uniffi_out_err: UniffiRustCallStatus): number;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_free_i16(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_poll_u32(handle: bigint, callback: UniffiRustFutureContinuationCallback, callbackData: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_u32(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_complete_u32(handle: bigint, uniffi_out_err: UniffiRustCallStatus): number;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_free_u32(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_poll_i32(handle: bigint, callback: UniffiRustFutureContinuationCallback, callbackData: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_i32(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_complete_i32(handle: bigint, uniffi_out_err: UniffiRustCallStatus): number;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_free_i32(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_poll_u64(handle: bigint, callback: UniffiRustFutureContinuationCallback, callbackData: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_u64(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_complete_u64(handle: bigint, uniffi_out_err: UniffiRustCallStatus): bigint;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_free_u64(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_poll_i64(handle: bigint, callback: UniffiRustFutureContinuationCallback, callbackData: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_i64(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_complete_i64(handle: bigint, uniffi_out_err: UniffiRustCallStatus): bigint;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_free_i64(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_poll_f32(handle: bigint, callback: UniffiRustFutureContinuationCallback, callbackData: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_f32(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_complete_f32(handle: bigint, uniffi_out_err: UniffiRustCallStatus): number;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_free_f32(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_poll_f64(handle: bigint, callback: UniffiRustFutureContinuationCallback, callbackData: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_f64(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_complete_f64(handle: bigint, uniffi_out_err: UniffiRustCallStatus): number;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_free_f64(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_poll_rust_buffer(handle: bigint, callback: UniffiRustFutureContinuationCallback, callbackData: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_rust_buffer(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_complete_rust_buffer(handle: bigint, uniffi_out_err: UniffiRustCallStatus): Uint8Array;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_free_rust_buffer(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_poll_void(handle: bigint, callback: UniffiRustFutureContinuationCallback, callbackData: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_void(handle: bigint): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_complete_void(handle: bigint, uniffi_out_err: UniffiRustCallStatus): void;
-    ubrn_ffi_matrix_crypto_ffi_rust_future_free_void(handle: bigint): void;
-    ubrn_uniffi_matrix_crypto_ffi_fn_clone_probeobserver(ptr: bigint, uniffi_out_err: UniffiRustCallStatus): bigint;
-    ubrn_uniffi_matrix_crypto_ffi_fn_free_probeobserver(ptr: bigint, uniffi_out_err: UniffiRustCallStatus): void;
-    ubrn_uniffi_matrix_crypto_ffi_fn_init_callback_vtable_probeobserver(vtable: UniffiVTableCallbackInterfaceMatrixCryptoProbeObserver): void;
-    ubrn_uniffi_matrix_crypto_ffi_fn_func_probe(input: Uint8Array, payload: Uint8Array): bigint;
-    ubrn_uniffi_matrix_crypto_ffi_fn_func_probe_with_observer(input: Uint8Array, payload: Uint8Array, observer: bigint): bigint;
-    ubrn_uniffi_matrix_crypto_ffi_fn_method_probeobserver_on_signal(uniffiSelf: bigint, signal: Uint8Array, uniffi_out_err: UniffiRustCallStatus): void;
-    ubrn_ffi_matrix_crypto_ffi_uniffi_contract_version(): number;
-    ubrn_uniffi_matrix_crypto_ffi_checksum_func_probe(): number;
-    ubrn_uniffi_matrix_crypto_ffi_checksum_func_probe_with_observer(): number;
-    ubrn_uniffi_matrix_crypto_ffi_checksum_method_probeobserver_on_signal(): number;
-    ubrn_uniffi_internal_fn_method_probeobserver_ffi__bless_pointer(pointer: bigint, uniffi_out_err: UniffiRustCallStatus): UniffiGcObject;
-    // Codegen call sites use these via `nativeModule().rustbuffer_alloc(...)`
-    // and `nativeModule().rustbuffer_free(...)`. The JSI host object exposes
-    // them as properties; see `props["rustbuffer_alloc"]` / `props["rustbuffer_free"]`
-    // in the C++ wrapper template.
-    rustbuffer_alloc(n: number): Uint8Array;
-    rustbuffer_free(view: Uint8Array): void;
+  ubrn_uniffi_internal_fn_func_ffi__string_to_byte_length(
+    string: string,
+    uniffi_out_err: UniffiRustCallStatus
+  ): number;
+  ubrn_uniffi_internal_fn_func_ffi__string_to_buffer(
+    string: string,
+    uniffi_out_err: UniffiRustCallStatus
+  ): Uint8Array;
+  ubrn_uniffi_internal_fn_func_ffi__string_from_buffer(
+    buffer: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus
+  ): string;
+  ubrn_uniffi_internal_fn_func_ffi__read_string_from_buffer(
+    buffer: any,
+    offset: number,
+    length: number
+  ): string;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_poll_u8(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint
+  ): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_u8(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_complete_u8(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): number;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_free_u8(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_poll_i8(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint
+  ): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_i8(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_complete_i8(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): number;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_free_i8(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_poll_u16(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint
+  ): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_u16(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_complete_u16(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): number;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_free_u16(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_poll_i16(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint
+  ): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_i16(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_complete_i16(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): number;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_free_i16(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_poll_u32(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint
+  ): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_u32(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_complete_u32(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): number;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_free_u32(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_poll_i32(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint
+  ): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_i32(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_complete_i32(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): number;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_free_i32(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_poll_u64(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint
+  ): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_u64(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_complete_u64(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): bigint;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_free_u64(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_poll_i64(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint
+  ): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_i64(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_complete_i64(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): bigint;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_free_i64(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_poll_f32(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint
+  ): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_f32(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_complete_f32(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): number;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_free_f32(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_poll_f64(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint
+  ): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_f64(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_complete_f64(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): number;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_free_f64(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_poll_rust_buffer(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint
+  ): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_rust_buffer(
+    handle: bigint
+  ): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_complete_rust_buffer(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): Uint8Array;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_free_rust_buffer(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_poll_void(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint
+  ): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_void(handle: bigint): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_complete_void(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): void;
+  ubrn_ffi_matrix_crypto_ffi_rust_future_free_void(handle: bigint): void;
+  ubrn_uniffi_matrix_crypto_ffi_fn_clone_probeobserver(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_free_probeobserver(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): void;
+  ubrn_uniffi_matrix_crypto_ffi_fn_init_callback_vtable_probeobserver(
+    vtable: UniffiVTableCallbackInterfaceMatrixCryptoProbeObserver
+  ): void;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_probe(
+    input: Uint8Array,
+    payload: Uint8Array
+  ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_probe_with_observer(
+    input: Uint8Array,
+    payload: Uint8Array,
+    observer: bigint
+  ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_method_probeobserver_on_signal(
+    uniffiSelf: bigint,
+    signal: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus
+  ): void;
+  ubrn_ffi_matrix_crypto_ffi_uniffi_contract_version(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_probe(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_probe_with_observer(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_method_probeobserver_on_signal(): number;
+  ubrn_uniffi_internal_fn_method_probeobserver_ffi__bless_pointer(
+    pointer: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): UniffiGcObject;
+  // Codegen call sites use these via `nativeModule().rustbuffer_alloc(...)`
+  // and `nativeModule().rustbuffer_free(...)`. The JSI host object exposes
+  // them as properties; see `props["rustbuffer_alloc"]` / `props["rustbuffer_free"]`
+  // in the C++ wrapper template.
+  rustbuffer_alloc(n: number): Uint8Array;
+  rustbuffer_free(view: Uint8Array): void;
 }
 
-const getter: () => NativeModuleInterface = () => (globalThis as any).NativeMatrixCrypto;
+const getter: () => NativeModuleInterface = () =>
+  (globalThis as any).NativeMatrixCrypto;
 export default getter;
 
 // Structs and function types for calling back into Typescript from Rust.
-export type UniffiRustFutureContinuationCallback = (data: bigint, pollResult: number) => void;
+export type UniffiRustFutureContinuationCallback = (
+  data: bigint,
+  pollResult: number
+) => void;
 export type UniffiForeignFutureDroppedCallback = (handle: bigint) => void;
 export type UniffiForeignFutureDroppedCallbackStruct = {
   handle: bigint;
   free: UniffiForeignFutureDroppedCallback;
 };
-type UniffiCallbackInterfaceMatrixCryptoProbeObserverMethod0 = (uniffiHandle: bigint, signal: Uint8Array) => UniffiResult<void>;
-type UniffiCallbackInterfaceCloneMatrixCryptoProbeObserver = (handle: bigint) => UniffiResult<void>;
-type UniffiCallbackInterfaceFreeMatrixCryptoProbeObserver = (handle: bigint) => void;
+type UniffiCallbackInterfaceMatrixCryptoProbeObserverMethod0 = (
+  uniffiHandle: bigint,
+  signal: Uint8Array
+) => UniffiResult<void>;
+type UniffiCallbackInterfaceCloneMatrixCryptoProbeObserver = (
+  handle: bigint
+) => UniffiResult<void>;
+type UniffiCallbackInterfaceFreeMatrixCryptoProbeObserver = (
+  handle: bigint
+) => void;
 export type UniffiVTableCallbackInterfaceMatrixCryptoProbeObserver = {
   uniffi_free: UniffiCallbackInterfaceFreeMatrixCryptoProbeObserver;
   uniffi_clone: UniffiCallbackInterfaceCloneMatrixCryptoProbeObserver;
