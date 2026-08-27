@@ -4,9 +4,9 @@
 /* eslint-disable */
 // @ts-nocheck
 import nativeModule from "./matrix_crypto-ffi";
-import { type UniffiRustFutureContinuationCallback, type UniffiForeignFutureDroppedCallback, type UniffiForeignFutureDroppedCallbackStruct,
+import { type UniffiRustFutureContinuationCallback, type UniffiForeignFutureDroppedCallback, type UniffiForeignFutureDroppedCallbackStruct, type UniffiVTableCallbackInterfaceMatrixCryptoProbeObserver,
 } from "./matrix_crypto-ffi";
-import { type UniffiByteArray, AbstractFfiConverterByteArray, Cursor, FfiConverterArrayBuffer, FfiConverterUInt8, RustBuffer, UniffiError, UniffiInternalError, UniffiRustCaller, uniffiCreateFfiConverterString, uniffiCreateRecord, uniffiRustCallAsync, uniffiTypeNameSymbol, variantOrdinalSymbol,
+import { type FfiConverter, type UniffiByteArray, type UniffiGcObject, type UniffiHandle, type UniffiObjectFactory, type UniffiReferenceHolder, type UniffiRustCallStatus, AbstractFfiConverterByteArray, Cursor, FfiConverterArrayBuffer, FfiConverterObject, FfiConverterObjectWithCallbacks, FfiConverterUInt8, RustBuffer, UniffiAbstractObject, UniffiError, UniffiInternalError, UniffiResult, UniffiRustCaller, destructorGuardSymbol, pointerLiteralSymbol, uniffiCreateFfiConverterString, uniffiCreateRecord, uniffiRustCallAsync, uniffiTraitInterfaceCall, uniffiTypeNameSymbol, variantOrdinalSymbol,
 } from "@ubjs/core";
 const uniffiCaller = new UniffiRustCaller(() => ({ code: 0 }));
 
@@ -31,6 +31,46 @@ export async function probe(input: string, payload: ArrayBuffer, asyncOpts_?: { 
             /*rustCaller:*/ uniffiCaller,
             /*rustFutureFunc:*/ () => {
                 return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_probe(FfiConverterString.lower(input, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(payload, nativeModule().rustbuffer_alloc)
+                );
+            },
+            /*pollFunc:*/ nativeModule().ubrn_ffi_matrix_crypto_ffi_rust_future_poll_rust_buffer,
+            /*cancelFunc:*/ nativeModule().ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_rust_buffer,
+            /*completeFunc:*/ nativeModule().ubrn_ffi_matrix_crypto_ffi_rust_future_complete_rust_buffer,
+            /*freeFunc:*/ nativeModule().ubrn_ffi_matrix_crypto_ffi_rust_future_free_rust_buffer,
+            // Async returns always go through the JS-side converter: the
+            // FFI symbol returns the future handle (u64), and the user-level
+            // RustBuffer comes back via the shared `rust_future_complete_*`
+            // export. The bytes the runtime hands back must be deserialized
+            // here using the per-callable return-type converter.
+            // Borrowed view over foreign memory: the call site owns the free,
+            // as on the sync paths. Unconditional — a no-op where buffers are
+            // already JS-owned.
+            /*liftFunc:*/ (__rb) => {
+                try {
+                    return FfiConverterTypeProbeReport.lift(__rb);
+                } finally {
+                    nativeModule().rustbuffer_free(__rb);
+                }
+            },
+            /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+            /*asyncOpts:*/ asyncOpts_,
+            /*errorHandler:*/ FfiConverterTypeProbeFfiError.lift.bind(FfiConverterTypeProbeFfiError)
+        );
+    } catch (__error: any) {
+        if (uniffiIsDebug && __error instanceof Error) {
+            __error.stack = __stack;
+        }
+        throw __error;
+    }
+    }
+
+export async function probeWithObserver(input: string, payload: ArrayBuffer, observer: ProbeObserver, asyncOpts_?: { signal: AbortSignal }): Promise<ProbeReport> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined;
+    try {
+        return await uniffiRustCallAsync(
+            /*rustCaller:*/ uniffiCaller,
+            /*rustFutureFunc:*/ () => {
+                return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_probe_with_observer(FfiConverterString.lower(input, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(payload, nativeModule().rustbuffer_alloc),FfiConverterTypeProbeObserver.lower(observer, nativeModule().rustbuffer_alloc)
                 );
             },
             /*pollFunc:*/ nativeModule().ubrn_ffi_matrix_crypto_ffi_rust_future_poll_rust_buffer,
@@ -166,6 +206,52 @@ const FfiConverterTypeProbeReport = (() => {
     return new FFIConverter();
 })();
 
+/**
+ * Mirror of the core's signal, carrying the UniFFI record derive.
+ */
+export type ProbeSignal = {
+    kind: string,
+    detail: string
+}
+
+/**
+ * Generated factory for {@link ProbeSignal} record objects.
+ */
+export const ProbeSignal = (() => {
+    const defaults = () => ({
+    });
+    const create = (() => {
+        return uniffiCreateRecord<ProbeSignal, ReturnType<typeof defaults>>(defaults);
+    })();
+    return Object.freeze({
+        create,
+        new: create,
+        defaults: () => Object.freeze(defaults()) as Partial<ProbeSignal>,
+    });
+})();
+
+const FfiConverterTypeProbeSignal = (() => {
+    type TypeName = ProbeSignal;
+    class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+        readFromCursor(c: Cursor): TypeName {
+            return {
+                kind: FfiConverterString.readFromCursor(c), 
+                detail: FfiConverterString.readFromCursor(c)
+            };
+        }
+        writeIntoCursor(value: TypeName, c: Cursor): void {
+            FfiConverterString.writeIntoCursor(value.kind, c);
+            FfiConverterString.writeIntoCursor(value.detail, c);
+        }
+        allocationSize(value: TypeName): number {
+            return FfiConverterString.allocationSize(value.kind) +
+             FfiConverterString.allocationSize(value.detail);
+            
+        }
+    };
+    return new FFIConverter();
+})();
+
 
 // Error type: ProbeFfiError
 export enum ProbeFfiError_Tags {
@@ -270,6 +356,159 @@ const FfiConverterTypeProbeFfiError = (() => {
     return new FFIConverter();
 })();
 
+/**
+ * `with_foreign` makes this implementable from JavaScript.
+ */
+export interface ProbeObserver {
+    
+    onSignal(signal: ProbeSignal): void;
+}
+
+
+/**
+ * `with_foreign` makes this implementable from JavaScript.
+ */
+export class ProbeObserverImpl extends UniffiAbstractObject implements ProbeObserver {
+
+    readonly [uniffiTypeNameSymbol] = "ProbeObserverImpl";
+    readonly [destructorGuardSymbol]: UniffiGcObject;
+    readonly [pointerLiteralSymbol]: UniffiHandle;
+    // No primary constructor declared for this class.
+private constructor(pointer: UniffiHandle) {
+    super();
+    this[pointerLiteralSymbol] = pointer;
+    this[destructorGuardSymbol] = uniffiTypeProbeObserverImplObjectFactory.bless(pointer);
+}
+
+    
+
+    
+    onSignal(signal: ProbeSignal): void {uniffiCaller.rustCall(
+            /*caller:*/ (callStatus) => { nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_method_probeobserver_on_signal(
+                uniffiTypeProbeObserverImplObjectFactory.clonePointer(this),
+        FfiConverterTypeProbeSignal.lower(signal, nativeModule().rustbuffer_alloc),
+                callStatus);
+            },
+            /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    );
+    }
+    
+
+    uniffiDestroy(): void {
+        const ptr = (this as any)[destructorGuardSymbol];
+        if (ptr !== undefined) {
+            const pointer = uniffiTypeProbeObserverImplObjectFactory.pointer(this);
+            uniffiTypeProbeObserverImplObjectFactory.freePointer(pointer);
+            uniffiTypeProbeObserverImplObjectFactory.unbless(ptr);
+            delete (this as any)[destructorGuardSymbol];
+        }
+    }
+
+    static instanceOf(obj_: any): obj_ is ProbeObserverImpl {
+        return uniffiTypeProbeObserverImplObjectFactory.isConcreteType(obj_);
+    }
+
+    
+}
+
+const uniffiTypeProbeObserverImplObjectFactory: UniffiObjectFactory<ProbeObserver> = (() => {
+    
+    return {
+    create(pointer: UniffiHandle): ProbeObserver {
+        const instance = Object.create(ProbeObserverImpl.prototype);
+        instance[pointerLiteralSymbol] = pointer;
+        instance[destructorGuardSymbol] = this.bless(pointer);
+        instance[uniffiTypeNameSymbol] = "ProbeObserverImpl";
+        return instance;
+    },
+
+    
+    bless(p: UniffiHandle): UniffiGcObject {
+        return uniffiCaller.rustCall(
+            /*caller:*/ (status) =>
+                nativeModule().ubrn_uniffi_internal_fn_method_probeobserver_ffi__bless_pointer(p, status),
+            /*liftString:*/ FfiConverterString.lift
+        );
+    },
+
+    unbless(ptr_: UniffiGcObject) {
+        ptr_.markDestroyed();
+    },
+
+    pointer(obj_: ProbeObserver): UniffiHandle {
+        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
+            throw new UniffiInternalError.UnexpectedNullPointer();
+        }
+        return (obj_ as any)[pointerLiteralSymbol];
+    },
+
+    clonePointer(obj_: ProbeObserver): UniffiHandle {
+        const pointer = this.pointer(obj_);
+        return uniffiCaller.rustCall(
+            /*caller:*/ (callStatus) => nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_clone_probeobserver(pointer, callStatus),
+            /*liftString:*/ FfiConverterString.lift
+        );
+    },
+
+    freePointer(pointer: UniffiHandle): void {
+        uniffiCaller.rustCall(
+            /*caller:*/ (callStatus) => nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_free_probeobserver(pointer, callStatus),
+            /*liftString:*/ FfiConverterString.lift
+        );
+    },
+
+    isConcreteType(obj_: any): obj_ is ProbeObserver {
+        return obj_[destructorGuardSymbol] && obj_[uniffiTypeNameSymbol] === "ProbeObserverImpl";
+    },
+}})();
+const FfiConverterTypeProbeObserver = new FfiConverterObjectWithCallbacks(uniffiTypeProbeObserverImplObjectFactory);
+
+// Add a vtable for the callbacks that go in ProbeObserver.
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+const uniffiCallbackInterfaceProbeObserver: { vtable: any; register: () => void; } = {
+    // Create the VTable using a series of closures.
+    // ts automatically converts these into C callback functions.
+    vtable: {
+        on_signal: (
+            uniffiHandle: bigint,
+            signal: Uint8Array,) => {
+            const uniffiMakeCall = 
+            ()
+            : void => {
+                const jsCallback = FfiConverterTypeProbeObserver.lift(uniffiHandle);
+                return jsCallback.onSignal(
+                    FfiConverterTypeProbeSignal.lift(signal)
+                )
+            };
+            const uniffiResult = UniffiResult.ready<void>();
+            const uniffiHandleSuccess = (obj: any) => {};
+            const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+                UniffiResult.writeError(uniffiResult, code, errBuf);
+            };
+            uniffiTraitInterfaceCall(
+                /*makeCall:*/ uniffiMakeCall,
+                /*handleSuccess:*/ uniffiHandleSuccess,
+                /*handleError:*/ uniffiHandleError,
+                /*lowerString:*/ FfiConverterString.lower.bind(FfiConverterString),
+                /*alloc:*/ nativeModule().rustbuffer_alloc,
+            )
+            return uniffiResult;
+        },
+        uniffi_free: (uniffiHandle: UniffiHandle): void => {
+            // this will throw a stale handle error if the handle isn't found.
+            FfiConverterTypeProbeObserver.drop(uniffiHandle);
+        },
+        uniffi_clone: (uniffiHandle: UniffiHandle): UniffiHandle => {
+            return FfiConverterTypeProbeObserver.clone(uniffiHandle);
+        }
+    },
+    register: () => {nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_init_callback_vtable_probeobserver(
+            uniffiCallbackInterfaceProbeObserver.vtable
+        );
+    },
+};
+
 
 /**
  * This should be called before anything else.
@@ -292,13 +531,22 @@ function uniffiEnsureInitialized() {
     if (nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_probe() !== 10505) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_matrix_crypto_ffi_checksum_func_probe");
     }
+    if (nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_probe_with_observer() !== 18625) {
+        throw new UniffiInternalError.ApiChecksumMismatch("uniffi_matrix_crypto_ffi_checksum_func_probe_with_observer");
+    }
+    if (nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_method_probeobserver_on_signal() !== 23850) {
+        throw new UniffiInternalError.ApiChecksumMismatch("uniffi_matrix_crypto_ffi_checksum_method_probeobserver_on_signal");
+    }
 
+    uniffiCallbackInterfaceProbeObserver.register();
     }
 
 export default Object.freeze({
   initialize: uniffiEnsureInitialized,
   converters: {
     FfiConverterTypeProbeFfiError,
+    FfiConverterTypeProbeObserver,
     FfiConverterTypeProbeReport,
+    FfiConverterTypeProbeSignal,
   }
 });

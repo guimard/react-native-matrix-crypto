@@ -67,9 +67,17 @@ interface NativeModuleInterface {
     ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_void(handle: bigint): void;
     ubrn_ffi_matrix_crypto_ffi_rust_future_complete_void(handle: bigint, uniffi_out_err: UniffiRustCallStatus): void;
     ubrn_ffi_matrix_crypto_ffi_rust_future_free_void(handle: bigint): void;
+    ubrn_uniffi_matrix_crypto_ffi_fn_clone_probeobserver(ptr: bigint, uniffi_out_err: UniffiRustCallStatus): bigint;
+    ubrn_uniffi_matrix_crypto_ffi_fn_free_probeobserver(ptr: bigint, uniffi_out_err: UniffiRustCallStatus): void;
+    ubrn_uniffi_matrix_crypto_ffi_fn_init_callback_vtable_probeobserver(vtable: UniffiVTableCallbackInterfaceMatrixCryptoProbeObserver): void;
     ubrn_uniffi_matrix_crypto_ffi_fn_func_probe(input: Uint8Array, payload: Uint8Array): bigint;
+    ubrn_uniffi_matrix_crypto_ffi_fn_func_probe_with_observer(input: Uint8Array, payload: Uint8Array, observer: bigint): bigint;
+    ubrn_uniffi_matrix_crypto_ffi_fn_method_probeobserver_on_signal(uniffiSelf: bigint, signal: Uint8Array, uniffi_out_err: UniffiRustCallStatus): void;
     ubrn_ffi_matrix_crypto_ffi_uniffi_contract_version(): number;
     ubrn_uniffi_matrix_crypto_ffi_checksum_func_probe(): number;
+    ubrn_uniffi_matrix_crypto_ffi_checksum_func_probe_with_observer(): number;
+    ubrn_uniffi_matrix_crypto_ffi_checksum_method_probeobserver_on_signal(): number;
+    ubrn_uniffi_internal_fn_method_probeobserver_ffi__bless_pointer(pointer: bigint, uniffi_out_err: UniffiRustCallStatus): UniffiGcObject;
     // Codegen call sites use these via `nativeModule().rustbuffer_alloc(...)`
     // and `nativeModule().rustbuffer_free(...)`. The JSI host object exposes
     // them as properties; see `props["rustbuffer_alloc"]` / `props["rustbuffer_free"]`
@@ -87,6 +95,14 @@ export type UniffiForeignFutureDroppedCallback = (handle: bigint) => void;
 export type UniffiForeignFutureDroppedCallbackStruct = {
   handle: bigint;
   free: UniffiForeignFutureDroppedCallback;
+};
+type UniffiCallbackInterfaceMatrixCryptoProbeObserverMethod0 = (uniffiHandle: bigint, signal: Uint8Array) => UniffiResult<void>;
+type UniffiCallbackInterfaceCloneMatrixCryptoProbeObserver = (handle: bigint) => UniffiResult<void>;
+type UniffiCallbackInterfaceFreeMatrixCryptoProbeObserver = (handle: bigint) => void;
+export type UniffiVTableCallbackInterfaceMatrixCryptoProbeObserver = {
+  uniffi_free: UniffiCallbackInterfaceFreeMatrixCryptoProbeObserver;
+  uniffi_clone: UniffiCallbackInterfaceCloneMatrixCryptoProbeObserver;
+  on_signal: UniffiCallbackInterfaceMatrixCryptoProbeObserverMethod0;
 };
 
 // UniffiRustFutureContinuationCallback is generated as part of the component interface's
