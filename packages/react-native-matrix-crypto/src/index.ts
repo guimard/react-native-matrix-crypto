@@ -28,7 +28,7 @@ export { isCryptoError } from './errors'
 export type { CryptoSignal, Unsubscribe } from './signals'
 export { onCryptoSignal } from './signals'
 
-export type { ProbeResult } from './probe'
+export type { ProbeResult, ProbeSignal } from './probe'
 export { runProbe } from './probe'
 
 export type { CryptoMachineConfig, DeviceStatus, IdentityKeys } from './facade'

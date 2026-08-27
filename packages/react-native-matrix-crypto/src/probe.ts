@@ -1,11 +1,22 @@
 import { probeWithObserver } from './generated/matrix_crypto'
 import { toCryptoError } from './errors'
-import { emitCryptoSignal } from './signals'
 
 export interface ProbeResult {
   echoed: string
   payload: Uint8Array
   coreVersion: string
+}
+
+/**
+ * A single diagnostic emitted by one `runProbe` call. Not a `CryptoSignal`:
+ * it carries no product decision and belongs to no crypto state -- it is
+ * proof that the UniFFI callback interface crosses JSI in the reverse
+ * direction (Rust calling back into JS), scoped to the call that asked for
+ * it. See `runProbe`'s own comment for why this is not broadcast.
+ */
+export interface ProbeSignal {
+  kind: string
+  detail: string
 }
 
 /**
@@ -24,14 +35,31 @@ function toArrayBuffer(view: Uint8Array): ArrayBuffer {
 }
 
 /**
- * Round-trips a string and bytes through the whole chain, emitting one signal.
- * Exists to prove the binding chain works. It has no cryptographic meaning.
+ * Round-trips a string and bytes through the whole chain. Exists to prove
+ * the binding chain works, including in reverse: Rust invokes the observer
+ * passed to `probeWithObserver` back across JSI while the call is still in
+ * flight. It has no cryptographic meaning.
+ *
+ * `onProbeSignal`, if given, receives that one call's own diagnostic and
+ * nothing else. It is deliberately NOT routed through
+ * `emitCryptoSignal`/`onCryptoSignal`: that channel is spec section 7.3's
+ * broadcast for genuine crypto state changes (`trust_changed`,
+ * `unexpected_device`, `key_missing`), which every subscriber should learn
+ * about. A probe's signal is a per-call diagnostic of this function, not a
+ * crypto state change, so it must reach only the caller that asked for it --
+ * broadcasting it made two independent callers of `runProbe` (e.g. the
+ * example app's guided walkthrough and its diagnostics panel, mounted as
+ * siblings) each see the other's signal too.
  */
-export async function runProbe(input: string, payload: Uint8Array): Promise<ProbeResult> {
+export async function runProbe(
+  input: string,
+  payload: Uint8Array,
+  onProbeSignal?: (signal: ProbeSignal) => void,
+): Promise<ProbeResult> {
   try {
     const report = await probeWithObserver(input, toArrayBuffer(payload), {
-      onSignal(signal: { kind: string; detail: string }) {
-        emitCryptoSignal({ kind: 'probe_started', detail: signal.detail })
+      onSignal(signal: ProbeSignal) {
+        onProbeSignal?.(signal)
       },
     })
     return {

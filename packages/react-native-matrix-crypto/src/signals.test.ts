@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { emitCryptoSignal, onCryptoSignal } from './signals'
 import type { CryptoSignal } from './signals'
 
-const SIGNAL: CryptoSignal = { kind: 'probe_started', detail: 'x' }
+const SIGNAL: CryptoSignal = { kind: 'trust_changed', user: '@alice:example.org', state: 'verified' }
 
 describe('emitCryptoSignal', () => {
   // Every listener registered by a test is tracked here and torn down in
