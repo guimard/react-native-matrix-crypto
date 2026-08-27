@@ -358,6 +358,31 @@ Bridge spec §13 defines five levels. Three cannot be meaningful in a skeleton.
 | Binding interop | Harness real, suite trivial. §4bis.3 calls drift blocking, so the shared JS suite exists from day one and a second binding drops into it |
 | Federation-neutral | Deferred; requires Synapse and Continuwuity, per crypto spec §14 |
 
+### 8.0 Interoperability testing belongs to M2, in two levels and in this order
+
+Decided during M1b. The bridge never speaks to a homeserver — spec §3 puts network sync
+out of scope, and the bridge takes an `EventEnvelope` in and returns one out, leaving
+transport to the product layer. So no test in M1a or M1b needs a Matrix server, and none
+uses one.
+
+M2 changes that, and the ordering matters because the expensive level is the tempting one:
+
+1. **Two-party encryption, in-process, no server.** Two crypto machines in a single test
+   exchanging keys and decrypting each other, as `matrix-sdk-crypto`'s own tests do.
+   Deterministic, fast, and it catches the large majority of defects. **Start here.**
+2. **Real interoperability, with a homeserver and a third-party client.** The question
+   level 1 cannot answer is not "does our code run" but "does a real Matrix client decrypt
+   what we encrypt, and can we decrypt what it sends". No unit test answers that.
+
+Level 2 is not optional politeness — it is the only check that catches a divergence
+between our assumptions and the protocol as implemented elsewhere. M1a demonstrated why in
+miniature: nineteen green tests passed against an assumed UniFFI error shape while the
+real one differed, and only running on real native code exposed it. A third-party client
+is that same check applied to the encryption format.
+
+Cross-implementation testing (Synapse ↔ Continuwuity, per crypto spec §14) is a third
+level, later still, and gated on both level 1 and level 2.
+
 ### 8.1 The agility test is pulled forward
 
 Crypto spec §14 requires a compatibility test proving a Megolm to MLS swap does not
