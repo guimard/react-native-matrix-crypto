@@ -82,12 +82,31 @@ export async function runInteropSuite(binding: BridgeBinding): Promise<InteropCh
 
     try {
       await binding.runProbe('', new Uint8Array())
-      checks.push({ name: 'typed_error', ok: false, detail: 'no error thrown' })
-    } catch (e) {
       checks.push({
         name: 'typed_error',
-        ok: binding.isCryptoError(e) && binding.errorKind(e) === 'rejected',
-        detail: String(binding.errorKind(e)),
+        ok: false,
+        detail: 'no error thrown - Rust should have rejected empty input',
+      })
+    } catch (e) {
+      // This check exists to prove a typed error survives the FFI boundary
+      // intact: 'rejected' is not a failure symptom, it is the one correct
+      // value -- the check passes BECAUSE the error crossed as a typed
+      // CryptoError with that kind. Read bare, though, a line ending in
+      // the single word "rejected" reads like something broke (raised by
+      // the repository owner from a device run). The detail is written as
+      // a full sentence so it reads correctly on its own, in both the
+      // on-screen list and the PROBE_CHECK line CI scrapes.
+      //
+      // "(expected)"/"(unexpected)" is chosen from `ok`, not hardcoded to
+      // "(expected)": a self-describing detail must not claim the result
+      // was expected on a run where it was not -- that would just move
+      // this task's own failure mode into the fix for it.
+      const kind = binding.errorKind(e)
+      const ok = binding.isCryptoError(e) && kind === 'rejected'
+      checks.push({
+        name: 'typed_error',
+        ok,
+        detail: `error crossed as typed kind "${kind}" (${ok ? 'expected' : 'unexpected'})`,
       })
     }
 
