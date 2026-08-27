@@ -51,4 +51,24 @@ cargo build --quiet --manifest-path ../../rust/matrix-crypto-ffi/Cargo.toml
 # come out as EMPTY STUBS: no `export * from './generated/matrix_crypto'`,
 # and the native installRustCrate() body is just `return true;` with no JSI
 # registration at all. Confirmed empirically.
+#
+# THIS STEP AND `ubrn build android --targets ... --and-generate` ARE NOT
+# INTERCHANGEABLE for android/build.gradle's `abiFilters` list (Task 14).
+# `ubrn build android` knows the specific target list it was invoked with and
+# computes `abiFilters` from it. This step has no such context -- it always
+# falls back to ubrn's default four-ABI Android template (arm64-v8a,
+# armeabi-v7a, x86, x86_64), regardless of which Android targets were
+# actually built. Whichever command ran LAST determines what a plain `git add`
+# would capture for that one file, and only `scripts/assert-no-drift.sh` (which
+# calls this script, never `ubrn build android` directly) is authoritative for
+# what must be committed. Confirmed empirically: running this step twice in a
+# row after `ubrn build android --targets <subset> --and-generate` deterministically
+# restores the full four-ABI list and produces zero further diff either time --
+# so THIS SCRIPT's output, not a full platform build's, is the canonical one.
+# Consequence: `scripts/assert-no-drift.sh` MUST be the last step run before any
+# commit that touches Android artifacts, including one made right after a real
+# `ubrn build android` invocation -- otherwise a commit can silently capture the
+# wrong `abiFilters` list, exactly as happened once in Task 14 (caught only
+# because the drift gate was re-run as extra diligence, not because anything
+# enforced it).
 ubrn generate jsi turbo-module matrix_crypto --config ../../ubrn.config.yaml
