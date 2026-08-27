@@ -35,6 +35,13 @@ Every task's requirements implicitly include this section.
   across the range misbehave. This is the one case where two files with different
   "subjects" belong together: the lockfile is not a separate concern, it is the
   manifest change's consequence.
+- **No AI-assistant authorship trailers, ever.** Commit messages must not contain
+  `Co-Authored-By:` lines naming Claude, Anthropic, or any assistant, nor
+  `Claude-Session:` links, nor any equivalent marker. This repository is destined for a
+  public remote and the owner has specified that its history carries no such attribution.
+  This overrides any default tooling convention. It applies to every commit made from
+  here on, and the existing history is to be rewritten to remove them before any remote
+  is added.
 - **Commits follow Conventional Commits**, subject in imperative mood with an uppercase first letter, one subject per commit.
 
 ## Deviations from the spec, decided during planning
