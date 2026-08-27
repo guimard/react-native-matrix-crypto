@@ -1523,6 +1523,12 @@ Spec §8 requires the shared JS suite to exist from day one, so a second binding
 - Create: `packages/react-native-matrix-crypto/interop/suite.ts`
 - Create: `packages/react-native-matrix-crypto/interop/reference.ts`
 - Create: `packages/react-native-matrix-crypto/interop/suite.test.ts`
+- Modify: `packages/react-native-matrix-crypto/tsconfig.json` — widen `include` to
+  `["src", "interop"]`. Without this the typecheck gate does not cover a single file
+  this task creates, and would report green over completely untypechecked code. Nothing
+  under `src/` imports `interop/*`, so the directory is otherwise invisible to `tsc`.
+  This does not affect `scripts/assert-facade-agility.sh`, which passes a file argument
+  to `tsc` and therefore ignores `tsconfig.json` entirely.
 
 **Interfaces:**
 - Consumes: `runProbe` and `onCryptoSignal` from Task 9.
@@ -1594,7 +1600,17 @@ export interface InteropCheck {
 export async function runInteropSuite(binding: BridgeBinding): Promise<InteropCheck[]> {
   const checks: InteropCheck[] = []
   const signals: string[] = []
-  const unsubscribe = binding.onCryptoSignal((s) => signals.push(s.kind))
+
+  // Subscribing is itself a call into the binding, so it can throw. Seeding a
+  // no-op and guarding the call keeps that inside the contract: a binding whose
+  // onCryptoSignal throws must produce a failing check, not reject the suite
+  // before a single check has been pushed.
+  let unsubscribe: () => void = () => {}
+  try {
+    unsubscribe = binding.onCryptoSignal((s) => signals.push(s.kind))
+  } catch {
+    // Left to fail at the `signal` check below.
+  }
 
   try {
     const report = await binding.runProbe('hello', new Uint8Array([1, 2, 3]))
@@ -1636,7 +1652,14 @@ export async function runInteropSuite(binding: BridgeBinding): Promise<InteropCh
   } catch (e) {
     checks.push({ name: 'fatal', ok: false, detail: String(e) })
   } finally {
-    unsubscribe()
+    // A throw from `finally` REPLACES whatever the try was about to return, so
+    // an unguarded unsubscribe() here would discard an already-complete set of
+    // checks. On a device that turns a useful partial result into nothing.
+    try {
+      unsubscribe()
+    } catch {
+      // Teardown failure must not destroy the results.
+    }
   }
 
   return checks
