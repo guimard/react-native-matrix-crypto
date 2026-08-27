@@ -3,3 +3,9 @@
 //! This crate knows nothing about UniFFI, JSI, or React Native. It must never
 //! take a direct dependency on `uniffi`; `scripts/assert-core-boundary.sh`
 //! enforces that in CI.
+
+mod error;
+mod probe;
+
+pub use error::ProbeError;
+pub use probe::{probe, ProbeReport};
