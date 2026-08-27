@@ -2399,6 +2399,147 @@ git commit -m "feat(core): Add device identity keys backed by matrix-sdk-crypto"
 
 ---
 
+### Task 15: The guided flow in the example app
+
+Added after the plan was written, at the repository owner's request. The example app so far
+is a verification harness: five PASS/FAIL lines, useful to CI and to nobody else. The spec's
+V1.0 milestone calls for a "complete example" for a component published to third-party
+projects, and this is that. It runs after Task 14 deliberately, because until M1b lands
+`getDeviceIdentityKeys` there is no real cryptographic value to show — the facade is stubs.
+
+**Language: English only.** This is a public library aimed at third-party consumers.
+
+**Neutral, per spec §12** — nothing product-specific, no branding.
+
+**Files:**
+- Create: `packages/example-app/src/GuidedFlow.tsx`
+- Create: `packages/example-app/src/steps.ts`
+- Modify: `packages/example-app/App.tsx`
+- Leave untouched: `packages/example-app/src/ProbeHarness.tsx`
+
+**Interfaces:**
+- Consumes: the public API from `react-native-matrix-crypto` — `runProbe`, `onCryptoSignal`,
+  `isCryptoError`, `getDeviceIdentityKeys`, and one deliberately unimplemented facade
+  function to demonstrate the `not_implemented` contract.
+- Produces: a guided screen. No new exported interface.
+
+**THE TRAP, read before writing any code.** CI scrapes the `PROBE_CHECK` / `PROBE_SUMMARY`
+lines that `ProbeHarness` logs from its mount effect. If the harness is moved behind a tab,
+it stops mounting until someone taps that tab, and CI goes green having verified nothing —
+this project's signature failure mode. **The interop suite must still run on app start,
+unconditionally, regardless of which view is displayed.** Keep the harness mounted (it may
+render nothing) and let the guided flow be the visible default, or hoist the suite call into
+`App.tsx`. Whichever you choose, prove it: run the app and confirm the `PROBE_SUMMARY` line
+still appears in `adb logcat` without touching the screen.
+
+- [ ] **Step 1: Write the step definitions**
+
+`packages/example-app/src/steps.ts` — each step names the exact call, what crosses the
+native boundary, and why it matters. Keep the prose short; this is a screen, not a manual.
+
+```ts
+export interface FlowStep {
+  title: string
+  /** The exact TypeScript a consumer would write. */
+  call: string
+  /** What physically crosses the JS/native boundary, in one line. */
+  crosses: string
+  /** Why this step exists — the property it demonstrates. */
+  why: string
+  run: () => Promise<string>
+}
+```
+
+- [ ] **Step 2: Write the seven steps**
+
+The arc goes from "a call reaches Rust at all" to "real cryptography", ending honestly on
+what is not built yet:
+
+1. **Subscribe to signals** — `onCryptoSignal(cb)` — nothing crosses yet; registers a
+   listener for events that belong to no call in flight.
+2. **Round-trip a record and bytes** — `runProbe('hello', new Uint8Array([1,2,3]))` — a
+   string and three bytes cross into Rust; the bytes come back **reversed**, which is how
+   you know Rust actually read them rather than echoing a reference.
+3. **Observe the signal that arrived** — no call; shows the `probe_started` signal that
+   step 2 caused Rust to emit back across the boundary.
+4. **A typed error** — `runProbe('', new Uint8Array())` — Rust rejects empty input; the
+   error arrives as a `CryptoError` with `kind: 'rejected'`. Note on screen that the error
+   carries no payload content, by design.
+5. **Real cryptography** — `getDeviceIdentityKeys('@alice:example.org', 'DEVICE1')` —
+   creates an in-memory `OlmMachine` in `matrix-sdk-crypto` and returns its Curve25519 and
+   Ed25519 public keys. This is the first step whose result is genuinely cryptographic.
+6. **Not implemented yet** — `encryptEvent(scope, 'm.room.message', {...})` — rejects with
+   `kind: 'not_implemented'`. Show it as a *feature*: the facade's types are final and
+   compile today; the implementation lands in M2.
+7. **Where the layers are** — no call; a short static summary naming the five layers the
+   earlier steps traversed: TypeScript facade, generated bindings, JSI Turbo Module, UniFFI
+   scaffolding, Rust core.
+
+- [ ] **Step 2b: Fix the misleading `typed_error` detail**
+
+Raised by the repository owner on seeing a device run. The check currently renders as:
+
+```
+PROBE_CHECK typed_error PASS rejected
+```
+
+`rejected` is the error *kind*, and it is the correct, expected value — the check passes
+precisely because the error crossed the FFI boundary and arrived as a typed `CryptoError`
+with that kind. Had it arrived as `unknown`, as a raw string, or not at all, the check
+would have failed. This is the subtlest of the five checks, and it is the one that caught
+the real UniFFI error-shape bug in Task 11, where it reported `unknown`.
+
+But read cold, a line ending in `rejected` looks like a failure. Make the detail
+self-describing in `packages/react-native-matrix-crypto/interop/suite.ts`:
+
+```ts
+      checks.push({
+        name: 'typed_error',
+        ok: binding.isCryptoError(e) && binding.errorKind(e) === 'rejected',
+        detail: `error crossed as typed kind "${binding.errorKind(e)}" (expected)`,
+      })
+```
+
+and give the failure branch a matching shape, so both read as sentences rather than bare
+tokens. Update the `no error thrown` branch to say why that is wrong:
+`'no error thrown - Rust should have rejected empty input'`.
+
+Adjust `interop/suite.test.ts` if it asserts on `detail`. Do NOT change the `ok` logic or
+the `'rejected'` kind itself — only how the result is described. CI greps `PROBE_CHECK`
+and `PROBE_SUMMARY`; a longer detail on the same line does not affect it, but confirm that
+by re-running the grep.
+
+- [ ] **Step 3: Write the screen**
+
+`GuidedFlow.tsx` renders the steps in order. Each row shows the title, the `call` in a
+monospace style, the `crosses` line, and — once run — the result or the typed error. A
+single "Run all" control plus per-step re-run. Keep it plain: no animation, no theming
+beyond legibility. The example app may use `console.log`; the bridge may not.
+
+- [ ] **Step 4: Verify the harness still runs unattended**
+
+```bash
+yarn --cwd packages/example-app android --device <id>
+adb logcat -d | grep -E 'PROBE_CHECK|PROBE_SUMMARY'
+```
+Expected: `PROBE_SUMMARY 5/5` (6/6 after Task 14) **without any interaction with the
+screen**. If it only appears after tapping a tab, the trap above has been walked into.
+
+- [ ] **Step 5: Verify the flow on a device**
+
+Run every step on the physical device, confirm each produces a sensible result, and capture
+a screenshot. Step 5's keys must be 43-character base64; step 6 must show
+`not_implemented` rather than crashing.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add packages/example-app/src/GuidedFlow.tsx packages/example-app/src/steps.ts packages/example-app/App.tsx
+git commit -m "feat(example): Add a guided flow explaining each layer of the bridge"
+```
+
+---
+
 ## Notes for the executor
 
 - **Run the guardrail-catches-a-violation steps.** They look like busywork. They are the only evidence the gate is wired up; a gate that has never failed is not known to work.
