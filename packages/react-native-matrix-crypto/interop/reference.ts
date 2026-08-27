@@ -7,10 +7,8 @@ import { isCryptoError, toCryptoError } from '../src/errors'
  * documentation of what a binding must do.
  */
 export function referenceBinding(): BridgeBinding {
-  const listeners = new Set<(s: { kind: string }) => void>()
-
   return {
-    async runProbe(input, payload) {
+    async runProbe(input, payload, onSignal) {
       if (input === '') {
         // UniFFI-shaped, not a convenient fiction: `@ubjs/core`'s `UniffiError`
         // base class (confirmed by reading its source) never sets `.name` --
@@ -25,16 +23,15 @@ export function referenceBinding(): BridgeBinding {
         })
         throw toCryptoError(uniffiShapedError)
       }
-      for (const l of listeners) l({ kind: 'probe_started' })
+      // Called directly, on this call's own callback -- not dispatched to a
+      // shared registry. Two concurrent `runProbe` calls against this same
+      // binding each get their own closure and never see each other's kind.
+      onSignal?.('probe_started')
       return {
         echoed: input,
         payload: new Uint8Array(Array.from(payload).reverse()),
         coreVersion: '0.1.0',
       }
-    },
-    onCryptoSignal(cb) {
-      listeners.add(cb)
-      return () => listeners.delete(cb)
     },
     isCryptoError,
     errorKind: (e) => (isCryptoError(e) ? e.kind : undefined),

@@ -18,39 +18,36 @@ describe('interop suite', () => {
     expect(checks.find((c) => c.name === 'record')?.ok).toBe(false)
   })
 
-  it('resolves rather than rejecting when onCryptoSignal throws synchronously', async () => {
+  it('resolves with a fatal check rather than rejecting when runProbe throws synchronously', async () => {
     const broken = referenceBinding()
-    broken.onCryptoSignal = () => {
-      throw new Error('subscribe boom')
+    broken.runProbe = () => {
+      throw new Error('boom')
     }
 
-    // A bare `const unsubscribe = binding.onCryptoSignal(...)` ahead of the
-    // try block would let this reject before a single check was recorded.
+    // binding.runProbe(...) throws while evaluating the first `await`,
+    // still inside the suite's own try block -- no separate guard needed,
+    // but worth locking down: this is the only step left in the suite, so
+    // there is nowhere else for such a throw to hide.
     const result = runInteropSuite(broken)
     await expect(result).resolves.toBeDefined()
 
     const checks = await result
-    expect(checks.length).toBeGreaterThan(0)
+    expect(checks).toEqual([{ name: 'fatal', ok: false, detail: expect.stringContaining('boom') }])
   })
 
-  it('resolves and keeps the checks already collected when unsubscribe throws', async () => {
-    const broken = referenceBinding()
-    const originalSubscribe = broken.onCryptoSignal
-    broken.onCryptoSignal = (cb) => {
-      originalSubscribe(cb)
-      return () => {
-        throw new Error('unsubscribe boom')
-      }
+  it("does not leak one caller's probe signal into a concurrent, independent caller", async () => {
+    // This is the defect this suite exists to catch: two independent
+    // callers of the same binding (e.g. the example app's guided walkthrough
+    // and its diagnostics panel, mounted as siblings) must each see only
+    // their own call's signal -- never "probe_started,probe_started".
+    const binding = referenceBinding()
+
+    const [checksA, checksB] = await Promise.all([runInteropSuite(binding), runInteropSuite(binding)])
+
+    for (const checks of [checksA, checksB]) {
+      const signal = checks.find((c) => c.name === 'signal')
+      expect(signal?.ok).toBe(true)
+      expect(signal?.detail).toBe('probe_started')
     }
-
-    // A throw from `finally { unsubscribe() }` would replace whatever the
-    // try/catch was about to return, discarding every check already
-    // collected. All five must survive teardown, not just "some array".
-    const result = runInteropSuite(broken)
-    await expect(result).resolves.toBeDefined()
-
-    const checks = await result
-    expect(checks).toHaveLength(5)
-    expect(checks.every((c) => c.ok)).toBe(true)
   })
 })
