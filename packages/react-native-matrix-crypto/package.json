@@ -23,7 +23,11 @@
     "*.podspec",
     "*.xcframework",
     "*.aar",
-    "LICENSE"
+    "LICENSE",
+    "README.md",
+    "!src/**/*.test.ts",
+    "!src/**/*.type-test.ts",
+    "!interop/**/*.test.ts"
   ],
   "codegenConfig": {
     "name": "RNNativeModuleSpec",
