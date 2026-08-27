@@ -58,8 +58,14 @@ mod tests {
         assert_ne!(keys.curve25519, keys.ed25519);
     }
 
+    /// `OlmMachine::new` generates fresh random keys on every call; user and
+    /// device ids are metadata that never derive the keys. This proves
+    /// generation freshness -- repeated calls don't reuse or predict a key --
+    /// not device-parameter correctness. Passing the same device id twice
+    /// would prove the same thing: Matrix identity keys aren't scoped by
+    /// device id, they're generated fresh per `OlmMachine` instance.
     #[tokio::test]
-    async fn distinct_devices_get_distinct_keys() {
+    async fn repeated_calls_get_fresh_random_keys() {
         let a = device_identity_keys("@a:server1", "DEVICE1").await.unwrap();
         let b = device_identity_keys("@a:server1", "DEVICE2").await.unwrap();
         assert_ne!(a.ed25519, b.ed25519);
