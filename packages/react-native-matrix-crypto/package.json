@@ -10,7 +10,17 @@
     "url": "https://github.com/linagora/react-native-matrix-crypto.git"
   },
   "main": "src/index.ts",
-  "files": ["src", "cpp", "interop", "android", "ios", "*.podspec", "LICENSE"],
+  "files": [
+    "src",
+    "cpp",
+    "interop",
+    "android",
+    "ios",
+    "*.podspec",
+    "*.xcframework",
+    "*.aar",
+    "LICENSE"
+  ],
   "codegenConfig": {
     "name": "RNNativeModuleSpec",
     "type": "modules",
