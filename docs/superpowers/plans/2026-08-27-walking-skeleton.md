@@ -23,6 +23,11 @@ Every task's requirements implicitly include this section.
 - **No Megolm-specific or Olm-specific identifier may appear in the public `.d.ts`.** Enforced by Task 9.
 - **`uniffi-bindgen-react-native` is a `devDependency` only.** It compiles its own binary from Rust source on first run; if it ever reached `dependencies`, consumers would need a Rust toolchain and Task 13's `cold-consume` gate would fail.
 - **Generated code is committed and never hand-edited.** Enforced by Task 5.
+- **Every core-to-FFI type conversion destructures its source.** Write
+  `let Core::T { a, b } = src;` then rebuild, never `Self { a: src.a, b: src.b }`.
+  Field-access construction is not exhaustiveness-checked, so a field added to a core
+  type later would be silently dropped from the FFI-exported record instead of failing
+  the build. Enum conversions use a real `match` with no wildcard arm, for the same reason.
 - **Commits follow Conventional Commits**, subject in imperative mood with an uppercase first letter, one subject per commit.
 
 ## Deviations from the spec, decided during planning
@@ -1077,10 +1082,10 @@ struct ObserverAdapter(Arc<dyn ProbeObserver>);
 
 impl matrix_crypto_core::ProbeObserver for ObserverAdapter {
     fn on_signal(&self, signal: matrix_crypto_core::ProbeSignal) {
-        self.0.on_signal(ProbeSignal {
-            kind: signal.kind,
-            detail: signal.detail,
-        });
+        // Destructured, not field-accessed: a new core field must fail to
+        // compile here rather than be silently dropped. See Global Constraints.
+        let matrix_crypto_core::ProbeSignal { kind, detail } = signal;
+        self.0.on_signal(ProbeSignal { kind, detail });
     }
 }
 
@@ -2100,7 +2105,11 @@ pub async fn device_identity_keys(
 ) -> Result<IdentityKeys, IdentityFfiError> {
     matrix_crypto_core::device_identity_keys(&user_id, &device_id)
         .await
-        .map(|k| IdentityKeys { curve25519: k.curve25519, ed25519: k.ed25519 })
+        .map(|k| {
+            // Destructured, not field-accessed. See Global Constraints.
+            let matrix_crypto_core::IdentityKeys { curve25519, ed25519 } = k;
+            IdentityKeys { curve25519, ed25519 }
+        })
         .map_err(|e| match e {
             matrix_crypto_core::IdentityError::MalformedIdentifier { detail } => {
                 IdentityFfiError::MalformedIdentifier { detail }
