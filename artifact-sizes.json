@@ -22,5 +22,13 @@
     "tarballKB": 104830,
     "tarballIncludesXcframework": true,
     "tarballIncludesAar": true
+  },
+  {
+    "label": "m1b-rebuilt",
+    "xcframeworkKB": 152856,
+    "aarKB": 22740,
+    "tarballKB": 104832,
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
   }
 ]
