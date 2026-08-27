@@ -20,5 +20,17 @@ export function onCryptoSignal(cb: (s: CryptoSignal) => void): Unsubscribe {
 
 /** Internal. Called by the shim when the native observer fires. */
 export function emitCryptoSignal(signal: CryptoSignal): void {
-  for (const listener of listeners) listener(signal)
+  // Snapshot before dispatch: a listener that subscribes while we are
+  // iterating must not receive the signal that triggered its own
+  // registration. Unsubscribing mid-dispatch remains safe either way.
+  for (const listener of [...listeners]) {
+    try {
+      listener(signal)
+    } catch {
+      // Isolate. One throwing listener must never starve the others: this
+      // channel carries trust_changed, unexpected_device and key_missing,
+      // and a buggy UI listener must not be able to suppress them.
+      // Deliberately silent - the bridge has no logger.
+    }
+  }
 }
