@@ -96,3 +96,48 @@ pub async fn probe_with_observer(
         .map(Into::into)
         .map_err(Into::into)
 }
+
+/// Mirror of the core's identity keys, carrying the UniFFI record derive.
+#[derive(Debug, uniffi::Record)]
+pub struct IdentityKeys {
+    pub curve25519: String,
+    pub ed25519: String,
+}
+
+/// Mirror of the core's identity error, carrying the UniFFI error derive.
+#[derive(Debug, uniffi::Error, thiserror::Error)]
+pub enum IdentityFfiError {
+    #[error("malformed identifier: {detail}")]
+    MalformedIdentifier { detail: String },
+}
+
+/// A plain `async fn`, exactly like `probe` above: `OlmMachine::new`'s only
+/// non-CPU-bound dependency is an in-memory store, and matrix-sdk-crypto's own
+/// Cargo.toml restricts its (non-test) `tokio` dependency to the `sync` feature
+/// only -- no `rt`/`time`/`net` -- so nothing on this path needs a reactor.
+/// Verified empirically on-device for the M1b task; see the spec and task-14
+/// report for the reasoning and the confirmation that no panic occurred.
+#[uniffi::export]
+pub async fn device_identity_keys(
+    user_id: String,
+    device_id: String,
+) -> Result<IdentityKeys, IdentityFfiError> {
+    matrix_crypto_core::device_identity_keys(&user_id, &device_id)
+        .await
+        .map(|k| {
+            // Destructured, not field-accessed. See Global Constraints.
+            let matrix_crypto_core::IdentityKeys {
+                curve25519,
+                ed25519,
+            } = k;
+            IdentityKeys {
+                curve25519,
+                ed25519,
+            }
+        })
+        .map_err(|e| match e {
+            matrix_crypto_core::IdentityError::MalformedIdentifier { detail } => {
+                IdentityFfiError::MalformedIdentifier { detail }
+            }
+        })
+}
