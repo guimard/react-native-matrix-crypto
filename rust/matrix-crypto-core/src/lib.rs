@@ -5,7 +5,9 @@
 //! enforces that in CI.
 
 mod error;
+mod observer;
 mod probe;
 
 pub use error::ProbeError;
+pub use observer::{probe_with_observer, ProbeObserver, ProbeSignal};
 pub use probe::{probe, ProbeReport};
