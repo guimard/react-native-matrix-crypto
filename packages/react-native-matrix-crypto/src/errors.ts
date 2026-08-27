@@ -45,6 +45,48 @@ export function isCryptoError(e: unknown): e is CryptoError {
 }
 
 /**
+ * `@ubjs/core`'s `UniffiError` (the base class every generated error variant
+ * extends) never sets `.name` -- confirmed by reading its source, and by a
+ * real device run throwing a real `ProbeFfiError.Rejected` instance whose
+ * `.name` is the inherited, useless `"Error"`. What it does set, always, is
+ * `.message`, to exactly `"<EnumTypeName>.<VariantName>"` (optionally
+ * followed by `": <message>"`) -- its own comment explains why: it cannot
+ * rely on an overridden `toString()` being called. That format is the one
+ * stable, codegen-version-independent way to recover the variant name
+ * without importing a specific enum shape from ./generated, which would
+ * couple this file to one Rust error type and need editing for every future
+ * variant. `interop/reference.ts` and this file's own tests construct plain
+ * `{ name: 'Rejected', ... }` objects instead, which is why this bug was
+ * invisible until a real UniFFI error crossed the bridge for the first time
+ * on a real build (Task 11) -- so `.name` is still checked first, both for
+ * those and for any future binding that does set it directly.
+ */
+function variantNameFromMessage(message: unknown): string | undefined {
+  if (typeof message !== 'string') return undefined
+  const dot = message.indexOf('.')
+  if (dot === -1) return undefined
+  const afterDot = message.slice(dot + 1)
+  const colon = afterDot.indexOf(': ')
+  return colon === -1 ? afterDot : afterDot.slice(0, colon)
+}
+
+/**
+ * A generated error's payload (`reason`, and per spec section 10 eventually
+ * `sender`/`scope`) is nested under `.inner`, not on the error itself --
+ * confirmed the same way as the `.name` gap above. Checked second, so a
+ * hand-built fixture with the field at the top level still works.
+ */
+function stringField(source: Record<string, unknown>, field: string): string | undefined {
+  if (typeof source[field] === 'string') return source[field] as string
+  const inner = source.inner
+  if (typeof inner === 'object' && inner !== null) {
+    const value = (inner as Record<string, unknown>)[field]
+    if (typeof value === 'string') return value
+  }
+  return undefined
+}
+
+/**
  * Normalizes anything thrown by the generated layer into a CryptoError.
  *
  * Only `reason` is ever copied into the message. Payload content and
@@ -53,15 +95,18 @@ export function isCryptoError(e: unknown): e is CryptoError {
 export function toCryptoError(raw: unknown): CryptoError {
   const source = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
   const name = typeof source.name === 'string' ? source.name : ''
-  const kind = KIND_BY_NAME.get(name) ?? 'unknown'
-  const reason = typeof source.reason === 'string' ? source.reason : undefined
+  const kind =
+    KIND_BY_NAME.get(name) ?? KIND_BY_NAME.get(variantNameFromMessage(source.message) ?? '') ?? 'unknown'
+  const reason = stringField(source, 'reason')
 
   const err = new Error(reason ?? `crypto error: ${kind}`) as CryptoError
   err.name = 'CryptoError'
   err.kind = kind
   err.retriable = RETRIABLE.has(kind)
-  if (typeof source.sender === 'string') err.sender = source.sender
-  if (typeof source.scope === 'string') err.scope = source.scope as CryptoScopeId
+  const sender = stringField(source, 'sender')
+  const scope = stringField(source, 'scope')
+  if (sender !== undefined) err.sender = sender
+  if (scope !== undefined) err.scope = scope as CryptoScopeId
   Object.defineProperty(err, BRAND, { value: true, enumerable: false })
   return err
 }
