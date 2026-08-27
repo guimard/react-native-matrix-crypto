@@ -10,10 +10,10 @@
   "main": "src/index.ts",
   "files": ["src", "cpp", "interop", "android", "ios", "*.podspec", "LICENSE"],
   "dependencies": {
-    "@ubjs/core": "0.31.0-5"
+    "@ubjs/core": "0.31.0-5",
+    "uniffi-bindgen-react-native": "0.31.0-5"
   },
   "devDependencies": {
-    "uniffi-bindgen-react-native": "0.31.0-5",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
   },
