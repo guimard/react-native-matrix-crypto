@@ -88,6 +88,14 @@ jobs:
     # macOS runners are the cost centre. The full cross-compile matrix
     # (device + simulator + all architectures) belongs to the tag-triggered
     # release workflow, not here.
+    #
+    # `needs: gates` is not about runner minutes: `gates` runs gate:drift,
+    # the only check proving the committed bindings match the Rust source.
+    # This job's own `--and-generate` regenerates and builds whatever it
+    # produces, without ever diffing against what is committed -- so on a PR
+    # with drifted bindings, this leg would otherwise go green against code
+    # that is not what is actually committed.
+    needs: gates
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -118,6 +126,13 @@ jobs:
         with: { name: artifact-sizes-ios, path: artifact-sizes.json }
 
   build-android:
+    # `needs: gates` is not about runner minutes: `gates` runs gate:drift,
+    # the only check proving the committed bindings match the Rust source.
+    # This job's own `--and-generate` regenerates and builds whatever it
+    # produces, without ever diffing against what is committed -- so on a PR
+    # with drifted bindings, this leg would otherwise go green against code
+    # that is not what is actually committed.
+    needs: gates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -131,7 +146,18 @@ jobs:
       # pre-installation docs (node_modules/uniffi-bindgen-react-native/
       # docs/src/guides/rn/pre-installation.md): "cargo install cargo-ndk"
       # is a required, explicit prerequisite for `ubrn build android`.
-      - run: cargo install cargo-ndk
+      # Pinned exact + --locked, per spec section 4's "every pin is exact"
+      # (cargo-ndk is the same pre-1.0-adjacent-tooling class as ubrn itself)
+      # -- and cached by that exact version, so a routine run does not
+      # rebuild it from source on every job; the install step below is
+      # skipped outright on a cache hit.
+      - id: cargo-ndk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-ndk
+          key: cargo-ndk-${{ runner.os }}-4.1.2
+      - if: steps.cargo-ndk-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-ndk --version 4.1.2 --locked
       - name: Build the x86_64 Android slice
         run: |
           # Same yarn --cwd + exec quirk as build-ios; see that job's comment.
