@@ -6,5 +6,13 @@
     "tarballKB": 17188,
     "tarballIncludesXcframework": true,
     "tarballIncludesAar": false
+  },
+  {
+    "label": "m1a-baseline-android",
+    "xcframeworkKB": 52292,
+    "aarKB": 10108,
+    "tarballKB": 44765,
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
   }
 ]
