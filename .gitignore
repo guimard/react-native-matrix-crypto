@@ -1,0 +1,8 @@
+node_modules/
+target/
+build/
+Pods/
+*.xcframework
+*.aar
+.DS_Store
+artifact-sizes.json

@@ -1,0 +1,15 @@
+{
+  "name": "react-native-matrix-crypto-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "workspaces": ["packages/*"],
+  "engines": { "node": ">=22.22.3" },
+  "scripts": {
+    "gate:workspaces": "./scripts/assert-workspaces.sh",
+    "gate:boundary": "./scripts/assert-core-boundary.sh",
+    "gate:drift": "./scripts/assert-no-drift.sh",
+    "gate:logger": "./scripts/assert-no-logger.sh",
+    "gate:agility": "./scripts/assert-facade-agility.sh"
+  }
+}

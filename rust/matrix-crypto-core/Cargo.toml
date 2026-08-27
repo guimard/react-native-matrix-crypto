@@ -1,0 +1,13 @@
+[package]
+name = "matrix-crypto-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
