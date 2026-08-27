@@ -192,7 +192,35 @@ the UI. Therefore:
   `{ signal: AbortSignal }` final argument for cancellation;
 - if `matrix-sdk-crypto` turns out to require a tokio reactor, the attribute
   becomes `#[uniffi::export(async_runtime = "tokio")]` and the runtime is owned by
-  the FFI crate and nowhere else. Resolved in M1b, not assumed now.
+  the FFI crate and nowhere else.
+
+**M1b outcome.** M1b exercised exactly one function, `device_identity_keys`
+(`OlmMachine::new` plus an in-memory store, no spawning). No `async_runtime`
+attribute was needed for it — confirmed by reading the vendored source and by
+clean runs on both the iOS simulator and a physical Android device, no reactor
+panic.
+
+That result is scoped to the one function tested, not a resolution for
+`matrix-sdk-crypto` as a whole, and must not be read that way. `matrix-sdk-common`
+— a mandatory, non-optional dependency of `matrix-sdk-crypto` — enables tokio's
+`rt` feature on every native (non-wasm) target
+(`matrix-sdk-common/Cargo.toml`, `[target.'cfg(not(target_family = "wasm"))'
+.dependencies.tokio]`: `features = ["sync", "rt", "time", "macros"]`) and
+re-exports `tokio::task::spawn` as `matrix_sdk_common::executor::spawn`
+(`src/executor.rs:29-31`). `matrix-sdk-crypto` calls that spawn from production,
+non-test code reachable from public APIs this crate does not yet expose:
+`session_manager/group_sessions/mod.rs:355,502,902,963` and
+`identities/manager.rs:318,387`. Most notably, `OlmMachine::share_room_key`
+(`machine/mod.rs:1239`) — the Megolm key-sharing entry point a later milestone
+needs — reaches the first of those as its normal, non-test path. Calling
+`share_room_key` under the current no-`async_runtime` setup would panic with
+"there is no reactor running".
+
+The async-runtime question is therefore scoped to what M1b exercised, not closed
+for the crate. It must be re-opened, not assumed closed, the moment a future
+milestone exports `share_room_key` or anything else that reaches a `spawn` call —
+at which point the `invokeBlocking` consequence below becomes live and the signal
+channel must be re-examined deliberately, exactly as already written here.
 
 **That attribute has a second consequence, discovered while building the signal
 channel and not anticipated here.** UniFFI callback methods that must return a value
