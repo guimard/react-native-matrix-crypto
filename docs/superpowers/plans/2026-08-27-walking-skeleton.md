@@ -28,6 +28,13 @@ Every task's requirements implicitly include this section.
   Field-access construction is not exhaustiveness-checked, so a field added to a core
   type later would be silently dropped from the FFI-exported record instead of failing
   the build. Enum conversions use a real `match` with no wildcard arm, for the same reason.
+- **A manifest change and its lockfile update go in the SAME commit.** Changing
+  `package.json` or a `Cargo.toml` in one commit and updating `yarn.lock` or `Cargo.lock`
+  in a later one leaves every commit in between unbuildable under
+  `yarn install --frozen-lockfile` or an `--immutable` CI install, and makes `git bisect`
+  across the range misbehave. This is the one case where two files with different
+  "subjects" belong together: the lockfile is not a separate concern, it is the
+  manifest change's consequence.
 - **Commits follow Conventional Commits**, subject in imperative mood with an uppercase first letter, one subject per commit.
 
 ## Deviations from the spec, decided during planning
