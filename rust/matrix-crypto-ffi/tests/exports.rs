@@ -10,5 +10,5 @@ async fn ffi_probe_delegates_to_core() {
 #[tokio::test]
 async fn ffi_probe_propagates_typed_error() {
     let err = matrix_crypto_ffi::probe(String::new(), vec![]).await.unwrap_err();
-    assert!(matches!(err, matrix_crypto_ffi::ProbeFfiError::Rejected { .. }));
+    assert!(matches!(err, matrix_crypto_ffi::ProbeFfiError::Rejected { reason } if reason == "input must not be empty"));
 }
