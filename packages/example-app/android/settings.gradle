@@ -1,6 +1,14 @@
-pluginManagement { includeBuild("../node_modules/@react-native/gradle-plugin") }
+// react-native-matrix-crypto is developed in a Yarn workspace monorepo, so
+// `@react-native/gradle-plugin` is hoisted to the workspace root's
+// node_modules, not to this app's own (as the RN CLI template's hardcoded
+// "../node_modules/@react-native/gradle-plugin" assumes). Resolve it the
+// same Node-module-resolution-aware way android/CMakeLists.txt already
+// resolves `uniffi-bindgen-react-native` -- via `require.resolve`, which
+// walks up parent node_modules directories and finds a hoisted package
+// regardless of where Yarn actually placed it.
+pluginManagement { includeBuild(new File(["node", "--print", "require.resolve('@react-native/gradle-plugin/package.json')"].execute(null, rootDir).text.trim()).parentFile.toString()) }
 plugins { id("com.facebook.react.settings") }
 extensions.configure(com.facebook.react.ReactSettingsExtension){ ex -> ex.autolinkLibrariesFromCommand() }
 rootProject.name = 'ExampleApp'
 include ':app'
-includeBuild('../node_modules/@react-native/gradle-plugin')
+includeBuild(new File(["node", "--print", "require.resolve('@react-native/gradle-plugin/package.json')"].execute(null, rootDir).text.trim()).parentFile.toString())

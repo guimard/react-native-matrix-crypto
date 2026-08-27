@@ -6,16 +6,45 @@ apply plugin: "com.facebook.react"
  * This is the configuration block to customize your React Native Android app.
  * By default you don't need to apply any configuration, just uncomment the lines you need.
  */
+// This app lives in a Yarn workspace monorepo, so react-native and its
+// siblings are hoisted to the workspace root's node_modules, not this app's
+// own -- every commented default below in the `react {}` block assumes a
+// flat, non-monorepo layout and none of those relative paths exist here.
+// Resolved the same Node-module-resolution-aware way android/settings.gradle
+// resolves @react-native/gradle-plugin (and the way the RN CLI's own iOS
+// Podfile template already resolves react-native/scripts/react_native_pods.rb):
+// via `require.resolve`, which walks up parent node_modules directories and
+// finds a hoisted package regardless of where Yarn actually placed it.
+//
+// Captured into a plain local File first, rather than read back through
+// `react { reactNativeDir }` (a lazy Gradle DirectoryProperty) inside the
+// block below -- reading a DirectoryProperty back via GString interpolation
+// stringifies the lazy Property wrapper, not the path it holds, which then
+// silently fails RNGP's own `detectCliFile`'s File.exists() check and falls
+// through to ITS internal `require.resolve('react-native/cli')` (note: no
+// ".js"), which fails with the exact same ERR_PACKAGE_PATH_NOT_EXPORTED
+// below -- confirmed empirically by reading RNGP's own PathUtils.kt source
+// (vendored at node_modules/@react-native/gradle-plugin) after hitting that
+// failure downstream, inside plugin application, with no other clue which
+// of the three resolutions had actually gone wrong.
+def reactNativeNodeModulesDir = file(["node", "--print", "require.resolve('react-native/package.json')"].execute(null, rootDir).text.trim()).parentFile
+
 react {
     /* Folders */
     //   The root of your project, i.e. where "package.json" lives. Default is '../..'
     // root = file("../../")
     //   The folder where the react-native NPM package is. Default is ../../node_modules/react-native
-    // reactNativeDir = file("../../node_modules/react-native")
+    reactNativeDir = reactNativeNodeModulesDir
     //   The folder where the react-native Codegen package is. Default is ../../node_modules/@react-native/codegen
-    // codegenDir = file("../../node_modules/@react-native/codegen")
+    codegenDir = file(["node", "--print", "require.resolve('@react-native/codegen/package.json')"].execute(null, rootDir).text.trim()).parentFile
     //   The cli.js file which is the React Native CLI entrypoint. Default is ../../node_modules/react-native/cli.js
-    // cliFile = file("../../node_modules/react-native/cli.js")
+    //   `require.resolve('react-native/cli.js')` itself fails here (confirmed
+    //   empirically: ERR_PACKAGE_PATH_NOT_EXPORTED) because react-native's own
+    //   package.json "exports" map does not expose that subpath externally,
+    //   even though the file exists on disk -- an unrelated Node "exports"
+    //   encapsulation rule, not a hoisting problem. Built from the plain File
+    //   captured above instead, avoiding that resolution entirely.
+    cliFile = new File(reactNativeNodeModulesDir, "cli.js")
 
     /* Variants */
     //   The list of variants to that are debuggable. For those we're going to
