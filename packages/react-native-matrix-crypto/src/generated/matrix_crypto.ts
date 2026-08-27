@@ -51,6 +51,66 @@ const uniffiIsDebug =
 // Public interface members begin here.
 
 /**
+ * A plain `async fn`, exactly like `probe` above: `OlmMachine::new`'s only
+ * non-CPU-bound dependency is an in-memory store, and matrix-sdk-crypto's own
+ * Cargo.toml restricts its (non-test) `tokio` dependency to the `sync` feature
+ * only -- no `rt`/`time`/`net` -- so nothing on this path needs a reactor.
+ * Verified empirically on-device for the M1b task; see the spec and task-14
+ * report for the reasoning and the confirmation that no panic occurred.
+ */
+export async function deviceIdentityKeys(
+  userId: string,
+  deviceId: string,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<IdentityKeys> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_device_identity_keys(
+          FfiConverterString.lower(userId, nativeModule().rustbuffer_alloc),
+          FfiConverterString.lower(deviceId, nativeModule().rustbuffer_alloc)
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_rust_buffer,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      // Borrowed view over foreign memory: the call site owns the free,
+      // as on the sync paths. Unconditional — a no-op where buffers are
+      // already JS-owned.
+      /*liftFunc:*/ (__rb) => {
+        try {
+          return FfiConverterTypeIdentityKeys.lift(__rb);
+        } finally {
+          nativeModule().rustbuffer_free(__rb);
+        }
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeIdentityFfiError.lift.bind(
+        FfiConverterTypeIdentityFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
  * A plain `async fn`. UniFFI maps this to a JavaScript Promise on its own;
  * no `async_runtime` attribute is needed until the core's futures require a
  * specific reactor. See the M1b task.
@@ -233,6 +293,54 @@ const stringConverter = (() => {
 const FfiConverterString = uniffiCreateFfiConverterString(stringConverter);
 
 /**
+ * Mirror of the core's identity keys, carrying the UniFFI record derive.
+ */
+export type IdentityKeys = {
+  curve25519: string;
+  ed25519: string;
+};
+
+/**
+ * Generated factory for {@link IdentityKeys} record objects.
+ */
+export const IdentityKeys = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<IdentityKeys, ReturnType<typeof defaults>>(
+      defaults
+    );
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<IdentityKeys>,
+  });
+})();
+
+const FfiConverterTypeIdentityKeys = (() => {
+  type TypeName = IdentityKeys;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      return {
+        curve25519: FfiConverterString.readFromCursor(c),
+        ed25519: FfiConverterString.readFromCursor(c),
+      };
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      FfiConverterString.writeIntoCursor(value.curve25519, c);
+      FfiConverterString.writeIntoCursor(value.ed25519, c);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterString.allocationSize(value.curve25519) +
+        FfiConverterString.allocationSize(value.ed25519)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
  * Mirror of the core's report, carrying the UniFFI record derive.
  */
 export type ProbeReport = {
@@ -327,6 +435,109 @@ const FfiConverterTypeProbeSignal = (() => {
         FfiConverterString.allocationSize(value.kind) +
         FfiConverterString.allocationSize(value.detail)
       );
+    }
+  }
+  return new FFIConverter();
+})();
+
+// Error type: IdentityFfiError
+export enum IdentityFfiError_Tags {
+  MalformedIdentifier = "MalformedIdentifier",
+}
+/**
+ * Mirror of the core's identity error, carrying the UniFFI error derive.
+ */
+export const IdentityFfiError = (() => {
+  type MalformedIdentifier__interface = {
+    tag: IdentityFfiError_Tags.MalformedIdentifier;
+    inner: Readonly<{ detail: string }>;
+  };
+  class MalformedIdentifier_
+    extends UniffiError
+    implements MalformedIdentifier__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "IdentityFfiError";
+    readonly tag = IdentityFfiError_Tags.MalformedIdentifier;
+    readonly inner: Readonly<{ detail: string }>;
+    constructor(inner: { detail: string }) {
+      super("IdentityFfiError", "MalformedIdentifier");
+
+      this.inner = Object.freeze(inner);
+    }
+    static new(inner: { detail: string }): MalformedIdentifier_ {
+      return new MalformedIdentifier_(inner);
+    }
+
+    static instanceOf(obj: any): obj is MalformedIdentifier_ {
+      return obj.tag === IdentityFfiError_Tags.MalformedIdentifier;
+    }
+    static hasInner(obj: any): obj is MalformedIdentifier_ {
+      return MalformedIdentifier_.instanceOf(obj);
+    }
+
+    static getInner(obj: MalformedIdentifier_): Readonly<{ detail: string }> {
+      return obj.inner;
+    }
+  }
+
+  function instanceOf(obj: any): obj is IdentityFfiError {
+    return obj[uniffiTypeNameSymbol] === "IdentityFfiError";
+  }
+
+  return Object.freeze({
+    instanceOf,
+    MalformedIdentifier: MalformedIdentifier_,
+  });
+})();
+/**
+ * Mirror of the core's identity error, carrying the UniFFI error derive.
+ */
+export type IdentityFfiError = InstanceType<
+  (typeof IdentityFfiError)["MalformedIdentifier"]
+>;
+
+// FfiConverter for enum IdentityFfiError
+const FfiConverterTypeIdentityFfiError = (() => {
+  type TypeName = IdentityFfiError;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      switch (c.readI32()) {
+        case 1:
+          return new IdentityFfiError.MalformedIdentifier({
+            detail: FfiConverterString.readFromCursor(c),
+          });
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase();
+      }
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      switch (value.tag) {
+        case IdentityFfiError_Tags.MalformedIdentifier: {
+          c.writeI32(1);
+          const inner = value.inner;
+          FfiConverterString.writeIntoCursor(inner.detail, c);
+          return;
+        }
+        default:
+          // Throwing from here means that IdentityFfiError_Tags hasn't matched an ordinal.
+          throw new UniffiInternalError.UnexpectedEnumCase();
+      }
+    }
+    allocationSize(value: TypeName): number {
+      switch (value.tag) {
+        case IdentityFfiError_Tags.MalformedIdentifier: {
+          const inner = value.inner;
+          let size = 4;
+          size += FfiConverterString.allocationSize(inner.detail);
+          return size;
+        }
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase();
+      }
     }
   }
   return new FFIConverter();
@@ -621,6 +832,14 @@ function uniffiEnsureInitialized() {
     );
   }
   if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_device_identity_keys() !==
+    23165
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_device_identity_keys"
+    );
+  }
+  if (
     nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_probe() !== 10505
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
@@ -650,6 +869,8 @@ function uniffiEnsureInitialized() {
 export default Object.freeze({
   initialize: uniffiEnsureInitialized,
   converters: {
+    FfiConverterTypeIdentityFfiError,
+    FfiConverterTypeIdentityKeys,
     FfiConverterTypeProbeFfiError,
     FfiConverterTypeProbeObserver,
     FfiConverterTypeProbeReport,
