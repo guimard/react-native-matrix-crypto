@@ -92,9 +92,14 @@ mod tests {
 
     /// The identifiers are an assertion, not an input: a caller who disagrees
     /// with the live machine about who this device is must be refused rather
-    /// than handed keys under the wrong identity.
+    /// than handed keys under the wrong identity. This covers only the
+    /// device-id half of the comparison -- see
+    /// `mismatched_user_id_is_refused` for the other half, which a review
+    /// found was unverified: deleting the `user_id` half of the `||` in
+    /// `device_identity_keys` left the whole suite green, because nothing
+    /// exercised it.
     #[tokio::test]
-    async fn mismatched_identifiers_are_refused() {
+    async fn mismatched_device_id_is_refused() {
         let _guard = crate::machine::lock_for_test().await;
         crate::machine::reset_for_test();
         let dir = tempfile::tempdir().unwrap();
@@ -103,6 +108,30 @@ mod tests {
             .unwrap();
 
         let err = device_identity_keys("@a:server1", "DEVICE2")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            MachineError::MalformedIdentifier {
+                detail: "identifiers do not match the active machine".to_string()
+            }
+        );
+    }
+
+    /// The other half of the same assertion: a caller who agrees on the
+    /// device id but disagrees on the user id must also be refused. Without
+    /// this, a refactor that dropped the `user_id` comparison entirely, or
+    /// swapped it for the wrong field, would ship with every test green.
+    #[tokio::test]
+    async fn mismatched_user_id_is_refused() {
+        let _guard = crate::machine::lock_for_test().await;
+        crate::machine::reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        crate::machine::create_machine(config(dir.path()))
+            .await
+            .unwrap();
+
+        let err = device_identity_keys("@b:server1", "DEVICE1")
             .await
             .unwrap_err();
         assert_eq!(
