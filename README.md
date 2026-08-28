@@ -58,7 +58,7 @@ It is a reusable component. Any React Native project can consume it without carr
 
 ## Status
 
-**The bridge chain is complete and proven. Encryption works between two crypto machines. It has not yet been proven against a third-party Matrix client.**
+**The bridge chain is complete and proven. Encryption works, and a third-party Matrix client decrypts what this library produces over a real homeserver.**
 
 Being precise about that, because a cryptographic library that oversells itself is worse than one that admits its state.
 
@@ -71,7 +71,7 @@ Being precise about that, because a cryptographic library that oversells itself 
 | Real `OlmMachine` identity keys | working |
 | Persistent encrypted store, surviving restart | working |
 | Encryption and decryption | working, proven between two crypto machines |
-| Interoperability with a third-party Matrix client | **not yet proven**, see the roadmap |
+| Interoperability with a third-party Matrix client | proven both directions against `matrix-nio`, over a real homeserver |
 | Sender authenticity | **not provided**, see below |
 | Device verification (SAS, QR) | **not implemented**, see the roadmap |
 | Secret export and import | **not implemented**, see the roadmap |
@@ -82,7 +82,7 @@ The unimplemented functions exist today as final types that compile, and reject 
 
 Decryption does not authenticate the sender. `EventEnvelope.sender` is the value the homeserver delivered, and a successfully decrypted event does not prove who sent it. That authentication comes from device verification, which is not implemented yet. Treat `sender` and `algorithm` as unauthenticated transport metadata until it is.
 
-Interoperability is proven only against ourselves so far. Two of our own crypto machines exchange keys and decrypt each other's events, which catches most defects but cannot catch a consistent misreading of the protocol, because both sides would misread it the same way. Until a third-party client decrypts what this library produces, treat the wire format as unverified.
+The interoperability proof covers the Rust core, not yet the TypeScript surface. `matrix-nio`, a Matrix client written in Python by people who have never seen this code, decrypts what this library encrypts and this library decrypts what it sends, over a real homeserver, in a test anyone can run. That test drives the Rust core directly. The facade, the generated bindings and the JSI layer above it are proven on an emulator and a simulator, against themselves rather than against another implementation. One documentation defect has already been found in exactly that gap, so it is named here rather than left implied.
 
 Verified end to end on an iOS simulator and on a physical Android device: a record round trip, a byte array returned reversed to prove Rust genuinely read it, an async call resolving as a Promise, a typed error reaching a JavaScript `catch`, one callback signal travelling back from Rust, and a real Curve25519 and Ed25519 key pair.
 
@@ -240,6 +240,27 @@ yarn --cwd packages/react-native-matrix-crypto test   # TypeScript
 ```
 
 `packages/example-app` is a neutral React Native application that runs the full chain and explains it. It walks seven steps from a trivial call through to real cryptographic keys, showing at each step the exact TypeScript a consumer would write, what crosses the native boundary, and the result.
+
+### Running the interoperability proof
+
+The strongest claim this library makes is that a third party client decrypts what it encrypts, over a real homeserver. You can check that claim yourself, on your own machine, without an account anywhere:
+
+```sh
+./scripts/run-level-two-interop.sh
+```
+
+That starts a throwaway [Continuwuity](https://continuwuity.org) homeserver in a container, creates the one account the test needs inside it with a password generated for that run, installs a pinned `matrix-nio[e2e]` into a temporary virtualenv, runs the level 2 test, and destroys all of it. It needs Docker, a Rust toolchain and a Python 3, and nothing else. No credential is read from anywhere, and none is left behind. CI runs the same script, so what you run and what stands behind the claim are the same code path.
+
+`matrix-nio` is a Matrix client written in Python by people who have never seen this code. The test has it decrypt an event this library encrypted, has this library decrypt an event it encrypted, and flips a single character of each ciphertext to watch both refusals happen. A run that never reaches those assertions fails: the script requires cargo's own output to name the test as passed, because `cargo test` exits successfully when it matches no test at all.
+
+To point the same test at a homeserver you already have an account on, set the three variables it has always read and the script starts no container:
+
+```sh
+MATRIX_INTEROP_HOMESERVER=https://your.homeserver \
+MATRIX_INTEROP_USER=@you:your.homeserver \
+MATRIX_INTEROP_PASSWORD=... \
+./scripts/run-level-two-interop.sh
+```
 
 ### Never hand edit a generated file
 

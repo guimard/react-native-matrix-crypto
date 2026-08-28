@@ -11,6 +11,7 @@
     "gate:drift": "./scripts/assert-no-drift.sh",
     "gate:logger": "./scripts/assert-no-logger.sh",
     "gate:agility": "./scripts/assert-facade-agility.sh",
+    "gate:readme": "./scripts/assert-readme-sync.sh",
     "gate:stubs": "./scripts/assert-generated-not-stubbed.sh"
   }
 }
