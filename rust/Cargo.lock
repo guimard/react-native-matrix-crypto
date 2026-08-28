@@ -1170,6 +1170,8 @@ dependencies = [
  "matrix-sdk-common",
  "matrix-sdk-crypto",
  "matrix-sdk-sqlite",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

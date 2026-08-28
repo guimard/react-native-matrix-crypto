@@ -33,6 +33,17 @@ matrix-sdk-crypto = "0.18.0"
 # portability and reproducibility problem, not just a linking one. Costs
 # roughly a megabyte of binary; the size work has room for it.
 matrix-sdk-sqlite = { version = "0.18.0", default-features = false, features = ["crypto-store", "bundled"] }
+# `derive`, explicitly: this crate writes `#[derive(Deserialize)]` itself in
+# `session.rs`, so it declares the feature it needs rather than relying on
+# `matrix-sdk-crypto`/`ruma` enabling it for their own reasons and Cargo's
+# feature unification carrying it in -- the same reasoning as `tokio`'s
+# "sync" feature below.
+serde = { version = "1", features = ["derive"] }
+# The wire format `receive_sync_changes` accepts. Version left unpinned
+# beyond the major version: `matrix-sdk-crypto` and `ruma` already fix a
+# specific `serde_json` in the lockfile, and this crate has no reason to
+# disagree with it.
+serde_json = "1"
 thiserror = "2"
 # `sync` added explicitly for `tokio::sync::Mutex` in `machine.rs`: this crate
 # calls it directly, so it declares the feature itself rather than relying on

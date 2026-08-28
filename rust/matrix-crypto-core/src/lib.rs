@@ -10,6 +10,7 @@ mod machine;
 mod observer;
 mod probe;
 mod runtime;
+mod session;
 
 pub use error::ProbeError;
 pub use identity::{device_identity_keys, IdentityKeys};
@@ -17,3 +18,4 @@ pub use machine::{create_machine, open_store, with_machine, MachineConfig, Machi
 pub use observer::{probe_with_observer, ProbeObserver, ProbeSignal};
 pub use probe::{probe, ProbeReport};
 pub use runtime::in_runtime;
+pub use session::{receive_sync_changes, SessionError, SyncOutcome};
