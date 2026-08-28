@@ -14,11 +14,25 @@ repository.workspace = true
 # comment in src/machine.rs.
 matrix-sdk-common = "0.18.0"
 matrix-sdk-crypto = "0.18.0"
-# `crypto-store` and nothing else: it is the feature that provides the crypto
-# store and declares `matrix-sdk-crypto` as its own dependency. Enabling more
-# pulls in `matrix-sdk-base`, the full client state store this library has no
-# use for. Version-matched to matrix-sdk-crypto so Cargo unifies on one `ruma`.
-matrix-sdk-sqlite = { version = "0.18.0", default-features = false, features = ["crypto-store"] }
+# `crypto-store` and nothing else beyond `bundled`: `crypto-store` is the
+# feature that provides the crypto store and declares `matrix-sdk-crypto` as
+# its own dependency. Enabling more of `matrix-sdk-sqlite`'s *other* features
+# (`state-store`, `event-cache`) would additionally pull in the full client
+# state store this library has no use for. Version-matched to
+# matrix-sdk-crypto so Cargo unifies on one `ruma`.
+#
+# `bundled` compiles SQLite from source instead of linking a system one.
+# Without it, `libsqlite3-sys` links against whatever `libsqlite3` the host
+# provides -- fine on macOS, which ships one, but the Android NDK sysroot
+# provides none, so every Android target failed to link
+# (`ld.lld: error: unable to find library -lsqlite3`) until this was added.
+# This is the right answer, not just the expedient one, even where a system
+# library does exist: Android has no stable system SQLite across API levels
+# to link against in the first place, and a cryptographic store whose
+# on-disk format depends on whichever SQLite the host happens to ship is a
+# portability and reproducibility problem, not just a linking one. Costs
+# roughly a megabyte of binary; the size work has room for it.
+matrix-sdk-sqlite = { version = "0.18.0", default-features = false, features = ["crypto-store", "bundled"] }
 thiserror = "2"
 # `sync` added explicitly for `tokio::sync::Mutex` in `machine.rs`: this crate
 # calls it directly, so it declares the feature itself rather than relying on
