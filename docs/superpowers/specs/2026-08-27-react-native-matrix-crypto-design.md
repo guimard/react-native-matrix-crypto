@@ -324,8 +324,16 @@ layer §8 permits to own telemetry.
 
 No `println!`, no `eprintln!`, no `log::`, no `console.*`, no file writes, and no
 `tracing` subscriber of its own. Diagnostics, if ever required, pass through a sink
-the product injects and owns. CI greps the shipped surface — Rust, TypeScript, and
-C/C++/Objective-C — for these tokens and fails on a hit.
+the product injects and owns. CI greps the shipped surface for these tokens and
+fails on a hit, in every language that surface contains: Rust, TypeScript,
+C/C++/Objective-C, Kotlin, Swift and the CocoaPods podspec.
+
+That list is enumerated rather than counted on purpose. It read "Rust, TypeScript,
+and C/C++/Objective-C" through two amendments that each widened the gate without
+widening this sentence, and a count in prose has no way to be wrong out loud.
+Kotlin was added 2026-08-28; Swift and the podspec on the same day, ahead of the
+first Swift file, because the podspec compiles `ios/**/*.swift` into a consumer's
+app and can itself run shell in their build through a `script_phase`.
 
 A crypto library that logs by default is how cleartext reaches a crash report.
 This also satisfies crypto spec §6's rule that audit "must never silently become a
@@ -521,7 +529,7 @@ Every job is a gate. None are advisory.
 |---|---|
 | `core` | `cargo test -p matrix-crypto-core`; no direct `uniffi` dependency |
 | `drift` | `ubrn generate jsi turbo-module` then `git diff --exit-code` |
-| `no-logger` | Grep the shipped surface — Rust, TypeScript, C/C++/Objective-C — for logging tokens; see §7.2.1 for the one tolerated shape |
+| `no-logger` | Grep the shipped surface for logging tokens, in every language it contains: Rust, TypeScript, C/C++/Objective-C, Kotlin, Swift, the podspec; see §7.2.1 for the one tolerated shape |
 | `lint` | `cargo fmt --check`, `clippy -D warnings`, `tsc --noEmit`, eslint |
 | `agility` | §8.1 |
 | `build-ios` | `ubrn build ios`, produce xcframework, record artifact size |
