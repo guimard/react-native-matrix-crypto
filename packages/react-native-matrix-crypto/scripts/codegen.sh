@@ -1,6 +1,44 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Make codegen output independent of what happens to be installed on the
+# machine running it.
+#
+# ubrn formats its emitted C++ with `clang-format` and its TypeScript with
+# `prettier` when it finds them, and silently skips formatting when it does
+# not. assert-no-drift.sh already warned against adding either as a
+# devDependency for this reason, but a devDependency was never the only
+# vector: GitHub's ubuntu-latest image ships clang-format system-wide while
+# a stock macOS developer machine does not. The same commit therefore
+# generated differently formatted C++ in CI than locally, and the drift gate
+# failed on pure whitespace -- `jsi::Runtime &rt` against `jsi::Runtime& rt`,
+# two-space against four-space indentation -- with nothing semantically
+# different at all.
+#
+# Scrubbing the formatters here rather than in CI makes the property hold
+# wherever codegen runs, including on a developer machine that has them.
+# The same PATH-scrubbing idiom the cold-consume CI job uses for cargo and
+# rustc, and for the same reason: proving a tool is unreachable beats
+# deleting it.
+_scrubbed_path=""
+_IFS_SAVE="$IFS"
+IFS=:
+for _dir in $PATH; do
+  [ -n "$_dir" ] || continue
+  if [ -x "$_dir/clang-format" ] || [ -x "$_dir/prettier" ]; then
+    continue
+  fi
+  _scrubbed_path="${_scrubbed_path:+$_scrubbed_path:}$_dir"
+done
+IFS="$_IFS_SAVE"
+PATH="$_scrubbed_path"
+export PATH
+
+if command -v clang-format >/dev/null 2>&1 || command -v prettier >/dev/null 2>&1; then
+  echo "FAIL: a formatter is still reachable; codegen output would not be reproducible." >&2
+  exit 1
+fi
+
 # Regenerates the UniFFI/JSI bindings from the Rust FFI crate. Invoked via
 # `yarn codegen` from this package's directory (packages/react-native-matrix-crypto/),
 # so every relative path below is relative to there.
