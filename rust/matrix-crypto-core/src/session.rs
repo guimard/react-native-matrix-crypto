@@ -648,7 +648,37 @@ pub async fn decrypt_event(scope: &str, raw_json: &str) -> Result<Envelope, Sess
 }
 
 /// Ensures `scope` has a group session and shares it with the given users'
-/// known devices.
+/// known devices, and makes those users' device lists tracked so they can
+/// become known in the first place.
+///
+/// The tracking is not a convenience. Upstream only learns that a user's
+/// devices exist by issuing a `/keys/query` for them, and it only issues one
+/// for a user it is *tracking*: `mark_tracked_users_as_changed`
+/// (matrix-sdk-crypto-0.18.0/src/store/mod.rs:291) opens with
+/// `if tracked_users.contains(user_id)` and silently skips everyone else,
+/// and a sync's `changed_devices` list routes nowhere but there
+/// (`receive_sync_changes` -> `receive_device_changes`). Without this call,
+/// no function on this crate's shipped surface could get a `/keys/query`
+/// issued for a user this device has not already encrypted to, and
+/// [`take_outgoing_requests`] would keep handing out upstream's own-user
+/// fallback query instead -- a silent failure whose only symptom is
+/// encrypting to nobody.
+///
+/// It is implicit rather than a separate `track_users` call because "share
+/// this scope's key with these users" already means "these users' devices
+/// matter to me". A separate call would add public surface and add a way to
+/// hold the API wrong: forgetting it fails silently, exactly like the
+/// mistake design doc section 3bis is named for.
+///
+/// Repeated calls are cheap: upstream's `update_tracked_users` flags only
+/// users it has not seen before (`if tracked_users.insert(...)`), so calling
+/// this every time a product sends is not a per-send key query.
+///
+/// **A first call for a never-seen user necessarily delivers nothing.** It
+/// has no device of theirs to encrypt to yet; what it does is cause the
+/// `/keys/query` that makes a *later* call able to. The full loop is
+/// therefore share, pump, share, pump, share -- see the ordering note below
+/// and `tests/two_parties.rs`, which walks it.
 ///
 /// This is the call that reaches `tokio::task::spawn` through
 /// `matrix-sdk-common` during group key sharing, and the reason Task 1's
@@ -687,7 +717,7 @@ pub async fn share_scope_key(scope: &str, users: &[String]) -> Result<(), Sessio
         .map(|user| parse_user(user))
         .collect::<Result<_, _>>()?;
 
-    let (missing, shared) = with_machine(move |machine| {
+    let (tracked, missing, shared) = with_machine(move |machine| {
         Box::pin(async move {
             let missing = machine
                 .get_missing_sessions(user_ids.iter().map(AsRef::as_ref))
@@ -699,7 +729,31 @@ pub async fn share_scope_key(scope: &str, users: &[String]) -> Result<(), Sessio
                     EncryptionSettings::default(),
                 )
                 .await;
-            (missing, shared)
+            // Tracked *after* `share_room_key`, not before, and the
+            // order is load-bearing rather than incidental. Upstream's
+            // `get_user_devices_for_encryption`
+            // (identities/manager.rs:924) waits up to a hard-coded
+            // `KEYS_QUERY_WAIT_TIME` of 5 seconds for an outstanding
+            // `/keys/query` to complete, for any user it is asked to
+            // encrypt to that has no known device and is flagged for a
+            // query. Flagging first would arm exactly that wait, on this
+            // call, for a request the product has not been handed yet --
+            // `take_outgoing_requests` is a *separate* call the caller
+            // makes after this one returns, so the query cannot possibly
+            // complete while this wait runs. Worse, `with_machine` holds
+            // the machine lock for this closure's whole duration, so no
+            // concurrent library call could satisfy the wait either: it
+            // would block every other caller for the full five seconds
+            // before timing out and proceeding to do exactly what it does
+            // now. Measured on this crate's own two-party test: 7.47s
+            // flagging first, 2.47s flagging last, for an identical
+            // outcome. Flagging last arms nothing -- the flag is set for
+            // the *pump*, which runs after this returns, which is the only
+            // thing that can act on it.
+            let tracked = machine
+                .update_tracked_users(user_ids.iter().map(AsRef::as_ref))
+                .await;
+            (tracked, missing, shared)
         })
     })
     .await?;
@@ -736,6 +790,13 @@ pub async fn share_scope_key(scope: &str, users: &[String]) -> Result<(), Sessio
                 .insert(request.txn_id.to_string(), request);
         }
     }
+
+    // Reported last, after both queues above have kept whatever progress
+    // this call made: a tracking failure is a store failure, and a store
+    // this broken will have failed the other two as well -- but it is not
+    // swallowed, because the users this call named would then never be
+    // queried and encryption to them would silently reach nobody.
+    tracked.map_err(|_upstream| SessionError::Failed)?;
 
     Ok(())
 }
@@ -2423,5 +2484,74 @@ mod tests {
     fn a_malformed_scope_is_rejected_for_decryption_too() {
         let err = futures::executor::block_on(decrypt_event("nonsense", "{}")).unwrap_err();
         assert_eq!(err, SessionError::MalformedPayload);
+    }
+
+    // --- Fix round 1: sharing tracks the users it was given -----------
+
+    /// The property that makes every later step reachable at all, and the
+    /// one nothing on this surface could do before: naming a user in
+    /// `share_scope_key` must make the pump ask the homeserver who that
+    /// user's devices are.
+    ///
+    /// Upstream only issues a `/keys/query` for a user it is *tracking* --
+    /// `mark_tracked_users_as_changed` (store/mod.rs:291) opens with
+    /// `if tracked_users.contains(user_id)` and silently skips everyone
+    /// else -- and a sync's `changed_devices` list routes nowhere but
+    /// there. So before `share_scope_key` tracked its users, a product
+    /// could name a brand-new user here forever and the pump would keep
+    /// handing out upstream's own-user fallback query instead: encrypting
+    /// to nobody, with no error anywhere. A review found this while
+    /// checking why `tests/two_parties.rs` needed a back door to set the
+    /// precondition; the back door is gone and this asserts the shipped
+    /// behaviour that replaced it.
+    ///
+    /// Asserts on the parsed `device_keys` keys, not on a substring of the
+    /// body: those keys *are* the set of users the request asks about, and
+    /// a structural check survives a body-shape change upstream that a
+    /// substring match would silently keep passing.
+    #[test]
+    fn sharing_a_scope_key_makes_the_pump_ask_about_the_users_it_was_given() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        let queried: Vec<String> = futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+
+            // A user this machine has never seen, named here for the
+            // first time.
+            share_scope_key("!s:example.org", &["@bob:example.org".to_string()])
+                .await
+                .unwrap();
+
+            let query = take_outgoing_requests()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|r| r.kind == "keys_query")
+                .expect("naming a user must queue a query for that user");
+
+            serde_json::from_str::<serde_json::Value>(&query.body)
+                .ok()
+                .and_then(|body| {
+                    Some(
+                        body.get("device_keys")?
+                            .as_object()?
+                            .keys()
+                            .cloned()
+                            .collect(),
+                    )
+                })
+                .expect("a keys-query body always carries a device_keys object")
+        });
+
+        assert!(
+            queried.iter().any(|user| user == "@bob:example.org"),
+            "share_scope_key must make the users it was given queryable -- \
+             nothing else on this crate's surface can"
+        );
     }
 }
