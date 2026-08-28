@@ -1,10 +1,21 @@
 import type { InteropCheck } from './suite'
 
 /**
- * Level 1 in the shape the interop contract already speaks (design doc
- * section 8): a real cryptographic round trip, driven entirely through the
- * public facade, returned as the same `InteropCheck[]` `runInteropSuite`
- * returns so the same reporter can print both.
+ * A real cryptographic round trip, driven entirely through the public
+ * facade, returned as the same `InteropCheck[]` `runInteropSuite` returns so
+ * the same reporter can print both.
+ *
+ * **This is not design doc section 8's level 1, and it does not discharge
+ * that exit criterion.** Level 1 there is two machines, each with its own
+ * store, exchanging keys and decrypting each other's events; that is
+ * `rust/matrix-crypto-core/tests/two_parties.rs`, which exists and is
+ * unaffected by this file. Level 2 is a real homeserver and a third-party
+ * client. This suite is one machine decrypting its own event, and it
+ * answers a question neither level asks: whether the *chain* -- TypeScript
+ * facade, generated bindings, JSI, UniFFI scaffolding, Rust core -- carries
+ * the cryptography that a host `cargo test` has already proved the Rust
+ * does. M1a shipped nineteen green tests against an assumed UniFFI error
+ * shape while the real one differed, and only real native code exposed it.
  *
  * `suite.ts`'s `BridgeBinding` is the model, and this file deliberately does
  * not extend it: that contract is about the probe (a record, some bytes, a
@@ -243,10 +254,11 @@ interface Step {
 }
 
 /**
- * The whole of level 1, driven through the public facade and nothing else:
- * create a machine on a real store, publish its keys, share a scope key,
- * pump what that produced back into the machine, then encrypt an event and
- * decrypt it again.
+ * The round trip, driven through the public facade and nothing else: create
+ * a machine on a real store, publish its keys, share a scope key, pump what
+ * that produced back into the machine, then encrypt an event and decrypt it
+ * again. See this file's own header for what this is not -- it is not
+ * section 8's level 1, and it discharges no exit criterion.
  *
  * # Never throws, never skips
  *
@@ -262,9 +274,10 @@ interface Step {
  * `shareScopeKey` stores the inbound session alongside the outbound one, so
  * the machine holds the key it just encrypted with. The core's own
  * `decrypting_recovers_the_exact_payload_encrypt_event_started_from` rests
- * on the same property. This is therefore not a two-party proof -- level 2
- * is -- it is a proof that the cryptography survives the whole chain from
- * TypeScript to Rust and back.
+ * on the same property. This is therefore not a two-party proof --
+ * `tests/two_parties.rs` is, and that one runs on the host -- it is a proof
+ * that the cryptography survives the whole chain from TypeScript to Rust
+ * and back, on the platform a product ships on.
  *
  * # The first share delivers nothing, and that is the contract
  *

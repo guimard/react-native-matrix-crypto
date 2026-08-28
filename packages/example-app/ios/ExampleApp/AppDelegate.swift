@@ -39,6 +39,20 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     let storeDir = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true)
       .first ?? ""
 
+    // RULE FOR ANYONE ADDING A PROP BELOW: initial properties are printed
+    // verbatim to the system log. React Native's own AppRegistry logs the
+    // whole dictionary on startup in a debug build -- observed here as
+    // `Running "ExampleApp" with {"rootTag":11,"initialProps":
+    // {"storeDir":"...Documents"},"fabric":true}` at info level, subsystem
+    // com.facebook.react.log, category javascript -- and they are ordinary
+    // JavaScript props afterwards, which any code may print. So NO
+    // PASSPHRASE, NO KEY MATERIAL AND NO USER OR DEVICE IDENTIFIER may
+    // travel this way. `storeDir` is here
+    // because it is the app's own sandbox directory, derivable from the
+    // bundle id and secret from nobody; the passphrase deliberately is not,
+    // and lives in src/cryptoConfig.ts instead. No gate in this repository
+    // enforces that -- this comment is the enforcement.
+
     factory.startReactNative(
       withModuleName: "ExampleApp",
       in: window,

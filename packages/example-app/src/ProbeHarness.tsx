@@ -201,7 +201,19 @@ export function ProbeHarness({ storeDir }: { storeDir: string }) {
     return () => {
       cancelled = true
     }
-  }, [storeDir])
+    // `[]`, not `[storeDir]`, so this array and the memo above say the same
+    // thing. `[storeDir]` would read as "re-run when the path changes",
+    // which is the opposite of what the line above does and of what the
+    // machine allows: the machine is process-wide and created once, so a
+    // later path could not be honoured even if this did re-run. A
+    // maintainer reads the dependency array first, and it must not be the
+    // half of the contradiction that wins.
+    //
+    // The lint rule wants `storeDir` declared because the closure reads it.
+    // Suppressed deliberately rather than satisfied: declaring it would
+    // restore exactly the contradiction this comment removes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <View>

@@ -25,6 +25,16 @@ class MainActivity : ReactActivity() {
    * travels to the root component as an initial property -- see App.tsx. This is the example
    * app's own native code doing it: no dependency was added, and nothing was added to the
    * library.
+   *
+   * RULE FOR ANYONE ADDING A KEY TO THIS BUNDLE: initial properties are printed verbatim to
+   * the system log. React Native's own AppRegistry logs the whole map on startup in a debug
+   * build -- `Running "ExampleApp" with {"rootTag":1,"initialProps":{"storeDir":"..."},...}`,
+   * in logcat here and in the iOS system log on the other platform -- and they are ordinary
+   * JavaScript props afterwards, which any code may print. So NO PASSPHRASE, NO KEY MATERIAL
+   * AND NO USER OR DEVICE IDENTIFIER may travel this way. `storeDir` is here because it is the app's own private files directory,
+   * derivable from the package name and secret from nobody; the passphrase deliberately is not,
+   * and lives in src/cryptoConfig.ts instead. No gate in this repository enforces that -- this
+   * comment is the enforcement.
    */
   override fun createReactActivityDelegate(): ReactActivityDelegate =
       object : DefaultReactActivityDelegate(this, mainComponentName, fabricEnabled) {
