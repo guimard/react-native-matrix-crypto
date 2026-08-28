@@ -64,7 +64,7 @@ Being precise about that, because a cryptographic library that oversells itself 
 
 | Capability | State |
 |---|---|
-| Rust to UniFFI to JSI to TypeScript chain | working, verified on real hardware |
+| Rust to UniFFI to JSI to TypeScript chain | working, verified on an iOS simulator and an Android emulator |
 | Byte-accurate marshalling across the boundary | verified |
 | Typed errors crossing the FFI boundary | verified |
 | Callback interface, Rust to JavaScript | verified |
