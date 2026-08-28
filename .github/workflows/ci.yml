@@ -343,3 +343,61 @@ jobs:
           # the verbatim `PROBE_SUMMARY n/n` line -- not on an exit code, and
           # never on the absence of a FAIL line.
           script: ./scripts/run-probe-on-emulator.sh
+
+  interop-level-two:
+    # M2's final exit criterion (design doc section 8): a real Matrix client
+    # decrypts what this library encrypted, and this library decrypts what it
+    # sent, over a real homeserver -- with a one-character ciphertext
+    # corruption observed failing in both directions.
+    #
+    # Until this job existed, that claim rested on three local runs against a
+    # homeserver one person had an account on, recorded in a git-ignored
+    # report. `cargo test` in `gates` runs without `--ignored`, so nothing in
+    # CI touched it. This job makes the proof repeatable by anyone.
+    #
+    # NO CREDENTIAL IS INVOLVED, AND THAT IS THE POINT.
+    #
+    # The obvious alternative was three repository secrets pointing at a real
+    # homeserver. That would put Matrix credentials in a public repository's
+    # CI, send test traffic to somebody's infrastructure on every pull request
+    # including from forks, and leave rooms and devices behind whenever a run
+    # failed. Instead the job starts a Continuwuity homeserver in a container,
+    # creates the one account the test needs inside it with a password
+    # generated per run, and destroys the lot. There is nothing here for a
+    # leaked log or a fork's pull request to expose.
+    #
+    # THE ASSERTION IS IN THE SCRIPT, NOT HERE.
+    #
+    # Same rule as probe-android: `cargo test` exits 0 when it matches no
+    # test at all, so this leg must assert that it FOUND the test reporting
+    # `... ok` and a `1 passed; 0 failed; 0 ignored` summary. It must never
+    # pass because nothing failed. That assertion lives in
+    # scripts/run-level-two-interop.sh so a contributor runs byte-for-byte
+    # what CI runs -- which is what makes the proof checkable by a third
+    # party rather than a claim from us. It has been watched failing three
+    # ways: an uncorrupted control (the test's own assertion fires), a filter
+    # that matches no test (cargo exits 0 and the script still refuses), and
+    # an image that will not start.
+    #
+    # `needs: gates` is not about drift here -- this test drives
+    # matrix-crypto-core directly and no generated binding is involved. It is
+    # so a leg that boots a homeserver and builds the Rust workspace does not
+    # run when a thirty-second gate has already gone red. `gates` also runs
+    # `cargo clippy --all-targets`, which is what compiles this test at all.
+    needs: gates
+    runs-on: ubuntu-latest
+    # Docker and a Rust toolchain both come with the hosted runner; nothing
+    # here needs a self-hosted one. Measured on a developer machine, the
+    # homeserver boots in about two seconds and the test itself takes under
+    # ten; the budget below is almost entirely the Rust build.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned rather than left to whatever the runner image ships, because
+      # the counterparty's dependency set is pinned against a Python version:
+      # tests/interop/requirements.txt is the resolution for CPython 3.12 and
+      # is installed with --no-deps, so a different interpreter could find a
+      # wheel missing rather than silently resolving something else.
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: ./scripts/run-level-two-interop.sh
