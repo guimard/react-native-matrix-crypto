@@ -26,12 +26,42 @@ use crate::runtime::in_runtime;
 /// store path and passphrase; this library chooses neither. A crypto library
 /// that picks its own on-disk location writes somewhere the product did not
 /// agree to.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// No `#[derive(Debug)]`: a derive would print `store_passphrase` and
+/// `store_path` verbatim, and this struct is `pub`, re-exported at the crate
+/// root, and lives for the process lifetime inside `Held` -- any future
+/// `{:?}`, any `#[derive(Debug)]` on a struct that embeds it, any
+/// `Result<_, MachineConfig>` unwrap, would print the secret. Task 3's own
+/// FFI mirror (`CryptoMachineConfig`) already omits the derive for the same
+/// reason. `Debug` is hand-written below instead, redacting both fields.
+#[derive(Clone, PartialEq, Eq)]
 pub struct MachineConfig {
     pub user_id: String,
     pub device_id: String,
     pub store_path: String,
     pub store_passphrase: Option<String>,
+}
+
+impl std::fmt::Debug for MachineConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Destructured, not field-accessed: a field added later must fail
+        // this to compile rather than be silently printed unredacted.
+        let MachineConfig {
+            user_id,
+            device_id,
+            store_path: _,
+            store_passphrase,
+        } = self;
+        f.debug_struct("MachineConfig")
+            .field("user_id", user_id)
+            .field("device_id", device_id)
+            .field("store_path", &"[redacted]")
+            .field(
+                "store_passphrase",
+                &store_passphrase.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -278,6 +308,42 @@ mod tests {
             store_path: dir.join("store").to_string_lossy().into_owned(),
             store_passphrase: Some("test-passphrase".to_string()),
         }
+    }
+
+    /// `MachineConfig` touches no global state, so this needs neither
+    /// `lock_for_test` nor `reset_for_test`.
+    #[test]
+    fn debug_output_redacts_the_store_path_and_passphrase() {
+        let config = MachineConfig {
+            user_id: "@a:b".to_string(),
+            device_id: "D".to_string(),
+            store_path: "/Users/alice/Library/store".to_string(),
+            store_passphrase: Some("s3cr3t".to_string()),
+        };
+
+        let rendered = format!("{config:?}");
+
+        assert!(
+            !rendered.contains("/Users/alice/Library/store"),
+            "Debug output must not contain the store path: {rendered}"
+        );
+        assert!(
+            !rendered.contains("s3cr3t"),
+            "Debug output must not contain the store passphrase: {rendered}"
+        );
+        // The non-secret fields still appear, so the redaction is not just
+        // an empty/panicking Debug impl standing in for a real one.
+        assert!(rendered.contains("@a:b"));
+        assert!(rendered.contains('D'));
+
+        // `store_passphrase: None` must not read as if a secret were
+        // present -- an unconditional "[redacted]" for the whole `Option`
+        // would make every config look like it carries a passphrase.
+        let no_passphrase = MachineConfig {
+            store_passphrase: None,
+            ..config
+        };
+        assert!(format!("{no_passphrase:?}").contains("None"));
     }
 
     #[test]
