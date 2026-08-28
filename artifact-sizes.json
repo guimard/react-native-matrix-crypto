@@ -193,5 +193,28 @@
     ],
     "tarballIncludesXcframework": true,
     "tarballIncludesAar": true
+  },
+  {
+    "label": "release-pack-aar-dropped-from-files",
+    "xcframeworkKB": 152128,
+    "aarKB": 29072,
+    "tarballKB": 65288,
+    "tarballUnpackedKB": 190717,
+    "tarballLargestContributors": [
+      {
+        "component": "MatrixCryptoFramework.xcframework",
+        "unpackedKB": 152122
+      },
+      {
+        "component": "android",
+        "unpackedKB": 38202
+      },
+      {
+        "component": "cpp",
+        "unpackedKB": 182
+      }
+    ],
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": false
   }
 ]
