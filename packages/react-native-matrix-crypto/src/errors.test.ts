@@ -104,6 +104,27 @@ describe('toCryptoError against the real UniFFI error shape', () => {
     expect(err.retriable).toBe(false)
   })
 
+  /**
+   * Regression for FIX 2: `errors.ts` used to map `['StoreCorrupt',
+   * 'store_corrupt']`, a Rust variant that has never existed --
+   * `MachineFfiError`'s real variant is `Store` (see the generated
+   * `MachineFfiError_Tags` in src/generated/matrix_crypto.ts), so a genuine
+   * store failure fell through `KIND_BY_NAME` to `kind: 'unknown'`. `Store`
+   * is a fielded variant (it carries `.inner.detail`), but its `.message` is
+   * still exactly "MachineFfiError.Store" with no ": <message>" suffix: the
+   * generated `Store_` constructor calls `super("MachineFfiError", "Store")`
+   * with no third argument, matching `NotInitialised` above.
+   */
+  it('maps a real UniFFI-shaped MachineFfiError.Store to kind store_unavailable, not store_corrupt', () => {
+    const raw = new Error('MachineFfiError.Store')
+    expect(raw.name).toBe('Error')
+
+    const err = toCryptoError(raw)
+    expect(err.kind).toBe('store_unavailable')
+    expect(err.kind).not.toBe('store_corrupt')
+    expect(err.retriable).toBe(false)
+  })
+
   it('recovers the variant from the "<Type>.<Variant>" prefix of .message when .name is not a recognized kind', () => {
     const err = toCryptoError({ name: 'Error', message: 'ProbeFfiError.Rejected' })
     expect(err.kind).toBe('rejected')

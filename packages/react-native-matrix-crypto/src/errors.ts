@@ -11,6 +11,7 @@ export type CryptoErrorKind =
   | 'revoked_device'
   | 'undecryptable'
   | 'store_corrupt'
+  | 'store_unavailable'
   | 'rejected'
   | 'malformed_identifier'
   | 'not_implemented'
@@ -38,7 +39,13 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   ['UnknownDevice', 'unknown_device'],
   ['RevokedDevice', 'revoked_device'],
   ['Undecryptable', 'undecryptable'],
-  ['StoreCorrupt', 'store_corrupt'],
+  // `MachineError::Store` means the store could not be opened -- often a
+  // wrong passphrase or a permissions problem, not damaged data. Mapping it
+  // to 'store_corrupt' would send a product down a destructive recovery path
+  // over what might just be a typo'd passphrase. 'store_corrupt' stays in
+  // the CryptoErrorKind union for genuine corruption, which decryption work
+  // later in M2 can detect; nothing maps to it yet.
+  ['Store', 'store_unavailable'],
   ['MalformedIdentifier', 'malformed_identifier'],
   ['NotInitialised', 'not_initialised'],
   ['AlreadyInitialised', 'already_initialised'],
