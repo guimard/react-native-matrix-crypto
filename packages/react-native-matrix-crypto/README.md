@@ -92,9 +92,15 @@ Verified end to end on an iOS simulator and on a physical Android device: a reco
 yarn add react-native-matrix-crypto
 ```
 
-**No Rust toolchain is required.** The published package ships prebuilt binaries, an `.xcframework` for iOS and an `.aar` for Android, so `yarn add` is all a consumer needs.
+**No Rust toolchain is required.** The published package ships prebuilt binaries: an `.xcframework` for iOS, and for Android a prebuilt Rust library per ABI under `android/src/main/jniLibs/`, which this module's `CMakeLists.txt` links when your app autolinks it and builds its C++ from source. A fully prebuilt, already linked `.aar` ships alongside those, for a consumer who would rather not build from source at all. `yarn add` is all you need.
 
-CI verifies the part of that a pull request can verify, and it is worth being exact about which part. A job packs this repository, installs the result on a machine with every directory carrying `cargo` or `rustc` scrubbed out of `PATH`, and asserts that the installed package declares no `preinstall`, `install`, `postinstall` or `prepare` script and ships no `binding.gyp` — so nothing in it can reach for a compiler on your machine either. What that job does not check is the binaries: they are build outputs, ignored by git and produced by the release workflow, so the tarball a pull request can pack contains none of them. Running the shipped chain is the Android emulator job's business, not that one's.
+Two different checks stand behind that sentence, and they establish different things.
+
+**On every pull request,** a job packs this repository, installs the result on a machine with every directory carrying `cargo` or `rustc` scrubbed out of `PATH`, and asserts that the installed package declares no `preinstall`, `install`, `postinstall` or `prepare` script and ships no `binding.gyp` — so nothing in it can reach for a compiler on your machine either. It does not check the binaries, and cannot: they are build outputs, ignored by git, so the tarball a pull request is able to pack contains none of them.
+
+**At publication,** the release workflow does. It builds both platforms in full, packs one tarball, and then opens that tarball and reads what is inside: every slice the `.xcframework` advertises, a prebuilt Rust library for every ABI `android/build.gradle` declares, an `.aar` carrying all of them — each large enough and with the right magic number to be real compiled code rather than a placeholder. Only then does it install those exact bytes on a machine with `cargo` and `rustc` unreachable, bundle and run the entry point out of the installed package the way your app's bundler would, and publish the tarball it checked, with [npm provenance](https://docs.npmjs.com/generating-provenance-statements) so the registry can show which workflow run produced what you downloaded.
+
+Neither of those runs the cryptography. Loading the module in a plain Node process stops where it calls into the native library, because a JSI turbo module needs a React Native runtime. Running the shipped chain end to end is the Android emulator job's business, and the interoperability proof below is where a third party client checks the result.
 
 ### Requirements
 
@@ -315,6 +321,22 @@ Every one of these runs in CI. Each has been observed rejecting a real violation
 `gate:stubs` exists because of a specific near miss. `ubrn build --and-generate` can emit a turbo module that exports nothing, with exit code zero and no warning, when it reads an Android shared library whose symbol table was stripped. Nothing downstream noticed, and the build went green. `gate:drift` cannot catch it either: drift regenerates and compares, so two equally empty generations agree with each other perfectly.
 
 If you add a gate, add the step that proves it fails on a real violation. A gate nobody has watched fail is not known to work.
+
+### Releasing
+
+A release is a git tag. Pushing `v0.1.0` runs `.github/workflows/release.yml`, which calls the entire pull request workflow first — every gate above, both build legs, the emulator probe and the interoperability proof — then builds the full cross compile matrix for both platforms, packs one tarball, asserts that tarball really contains the prebuilt binaries, installs those same bytes with `cargo` and `rustc` scrubbed out of `PATH` and loads the module out of them, and only then publishes, with provenance. It publishes the exact tarball it checked rather than repacking, so there is no gap between what was verified and what is uploaded.
+
+Three things stop the run before anything is built: a tag that disagrees with the version in `packages/react-native-matrix-crypto/package.json`, a version already on the registry, and a missing `NPM_TOKEN` repository secret. Each says so by name.
+
+You can rehearse the publish without publishing and without a token:
+
+```sh
+./scripts/rehearse-publish.sh
+```
+
+That packs the package exactly as the release workflow packs it, runs the same assertion on the packed bytes, and finishes with `npm publish --dry-run`, which prints the file list npm would upload and uploads nothing. It needs the binaries on disk; its header carries the two `ubrn build` commands that produce them, and if any are missing it names precisely which. To rehearse the other half, `./scripts/assert-release-ready.sh v0.1.0`.
+
+The release assertions are deliberately not `gate:*` scripts. `gate:readme` requires every `gate:*` to run as a step in `ci.yml`, and these two need an artifact with binaries in it, which a pull request never has.
 
 ### Conventions
 
