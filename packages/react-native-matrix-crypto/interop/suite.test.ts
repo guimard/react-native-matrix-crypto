@@ -14,7 +14,9 @@ describe('interop suite', () => {
     const broken = referenceBinding()
     broken.runProbe = async () => ({ echoed: 'wrong', payload: new Uint8Array(), coreVersion: '' })
 
-    const checks = await runInteropSuite(broken)
+    // This binding never signals either, so it would otherwise sit out the
+    // whole `signal` budget on the way to the assertion below.
+    const checks = await runInteropSuite(broken, { signalWaitMs: 100 })
     expect(checks.find((c) => c.name === 'record')?.ok).toBe(false)
   })
 
@@ -33,6 +35,45 @@ describe('interop suite', () => {
 
     const checks = await result
     expect(checks).toEqual([{ name: 'fatal', ok: false, detail: expect.stringContaining('boom') }])
+  })
+
+  it('sees a signal the binding delivers after runProbe has already resolved', async () => {
+    // The failure this pins is not hypothetical. A release build of the
+    // example app on emulator-5554 reported `signal FAIL (none)` on 5 of 8
+    // launches while the callback was working perfectly -- it simply reached
+    // the JS thread after the promise did. The reference binding calls its
+    // observer synchronously, so nothing in Node had ever exercised the other
+    // order.
+    const binding = referenceBinding()
+    const direct = binding.runProbe
+    binding.runProbe = async (input, payload, onSignal) => {
+      const report = await direct(input, payload, undefined)
+      if (onSignal) setTimeout(() => onSignal('probe_started'), 50)
+      return report
+    }
+
+    const checks = await runInteropSuite(binding)
+    const signal = checks.find((c) => c.name === 'signal')
+    expect(signal?.ok).toBe(true)
+    expect(signal?.detail).toBe('probe_started')
+  })
+
+  it('still fails when the binding never signals at all', async () => {
+    // The other half of the check above: waiting for a late callback must not
+    // turn `signal` into something that can only pass. A binding that never
+    // calls the observer has to fail, bounded wait or not.
+    //
+    // `signalWaitMs` is shortened because this test is about the branch, not
+    // about the budget -- the shipped default is sized for a loaded emulator
+    // and would spend 15 seconds here proving nothing extra.
+    const binding = referenceBinding()
+    const direct = binding.runProbe
+    binding.runProbe = (input, payload) => direct(input, payload, undefined)
+
+    const checks = await runInteropSuite(binding, { signalWaitMs: 100 })
+    const signal = checks.find((c) => c.name === 'signal')
+    expect(signal?.ok).toBe(false)
+    expect(signal?.detail).toBe('(none)')
   })
 
   it("does not leak one caller's probe signal into a concurrent, independent caller", async () => {
