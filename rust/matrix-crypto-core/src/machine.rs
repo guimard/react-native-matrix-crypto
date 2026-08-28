@@ -141,7 +141,32 @@ fn held() -> Option<Arc<Held>> {
     HELD.read().expect("machine registry poisoned").clone()
 }
 
+/// Serialises `create_machine`/`open_store` end to end.
+///
+/// Held for the whole of `init`, including across `build`'s `.await` -- a
+/// `tokio::sync::Mutex`, not `std::sync::Mutex`, exists for exactly this: to
+/// be safely held across await points. Without it, two concurrent calls with
+/// the *same* config both pass the early `held()` check (both see `None`),
+/// both call `SqliteCryptoStore::open` on the same fresh path, and collide on
+/// sqlite's own migration lock -- one comes back `Store { detail: "the
+/// crypto store could not be opened" }`, even though the brief's own
+/// invariant says a second identical create is not an error. Reproduced
+/// deterministically (12/12) by a review before this lock existed. With at
+/// most one caller ever inside `build()`, that collision cannot happen, and
+/// a caller whose config loses against an already-held one is turned away
+/// before ever calling `build()` for it -- so it never creates a store on
+/// disk for a configuration that is then rejected, the same "no store on a
+/// rejected config" rule `a_malformed_user_id_is_reported_before_any_store_is_touched`
+/// already asserts for a different kind of rejection. That also means there
+/// is no longer a "concurrent caller already inserted while I was building"
+/// case to reconcile after the fact: nothing can change `HELD` while this
+/// lock is held, so the checked-then-inserted value cannot go stale between
+/// the check and the insert.
+static INIT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn init(config: MachineConfig) -> Result<(), MachineError> {
+    let _serialised = INIT_LOCK.lock().await;
+
     if let Some(existing) = held() {
         return if existing.config == config {
             Ok(())
@@ -152,33 +177,17 @@ async fn init(config: MachineConfig) -> Result<(), MachineError> {
 
     let built = in_runtime(build(config)).await?;
 
-    // A concurrent caller may have won the race while this one was building.
-    // Losing it is not an error when the configurations agree, for the same
-    // reason a second create is not. Computed synchronously under the write
-    // lock, which is released before this returns: a `std::sync::RwLock`
-    // guard is not `Send` and must never be held across an `.await`.
-    let (result, to_discard) = {
-        let mut guard = HELD.write().expect("machine registry poisoned");
-        match &*guard {
-            Some(existing) if existing.config == built.config => (Ok(()), Some(built)),
-            Some(_) => (Err(MachineError::AlreadyInitialised), Some(built)),
-            None => {
-                *guard = Some(Arc::new(built));
-                (Ok(()), None)
-            }
-        }
-    };
+    // No re-check needed here: `INIT_LOCK` has been held continuously since
+    // before the `held()` check above, so nothing else could have written
+    // `HELD` in between. `expect`, not a defensive branch that "handles" a
+    // conflict that can no longer occur -- a branch that can never run is
+    // worse than no branch, because it invites a future reader to wonder
+    // when it does.
+    let mut guard = HELD.write().expect("machine registry poisoned");
+    assert!(guard.is_none(), "HELD changed while INIT_LOCK was held");
+    *guard = Some(Arc::new(built));
 
-    // A discarded `Held` carries a live `SqliteCryptoStore`. Its pooled
-    // connections close through a tokio-backed `spawn_blocking`, which needs
-    // a runtime context to do it, exactly as opening the store did -- so it
-    // cannot simply be allowed to drop here, back on a bare `.await`er with
-    // no such context. See `reset_for_test`, which hits the same requirement.
-    if let Some(held) = to_discard {
-        in_runtime(async move { drop(held) }).await;
-    }
-
-    result
+    Ok(())
 }
 
 /// Creates the machine, or accepts an identical existing one.
@@ -455,5 +464,95 @@ mod tests {
             first, second,
             "a reopened store must yield the same identity"
         );
+    }
+
+    /// Regression test for a review finding: before `INIT_LOCK` serialised
+    /// `init`, two concurrent `create_machine` calls with the *same* config
+    /// raced two `SqliteCryptoStore::open`s onto the same fresh database and
+    /// collided on sqlite's own migration lock, failing deterministically
+    /// (12/12 in the review's own probe) even though the brief's own
+    /// invariant -- and `creating_twice_with_the_same_config_is_not_an_error`
+    /// above -- says a second identical create is not an error. That test
+    /// only proves it sequentially; this one proves it under real
+    /// concurrency, with real OS threads racing through a barrier rather
+    /// than one `.await` after another on a single task.
+    #[test]
+    fn concurrent_creates_with_the_same_config_all_succeed() {
+        let _guard = futures::executor::block_on(lock_for_test());
+        reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        const CALLERS: usize = 4;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(CALLERS));
+        let handles: Vec<_> = (0..CALLERS)
+            .map(|_| {
+                let barrier = std::sync::Arc::clone(&barrier);
+                let config = config_in(dir.path());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    futures::executor::block_on(create_machine(config))
+                })
+            })
+            .collect();
+
+        for (i, handle) in handles.into_iter().enumerate() {
+            handle
+                .join()
+                .unwrap()
+                .unwrap_or_else(|e| panic!("caller {i} was refused: {e:?}"));
+        }
+    }
+
+    /// Regression test for a review finding: before `INIT_LOCK` serialised
+    /// `init`, a race-losing config had already run `build()` -- and so had
+    /// already created an encrypted `SqliteCryptoStore` on disk at its own
+    /// path -- before the write-lock re-check rejected it with
+    /// `AlreadyInitialised` (observed in 4/10 runs of the review's probe).
+    /// That contradicts the same "no store on a rejected config" rule
+    /// `a_malformed_user_id_is_reported_before_any_store_is_touched` asserts
+    /// for a different kind of rejection. With `init` serialised, the loser
+    /// never calls `build()` at all, so there is nothing to leave behind.
+    #[test]
+    fn concurrent_creates_with_different_configs_leave_no_store_for_the_loser() {
+        let _guard = futures::executor::block_on(lock_for_test());
+        reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut config_a = config_in(dir.path());
+        config_a.store_path = dir.path().join("store-a").to_string_lossy().into_owned();
+        let mut config_b = config_in(dir.path());
+        config_b.device_id = "DEVICE2".to_string();
+        config_b.store_path = dir.path().join("store-b").to_string_lossy().into_owned();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = [config_a, config_b]
+            .into_iter()
+            .map(|config| {
+                let barrier = std::sync::Arc::clone(&barrier);
+                let store_path = config.store_path.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let ok = futures::executor::block_on(create_machine(config)).is_ok();
+                    (store_path, ok)
+                })
+            })
+            .collect();
+
+        let results: Vec<(String, bool)> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        let winners = results.iter().filter(|(_, ok)| *ok).count();
+        assert_eq!(
+            winners, 1,
+            "exactly one of two differently-configured concurrent creates should win: {results:?}"
+        );
+
+        for (store_path, ok) in &results {
+            if !ok {
+                assert!(
+                    !std::path::Path::new(store_path).exists(),
+                    "a config that lost the race must never have a store on disk at {store_path}"
+                );
+            }
+        }
     }
 }
