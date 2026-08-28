@@ -78,5 +78,28 @@
     "tarballKB": 184608,
     "tarballIncludesXcframework": true,
     "tarballIncludesAar": true
+  },
+  {
+    "label": "task11-honest-metric-staticlib",
+    "xcframeworkKB": 104460,
+    "aarKB": 30604,
+    "tarballKB": 184608,
+    "tarballUnpackedKB": 550134,
+    "tarballLargestContributors": [
+      {
+        "component": "android",
+        "unpackedKB": 414821
+      },
+      {
+        "component": "MatrixCryptoFramework.xcframework",
+        "unpackedKB": 104453
+      },
+      {
+        "component": "react-native-matrix-crypto-release.aar",
+        "unpackedKB": 30603
+      }
+    ],
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
   }
 ]
