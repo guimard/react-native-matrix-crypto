@@ -309,7 +309,12 @@ jobs:
       # corrected composition metric, which reports what is actually in the
       # tarball rather than only the two build outputs this repo produces.
       - name: Measure and record the published artifact
-        run: ./scripts/measure-artifacts.sh "release-${{ needs.preflight.outputs.tag }}"
+        # Through env, not spliced into the script body: preflight has already
+        # required the tag to be 'v' plus a semantic version, but a ref name
+        # reaching a shell through `${{ }}` is a habit worth not having.
+        env:
+          TAG: ${{ needs.preflight.outputs.tag }}
+        run: ./scripts/measure-artifacts.sh "release-$TAG"
       - uses: actions/upload-artifact@v4
         with: { name: artifact-sizes-release, path: artifact-sizes.json }
 
