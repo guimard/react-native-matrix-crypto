@@ -141,28 +141,37 @@ export async function encryptEvent(
 }
 
 /**
- * Decrypts a previously-received `m.room.encrypted` event.
+ * Decrypts a previously-received `m.room.encrypted` event for `scope` --
+ * the same value passed to `encryptEvent`, since decryption needs it for
+ * the same reason: the native call this delegates to requires an explicit
+ * scope to look up the right group session, and reading one out of the
+ * unauthenticated, not-yet-decrypted event JSON would mean trusting
+ * attacker-influenced input for a security-relevant lookup.
  *
- * `rawEvent` carries both the scope the event belongs to and the event
- * itself, as `{ scope, event }`: the native call this delegates to needs
- * an explicit scope to look up the right group session (upstream requires
- * it as its own separate parameter, not something safe to infer from the
- * unauthenticated, not-yet-decrypted event JSON), and the frozen M1a
- * signature -- `(rawEvent: unknown) => Promise<EventEnvelope>` -- has no
- * room for a second parameter to carry it. `{ scope, event }`, not the
- * flatter `{ scope, ...event }`: the native call expects the event "as
- * received, verbatim", and destructuring `event` back out preserves that,
- * where reassembling a flattened object risks reordering or dropping a
- * duplicate key that `JSON.stringify` would otherwise pass through
- * untouched.
+ * A deliberate break from the M1a-frozen `decryptEvent(rawEvent)`: that
+ * shape cannot express a required scope without smuggling it into the
+ * `unknown` (e.g. `{ scope, event }`), which compiles but hides a required
+ * argument where the type system cannot see it and bypasses the branded
+ * `CryptoScopeId` that exists precisely so a caller cannot pass a bare
+ * string -- trading a compile error for a runtime one in a cryptographic
+ * API. `getDeviceIdentityKeys` is the counter-case: its parameters stayed
+ * because keeping them cost nothing. Here, keeping the frozen shape would
+ * have cost the caller the type system.
+ *
+ * `rawEvent` is the `m.room.encrypted` event as received, verbatim --
+ * JSON-stringified as-is before crossing to native.
  */
-export async function decryptEvent(rawEvent: unknown): Promise<EventEnvelope> {
-  const { scope, event } = (rawEvent ?? {}) as { scope?: unknown; event?: unknown }
+export async function decryptEvent(scope: CryptoScopeId, rawEvent: unknown): Promise<EventEnvelope> {
+  // `CryptoScopeId` performs no runtime validation (see types.ts) --
+  // enforced by the type system for a caller that goes through it, but a
+  // caller that bypasses it (plain JS, or `as any`) can still reach this
+  // with a non-string value. Rejected before native is ever called, the
+  // same discipline the old `{ scope, event }` guard applied.
   if (typeof scope !== 'string') {
     throw toCryptoError({ name: 'MalformedPayload' })
   }
   try {
-    const decrypted = await nativeDecryptEvent(scope, JSON.stringify(event))
+    const decrypted = await nativeDecryptEvent(scope, JSON.stringify(rawEvent))
     // Destructured, not returned directly. See encryptEvent above.
     const { scope: decryptedScope, algorithm, eventType, ciphertext, sender } = decrypted
     return {

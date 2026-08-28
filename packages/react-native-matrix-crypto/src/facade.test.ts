@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { CryptoScopeId } from './types'
 import { asCryptoScopeId } from './types'
 import { isCryptoError } from './errors'
 import {
@@ -137,13 +138,13 @@ describe('encryptEvent wiring to the native layer', () => {
 })
 
 describe('decryptEvent wiring to the native layer', () => {
-  it('extracts scope from rawEvent, forwards the event as JSON verbatim, and rebuilds every field of the returned envelope', async () => {
+  it('forwards scope and the JSON-stringified rawEvent verbatim, and rebuilds every field of the returned envelope', async () => {
     const event = { type: 'm.room.encrypted', sender: '@bob:example.org', content: { algorithm: 'm.native.algorithm' } }
 
-    const envelope = await decryptEvent({ scope: '!s:example.org', event })
+    const envelope = await decryptEvent(scope, event)
 
     const call = vi.mocked(nativeDecryptEvent).mock.calls.at(-1)
-    expect(call?.[0]).toBe('!s:example.org')
+    expect(call?.[0]).toBe(scope)
     expect(call?.[1]).toBe(JSON.stringify(event))
 
     expect(envelope.ciphertext).toBeInstanceOf(Uint8Array)
@@ -151,19 +152,17 @@ describe('decryptEvent wiring to the native layer', () => {
   })
 
   /**
-   * `decryptEvent`'s frozen M1a signature -- `(rawEvent: unknown) =>
-   * Promise<EventEnvelope>` -- has no separate scope parameter, so scope
-   * travels inside `rawEvent` as `{ scope, event }`. This proves the
-   * malformed-shape guard rejects before ever reaching native, rather
-   * than forwarding `undefined`/`"undefined"` as if it were a scope.
+   * `CryptoScopeId` performs no runtime validation (see types.ts): it is
+   * enforced by the type system for a caller that goes through
+   * `asCryptoScopeId`, but a caller that bypasses it (plain JS, or
+   * `as any`) can still reach this function with a non-string value. This
+   * proves that is rejected before ever reaching native, rather than
+   * forwarded as `undefined`/`"[object Object]"`.
    */
-  it('rejects with malformed_payload before ever calling native, when rawEvent carries no string scope', async () => {
+  it('rejects with malformed_payload before ever calling native, when scope is not actually a string at runtime', async () => {
     vi.mocked(nativeDecryptEvent).mockClear()
 
-    await expect(decryptEvent({ event: {} })).rejects.toSatisfy(
-      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
-    )
-    await expect(decryptEvent(null)).rejects.toSatisfy(
+    await expect(decryptEvent(undefined as unknown as CryptoScopeId, {})).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
     )
 
