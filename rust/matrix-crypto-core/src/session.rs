@@ -102,6 +102,30 @@ pub enum SessionError {
     /// `raw_json` did not parse into the shape this function accepts.
     #[error("the payload could not be parsed")]
     MalformedPayload,
+    /// A `scope` or user id handed to this call is not a parseable
+    /// identifier.
+    ///
+    /// Split out of [`MalformedPayload`](Self::MalformedPayload), which it
+    /// used to share. Two kinds exist to be told apart, and a caller who
+    /// passed a scope that is not a well-formed identifier was being told
+    /// their *payload* was malformed while their payload was fine. The
+    /// public `asCryptoScopeId` performs no validation at all, so an
+    /// unparseable scope is an ordinary mistake rather than an exotic one,
+    /// and pointing at the wrong argument costs the caller the whole
+    /// diagnosis.
+    ///
+    /// Fieldless like every other kind here, and for the usual reason: what
+    /// the identifier contained is caller-supplied content this crate does
+    /// not carry across the boundary. Nothing is lost by that here in
+    /// particular, since the identifier is the caller's own argument and
+    /// the caller still has it.
+    ///
+    /// Declared next to `MalformedPayload`, where it reads, rather than
+    /// appended: this enum has no wire representation, so its order is free.
+    /// Its FFI mirror does have one, and is appended last there for the
+    /// reason that mirror's own doc comment gives.
+    #[error("an identifier could not be parsed")]
+    MalformedIdentifier,
     /// No crypto machine has been created yet.
     #[error("no crypto machine has been created")]
     NotInitialised,
@@ -205,8 +229,12 @@ impl From<MachineError> for SessionError {
             // machine. Matched explicitly anyway, with no wildcard, so a
             // future `MachineError` variant fails this build instead of
             // silently landing on `Failed`.
+            // Carried across by name rather than collapsed into `Failed`,
+            // now that this enum has the matching kind. Unreachable today
+            // for the reason above, and mapping it truthfully costs
+            // nothing if it ever stops being.
+            MachineError::MalformedIdentifier { .. } => SessionError::MalformedIdentifier,
             MachineError::AlreadyInitialised
-            | MachineError::MalformedIdentifier { .. }
             | MachineError::Store { .. }
             | MachineError::MismatchedAccount => SessionError::Failed,
         }
@@ -327,12 +355,19 @@ pub async fn receive_sync_changes(raw_json: &str) -> Result<SyncOutcome, Session
 /// implementation detail, never a public identifier -- see spec section 6
 /// and the design doc's section 3bis. A later scope kind (e.g. an MLS group)
 /// would branch here without moving anything public.
+/// `MalformedIdentifier`, not `MalformedPayload`: what failed is the
+/// caller's scope argument, not the event or response body they also
+/// passed. See [`SessionError::MalformedIdentifier`].
 fn parse_scope(scope: &str) -> Result<OwnedRoomId, SessionError> {
-    scope.parse().map_err(|_| SessionError::MalformedPayload)
+    scope.parse().map_err(|_| SessionError::MalformedIdentifier)
 }
 
+/// Same reasoning as [`parse_scope`]: a user id that does not parse is a
+/// malformed identifier, and the caller supplied it directly.
 fn parse_user(user_id: &str) -> Result<OwnedUserId, SessionError> {
-    user_id.parse().map_err(|_| SessionError::MalformedPayload)
+    user_id
+        .parse()
+        .map_err(|_| SessionError::MalformedIdentifier)
 }
 
 /// An event encrypted for a scope, or the plaintext recovered by decrypting
@@ -1575,12 +1610,16 @@ mod tests {
     }
 
     /// A scope that is not a valid identifier must be rejected before any
-    /// cryptographic work happens.
+    /// cryptographic work happens, and as `MalformedIdentifier` rather than
+    /// `MalformedPayload`: the payload this call is given here is an empty
+    /// JSON object, which is perfectly well-formed, so naming the payload
+    /// would send the caller to look at the wrong argument. See
+    /// `SessionError::MalformedIdentifier`.
     #[test]
     fn a_malformed_scope_is_rejected() {
         let err = futures::executor::block_on(encrypt_event("nonsense", "m.room.message", "{}"))
             .unwrap_err();
-        assert_eq!(err, SessionError::MalformedPayload);
+        assert_eq!(err, SessionError::MalformedIdentifier);
     }
 
     /// This crate's own "no secret in any error" rule (spec section 7):
@@ -2672,11 +2711,28 @@ mod tests {
 
     /// Mirrors `a_malformed_scope_is_rejected`: an invalid scope must be
     /// rejected before this function ever reaches the machine, for
-    /// `decrypt_event` exactly as for `encrypt_event`.
+    /// `decrypt_event` exactly as for `encrypt_event`, and with the same
+    /// kind.
     #[test]
     fn a_malformed_scope_is_rejected_for_decryption_too() {
         let err = futures::executor::block_on(decrypt_event("nonsense", "{}")).unwrap_err();
-        assert_eq!(err, SessionError::MalformedPayload);
+        assert_eq!(err, SessionError::MalformedIdentifier);
+    }
+
+    /// The distinction the two kinds exist for, asserted as one thing so it
+    /// cannot be half-reverted: one call, given a bad scope with a good
+    /// payload and then a good scope with a bad payload, must report two
+    /// different kinds. Collapsing them again fails here rather than being
+    /// discovered by a consumer sent to inspect the wrong argument.
+    #[test]
+    fn a_bad_scope_and_a_bad_payload_are_told_apart() {
+        let bad_scope = futures::executor::block_on(decrypt_event("nonsense", "{}")).unwrap_err();
+        let bad_payload =
+            futures::executor::block_on(decrypt_event("!s:example.org", "{oops")).unwrap_err();
+
+        assert_eq!(bad_scope, SessionError::MalformedIdentifier);
+        assert_eq!(bad_payload, SessionError::MalformedPayload);
+        assert_ne!(bad_scope, bad_payload);
     }
 
     // --- Fix round 1: sharing tracks the users it was given -----------

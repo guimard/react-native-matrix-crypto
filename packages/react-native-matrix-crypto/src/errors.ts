@@ -23,6 +23,12 @@ export type CryptoErrorKind =
   // remove it; either is fine, silence about which is not.
   | 'revoked_device'
   | 'undecryptable'
+  // A payload this library was handed did not parse: `rawEvent`, a
+  // `markRequestSent` response body, a sync delta. NOT a bad scope --
+  // that is 'malformed_identifier' below, and telling the two apart is
+  // the whole reason both exist. A malformed scope reported
+  // 'malformed_payload' until the M2 final review, which sent a caller
+  // whose payload was fine to go and inspect it.
   | 'malformed_payload'
   | 'unknown_request'
   | 'failed'
@@ -34,6 +40,8 @@ export type CryptoErrorKind =
   | 'store_unavailable'
   | 'mismatched_account'
   | 'rejected'
+  // An identifier this library was handed did not parse: a `CryptoScopeId`
+  // (which `asCryptoScopeId` never validates), a user id, a device id.
   | 'malformed_identifier'
   | 'not_implemented'
   | 'not_initialised'
@@ -114,6 +122,14 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   // distinguishable condition unclassified. Not in RETRIABLE: retrying with
   // the same mismatched config fails the same way every time.
   ['MismatchedAccount', 'mismatched_account'],
+  // Reached from two enums, not one. `MachineFfiError::MalformedIdentifier`
+  // carries a `detail` and covers a bad user or device id at machine
+  // creation; `SessionFfiError::MalformedIdentifier` is fieldless and
+  // covers a `scope` (or a user id given to `shareScopeKey`) that does not
+  // parse. This map is keyed on the variant name alone, so one entry
+  // already served both the moment the second existed -- which is
+  // convenient and easy to miss, since nothing in this file names either
+  // enum. errors.test.ts asserts both, and asserts they agree.
   ['MalformedIdentifier', 'malformed_identifier'],
   ['NotInitialised', 'not_initialised'],
   ['AlreadyInitialised', 'already_initialised'],

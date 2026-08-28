@@ -347,6 +347,16 @@ carrying any ciphertext or plaintext.
 flagged this as the one field that edges toward a product decision, retained because
 transience is knowable only at the crypto layer.
 
+**A scope that does not parse is `malformed_identifier`, not `malformed_payload`.**
+Both kinds already existed, and the implementation initially sent every unparseable
+scope and user id to the payload one, which the M2 final review caught. The public
+`asCryptoScopeId` performs no validation, so a bad scope is an ordinary mistake, and
+naming the payload sends a caller to inspect an argument that is fine. Two kinds exist
+to be told apart; the cost of getting that wrong is paid entirely by the consumer, and
+it is paid at the one moment they are least able to tell a library bug from their own.
+Changed now rather than documented as a wart, because moving a case between kinds stops
+being free the moment a product ships a `switch` over them.
+
 ### 7.1 M2 decrypts events. It does not authenticate their senders.
 
 This has to be said in the specification rather than only in a code comment, because it

@@ -342,8 +342,13 @@ export async function decryptEvent(scope: CryptoScopeId, rawEvent: unknown): Pro
   // caller that bypasses it (plain JS, or `as any`) can still reach this
   // with a non-string value. Rejected before native is ever called, the
   // same discipline the old `{ scope, event }` guard applied.
+  //
+  // `malformed_identifier`, not `malformed_payload`: what is wrong is the
+  // scope argument, and `rawEvent` may be perfectly good. This matches what
+  // the core reports for a scope that is a string but not a parseable
+  // identifier, so both ways of getting the scope wrong name the scope.
   if (typeof scope !== 'string') {
-    throw toCryptoError({ name: 'MalformedPayload' })
+    throw toCryptoError({ name: 'MalformedIdentifier' })
   }
   const rawEventJson = stringifyOrMalformed(rawEvent)
   try {

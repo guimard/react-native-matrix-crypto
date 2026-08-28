@@ -342,12 +342,16 @@ describe('decryptEvent wiring to the native layer', () => {
    * `as any`) can still reach this function with a non-string value. This
    * proves that is rejected before ever reaching native, rather than
    * forwarded as `undefined`/`"[object Object]"`.
+   *
+   * The kind is `malformed_identifier`, matching what the core reports for
+   * a scope that is a string but not a parseable identifier: both ways of
+   * getting the scope wrong must name the scope, not the payload.
    */
-  it('rejects with malformed_payload before ever calling native, when scope is not actually a string at runtime', async () => {
+  it('rejects with malformed_identifier before ever calling native, when scope is not actually a string at runtime', async () => {
     vi.mocked(nativeDecryptEvent).mockClear()
 
     await expect(decryptEvent(undefined as unknown as CryptoScopeId, {})).rejects.toSatisfy(
-      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
+      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_identifier',
     )
 
     expect(nativeDecryptEvent).not.toHaveBeenCalled()

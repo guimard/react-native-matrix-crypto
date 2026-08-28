@@ -186,6 +186,34 @@ describe('toCryptoError against the real UniFFI error shape', () => {
   })
 
   /**
+   * `KIND_BY_NAME` is keyed on the variant name alone, so the entry written
+   * for `MachineFfiError.MalformedIdentifier` already serves the
+   * `SessionFfiError` variant a malformed scope now raises. That is
+   * convenient rather than obviously correct, and it is exactly the shape
+   * that goes unnoticed: nothing in errors.ts names either enum, so a
+   * reader cannot tell from this file that two of them reach one entry.
+   * Both are asserted, and asserted to agree.
+   */
+  it('maps SessionFfiError.MalformedIdentifier to the same kind as the machine variant', () => {
+    const fromSession = toCryptoError(new Error('SessionFfiError.MalformedIdentifier'))
+    const fromMachine = toCryptoError(new Error('MachineFfiError.MalformedIdentifier'))
+    expect(fromSession.kind).toBe('malformed_identifier')
+    expect(fromMachine.kind).toBe('malformed_identifier')
+    expect(fromSession.retriable).toBe(false)
+  })
+
+  /**
+   * The reason the variant exists at all: a bad scope and a bad payload
+   * must not land on one kind. Asserted here as well as in the Rust,
+   * because this is the layer a consumer actually reads a kind off.
+   */
+  it('keeps a malformed identifier and a malformed payload on distinct kinds', () => {
+    const identifier = toCryptoError(new Error('SessionFfiError.MalformedIdentifier'))
+    const payload = toCryptoError(new Error('SessionFfiError.MalformedPayload'))
+    expect(identifier.kind).not.toBe(payload.kind)
+  })
+
+  /**
    * G26 in the milestone's own ledger, dispatched: policy withheld codes
    * (`m.blacklisted`, `m.unauthorised`) must not be retriable, while the
    * circumstantial ones `unshared_session` still covers (`m.unavailable`,

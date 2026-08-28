@@ -337,7 +337,12 @@ impl From<matrix_crypto_core::OutgoingRequest> for OutgoingRequest {
 /// cleanly on the one that was added. Appending costs one unrecognised
 /// ordinal instead, which is why `SessionRefused` sits last, after
 /// `Undecryptable`, rather than beside `UnsharedSession` where it reads
-/// more naturally.
+/// more naturally, and why `MalformedIdentifier` sits after that rather
+/// than beside `MalformedPayload`. The core's own `SessionError` does put
+/// each of them where it reads, because that enum crosses no boundary and
+/// its order is free; these two lists are deliberately not in the same
+/// order, and the `From` impl below is exhaustive so neither can drift
+/// silently.
 ///
 /// **This comment ships.** Codegen copies it verbatim into
 /// `src/generated/matrix_crypto.ts`, twice, so it has to describe the rule
@@ -368,6 +373,8 @@ pub enum SessionFfiError {
     Undecryptable,
     #[error("the session that encrypted this event was refused by its sender's policy")]
     SessionRefused,
+    #[error("an identifier could not be parsed")]
+    MalformedIdentifier,
 }
 
 impl From<matrix_crypto_core::SessionError> for SessionFfiError {
@@ -375,6 +382,7 @@ impl From<matrix_crypto_core::SessionError> for SessionFfiError {
         // Exhaustive, no wildcard arm. See Global Constraints.
         match e {
             matrix_crypto_core::SessionError::MalformedPayload => Self::MalformedPayload,
+            matrix_crypto_core::SessionError::MalformedIdentifier => Self::MalformedIdentifier,
             matrix_crypto_core::SessionError::NotInitialised => Self::NotInitialised,
             matrix_crypto_core::SessionError::Failed => Self::Failed,
             matrix_crypto_core::SessionError::UnknownRequest => Self::UnknownRequest,

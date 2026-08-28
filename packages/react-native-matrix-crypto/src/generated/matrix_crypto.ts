@@ -1488,6 +1488,7 @@ export enum SessionFfiError_Tags {
   UnknownDevice = "UnknownDevice",
   Undecryptable = "Undecryptable",
   SessionRefused = "SessionRefused",
+  MalformedIdentifier = "MalformedIdentifier",
 }
 /**
  * Mirror of the core's session error, carrying the UniFFI error derive.
@@ -1506,7 +1507,12 @@ export enum SessionFfiError_Tags {
  * cleanly on the one that was added. Appending costs one unrecognised
  * ordinal instead, which is why `SessionRefused` sits last, after
  * `Undecryptable`, rather than beside `UnsharedSession` where it reads
- * more naturally.
+ * more naturally, and why `MalformedIdentifier` sits after that rather
+ * than beside `MalformedPayload`. The core's own `SessionError` does put
+ * each of them where it reads, because that enum crosses no boundary and
+ * its order is free; these two lists are deliberately not in the same
+ * order, and the `From` impl below is exhaustive so neither can drift
+ * silently.
  *
  * **This comment ships.** Codegen copies it verbatim into
  * `src/generated/matrix_crypto.ts`, twice, so it has to describe the rule
@@ -1768,6 +1774,35 @@ export const SessionFfiError = (() => {
     }
   }
 
+  type MalformedIdentifier__interface = {
+    tag: SessionFfiError_Tags.MalformedIdentifier;
+  };
+  class MalformedIdentifier_
+    extends UniffiError
+    implements MalformedIdentifier__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "SessionFfiError";
+    readonly tag = SessionFfiError_Tags.MalformedIdentifier;
+    constructor() {
+      super("SessionFfiError", "MalformedIdentifier");
+    }
+
+    static new(): MalformedIdentifier_ {
+      return new MalformedIdentifier_();
+    }
+
+    static instanceOf(obj: any): obj is MalformedIdentifier_ {
+      return obj.tag === SessionFfiError_Tags.MalformedIdentifier;
+    }
+    static hasInner(obj: any): obj is MalformedIdentifier_ {
+      return false;
+    }
+  }
+
   function instanceOf(obj: any): obj is SessionFfiError {
     return obj[uniffiTypeNameSymbol] === "SessionFfiError";
   }
@@ -1783,6 +1818,7 @@ export const SessionFfiError = (() => {
     UnknownDevice: UnknownDevice_,
     Undecryptable: Undecryptable_,
     SessionRefused: SessionRefused_,
+    MalformedIdentifier: MalformedIdentifier_,
   });
 })();
 /**
@@ -1802,7 +1838,12 @@ export const SessionFfiError = (() => {
  * cleanly on the one that was added. Appending costs one unrecognised
  * ordinal instead, which is why `SessionRefused` sits last, after
  * `Undecryptable`, rather than beside `UnsharedSession` where it reads
- * more naturally.
+ * more naturally, and why `MalformedIdentifier` sits after that rather
+ * than beside `MalformedPayload`. The core's own `SessionError` does put
+ * each of them where it reads, because that enum crosses no boundary and
+ * its order is free; these two lists are deliberately not in the same
+ * order, and the `From` impl below is exhaustive so neither can drift
+ * silently.
  *
  * **This comment ships.** Codegen copies it verbatim into
  * `src/generated/matrix_crypto.ts`, twice, so it has to describe the rule
@@ -1824,7 +1865,8 @@ export type SessionFfiError = InstanceType<
     | "UnsharedSession"
     | "UnknownDevice"
     | "Undecryptable"
-    | "SessionRefused"]
+    | "SessionRefused"
+    | "MalformedIdentifier"]
 >;
 
 // FfiConverter for enum SessionFfiError
@@ -1851,6 +1893,8 @@ const FfiConverterTypeSessionFfiError = (() => {
           return new SessionFfiError.Undecryptable();
         case 9:
           return new SessionFfiError.SessionRefused();
+        case 10:
+          return new SessionFfiError.MalformedIdentifier();
         default:
           throw new UniffiInternalError.UnexpectedEnumCase();
       }
@@ -1893,6 +1937,10 @@ const FfiConverterTypeSessionFfiError = (() => {
           c.writeI32(9);
           return;
         }
+        case SessionFfiError_Tags.MalformedIdentifier: {
+          c.writeI32(10);
+          return;
+        }
         default:
           // Throwing from here means that SessionFfiError_Tags hasn't matched an ordinal.
           throw new UniffiInternalError.UnexpectedEnumCase();
@@ -1925,6 +1973,9 @@ const FfiConverterTypeSessionFfiError = (() => {
           return 4;
         }
         case SessionFfiError_Tags.SessionRefused: {
+          return 4;
+        }
+        case SessionFfiError_Tags.MalformedIdentifier: {
           return 4;
         }
         default:

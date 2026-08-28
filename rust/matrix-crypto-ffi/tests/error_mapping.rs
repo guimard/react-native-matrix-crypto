@@ -31,7 +31,7 @@
 use matrix_crypto_core::{MachineError, SessionError};
 use matrix_crypto_ffi::{MachineFfiError, SessionFfiError};
 
-/// All nine `SessionError` variants, each to its own kind.
+/// All ten `SessionError` variants, each to its own kind.
 ///
 /// One assertion per variant rather than a loop: a loop would need the two
 /// enums to be relatable by something other than this mapping, which is the
@@ -65,6 +65,16 @@ fn every_session_error_maps_to_the_matching_ffi_variant() {
             SessionFfiError::UnknownRequest
         ),
         "SessionError::UnknownRequest must not arrive as another kind"
+    );
+    assert!(
+        matches!(
+            SessionFfiError::from(SessionError::MalformedIdentifier),
+            SessionFfiError::MalformedIdentifier
+        ),
+        "SessionError::MalformedIdentifier must not arrive as another kind -- \
+         it is fieldless and same-shaped as MalformedPayload, and the whole \
+         point of the split is that a caller with a bad scope is not sent to \
+         inspect a payload that is fine"
     );
 
     // The five decryption kinds. These are the ones a swap damages most:
