@@ -37,11 +37,48 @@ if [ "${#GENERATED_PREFIXES[@]}" -eq 0 ]; then
   exit 1
 fi
 
+# Every exemption below rests on this, so it is checked before any exemption
+# is granted rather than trusted.
+#
+# The comment that used to stand here said the drift gate's empty diff made an
+# exemption safe, because "a tolerated write cannot have been planted by hand
+# without gate:drift failing first". THAT WAS FALSE, and it was false for the
+# only case that matters. gate:drift sees modifications and untracked files.
+# It never sees ADDITIONS: codegen does not delete what it does not emit, so a
+# hand-written file COMMITTED under a listed directory produces no diff at
+# all. Reproduced 2026-08-28 with a tracked
+# src/generated/review-helper.ts holding `console.log('PLAINTEXT ' +
+# plaintext)`: gate:logger, gate:drift and gate:stubs all passed, and
+# `files: ["src"]` ships it.
+#
+# So the prefix list alone cannot justify an exemption, and does not any more.
+# scripts/generated-file-set.sh requires the path oracle and the generator's
+# own header to select exactly the same committed files, in both directions --
+# which the planted file above fails, because nothing wrote a header into it.
+# See that script for the full argument and for what each direction catches.
+#
+# WHAT THIS GATE ALONE STILL CANNOT SEE, said plainly rather than left for the
+# next reviewer to find: a forger who types the header in as well as choosing
+# the directory satisfies both oracles here. Constructed and watched passing
+# this gate. It does not survive the `gates` job, because two other checks run
+# in it and each rejects that file on its own terms -- assert-no-drift.sh runs
+# the generator and requires every committed file under a generated path to be
+# one this run actually WROTE, and assert-generated-not-stubbed.sh pins how
+# many artifacts there are, so a twentieth is a failure whatever it contains.
+# Neither of those can run from here: one needs a codegen, the other is the
+# gate that owns the count.
+if ! ./scripts/generated-file-set.sh >/dev/null; then
+  echo "FAIL: the generated-file set does not hold together, so this gate"
+  echo "      cannot justify exempting anything from the no-logger rule."
+  echo "      The cross-check's own message above says which file broke it."
+  exit 1
+fi
+
 # True when $1 is, or is under, a path scripts/assert-no-drift.sh regenerates
-# and diffs. That gate's empty-diff requirement is what makes an exemption
-# here safe: a file it covers is byte-for-byte what `ubrn generate` emits, so
-# a tolerated write cannot have been planted by hand without gate:drift
-# failing first.
+# and diffs. Two things now make an exemption here safe, and it takes both:
+# gate:drift proves a listed file is byte-for-byte what `ubrn generate`
+# emits, and the cross-check above proves no hand-written file is sitting
+# under a listed path claiming the same exemption.
 is_generated() {
   candidate="$1"
   for prefix in "${GENERATED_PREFIXES[@]}"; do
