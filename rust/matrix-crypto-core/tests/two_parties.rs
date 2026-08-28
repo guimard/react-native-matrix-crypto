@@ -11,8 +11,9 @@
 //!   through this crate's public surface and nothing else --
 //!   `create_machine`, `receive_sync_changes`, `share_scope_key`,
 //!   `take_outgoing_requests`, `mark_request_sent`, `encrypt_event`,
-//!   `decrypt_event` -- against the one registered machine, with a real
-//!   SQLite store on disk.
+//!   `decrypt_event`, and `with_machine` for the one precondition M2's
+//!   narrower surface does not express (see the keys-query step) --
+//!   against the one registered machine, with a real SQLite store on disk.
 //! * **Bob is a bare `matrix_sdk_crypto::OlmMachine`**, constructed and
 //!   driven directly, exactly the way `matrix-sdk-crypto`'s own tests
 //!   construct a second party. Not one line of this crate runs on his side.
@@ -50,7 +51,8 @@ use std::collections::BTreeMap;
 
 use matrix_crypto_core::{
     create_machine, decrypt_event, encrypt_event, in_runtime, mark_request_sent,
-    receive_sync_changes, share_scope_key, take_outgoing_requests, MachineConfig, OutgoingRequest,
+    receive_sync_changes, share_scope_key, take_outgoing_requests, with_machine, MachineConfig,
+    OutgoingRequest,
 };
 use matrix_sdk_common::ruma::api::client::keys::claim_keys::v3::Response as KeysClaimResponse;
 use matrix_sdk_common::ruma::api::client::keys::get_keys::v3::Response as KeysQueryResponse;
@@ -346,26 +348,58 @@ fn two_parties_exchange_a_group_key_and_each_decrypts_what_the_other_encrypted()
         .expect("the bare machine must accept its own upload response");
 
         // ---- Step 1 of 3ter: /keys/query -------------------------------
-        // Alice learns Bob's device exists. The request is drained from the
-        // library's pump and answered with the device keys Bob published,
-        // which is exactly what a homeserver returns for a user whose room
-        // Alice shares. (M2 exposes no "track this user" call, so the query
-        // the machine asks for on its own is the one that carries the
-        // answer; what teaches it about Bob is the response either way.)
+        // Alice learns Bob's device exists.
+        //
+        // Bob is tracked first, through `with_machine`. This is not a
+        // shortcut past the pump, and it is not optional: upstream's own
+        // `mark_tracked_users_as_changed` **skips every user it has never
+        // seen**, so a `changed_devices` list naming an untracked Bob
+        // queues nothing for him at all -- the request the pump would then
+        // hand out is upstream's own-user fallback query, and answering
+        // *that* with Bob's keys would teach the machine about Bob while
+        // proving nothing about which user the request asked for. Tracking
+        // membership is the product's job (it owns `/sync`'s room member
+        // lists, which this bridge deliberately does not read), so M2's
+        // narrower surface has no call for it; `with_machine` is this
+        // crate's own public accessor for the live machine and is the
+        // honest way to set the precondition.
+        let tracked: Vec<OwnedUserId> = vec![bob_user.clone()];
+        with_machine(move |machine| {
+            Box::pin(async move {
+                machine
+                    .update_tracked_users(tracked.iter().map(AsRef::as_ref))
+                    .await
+            })
+        })
+        .await
+        .expect("the machine must be live")
+        .expect("tracking a user must not fail");
+
         receive_sync_changes(&format!(
             r#"{{"changed_devices":{{"changed":["{BOB_USER}"],"left":[]}}}}"#
         ))
         .await
         .expect("a device-list change must be accepted");
-        let query_id = take_outgoing_requests()
+        let query = take_outgoing_requests()
             .await
             .expect("the pump must be drainable")
             .into_iter()
             .find(|r| r.kind == "keys_query")
-            .expect("the machine must ask who exists before it can encrypt to anyone")
-            .id;
+            .expect("the machine must ask who exists before it can encrypt to anyone");
+        // `contains`, not a positional match: this batch's query
+        // legitimately names this machine's own user as well (upstream
+        // flagged it on the first pump call above, and that request was
+        // never marked sent), and the two are ordered by user id rather
+        // than by which one this test cares about. What matters is that
+        // the other party is in the request at all: without it, the
+        // response below would be teaching the machine about a device it
+        // never asked for, and this step would prove nothing.
+        assert!(
+            query.body.contains(BOB_USER),
+            "the query the pump hands out must ask about the other party"
+        );
         mark_request_sent(
-            &query_id,
+            &query.id,
             &query_body(BOB_USER, BOB_DEVICE, &bob_device_keys),
         )
         .await
