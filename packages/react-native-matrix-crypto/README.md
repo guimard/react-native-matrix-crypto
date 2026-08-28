@@ -190,7 +190,7 @@ There is one exception, and it is worth stating precisely rather than claiming a
 
 No call argument, ciphertext, key or identifier is interpolated into that stream. The JavaScript functions reached at those five sites are the generator's own, not yours. A callback you pass in runs inside the generated trampoline's TypeScript `try`/`catch`, which lowers a throw into a Rust call status before it can reach the C++ frame; `onCryptoSignal` listeners sit behind a second `try`/`catch` in `emitCryptoSignal` on top of that. What is left to reach the stream is the generator's own fixed-message internal errors, such as a stale handle after a hot reload.
 
-It cannot be switched off. The generator's C++ backend takes no configuration at all, the write is unconditional in a template compiled into the tool, and hand-editing generated code is forbidden here and caught by `gate:drift`. So `gate:logger` reads that file instead of skipping it, tolerates exactly that one three-line shape and nothing else anywhere in the shipped C, C++ or Objective-C, and prints how many sites it tolerated so the number is visible when it moves.
+It cannot be switched off. The generator's C++ backend takes no configuration at all, the write is unconditional in a template compiled into the tool, and hand-editing generated code is forbidden here and caught by `gate:drift`. So `gate:logger` reads that file instead of skipping it and tolerates exactly that one three-line shape and nothing else anywhere in the shipped C, C++ or Objective-C. Arrangement alone is not enough to earn the exemption: the name in the message must be one the generator emits, and the `try` block the `catch` closes must construct no error of its own, so a site that manufactures a `jsi::JSError` out of a key and prints it is rejected rather than tolerated. The number of tolerated sites is asserted to be exactly five, not merely printed, so a sixth fails the build instead of moving a digit in a log nobody reads.
 
 **Errors carry no payload content.** `toCryptoError` reads a small set of known fields and never copies ciphertext, plaintext or arbitrary properties into a message.
 
@@ -209,14 +209,17 @@ The milestone below is what turns this from a proven chain into a usable encrypt
 | `receiveSyncChanges` | done |
 | `shareScopeKey`, `takeOutgoingRequests`, `markRequestSent` | done, the outbound queue described above |
 | Two crypto machines exchanging a key and decrypting each other | done, in one test process, with the key travelling through the queue rather than handed over in test code |
-| A third-party Matrix client decrypting what this library produces | **the one thing left**, see below |
+| A third-party Matrix client decrypting what this library produces | done, both directions, against `matrix-nio` over a real homeserver |
+| The same proof through the published TypeScript surface | done, on an emulator, with a second Matrix user as the counterparty |
 
 Both obstacles named when this milestone was planned turned out real, and both were resolved rather than absorbed:
 
 * **A tokio runtime became mandatory**, because group key sharing reaches `tokio::task::spawn`. The core now owns one, and signal delivery is non blocking, so no callback holds a lock or waits on JavaScript.
 * **Binary size** went the other way from expected. Linking the Rust as a shared library instead of a static archive cut the published tarball by 74 percent, from 263 MB to 68 MB, which is 44 percent of its budget. Splitting into per platform packages was not needed.
 
-**What remains is the level that matters most.** Two of our own crypto machines agreeing proves the implementation is self consistent; it cannot prove the wire format is right, because a consistent misreading of the protocol passes it cleanly. Only a third party client decrypting a real message answers that, and until it does, the format is unverified.
+**Why the last two rows exist.** Two of our own crypto machines agreeing proves the implementation is self consistent. It cannot prove the wire format is right, because a consistent misreading of the protocol passes it cleanly on both sides. Only a third party client decrypting a real message answers that, so both proofs run against `matrix-nio` over a real homeserver, and either can be run by anyone: `./scripts/run-level-two-interop.sh` for the core, and the level two harness in `packages/example-app` for the published surface.
+
+What those proofs still cannot reach is stated under Status: `matrix-nio` and this library both call `vodozemac`, so the ratchet is the floor, and sender authenticity waits on device verification in M3.
 
 ### M3 and beyond
 
@@ -270,9 +273,9 @@ The script above drives the Rust core. Between that core and your code sit the U
 python3 packages/example-app/level-two/run_level_two.py
 ```
 
-It needs Docker, an emulator `adb` can see, a release APK already built, and a Python with `matrix-nio[e2e]` — no Rust toolchain. It stands up its own throwaway homeserver, creates two accounts and an encrypted room inside it, drives `matrix-nio` as the counterparty, installs and launches the example app, and reads the app's own `LEVEL2_SUMMARY 13/13` back out of the system log. Every call the app makes is the published API and nothing else. Everything the run creates lives inside the container, and the container is destroyed from a `finally`, an `atexit` hook and a signal handler, so a failed run leaves no more behind than a passing one.
+It needs Docker, an emulator `adb` can see, a release APK already built, and a Python with `matrix-nio[e2e]`, and no Rust toolchain. It stands up its own throwaway homeserver, creates two accounts and an encrypted room inside it, drives `matrix-nio` as the counterparty, installs and launches the example app, and reads the app's own `LEVEL2_SUMMARY 13/13` back out of the system log. Every call the app makes is the published API and nothing else. Everything the run creates lives inside the container, and the container is destroyed from a `finally`, an `atexit` hook and a signal handler, so a failed run leaves no more behind than a passing one.
 
-`--mutation <name>` sabotages exactly one assertion, to check that assertion can fail — corrupting the event the counterparty is meant to read, or handing `receiveSyncChanges` a raw `/sync` response, among others. A mutated run prints a different summary line, so it can never be read as a clean one.
+`--mutation <name>` sabotages exactly one assertion, to check that assertion can fail: corrupting the event the counterparty is meant to read, or handing `receiveSyncChanges` a raw `/sync` response, among others. A mutated run prints a different summary line, so it can never be read as a clean one.
 
 ### Never hand edit a generated file
 
