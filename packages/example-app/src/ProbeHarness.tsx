@@ -34,11 +34,64 @@ import { DEMO_DEVICE_ID, DEMO_SCOPE, DEMO_USER_ID, demoMachineConfig } from './c
  * signal from its own call, never `GuidedFlow`'s. Both mount as siblings
  * in App.tsx and both call `runProbe`; before this, the shared global
  * channel meant one's probe call showed up in the other's check too.
+ *
+ * TWO TIMING LINES, AND WHY THEY ARE HERE RATHER THAN IN THE SUITE
+ *
+ * `interop/suite.ts`'s `signal` check answers "did the callback arrive at
+ * all", bounded by `SIGNAL_WAIT_MS`. That constant is a measured number, and
+ * a measured number nobody can re-measure decays into a guess: it was sized
+ * from a release build on an emulator because the Rust-to-JavaScript
+ * callback lost a race to the promise there and nowhere else (spec section
+ * 5.1, B2). These two lines are the instrument that produced it, kept in the
+ * tree so the next person to touch the delivery mechanism re-derives the
+ * budget instead of inheriting it.
+ *
+ * - `PROBE_SIGNAL_MS n` -- milliseconds from calling `runProbe` to the
+ *   observer callback landing on the JavaScript thread. This is the whole
+ *   chain a product waits on: Rust's `emit`, the UniFFI callback, the JSI
+ *   hop, and the JavaScript thread getting round to it.
+ * - `PROBE_PROMISE_MS n` -- the same clock, stopped when `runProbe`'s
+ *   promise resolves. The two together say which won, which is the race
+ *   itself rather than a proxy for it.
+ *
+ * They are not checks: nothing passes or fails on them, the summary's
+ * denominator does not move, and `scripts/run-probe-on-emulator.sh` prints
+ * them with the rest of the `PROBE_` output because it greps the prefix. The
+ * suite stays free of them deliberately -- it is the shipped contract every
+ * binding must satisfy, and a latency number is a measurement of one
+ * binding on one machine, not a property a binding must have. The example
+ * app is not the bridge and may log; these carry two integers and no
+ * identifier, no payload and no key material.
  */
 function jsiBinding(): BridgeBinding {
   return {
     runProbe(input, payload, onSignal) {
-      return runProbe(input, payload, onSignal && ((signal) => onSignal(signal.kind)))
+      const calledAt = Date.now()
+      const call = runProbe(
+        input,
+        payload,
+        onSignal &&
+          ((signal) => {
+            console.log(`PROBE_SIGNAL_MS ${Date.now() - calledAt}`)
+            onSignal(signal.kind)
+          }),
+      )
+      // Only the observing call is timed: the suite's second `runProbe` is
+      // the rejection check and passes no observer, so there is no delivery
+      // to time and no promise worth a second line.
+      //
+      // The rejection handler is not a swallowed error. The suite awaits
+      // this same promise and reports whatever it does; this `then` is a
+      // second, independent consumer, and without an `onRejected` a
+      // rejection here would surface as an unhandled promise rejection from
+      // a branch that exists only to print a number.
+      if (onSignal) {
+        void call.then(
+          () => console.log(`PROBE_PROMISE_MS ${Date.now() - calledAt}`),
+          () => {},
+        )
+      }
+      return call
     },
     isCryptoError,
     errorKind: (e) => (isCryptoError(e) ? e.kind : undefined),
