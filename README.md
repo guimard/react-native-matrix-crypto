@@ -180,6 +180,9 @@ const envelope = await encryptEvent(scope, 'm.room.message', { body: 'hi' })
 // send envelope.ciphertext as the content of an m.room.encrypted event
 
 const recovered = await decryptEvent(scope, incomingEvent)
+// recovered.ciphertext is the PLAINTEXT. One type serves both directions, so the
+// field name describes the encrypt path and is wrong here. Handle it as plaintext:
+// no logging, no unencrypted persistence, no crash report.
 ```
 
 ### Design notes worth knowing

@@ -38,6 +38,25 @@ export interface EventEnvelope {
    */
   algorithm: CryptoAlgorithm
   eventType: string
+  /**
+   * **Do not trust this field's name on the decrypt path.**
+   *
+   * From `encryptEvent`, this is the wire ciphertext: send it as the
+   * content of your `m.room.encrypted` event.
+   *
+   * From `decryptEvent`, this is the **plaintext** that call just
+   * recovered. One type describes both directions, so the name comes from
+   * the direction that produced it first and is wrong for the other. There
+   * is no second field to read instead.
+   *
+   * The consequence is a handling rule, not a naming quibble. Everything a
+   * product does to plaintext, it must do to this value on the decrypt
+   * path: do not log it, do not persist it unencrypted, do not put it in a
+   * crash report or an analytics event, and do not let it into a `console`
+   * statement written while debugging. The Rust core hand-writes a
+   * redacting `Debug` for exactly this reason, and it cannot reach across
+   * this boundary to do the same for JavaScript.
+   */
   ciphertext: Uint8Array
   /**
    * Fully qualified `@user:server`, verbatim. Spec section 10.
