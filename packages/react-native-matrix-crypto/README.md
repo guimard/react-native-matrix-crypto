@@ -334,7 +334,7 @@ You can rehearse the publish without publishing and without a token:
 ./scripts/rehearse-publish.sh
 ```
 
-That packs the package exactly as the release workflow packs it, runs the same assertion on the packed bytes, and finishes with `npm publish --dry-run`, which prints the file list npm would upload and uploads nothing. It needs the binaries on disk; its header carries the two `ubrn build` commands that produce them, and if any are missing it names precisely which. To rehearse the other half, `./scripts/assert-release-ready.sh v0.1.0`.
+That packs the package exactly as the release workflow packs it, runs the same assertion on the packed bytes, and finishes with `npm publish --dry-run`, which prints the file list npm would upload and uploads nothing. It needs the binaries on disk; its header carries the three commands that produce them — two `ubrn build` invocations and the Gradle `assembleRelease` that produces the `.aar`, which `ubrn` does not — and if any are missing it names precisely which. To rehearse the other half, `./scripts/assert-release-ready.sh v0.1.0`.
 
 The release assertions are deliberately not `gate:*` scripts. `gate:readme` requires every `gate:*` to run as a step in `ci.yml`, and these two need an artifact with binaries in it, which a pull request never has.
 
