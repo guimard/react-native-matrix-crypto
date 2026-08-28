@@ -10,6 +10,12 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex as StdMutex;
 
+// Already a direct dependency of this crate (see the Cargo.toml comment on
+// the `matrix-sdk-common` entry, written for reaching `ruma` the same way):
+// this is the type `MegolmError::MissingRoomKey`'s own `Option<_>` carries,
+// reached through the crate that defines it rather than through
+// `matrix-sdk-crypto`, which does not re-export it.
+use matrix_sdk_common::deserialized_responses::WithheldCode;
 // Response types for the six kinds `OlmMachine::outgoing_requests` and
 // `share_room_key` can ever hand out (matched exhaustively against
 // `AnyOutgoingRequest` below, with no wildcard -- see `describe_outgoing`).
@@ -84,10 +90,10 @@ fn decryption_settings() -> DecryptionSettings {
 /// is not the same problem as a crypto operation failing on well-formed
 /// input.
 ///
-/// The four decryption kinds below (`MissingKey` through `Undecryptable`)
+/// The five decryption kinds below (`MissingKey` through `Undecryptable`)
 /// exist for the same reason, one level more specific: decryption failure
 /// is normal Matrix operation, not a single exceptional condition, and
-/// collapsing all four into `Failed` would tell a product nothing about
+/// collapsing all five into `Failed` would tell a product nothing about
 /// which of "retry", "request the key again", "warn about an untrusted
 /// device" or "show a placeholder" applies. See [`classify_megolm_error`]
 /// for exactly which upstream condition maps to which.
@@ -123,20 +129,47 @@ pub enum SessionError {
     #[error("no key is available to decrypt this event")]
     MissingKey,
     /// [`decrypt_event`] found a record that the group session was
-    /// explicitly withheld, or never shared with this device. Distinct
-    /// from `MissingKey`: this is a known fact about the session rather
-    /// than the mere absence of one. Not uniformly worth requesting
-    /// again: upstream's withheld reasons include both circumstantial
-    /// ones a retry can resolve (`m.unavailable`, `m.no_olm` -- the
-    /// sender did not have the key yet, or could not reach this device)
-    /// and deliberate policy refusals a retry cannot (`m.blacklisted`,
-    /// `m.unauthorised`). This kind does not distinguish which reason
+    /// explicitly withheld, or never shared with this device, for a
+    /// *circumstantial* reason: `m.unavailable` (the sender did not have
+    /// the key yet) or `m.no_olm` (the sender could not reach this
+    /// device), or any withheld code this crate does not specifically
+    /// classify. Distinct from `MissingKey`: this is a known fact about
+    /// the session rather than the mere absence of one. Worth requesting
+    /// again -- the circumstance that produced it can change on a later
+    /// attempt.
+    ///
+    /// The two withheld codes that are a deliberate *policy* refusal
+    /// instead of a circumstance -- `m.blacklisted`, `m.unauthorised` --
+    /// are [`SessionRefused`](Self::SessionRefused), not this kind; see
+    /// its own doc comment for why retrying those is never productive.
+    /// This kind does not distinguish which of its own remaining reasons
     /// applies -- the reason itself is sender-supplied wire content this
     /// crate deliberately does not carry into any error, per the
-    /// no-payload-content rule -- so a product must not assume every
-    /// occurrence is productive to retry forever.
+    /// no-payload-content rule.
     #[error("the session that encrypted this event was not shared with this device")]
     UnsharedSession,
+    /// [`decrypt_event`] found a record that the group session's sender
+    /// deliberately refused to share it with this device: `m.blacklisted`
+    /// (the sender has blocked this device) or `m.unauthorised` (this
+    /// device was not entitled to the key -- for example, it asked for a
+    /// key to a message sent before it joined the room). Split out from
+    /// [`UnsharedSession`](Self::UnsharedSession) rather than folded into
+    /// it, and rather than adding a field to either: G26 in the
+    /// milestone's own ledger ruled that a product treating every
+    /// `UnsharedSession` occurrence as retriable would retry one of these
+    /// two forever, for no possible gain, at real cost in battery and
+    /// network, since both are the sender's own decision and nothing this
+    /// device does changes it.
+    ///
+    /// Fieldless like every other kind here, and not by discipline but by
+    /// construction: the split happens by matching upstream's `WithheldCode`
+    /// *variant* to choose between two already-existing, already-fixed
+    /// kinds, never by reading it into a field, so which of the two codes
+    /// produced this is still sender-supplied wire content this crate does
+    /// not carry across the boundary. This kind never distinguishes which
+    /// of the two applies.
+    #[error("the session that encrypted this event was refused by its sender's policy")]
+    SessionRefused,
     /// [`decrypt_event`] could not trust the device that supposedly
     /// encrypted this event, for either of two different reasons this
     /// kind does not currently distinguish: its identity does not match
@@ -482,24 +515,41 @@ struct DecryptedEventFields {
 }
 
 /// Maps an upstream Megolm decryption failure onto one of [`SessionError`]'s
-/// four dedicated kinds, by matching on the variant -- never on its
+/// five dedicated kinds, by matching on the variant -- never on its
 /// rendered text, which can embed a session id or key material (e.g.
 /// `MismatchedIdentityKeys`'s own `Display` impl serialises the keys
 /// involved). Exhaustive, no wildcard, for the same reason
 /// `From<MachineError>` above is: a future `MegolmError` variant must fail
-/// this build instead of silently landing on one of these four.
+/// this build instead of silently landing on one of these five.
 fn classify_megolm_error(error: MegolmError) -> SessionError {
     match error {
         // No record of the room key that encrypted this event. `None` --
         // no explanation offered -- is the "just don't have it yet" case a
-        // product can retry or wait out; `Some(_)` means the sending
-        // device explicitly told us, via an `m.room_key.withheld`
-        // to-device message, that this session was withheld or never
-        // shared -- a distinct fact worth a distinct kind. Neither arm
-        // reads the withheld code's own value: even a well-known code is
-        // sender-supplied wire content, and no variant here carries a
-        // field to put it in.
+        // product can retry or wait out.
         MegolmError::MissingRoomKey(None) => SessionError::MissingKey,
+
+        // `Some(code)` means the sending device explicitly told us, via an
+        // `m.room_key.withheld` to-device message, that this session was
+        // withheld or never shared -- a distinct fact worth a distinct
+        // kind, split further by `code` itself (G26 in the milestone's own
+        // ledger, ruled but never dispatched until now): `m.blacklisted`
+        // and `m.unauthorised` are the sender's own deliberate policy
+        // decision to refuse this device, which no retry from this device
+        // can ever change, so they get `SessionRefused`, never
+        // `UnsharedSession`. Every other code, named here or not
+        // (`m.unavailable`, `m.no_olm`, and anything this crate does not
+        // specifically classify) is circumstantial, so it stays
+        // `UnsharedSession`.
+        //
+        // Matching on `code` still never *reads* it into an error: this
+        // only chooses between two kinds that already exist regardless of
+        // which specific code arrived, and neither carries a field for it.
+        // The sender-supplied wire content a withheld code is has nowhere
+        // to flow into -- structurally, per the no-payload-content rule,
+        // not by the discipline of an arm that declines to look.
+        MegolmError::MissingRoomKey(Some(
+            WithheldCode::Blacklisted | WithheldCode::Unauthorised,
+        )) => SessionError::SessionRefused,
         MegolmError::MissingRoomKey(Some(_)) => SessionError::UnsharedSession,
 
         // The session is present -- this is not `MissingRoomKey` -- but its
@@ -2421,10 +2471,122 @@ mod tests {
         assert_eq!(err, SessionError::UnsharedSession);
     }
 
+    /// The half of the split `MissingRoomKey` handling that G26 in the
+    /// milestone's own ledger ruled on and this change dispatches:
+    /// `m.blacklisted` is not a circumstance a retry can resolve, it is the
+    /// sender's own decision to refuse this device, so it must report
+    /// `SessionRefused`, not `UnsharedSession`. Structured identically to
+    /// `decrypting_an_event_for_a_withheld_session_reports_unshared_session`
+    /// above -- same wire event shape, same real dispatch path through
+    /// `receive_sync_changes` and `add_withheld_info` -- and differs only
+    /// in the withheld `code`, so the contrast this pair of tests proves is
+    /// the split itself, not some other difference between the two tests.
+    #[test]
+    fn decrypting_an_event_for_a_policy_refused_session_reports_session_refused() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+
+            // A real curve25519 key, not a fabricated string: the withheld
+            // content's `sender_key` must deserialize as one, and this
+            // machine's own identity key is guaranteed to.
+            let keys = crate::device_identity_keys("@alice:example.org", "DEVICE1")
+                .await
+                .unwrap();
+
+            let withheld_session_id = "REFUSED_SESSION_NOBODY_GOT";
+            let withheld_event = serde_json::json!({
+                "sender": "@bob:example.org",
+                "type": "m.room_key.withheld",
+                "content": {
+                    "algorithm": "m.megolm.v1.aes-sha2",
+                    "code": "m.blacklisted",
+                    "reason": "The sender has blocked you.",
+                    "room_id": "!s:example.org",
+                    "session_id": withheld_session_id,
+                    "sender_key": keys.curve25519,
+                },
+            });
+            receive_sync_changes(
+                &serde_json::json!({ "to_device_events": [withheld_event] }).to_string(),
+            )
+            .await
+            .unwrap();
+
+            // A real content shape (borrowed from a real encrypt, then
+            // repointed at the withheld session id), the same technique
+            // the sibling `UnsharedSession` test above uses -- so this
+            // exercises the withheld-record branch specifically, not a
+            // shape rejection.
+            share_scope_key("!s:example.org", &["@alice:example.org".to_string()])
+                .await
+                .unwrap();
+            let encrypted = encrypt_event("!s:example.org", "m.room.message", r#"{"body":"hi"}"#)
+                .await
+                .unwrap();
+            let mut content: serde_json::Value = serde_json::from_slice(&encrypted.ciphertext)
+                .expect("encrypt_event's own ciphertext is well-formed JSON");
+            content["session_id"] = serde_json::Value::String(withheld_session_id.to_string());
+
+            let raw_event = serde_json::json!({
+                "sender": encrypted.sender,
+                "event_id": "$event6:example.org",
+                "origin_server_ts": 1_700_000_000_000u64,
+                "content": content,
+            })
+            .to_string();
+
+            decrypt_event("!s:example.org", &raw_event).await
+        })
+        .unwrap_err();
+
+        assert_eq!(err, SessionError::SessionRefused);
+    }
+
+    /// The split itself, proven directly against `classify_megolm_error`
+    /// rather than through the full machine the pair of tests above uses:
+    /// the two policy withheld codes (`m.blacklisted`, `m.unauthorised`)
+    /// must classify as the new `SessionRefused`, and the two
+    /// circumstantial ones this crate names explicitly in its own doc
+    /// comments (`m.unavailable`, `m.no_olm`) must still classify as
+    /// `UnsharedSession`, which stays retriable. A swap of either pairing
+    /// -- a policy code classified as `UnsharedSession`, or a
+    /// circumstantial one moved to `SessionRefused` -- turns this test
+    /// red, which is the property a fieldless, same-shaped pair of kinds
+    /// cannot get from the compiler and must get from a test instead.
+    #[test]
+    fn a_policy_withheld_code_is_not_retriable_and_a_circumstantial_one_stays_unshared() {
+        assert_eq!(
+            classify_megolm_error(MegolmError::MissingRoomKey(Some(WithheldCode::Blacklisted))),
+            SessionError::SessionRefused,
+        );
+        assert_eq!(
+            classify_megolm_error(MegolmError::MissingRoomKey(Some(
+                WithheldCode::Unauthorised
+            ))),
+            SessionError::SessionRefused,
+        );
+
+        assert_eq!(
+            classify_megolm_error(MegolmError::MissingRoomKey(Some(WithheldCode::Unavailable))),
+            SessionError::UnsharedSession,
+        );
+        assert_eq!(
+            classify_megolm_error(MegolmError::MissingRoomKey(Some(WithheldCode::NoOlm))),
+            SessionError::UnsharedSession,
+        );
+    }
+
     /// This crate's own "no secret in any error" rule (spec section 7),
-    /// for decryption specifically: regardless of which of the four kinds
+    /// for decryption specifically: regardless of which of the five kinds
     /// a failure is classified as, no fragment of the ciphertext that
-    /// caused it may survive into the rendered error. The four decryption
+    /// caused it may survive into the rendered error. The five decryption
     /// variants of `SessionError` are fieldless with fixed literal
     /// messages precisely so this holds structurally; this test proves it
     /// rather than leaving it to be trusted by inspection, reusing the

@@ -327,6 +327,21 @@ impl From<matrix_crypto_core::OutgoingRequest> for OutgoingRequest {
 /// requires (via its `std::error::Error: Debug` supertrait bound) prints
 /// only the variant name -- nothing to redact, unlike `Envelope`/
 /// `OutgoingRequest` above.
+///
+/// `SessionRefused` is declared last, after `Undecryptable`, not next to
+/// `UnsharedSession` where it reads most naturally: UniFFI assigns each
+/// variant's wire ordinal by declaration position (confirmed against the
+/// committed `src/generated/matrix_crypto.ts`, whose
+/// `FfiConverterTypeSessionFfiError.readFromCursor` switches on exactly
+/// `MalformedPayload` through `Undecryptable` as cases 1 through 8, in this
+/// declaration's own order), and this change deliberately does not run
+/// codegen to regenerate that file, so the committed bindings still only
+/// know cases 1 through 8. Inserting a ninth variant anywhere but the end
+/// would renumber every variant after it, so those stale bindings would
+/// misdecode `UnknownDevice` and `Undecryptable` too, not just fail cleanly
+/// on the one this build actually added. Appended last, the only
+/// consequence of the pending regeneration is that ordinal 9 itself
+/// (`SessionRefused`) is not yet recognised.
 #[derive(Debug, uniffi::Error, thiserror::Error)]
 pub enum SessionFfiError {
     #[error("the payload could not be parsed")]
@@ -345,6 +360,8 @@ pub enum SessionFfiError {
     UnknownDevice,
     #[error("this event could not be decrypted")]
     Undecryptable,
+    #[error("the session that encrypted this event was refused by its sender's policy")]
+    SessionRefused,
 }
 
 impl From<matrix_crypto_core::SessionError> for SessionFfiError {
@@ -357,6 +374,7 @@ impl From<matrix_crypto_core::SessionError> for SessionFfiError {
             matrix_crypto_core::SessionError::UnknownRequest => Self::UnknownRequest,
             matrix_crypto_core::SessionError::MissingKey => Self::MissingKey,
             matrix_crypto_core::SessionError::UnsharedSession => Self::UnsharedSession,
+            matrix_crypto_core::SessionError::SessionRefused => Self::SessionRefused,
             matrix_crypto_core::SessionError::UnknownDevice => Self::UnknownDevice,
             matrix_crypto_core::SessionError::Undecryptable => Self::Undecryptable,
         }

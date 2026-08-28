@@ -186,6 +186,26 @@ describe('toCryptoError against the real UniFFI error shape', () => {
   })
 
   /**
+   * G26 in the milestone's own ledger, dispatched: policy withheld codes
+   * (`m.blacklisted`, `m.unauthorised`) must not be retriable, while the
+   * circumstantial ones `unshared_session` still covers (`m.unavailable`,
+   * `m.no_olm`) must stay retriable. Both are asserted together, not just
+   * the new kind alone, because the property this proves is the contrast
+   * between the two siblings, not either one in isolation -- the same
+   * reasoning `error_mapping.rs`'s Rust-side test gives for asserting
+   * `SessionRefused` and `UnsharedSession` side by side.
+   */
+  it('maps a real UniFFI-shaped SessionFfiError.SessionRefused to a non-retriable kind, unlike its sibling UnsharedSession', () => {
+    const refused = toCryptoError(new Error('SessionFfiError.SessionRefused'))
+    expect(refused.kind).toBe('session_refused')
+    expect(refused.retriable).toBe(false)
+
+    const unshared = toCryptoError(new Error('SessionFfiError.UnsharedSession'))
+    expect(unshared.kind).toBe('unshared_session')
+    expect(unshared.retriable).toBe(true)
+  })
+
+  /**
    * Regression for the `RevokedDevice` cleanup (flagged by Task 6's review,
    * finding F3, fixed here): `KIND_BY_NAME` used to map
    * `['RevokedDevice', 'revoked_device']`, a name that exists in neither

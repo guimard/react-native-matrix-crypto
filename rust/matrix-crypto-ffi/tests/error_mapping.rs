@@ -16,9 +16,12 @@
 //! for, one layer over, and it matters more than its size suggests: the
 //! decryption taxonomy these variants carry took a full review round to settle
 //! in Task 6, precisely because `MissingKey`, `UnsharedSession`,
-//! `UnknownDevice` and `Undecryptable` call for four different product
-//! responses. A swap here silently tells a product to retry what it should
-//! never retry, or to give up on what a retry would fix.
+//! `SessionRefused`, `UnknownDevice` and `Undecryptable` call for five
+//! different product responses. A swap here silently tells a product to
+//! retry what it should never retry, or to give up on what a retry would
+//! fix -- `UnsharedSession` and `SessionRefused` are the sharpest version of
+//! that risk: same shape, opposite retriability, split apart for exactly
+//! this reason (G26 in the milestone's own ledger).
 //!
 //! No machine, no store, no runtime, and no failure path: both `From` impls
 //! are public, both core enums are public and not `#[non_exhaustive]`, and
@@ -28,7 +31,7 @@
 use matrix_crypto_core::{MachineError, SessionError};
 use matrix_crypto_ffi::{MachineFfiError, SessionFfiError};
 
-/// All eight `SessionError` variants, each to its own kind.
+/// All nine `SessionError` variants, each to its own kind.
 ///
 /// One assertion per variant rather than a loop: a loop would need the two
 /// enums to be relatable by something other than this mapping, which is the
@@ -64,25 +67,38 @@ fn every_session_error_maps_to_the_matching_ffi_variant() {
         "SessionError::UnknownRequest must not arrive as another kind"
     );
 
-    // The four decryption kinds. These are the ones a swap damages most:
-    // each names a different product response, and all four are fieldless,
+    // The five decryption kinds. These are the ones a swap damages most:
+    // each names a different product response, and all five are fieldless,
     // so the compiler cannot tell them apart.
     assert!(
         matches!(
             SessionFfiError::from(SessionError::MissingKey),
             SessionFfiError::MissingKey
         ),
-        "SessionError::MissingKey must not arrive as another kind -- it is the \
-         retriable one, and a product told UnsharedSession instead may stop asking"
+        "SessionError::MissingKey must not arrive as another kind -- it is \
+         retriable, and a product told UnsharedSession or SessionRefused \
+         instead may stop asking, or ask forever"
     );
     assert!(
         matches!(
             SessionFfiError::from(SessionError::UnsharedSession),
             SessionFfiError::UnsharedSession
         ),
-        "SessionError::UnsharedSession must not arrive as another kind -- it is \
-         not uniformly worth retrying, and a product told MissingKey instead may \
-         retry a deliberate refusal forever"
+        "SessionError::UnsharedSession must not arrive as another kind -- it \
+         is the circumstantial half of the withheld-code split and stays \
+         retriable, and a product told SessionRefused instead may give up on \
+         a withheld session a later attempt could still resolve"
+    );
+    assert!(
+        matches!(
+            SessionFfiError::from(SessionError::SessionRefused),
+            SessionFfiError::SessionRefused
+        ),
+        "SessionError::SessionRefused must not arrive as another kind -- it \
+         is the policy half of the withheld-code split (G26) and is never \
+         retriable, and a product told UnsharedSession instead may retry a \
+         deliberate blacklist or unauthorised refusal forever, at real cost \
+         in battery and network for a retry that can never succeed"
     );
     assert!(
         matches!(

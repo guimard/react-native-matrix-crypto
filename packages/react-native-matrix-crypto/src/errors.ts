@@ -7,6 +7,13 @@ import type { CryptoScopeId } from './types'
 export type CryptoErrorKind =
   | 'missing_key'
   | 'unshared_session'
+  // The policy half of the withheld-code split (G26 in the milestone's own
+  // ledger): `m.blacklisted` and `m.unauthorised` are the sender's own
+  // deliberate refusal, which no retry can ever change, so this kind is
+  // deliberately absent from RETRIABLE below -- unlike its sibling
+  // 'unshared_session', which keeps every other withheld code and stays
+  // retriable.
+  | 'session_refused'
   | 'unknown_device'
   // Forward scaffolding, not dead: nothing produces this yet (device
   // revocation is trust/M3 work), but it stays in the union, commented,
@@ -56,6 +63,7 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   ['NotImplemented', 'not_implemented'],
   ['MissingKey', 'missing_key'],
   ['UnsharedSession', 'unshared_session'],
+  ['SessionRefused', 'session_refused'],
   ['UnknownDevice', 'unknown_device'],
   ['Undecryptable', 'undecryptable'],
   // The remaining three `SessionFfiError` variants (Task 7): `raw_json`
@@ -87,6 +95,10 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   ['AlreadyInitialised', 'already_initialised'],
 ])
 
+// 'session_refused' is deliberately not here: see its own doc comment on
+// CryptoErrorKind above. It is the one kind this set must never gain by a
+// well-meaning edit that assumes every withheld-session kind belongs next
+// to 'unshared_session'.
 const RETRIABLE: ReadonlySet<CryptoErrorKind> = new Set(['missing_key', 'unshared_session'])
 
 export function isCryptoError(e: unknown): e is CryptoError {
