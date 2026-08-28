@@ -64,8 +64,9 @@ describe('interop suite', () => {
     // calls the observer has to fail, bounded wait or not.
     //
     // `signalWaitMs` is shortened because this test is about the branch, not
-    // about the budget -- the shipped default is sized for a loaded emulator
-    // and would spend 15 seconds here proving nothing extra.
+    // about the budget -- the shipped default carries a margin for a slower
+    // emulator than this one and would spend 3 seconds here proving nothing
+    // extra.
     const binding = referenceBinding()
     const direct = binding.runProbe
     binding.runProbe = (input, payload) => direct(input, payload, undefined)

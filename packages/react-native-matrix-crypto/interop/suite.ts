@@ -47,18 +47,58 @@ export interface InteropSuiteOptions {
  * How long the `signal` check waits for the observer callback, and how often
  * it looks while waiting.
  *
- * Not a performance claim, and deliberately far larger than a healthy
- * delivery: a run that gets its signal promptly stops waiting immediately, so
- * the budget costs nothing except when something is actually wrong.
+ * Not a performance claim: a run that gets its signal promptly stops waiting
+ * immediately, so the budget costs nothing except when something is actually
+ * wrong. But it is not free to oversize either. This check is the only
+ * automated thing that watches the Rust-to-JavaScript callback path, and a
+ * budget far above any delivery the path can produce stays green long after
+ * the thing it measures has broken.
  *
- * The number is measured. On a RELEASE build of the example app on
- * emulator-5554 (API 35, 2026-08-28), with a 2000 ms budget the check still
- * reported `signal FAIL (none)` on 1 launch in 8; with 15000 ms it passed 8
- * launches out of 8. So delivery can take seconds on a loaded emulator --
- * worth knowing about the callback path, and not something a check that only
- * asks "did it arrive at all" should be failing over.
+ * WHAT THIS NUMBER IS MEASURED FROM
+ *
+ * 15000 came from a release build on emulator-5554 (API 35, 2026-08-28),
+ * where a 2000 ms budget still reported `signal FAIL (none)` on 1 launch in 8
+ * and 15000 ms passed 8 of 8 -- so delivery was thought to take seconds. That
+ * was measured against `observer.rs`'s thread-per-signal emission, which M3
+ * replaced with the runtime's blocking pool (spec section 5.1, B2).
+ *
+ * Re-measured on the same emulator, same API level, same release build, with
+ * `PROBE_SIGNAL_MS` (see `ProbeHarness.tsx`) reporting the delivery in
+ * milliseconds rather than only pass or fail. 46 launches, 23 on each side of
+ * the change, interleaved launch by launch so host load fell on both arms
+ * equally; 30 of the 46 with the host deliberately saturated:
+ *
+ *   before (thread per signal): median 3 ms, p90 14 ms, max 102 ms
+ *   after  (blocking pool):     median 4 ms, p90 28 ms, max 38 ms
+ *
+ * Every one of the 46 passed. **The seconds did not reproduce, on either
+ * arm.** What did reproduce is the race: the callback lands after the promise
+ * in 28 of the 46, which is exactly why this bounded wait exists and why it
+ * must stay. Its magnitude is milliseconds, not seconds.
+ *
+ * WHY 3000 AND NOT 100
+ *
+ * 3000 ms is roughly thirty times the worst of those 46 launches. The margin
+ * is not measured, and saying so is the point: `probe-android` runs an
+ * x86_64 emulator under a software GPU on a four-vCPU hosted runner, which is
+ * a slower machine than the one measured above and could not be measured
+ * here. The margin is for that, and it is deliberately large.
+ *
+ * It is still five times tighter than 15000, which is what makes it useful: a
+ * regression that puts delivery back into seconds -- the condition B2 was
+ * opened for -- now fails this check instead of passing quietly inside the
+ * budget.
+ *
+ * IF THIS EVER GOES RED
+ *
+ * Read the `PROBE_SIGNAL_MS` line from the same launch before touching this
+ * number. The callback keeps arriving after this check has given up, and the
+ * harness keeps logging for another ten seconds or so, so a late delivery
+ * still prints its own latency -- the line's absence means the callback was
+ * lost, its presence means it was late, and the check alone cannot tell those
+ * apart.
  */
-const SIGNAL_WAIT_MS = 15000
+const SIGNAL_WAIT_MS = 3000
 const SIGNAL_POLL_MS = 20
 
 async function waitUntil(predicate: () => boolean, budgetMs: number): Promise<void> {
@@ -178,6 +218,11 @@ export async function runInteropSuite(
     // callback hop, so release loses the race that debug happened to win. The
     // callback was never lost: with a long enough wait it always arrived
     // (8 of 8). This line used to read the array before it got there.
+    //
+    // Re-measured after M3 changed the emission mechanism, and the race is
+    // still here: the callback landed after the promise in 28 of 46 release
+    // launches. Only its size changed -- see SIGNAL_WAIT_MS, which now says
+    // milliseconds where it used to say seconds.
     //
     // Bounded, so it cannot turn the check into a no-op: a binding that never
     // calls the observer still fails, it just takes the budget to say so.
