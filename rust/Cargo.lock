@@ -1181,7 +1181,9 @@ dependencies = [
 name = "matrix-crypto-ffi"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "matrix-crypto-core",
+ "tempfile",
  "thiserror",
  "tokio",
  "uniffi",
