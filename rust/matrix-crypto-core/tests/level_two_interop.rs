@@ -744,9 +744,14 @@ fn level_two_interoperability_over_a_real_homeserver() {
     // Declared here, before anything else exists on the homeserver, and
     // *before* `nio` below, so that on an unwind `nio`'s own `Drop` kills the
     // subprocess first and this one then removes what the run created. Every
-    // resource is registered with it the moment it comes into being, so there
-    // is no window in which something exists and is not owned by the
-    // teardown.
+    // resource is registered with it the moment its identifier is in hand, and
+    // before anything that could fail in between. A review found this claim
+    // overstated once: the counterparty's device was registered six lines and
+    // two assertions after it existed, so a failing assertion would have
+    // abandoned it. That is fixed. The residue that cannot be closed by
+    // reordering is narrow and worth naming: a homeserver replying 2xx with a
+    // body we cannot parse leaves a resource created but unidentified, and one
+    // cannot own an id one was never given.
     let mut teardown = Teardown::new(&homeserver, &library, &password);
 
     // ---- 2. An encrypted room both devices are in ----------------------
@@ -787,6 +792,13 @@ fn level_two_interoperability_over_a_real_homeserver() {
         .as_str()
         .expect("the counterparty reports its device id")
         .to_string();
+    // Ownership is taken the moment the id exists, before anything that can
+    // fail. The assertions below are exactly such a thing: either one firing
+    // would abandon a device that had already been created on someone else's
+    // homeserver, with no teardown recourse, because the guard would never
+    // have been told about it. Six lines is a small window and a real one.
+    teardown.owns_device(&nio_device_id);
+
     assert_eq!(
         nio_user_id, library.user_id,
         "both devices must belong to the same account: Matrix encryption is \
@@ -797,7 +809,6 @@ fn level_two_interoperability_over_a_real_homeserver() {
         nio_device_id, library.device_id,
         "the counterparty must be a second device, not the same one"
     );
-    teardown.owns_device(&nio_device_id);
 
     // ---- 4. The library's machine, and its keys on the wire -------------
     run(create_machine(MachineConfig {
