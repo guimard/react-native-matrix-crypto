@@ -269,9 +269,15 @@ pub type MachineFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// without this wrapping.
 ///
 /// The lock is acquired and `f` is called inside that borrowed runtime
-/// context, and released before this returns. No caller may emit a signal
-/// while holding it: a listener that calls back into the library would
-/// self-deadlock.
+/// context, and released before this returns.
+///
+/// Prefer not to emit a signal from inside `f`. This used to say a listener
+/// calling back into the library would self-deadlock; that is no longer true,
+/// because `observer::emit` hands delivery to its own thread and returns
+/// immediately, so nothing waits on the foreign side while this lock is held.
+/// The remaining reason is ordering rather than liveness: a listener that
+/// reads library state during `f` observes it mid-update, before whatever `f`
+/// is doing has been committed. Finish the locked work, release, then emit.
 pub async fn with_machine<F, T>(f: F) -> Result<T, MachineError>
 where
     F: for<'a> FnOnce(&'a OlmMachine) -> MachineFuture<'a, T> + Send + 'static,
