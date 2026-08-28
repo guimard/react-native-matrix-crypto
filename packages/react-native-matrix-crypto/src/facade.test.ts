@@ -1,7 +1,18 @@
 import { describe, expect, it, vi } from 'vitest'
 import { asCryptoScopeId } from './types'
 import { isCryptoError } from './errors'
-import { encryptEvent, decryptEvent, exportSecrets, getDeviceIdentityKeys } from './facade'
+import {
+  createCryptoMachine,
+  decryptEvent,
+  encryptEvent,
+  exportSecrets,
+  getDeviceIdentityKeys,
+  openCryptoStore,
+} from './facade'
+import {
+  createCryptoMachine as nativeCreateCryptoMachine,
+  openCryptoStore as nativeOpenCryptoStore,
+} from './generated/matrix_crypto'
 
 const scope = asCryptoScopeId('!scope:example.org')
 
@@ -22,6 +33,11 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./generated/matrix_crypto')>()
   return {
     ...actual,
+    // Stateless: both resolve to void on any input, so FIX 1's tests below
+    // can inspect what reached them via vi.mocked(...).mock.calls without
+    // this mock throwing or needing per-test setup.
+    createCryptoMachine: vi.fn(async () => undefined),
+    openCryptoStore: vi.fn(async () => undefined),
     deviceIdentityKeys: vi.fn(async (userId: string) => {
       if (userId !== 'bad-id') throw new Error('unexpected call in this fixture')
       throw new actual.MachineFfiError.MalformedIdentifier({ detail: 'user id' })
@@ -62,5 +78,68 @@ describe('getDeviceIdentityKeys against a real MalformedIdentifier failure', () 
     expect(err.kind).toBe('malformed_identifier')
     expect(err.kind).not.toBe('unknown')
     expect(err.message).toContain('user id')
+  })
+})
+
+/**
+ * Regression for FIX 1: `CryptoMachineConfig` had no `storePassphrase`
+ * field, so the native call never received one and every store this library
+ * created held key material unencrypted at rest, with no way for a caller
+ * to say otherwise. `storePassphrase` is required (`string | null`, not
+ * optional) precisely so a caller cannot omit it by accident; these tests
+ * cover both the real-passphrase path and the deliberate-`null` path,
+ * neither of which may throw.
+ */
+describe('storePassphrase wiring to the native layer', () => {
+  it('createCryptoMachine forwards a real passphrase, and translates an explicit null to undefined rather than throwing', async () => {
+    await expect(
+      createCryptoMachine({
+        userId: '@alice:example.org',
+        deviceId: 'DEVICE1',
+        storePath: '/tmp/store-a',
+        storePassphrase: 'correct horse battery staple',
+      }),
+    ).resolves.toBeUndefined()
+    expect(vi.mocked(nativeCreateCryptoMachine).mock.calls.at(-1)?.[0].storePassphrase).toBe(
+      'correct horse battery staple',
+    )
+
+    await expect(
+      createCryptoMachine({
+        userId: '@alice:example.org',
+        deviceId: 'DEVICE1',
+        storePath: '/tmp/store-a',
+        storePassphrase: null,
+      }),
+    ).resolves.toBeUndefined()
+    // The generated binding's optional field is spelled with `undefined`
+    // (UniFFI's `Option<String>`), never the literal `null` -- asserted
+    // explicitly so a future regression that forwards `null` verbatim fails
+    // here rather than at the native boundary this test cannot reach.
+    expect(vi.mocked(nativeCreateCryptoMachine).mock.calls.at(-1)?.[0].storePassphrase).toBeUndefined()
+  })
+
+  it('openCryptoStore forwards a real passphrase, and translates an explicit null to undefined rather than throwing', async () => {
+    await expect(
+      openCryptoStore({
+        userId: '@alice:example.org',
+        deviceId: 'DEVICE1',
+        storePath: '/tmp/store-b',
+        storePassphrase: 'correct horse battery staple',
+      }),
+    ).resolves.toBeUndefined()
+    expect(vi.mocked(nativeOpenCryptoStore).mock.calls.at(-1)?.[0].storePassphrase).toBe(
+      'correct horse battery staple',
+    )
+
+    await expect(
+      openCryptoStore({
+        userId: '@alice:example.org',
+        deviceId: 'DEVICE1',
+        storePath: '/tmp/store-b',
+        storePassphrase: null,
+      }),
+    ).resolves.toBeUndefined()
+    expect(vi.mocked(nativeOpenCryptoStore).mock.calls.at(-1)?.[0].storePassphrase).toBeUndefined()
   })
 })

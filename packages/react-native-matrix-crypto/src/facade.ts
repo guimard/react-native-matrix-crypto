@@ -18,6 +18,14 @@ export interface CryptoMachineConfig {
   userId: string
   deviceId: string
   storePath: string
+  /**
+   * Required, not optional: an optional field lets a caller omit it by
+   * accident and get unencrypted key material with no signal. `string |
+   * null` forces the caller to write `null` deliberately, where a code
+   * review can see it. Spec section 6: the store is encrypted with whatever
+   * passphrase the product supplies here.
+   */
+  storePassphrase: string | null
 }
 
 export interface DeviceStatus {
@@ -31,6 +39,11 @@ export async function createCryptoMachine(config: CryptoMachineConfig): Promise<
       userId: config.userId,
       deviceId: config.deviceId,
       storePath: config.storePath,
+      // The generated binding's field is UniFFI's `Option<String>`, spelled
+      // in TS as optional-with-undefined, not `| null`. This is the one
+      // place that translates the facade's deliberate `null` into the shape
+      // the native call expects.
+      storePassphrase: config.storePassphrase ?? undefined,
     })
   } catch (e) {
     throw toCryptoError(e)
@@ -43,6 +56,8 @@ export async function openCryptoStore(config: CryptoMachineConfig): Promise<void
       userId: config.userId,
       deviceId: config.deviceId,
       storePath: config.storePath,
+      // See createCryptoMachine above: null -> undefined for the native call.
+      storePassphrase: config.storePassphrase ?? undefined,
     })
   } catch (e) {
     throw toCryptoError(e)
