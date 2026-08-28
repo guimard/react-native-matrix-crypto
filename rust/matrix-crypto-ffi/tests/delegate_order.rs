@@ -37,14 +37,21 @@
 //! against the algorithm-named keys the device's own upload publishes,
 //! since nothing else at this boundary can tell them apart.
 //!
+//! The two M1 probe record mirrors are covered by the second test below --
+//! `ProbeReport`'s `echoed` against `core_version`, and `ProbeSignal`'s
+//! `kind` against `detail`. Neither was covered when this file first claimed
+//! "every exported delegate", and `exports.rs` pins only `echoed`; a review
+//! caught the over-claim.
+//!
 //! What this file does **not** cover, stated rather than implied:
 //! `share_scope_key(scope, users)` and `receive_sync_changes(raw_json)` have
-//! no same-typed argument pair to transpose in the first place;
-//! `create_crypto_machine`/`open_crypto_store` delegate to two core
-//! functions that are deliberately the same operation, so swapping them
-//! changes nothing observable; and a *mis-mapped error variant* in
+//! no same-typed argument pair to transpose in the first place; `probe` and
+//! `probe_with_observer` likewise (their arguments are `String` and
+//! `Vec<u8>`); and `create_crypto_machine`/`open_crypto_store` delegate to
+//! two core functions that are deliberately the same operation, so swapping
+//! *them* changes nothing observable. A **mis-mapped error variant** in
 //! `From<SessionError>`/`From<MachineError>` is a different hazard from
-//! argument order, reachable only on failure paths this test does not take.
+//! argument order and is covered by `error_mapping.rs`, not here.
 
 use matrix_crypto_ffi::{
     create_crypto_machine, decrypt_event, device_identity_keys, encrypt_event, mark_request_sent,
@@ -231,4 +238,75 @@ fn the_exported_functions_pass_their_arguments_to_the_core_in_order() {
             "an event carrying no room key establishes no session"
         );
     });
+}
+
+/// The two probe record mirrors the test above does not reach.
+///
+/// `ProbeReport` and `ProbeSignal` are hand-written mirrors like every other
+/// record in this crate, and each has a same-typed pair with nothing in the
+/// type system between them: `echoed`/`core_version`, and `kind`/`detail`.
+/// `exports.rs` pins `echoed` only, and no Rust test constructed a
+/// `ProbeSignal` at all before this one. They are M1 surfaces of modest
+/// value, but the file's framing invites a reader to believe every record
+/// mirror is pinned, so they are pinned.
+///
+/// Anchored on the semantic contract rather than on literals: the report
+/// echoes the input, and the signal's detail carries the input. Asserting
+/// `kind == "probe_started"` would pin a magic string this test does not own
+/// and would break for a reason unrelated to field order; asserting only
+/// that the two differ would not catch a swap at all, a swap of two distinct
+/// values leaving them distinct.
+#[test]
+fn the_probe_record_mirrors_carry_their_fields_in_order() {
+    // Not a version string, so `echoed` and `core_version` cannot be
+    // confused for one another.
+    const INPUT: &str = "delegate-order-probe-input";
+
+    struct Recorder(std::sync::mpsc::Sender<matrix_crypto_ffi::ProbeSignal>);
+    impl matrix_crypto_ffi::ProbeObserver for Recorder {
+        fn on_signal(&self, signal: matrix_crypto_ffi::ProbeSignal) {
+            // A send failure means the test already finished; nothing to do
+            // about it here, and nothing to report from a detached thread.
+            let _ = self.0.send(signal);
+        }
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let report = futures::executor::block_on(matrix_crypto_ffi::probe_with_observer(
+        INPUT.to_string(),
+        vec![9, 8],
+        std::sync::Arc::new(Recorder(tx)),
+    ))
+    .expect("a non-empty probe input must be accepted");
+
+    assert!(
+        report.echoed == INPUT,
+        "ProbeReport's echoed field must carry the input, not the core version"
+    );
+    assert!(
+        !report.core_version.is_empty() && report.core_version != INPUT,
+        "ProbeReport's core_version field must carry the version, not the input"
+    );
+    assert_eq!(
+        report.payload,
+        vec![8, 9],
+        "the payload must be the reversed input bytes, so it cannot be a \
+         passed-through reference or a silently dropped field"
+    );
+
+    // Emission is fire-and-forget on its own thread (see `observer.rs`), so
+    // this waits rather than assuming delivery has already happened. A
+    // bounded wait: a hang here is a failure, not a stall.
+    let signal = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the observer must receive the signal the probe emits");
+    assert!(
+        signal.detail == INPUT,
+        "ProbeSignal's detail field must carry the input the signal describes, \
+         not the signal's kind"
+    );
+    assert!(
+        !signal.kind.is_empty() && signal.kind != signal.detail,
+        "ProbeSignal's kind field must carry the kind, not the detail"
+    );
 }
