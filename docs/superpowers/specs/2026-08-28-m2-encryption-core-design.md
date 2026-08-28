@@ -206,8 +206,18 @@ optional on mobile: Android's NDK sysroot provides no `libsqlite3` to link again
 without it every Android target fails at link time with
 `ld.lld: error: unable to find library -lsqlite3`. Beyond linking, a cryptographic
 store whose on-disk format depends on whichever SQLite the host happens to ship is a
-portability and reproducibility problem. It costs roughly a megabyte of binary, which
-§9's measurements leave ample room for.
+portability and reproducibility problem.
+
+Two details worth keeping, because both are easy to get wrong later:
+
+* The failure is total, not partial. `matrix-crypto-ffi` declares
+  `crate-type = ["cdylib", "staticlib", "lib"]`, and rustc finalises none of the
+  requested outputs if the invocation fails. So without `bundled` the committed
+  configuration produces neither a `.a` nor a `.so` for Android, whichever linking
+  mode §9 selects.
+* Its size cost is already inside §9's numbers. Both post-store rows were measured
+  with `bundled` active, so the 67555 KB tarball includes compiled-in SQLite rather
+  than needing an allowance added on top.
 
 **Corrected during implementation.** This section first claimed that `matrix-sdk-base`
 enters only if you enable more than `crypto-store`. That is false. The published
