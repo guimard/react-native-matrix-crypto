@@ -825,15 +825,28 @@ pub async fn share_scope_key(scope: &str, users: &[String]) -> Result<(), Sessio
     // this is progress worth keeping regardless of whether the share
     // attempt below succeeds, since it is the only way a *later*
     // `share_scope_key` call can do better.
+    //
+    // Both queues below are written under one `STATE.lock()` acquisition,
+    // not two: `pending_claim` and `queued_to_device` are two of the three
+    // fields `RequestState`'s own doc comment says share a lock precisely
+    // so a caller can never observe one updated without the others (N1 in
+    // the milestone's own ledger -- parked, not fixed, until now). Neither
+    // write here is preceded or followed by an `.await`: `missing` and
+    // `shared` are already-resolved `Result`s by this point, taken from the
+    // tuple `with_machine` handed back above, not futures still to be
+    // polled -- so holding the guard across both is exactly as cheap as the
+    // two separate acquisitions it replaces, and cannot deadlock the
+    // executor the way holding a lock across an `.await` already has once
+    // in this crate (see `machine.rs`).
+    let mut state = STATE.lock().expect("request registry poisoned");
+
     if let Some(claim) = missing.map_err(|_upstream| SessionError::Failed)? {
-        let mut state = STATE.lock().expect("request registry poisoned");
         state.pending_claim = Some(claim);
     }
 
     let to_device_requests = shared.map_err(|_upstream| SessionError::Failed)?;
 
     if !to_device_requests.is_empty() {
-        let mut state = STATE.lock().expect("request registry poisoned");
         // Keyed by `txn_id`, not appended to a growing `Vec`:
         // `share_room_key` returns the *entire* persisted
         // `to_share_with_set` on every call
@@ -853,6 +866,11 @@ pub async fn share_scope_key(scope: &str, users: &[String]) -> Result<(), Sessio
                 .insert(request.txn_id.to_string(), request);
         }
     }
+
+    // Dropped explicitly, rather than left to fall out of scope at the
+    // function's end: nothing below needs it, and the whole point of this
+    // block is to hold it no longer than the two writes actually require.
+    drop(state);
 
     // Reported last, after both queues above have kept whatever progress
     // this call made: a tracking failure is a store failure, and a store
