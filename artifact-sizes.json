@@ -38,5 +38,45 @@
     "tarballKB": 128031,
     "tarballIncludesXcframework": true,
     "tarballIncludesAar": true
+  },
+  {
+    "label": "opt-strip",
+    "xcframeworkKB": 152788,
+    "aarKB": 31492,
+    "tarballKB": 128038,
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
+  },
+  {
+    "label": "opt-strip-lto",
+    "xcframeworkKB": 292720,
+    "aarKB": 30604,
+    "tarballKB": 242936,
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
+  },
+  {
+    "label": "opt-strip-lto-nobc",
+    "xcframeworkKB": 104460,
+    "aarKB": 30604,
+    "tarballKB": 184608,
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
+  },
+  {
+    "label": "opt-strip-lto-nobc-z",
+    "xcframeworkKB": 142324,
+    "aarKB": 30172,
+    "tarballKB": 156398,
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
+  },
+  {
+    "label": "opt-strip-lto-nobc-final",
+    "xcframeworkKB": 104460,
+    "aarKB": 30604,
+    "tarballKB": 184608,
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
   }
 ]
