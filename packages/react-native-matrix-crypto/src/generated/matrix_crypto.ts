@@ -1497,20 +1497,26 @@ export enum SessionFfiError_Tags {
  * only the variant name -- nothing to redact, unlike `Envelope`/
  * `OutgoingRequest` above.
  *
- * `SessionRefused` is declared last, after `Undecryptable`, not next to
- * `UnsharedSession` where it reads most naturally: UniFFI assigns each
- * variant's wire ordinal by declaration position (confirmed against the
- * committed `src/generated/matrix_crypto.ts`, whose
- * `FfiConverterTypeSessionFfiError.readFromCursor` switches on exactly
- * `MalformedPayload` through `Undecryptable` as cases 1 through 8, in this
- * declaration's own order), and this change deliberately does not run
- * codegen to regenerate that file, so the committed bindings still only
- * know cases 1 through 8. Inserting a ninth variant anywhere but the end
- * would renumber every variant after it, so those stale bindings would
- * misdecode `UnknownDevice` and `Undecryptable` too, not just fail cleanly
- * on the one this build actually added. Appended last, the only
- * consequence of the pending regeneration is that ordinal 9 itself
- * (`SessionRefused`) is not yet recognised.
+ * **A new variant is appended here. It is never inserted.** UniFFI assigns
+ * each variant's wire ordinal by declaration position, which
+ * `FfiConverterTypeSessionFfiError.readFromCursor` in the generated
+ * TypeScript reads back as a numbered `switch` in exactly this order. So
+ * inserting a variant renumbers every variant after it, and any binding
+ * generated before that insert misdecodes all of them rather than failing
+ * cleanly on the one that was added. Appending costs one unrecognised
+ * ordinal instead, which is why `SessionRefused` sits last, after
+ * `Undecryptable`, rather than beside `UnsharedSession` where it reads
+ * more naturally.
+ *
+ * **This comment ships.** Codegen copies it verbatim into
+ * `src/generated/matrix_crypto.ts`, twice, so it has to describe the rule
+ * rather than the state of one commit. It used to end by saying the
+ * committed bindings "still only know cases 1 through 8", because the
+ * change that added `SessionRefused` deliberately did not regenerate them.
+ * The regeneration ran a commit later, and that sentence went on shipping
+ * to consumers, sitting directly above `case 9`. `gate:drift` cannot catch
+ * that class of defect at all: the generated file reproduces its source
+ * faithfully, and it is the content of the source that expired.
  */
 export const SessionFfiError = (() => {
   type MalformedPayload__interface = {
@@ -1787,20 +1793,26 @@ export const SessionFfiError = (() => {
  * only the variant name -- nothing to redact, unlike `Envelope`/
  * `OutgoingRequest` above.
  *
- * `SessionRefused` is declared last, after `Undecryptable`, not next to
- * `UnsharedSession` where it reads most naturally: UniFFI assigns each
- * variant's wire ordinal by declaration position (confirmed against the
- * committed `src/generated/matrix_crypto.ts`, whose
- * `FfiConverterTypeSessionFfiError.readFromCursor` switches on exactly
- * `MalformedPayload` through `Undecryptable` as cases 1 through 8, in this
- * declaration's own order), and this change deliberately does not run
- * codegen to regenerate that file, so the committed bindings still only
- * know cases 1 through 8. Inserting a ninth variant anywhere but the end
- * would renumber every variant after it, so those stale bindings would
- * misdecode `UnknownDevice` and `Undecryptable` too, not just fail cleanly
- * on the one this build actually added. Appended last, the only
- * consequence of the pending regeneration is that ordinal 9 itself
- * (`SessionRefused`) is not yet recognised.
+ * **A new variant is appended here. It is never inserted.** UniFFI assigns
+ * each variant's wire ordinal by declaration position, which
+ * `FfiConverterTypeSessionFfiError.readFromCursor` in the generated
+ * TypeScript reads back as a numbered `switch` in exactly this order. So
+ * inserting a variant renumbers every variant after it, and any binding
+ * generated before that insert misdecodes all of them rather than failing
+ * cleanly on the one that was added. Appending costs one unrecognised
+ * ordinal instead, which is why `SessionRefused` sits last, after
+ * `Undecryptable`, rather than beside `UnsharedSession` where it reads
+ * more naturally.
+ *
+ * **This comment ships.** Codegen copies it verbatim into
+ * `src/generated/matrix_crypto.ts`, twice, so it has to describe the rule
+ * rather than the state of one commit. It used to end by saying the
+ * committed bindings "still only know cases 1 through 8", because the
+ * change that added `SessionRefused` deliberately did not regenerate them.
+ * The regeneration ran a commit later, and that sentence went on shipping
+ * to consumers, sitting directly above `case 9`. `gate:drift` cannot catch
+ * that class of defect at all: the generated file reproduces its source
+ * faithfully, and it is the content of the source that expired.
  */
 export type SessionFfiError = InstanceType<
   (typeof SessionFfiError)[
