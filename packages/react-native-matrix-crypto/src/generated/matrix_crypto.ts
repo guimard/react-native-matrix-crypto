@@ -600,6 +600,7 @@ export enum MachineFfiError_Tags {
   AlreadyInitialised = "AlreadyInitialised",
   MalformedIdentifier = "MalformedIdentifier",
   Store = "Store",
+  MismatchedAccount = "MismatchedAccount",
 }
 /**
  * Mirror of the core's machine error, carrying the UniFFI error derive.
@@ -736,6 +737,35 @@ export const MachineFfiError = (() => {
     }
   }
 
+  type MismatchedAccount__interface = {
+    tag: MachineFfiError_Tags.MismatchedAccount;
+  };
+  class MismatchedAccount_
+    extends UniffiError
+    implements MismatchedAccount__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.MismatchedAccount;
+    constructor() {
+      super("MachineFfiError", "MismatchedAccount");
+    }
+
+    static new(): MismatchedAccount_ {
+      return new MismatchedAccount_();
+    }
+
+    static instanceOf(obj: any): obj is MismatchedAccount_ {
+      return obj.tag === MachineFfiError_Tags.MismatchedAccount;
+    }
+    static hasInner(obj: any): obj is MismatchedAccount_ {
+      return false;
+    }
+  }
+
   function instanceOf(obj: any): obj is MachineFfiError {
     return obj[uniffiTypeNameSymbol] === "MachineFfiError";
   }
@@ -746,6 +776,7 @@ export const MachineFfiError = (() => {
     AlreadyInitialised: AlreadyInitialised_,
     MalformedIdentifier: MalformedIdentifier_,
     Store: Store_,
+    MismatchedAccount: MismatchedAccount_,
   });
 })();
 /**
@@ -760,7 +791,8 @@ export type MachineFfiError = InstanceType<
     | "NotInitialised"
     | "AlreadyInitialised"
     | "MalformedIdentifier"
-    | "Store"]
+    | "Store"
+    | "MismatchedAccount"]
 >;
 
 // FfiConverter for enum MachineFfiError
@@ -781,6 +813,8 @@ const FfiConverterTypeMachineFfiError = (() => {
           return new MachineFfiError.Store({
             detail: FfiConverterString.readFromCursor(c),
           });
+        case 5:
+          return new MachineFfiError.MismatchedAccount();
         default:
           throw new UniffiInternalError.UnexpectedEnumCase();
       }
@@ -807,6 +841,10 @@ const FfiConverterTypeMachineFfiError = (() => {
           FfiConverterString.writeIntoCursor(inner.detail, c);
           return;
         }
+        case MachineFfiError_Tags.MismatchedAccount: {
+          c.writeI32(5);
+          return;
+        }
         default:
           // Throwing from here means that MachineFfiError_Tags hasn't matched an ordinal.
           throw new UniffiInternalError.UnexpectedEnumCase();
@@ -831,6 +869,9 @@ const FfiConverterTypeMachineFfiError = (() => {
           let size = 4;
           size += FfiConverterString.allocationSize(inner.detail);
           return size;
+        }
+        case MachineFfiError_Tags.MismatchedAccount: {
+          return 4;
         }
         default:
           throw new UniffiInternalError.UnexpectedEnumCase();
