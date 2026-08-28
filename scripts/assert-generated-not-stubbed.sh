@@ -92,33 +92,53 @@ fi
 
 # --- Which artifacts are we asserting about? ---------------------------------
 #
-# Committed files only, via `git ls-files`: the build jobs run this on a tree
-# that also holds gradle/CMake output carrying the same header (e.g.
+# Committed files only: the build jobs run this on a tree that also holds
+# gradle/CMake output carrying the same header (e.g.
 # android/build/intermediates/.../proguard.txt), and none of that is an
 # artifact anyone ships or reviews.
 #
-# Selected by the tool's own header in the first 3 lines -- the same convention
-# assert-no-logger.sh uses to EXCLUDE generated files -- so a future generated
-# file is covered automatically without editing a list here. Three lines is
-# tight enough that this package's hand-written files which legitimately name
-# the tool further down (README.md line 24, scripts/codegen.sh line 19,
-# package.json line 46) are not selected.
-GENERATED=$(git ls-files -- "$PKG" | while read -r f; do
-  if [ -f "$f" ] && awk '
-    NR <= 3 && /uniffi-bindgen-react-native/ { found = 1 }
-    NR > 3 { exit }
-    END { exit(found ? 0 : 1) }
-  ' "$f" 2>/dev/null; then
-    echo "$f"
-  fi
-done)
+# The enumeration used to live here, selecting files by the tool's own header
+# in their first 3 lines. It now comes from scripts/generated-file-set.sh,
+# which requires that header oracle and scripts/generated-paths.txt to agree
+# in both directions before it will answer at all. That is not a refactor: it
+# is the fix for a hole this gate had.
+#
+# THE HOLE. Hollowing a non-required artifact WITH its header intact failed,
+# correctly, on the check below. Hollowing the same artifact and also
+# STRIPPING its header passed -- because the file then stopped being
+# enumerated at all, and the set silently went 19 -> 18. Reproduced on
+# ios/MatrixCrypto.mm, both directions, 2026-08-28. The edit that hollows the
+# file was the same edit that disarmed the check meant to catch it, and the
+# only floor was zero. The cross-check catches it from the other side: the
+# file is still under a listed generated path, so it is still expected to
+# carry the header, and its absence is now a failure with its own message.
+GENERATED=$(./scripts/generated-file-set.sh)
 
 if [ -z "${GENERATED//[[:space:]]/}" ]; then
   echo "FAIL: refusing to pass having scanned nothing."
-  echo "      No committed file under $PKG carries a"
-  echo "      uniffi-bindgen-react-native header in its first 3 lines, which"
-  echo "      means the enumeration broke rather than that the generated code"
-  echo "      is fine."
+  echo "      scripts/generated-file-set.sh named no committed generated file,"
+  echo "      which means the enumeration broke rather than that the generated"
+  echo "      code is fine."
+  exit 1
+fi
+
+# And a floor above zero, pinned rather than printed.
+#
+# The count was reported on success and compared with nothing, so a set that
+# shrank said so in a passing log and nowhere else. Same discipline as
+# run-probe-on-emulator.sh's hardcoded `PROBE_SUMMARY 12/12`: when the Rust
+# surface grows an artifact, CI fails until someone comes here and changes
+# this number on purpose.
+EXPECTED_ARTIFACTS=19
+
+ARTIFACT_COUNT=$(printf '%s\n' "$GENERATED" | grep -c .)
+if [ "$ARTIFACT_COUNT" -ne "$EXPECTED_ARTIFACTS" ]; then
+  echo "FAIL: $ARTIFACT_COUNT committed generated artifacts, but this gate"
+  echo "      expects exactly $EXPECTED_ARTIFACTS."
+  printf '%s\n' "$GENERATED" | sed 's/^/        /'
+  echo "      A set that changed size is either a real change to what the"
+  echo "      generator emits -- in which case update EXPECTED_ARTIFACTS here,"
+  echo "      deliberately -- or an artifact that quietly left the tree."
   exit 1
 fi
 
@@ -263,21 +283,38 @@ if [ -z "${EXPORTED//[[:space:]]/}" ]; then
 fi
 
 # UniFFI renames snake_case Rust functions to camelCase TypeScript ones.
+#
+# EXPORTED, not merely MENTIONED. This was `grep -qwF "$camel"` over the whole
+# file, which a comment satisfies: the bindings reduced to their 3-line header
+# plus one comment line listing all eleven camelCase names passed this gate
+# outright, 19 artifacts and all (reproduced 2026-08-28). The file was four
+# lines long and every check here was happy. What has to be true is that the
+# name is DECLARED and EXPORTED, so the pattern anchors on the export keyword
+# and a declaration keyword.
+#
+# Whitespace-tolerant in the same spirit as the greps above, since this gate
+# reads whatever a build job left behind. `export const` and `export let` are
+# accepted alongside `function` because ubrn renders some of the surface as
+# consts (every generated record type is an `export const`), and a future
+# non-async free function would be `export function`.
 MISSING=""
 for name in $EXPORTED; do
   camel=$(echo "$name" | awk -F_ '{ out=$1; for (i=2;i<=NF;i++) out = out toupper(substr($i,1,1)) substr($i,2); print out }')
-  if ! grep -qwF "$camel" "$PKG/src/generated/$NAMESPACE.ts"; then
+  if ! grep -qE "^[[:space:]]*export[[:space:]]+(async[[:space:]]+)?(function|const|let|var)[[:space:]]+${camel}\b" \
+      "$PKG/src/generated/$NAMESPACE.ts"; then
     MISSING="${MISSING:+$MISSING
 }$name -> $camel"
   fi
 done
 if [ -n "$MISSING" ]; then
-  echo "FAIL: the generated TypeScript bindings do not name every function"
+  echo "FAIL: the generated TypeScript bindings do not EXPORT every function"
   echo "      exported from $FFI_LIB:"
   echo "$MISSING"
+  echo "      A name appearing in a comment does not count; the binding has to"
+  echo "      be declared and exported."
   echo "      Regenerate with 'yarn --cwd $PKG codegen' and commit the result."
   exit 1
 fi
 
-COUNT=$(printf '%s\n' "$GENERATED" | awk 'END { print NR }')
-echo "PASS: generated code is not stubbed ($COUNT artifacts, namespace '$NAMESPACE')"
+echo "PASS: generated code is not stubbed ($ARTIFACT_COUNT artifacts, asserted,"
+echo "      namespace '$NAMESPACE')"
