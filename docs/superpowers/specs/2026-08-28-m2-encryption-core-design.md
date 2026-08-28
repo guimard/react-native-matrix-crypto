@@ -471,8 +471,10 @@ developer on macOS building both platforms matches every filter, so the resolver
 cannot thin the download for the common case. The fallback helps only a project that
 ships to one platform, which is not the case worth optimising for.
 
-**Decision, in priority order. Step 1 was taken, measured, and closed the gate;
-steps 2 and 3 are therefore not needed and were not attempted.**
+**Decision, in priority order. Step 1 was taken, measured, and closed the gate.**
+Step 2 was taken afterward, for a different reason than the gate: not because the
+size budget still needed it, but because the file it drops turned out to have no
+consumer at all. Step 3 remains not needed and was not attempted.
 
 1. **Build the Rust as a `cdylib` per Android ABI instead of a `staticlib`.** ✅ Done.
    A static archive carries every object file including unreferenced ones; a linked,
@@ -496,30 +498,46 @@ steps 2 and 3 are therefore not needed and were not attempted.**
    M2. The store dependency added 79 MB. So `cdylib` did not merely close a gap that
    already existed; it absorbed M2's own growth as well.
 
-2. **Drop the root `react-native-matrix-crypto-release.aar`.** Not needed for the size
-   gate, which step 1 already closed, so it was retained. **Open, and it should not
-   stay open long.** The M2 final review established that the file has no consumer at
-   all: React Native autolinking includes `android/build.gradle` as a Gradle
-   subproject and builds the module from source, and no gradle file, podspec or
-   `CMakeLists.txt` in this repository names the archive. The README had meanwhile
-   grown a rationale for it, "for a consumer who would rather not build from source at
-   all", describing a mechanism that does not exist, and two release assertions had
-   been built on that sentence: both required the file, one citing the README as its
-   reason. The sentence and both requirements are withdrawn.
+2. **Drop the root `react-native-matrix-crypto-release.aar`.** ✅ Done. Not needed for
+   the size gate, which step 1 already closed, so it was retained past that point --
+   until the M2 final review established that the file has no consumer at all: React
+   Native autolinking includes `android/build.gradle` as a Gradle subproject and
+   builds the module from source, and no gradle file, podspec or `CMakeLists.txt` in
+   this repository names the archive. The README had meanwhile grown a rationale for
+   it, "for a consumer who would rather not build from source at all", describing a
+   mechanism that does not exist, and two release assertions had been built on that
+   sentence: both required the file, one citing the README as its reason. That review
+   withdrew the sentence and both requirements, and left the file itself in place,
+   recording dropping it as an open packaging decision.
 
-   What that leaves is a packaging decision rather than a documentation one, so it is
-   recorded here rather than taken in a fix round. On the first complete
-   cross-platform pack the archive is 29068 KB of 219772 KB unpacked, 13 percent of
-   the artifact, duplicating the four per-ABI `.so` files that `android/` already
-   ships; and producing it costs the release a JDK setup and a full Gradle
-   `assembleRelease`, since `ubrn build android` does not emit one. Dropping `*.aar`
-   from `package.json`'s `files` and removing that build step is the whole change. The
-   argument for keeping it is that an `.aar` is the conventional Android library
-   format and a brownfield consumer outside autolinking could in principle use one --
-   but no document says how, nothing tests that path, and by this repository's own
-   standard for gates ("a gate nobody has watched fail is not known to work") a
-   distribution path nobody has ever consumed is not known to work either. Shipping an
-   untested one for a cryptographic library is worse than shipping none.
+   That decision is now taken, in this cleanup. `*.aar` is dropped from
+   `package.json`'s `files`, and `release.yml`'s Android leg no longer runs the Gradle
+   `assembleRelease` step that produced one, nor the JDK setup that step needed --
+   both existed only to satisfy the README sentence and the two assertions above, and
+   both were already gone. The argument for keeping it was that an `.aar` is the
+   conventional Android library format and a brownfield consumer outside autolinking
+   could in principle use one. Weighed and rejected: no document said how, nothing
+   tested that path, and by this repository's own standard for gates ("a gate nobody
+   has watched fail is not known to work") a distribution path nobody has ever
+   consumed is not known to work either. Shipping an untested one for a cryptographic
+   library is worse than shipping none.
+
+   Measured before and after on a real pack, the same built binaries on disk both
+   times, nothing else changed:
+
+   | | packed KB | unpacked KB | `.aar` in tarball |
+   |---|---:|---:|---:|
+   | with it (`release-pack-complete-ios-3-arch-android-4-abi`) | 94272 | 219772 | yes |
+   | without it (`release-pack-aar-dropped-from-files`) | 65288 | 190717 | no |
+
+   30.7% smaller packed, 13.2% smaller unpacked -- matching the 13 percent of the
+   unpacked artifact the file was measured at going in. `xcframeworkKB` is unchanged
+   (152128 both times), confirming the drop touched nothing on the iOS side.
+   `scripts/assert-tarball-ships-binaries.sh` and `scripts/cold-consume-tarball.sh`
+   already tolerated the file's absence, from the same review that withdrew the
+   README sentence; this run is what proved that on a real pack rather than a
+   synthetic one. Full detail:
+   `.superpowers/sdd/2026-08-28-m2-encryption-core/aar-removal-report.md`.
 3. **Split per-platform packages, installed explicitly rather than resolved
    automatically.** Not needed. Retained as the fallback if a later milestone's
    dependencies push the tarball back over the gate.
