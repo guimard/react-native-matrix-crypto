@@ -55,18 +55,18 @@ export const FLOW_STEPS: FlowStep[] = [
   {
     id: 'identity',
     title: '5. Real cryptography',
-    call: "import { getDeviceIdentityKeys } from 'react-native-matrix-crypto';\n\nconst keys = await getDeviceIdentityKeys(\n  '@alice:example.org',\n  'DEVICE1',\n);",
+    call: "import { createCryptoMachine, getDeviceIdentityKeys } from 'react-native-matrix-crypto';\n\nawait createCryptoMachine({\n  userId: '@alice:example.org',\n  deviceId: 'DEVICE1',\n  storePath, // from this app's own native code\n  storePassphrase,\n});\n\nconst keys = await getDeviceIdentityKeys(\n  '@alice:example.org',\n  'DEVICE1',\n);",
     crosses:
-      'Rust builds a real device crypto machine in memory for this user and device, and returns its actual public Curve25519 and Ed25519 identity keys -- 32 raw bytes each, base64-encoded. Not placeholders.',
-    why: 'Everything before this line was plumbing. This is the first genuine cryptographic value in the flow.',
+      "Rust opens a real, passphrase-encrypted crypto store on disk, builds this device's crypto machine on top of it, and returns that machine's actual public Curve25519 and Ed25519 identity keys -- 32 raw bytes each, base64-encoded. Not placeholders, and not a throwaway machine either: these are the keys everything else on this screen encrypts and decrypts with.",
+    why: "Everything before this line was plumbing. This is the first genuine cryptographic value in the flow. The store path comes from this app's own native code, not from the library: a crypto library that picks its own on-disk location writes somewhere the product did not agree to.",
   },
   {
     id: 'notYet',
     title: '6. Not implemented yet -- on purpose',
-    call: "import { asCryptoScopeId, encryptEvent } from 'react-native-matrix-crypto';\n\nawait encryptEvent(\n  asCryptoScopeId('!crypto-demo:example.org'),\n  'm.room.message',\n  { body: 'hello' },\n);",
+    call: "import { getDeviceStatuses } from 'react-native-matrix-crypto';\n\nawait getDeviceStatuses('@alice:example.org');",
     crosses:
       'Nothing crosses to native code at all. The facade rejects before making a call, with a typed not_implemented error.',
-    why: "Ten more functions in this library's product surface share this shape: final, compiling types with the implementation still to come. Shown as a feature, not a gap -- product code can be written against the real shape today, and starts working the moment the native side lands.",
+    why: "Five more functions in this library's product surface share this shape: final, compiling types with the implementation still to come. Shown as a feature, not a gap -- product code can be written against the real shape today, and starts working the moment the native side lands. This card used to demonstrate encryptEvent; that one now works, which the diagnostics below prove on this device, so the example moved to a function still genuinely waiting on trust establishment.",
   },
   {
     id: 'layers',

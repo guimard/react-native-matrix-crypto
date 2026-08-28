@@ -1,14 +1,15 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import {
-  asCryptoScopeId,
-  encryptEvent,
+  createCryptoMachine,
   getDeviceIdentityKeys,
+  getDeviceStatuses,
   isCryptoError,
   onCryptoSignal,
   runProbe,
   type Unsubscribe,
 } from 'react-native-matrix-crypto'
+import { DEMO_DEVICE_ID, DEMO_USER_ID, demoMachineConfig } from './cryptoConfig'
 import { FLOW_STEPS, type FlowStep } from './steps'
 
 /**
@@ -29,12 +30,6 @@ import { FLOW_STEPS, type FlowStep } from './steps'
  * exist. Removing every button from this file would not change what
  * appears on first launch.
  */
-
-// Deliberately fictional Matrix identifiers, `example.org`-shaped, so they
-// read as illustrative rather than as configuration for any real server.
-const DEMO_USER_ID = '@alice:example.org'
-const DEMO_DEVICE_ID = 'DEVICE1'
-const DEMO_SCOPE = '!crypto-demo:example.org'
 
 type OutcomeStatus = 'pending' | 'ok' | 'unexpected'
 
@@ -65,6 +60,13 @@ type Commit = (id: FlowStep['id'], outcome: Outcome) => void
 interface RunContext {
   unsubscribe: Unsubscribe | null
   probeSignals: string[]
+  /**
+   * The writable directory this app's own native code supplied (see
+   * App.tsx). Step 5 needs it: the crypto machine is what holds this
+   * device's identity keys, and creating one needs somewhere to put its
+   * store.
+   */
+  storeDir: string
 }
 
 function bytesToText(bytes: Uint8Array): string {
@@ -150,8 +152,18 @@ async function runTypedError(_ctx: RunContext, commit: Commit): Promise<void> {
 }
 
 // Step 5: real cryptography.
-async function runIdentity(_ctx: RunContext, commit: Commit): Promise<void> {
+//
+// `createCryptoMachine` first, and with the identity `cryptoConfig` holds
+// for the whole app: M2 changed what `getDeviceIdentityKeys` reads. It used
+// to mint a throwaway machine per call; it now reports the live machine's
+// own keys, and refuses a caller who names a different user or device than
+// that machine holds. Creating the machine here is safe alongside
+// ProbeHarness doing the same: the library holds one machine per process
+// and documents a second create with a matching configuration as resolving
+// against the existing one.
+async function runIdentity(ctx: RunContext, commit: Commit): Promise<void> {
   try {
+    await createCryptoMachine(demoMachineConfig(ctx.storeDir))
     const keys = await getDeviceIdentityKeys(DEMO_USER_ID, DEMO_DEVICE_ID)
     const wellFormed = keys.curve25519.length === 43 && keys.ed25519.length === 43
     commit('identity', {
@@ -167,9 +179,15 @@ async function runIdentity(_ctx: RunContext, commit: Commit): Promise<void> {
 }
 
 // Step 6: deliberately triggers the not-implemented path.
+//
+// `getDeviceStatuses`, not `encryptEvent`: M2 implemented encryption, so
+// this step's whole point -- a final type whose behaviour is scheduled
+// rather than missing -- moved to a function that is still waiting for M3.
+// Left pointing at `encryptEvent`, this card would have claimed something
+// untrue about the shipped surface on every launch.
 async function runNotYet(_ctx: RunContext, commit: Commit): Promise<void> {
   try {
-    await encryptEvent(asCryptoScopeId(DEMO_SCOPE), 'm.room.message', { body: 'hello' })
+    await getDeviceStatuses(DEMO_USER_ID)
     commit('notYet', { status: 'unexpected', headline: 'Unexpected: resolved instead of rejecting' })
   } catch (e) {
     const kind = isCryptoError(e) ? e.kind : undefined
@@ -277,7 +295,7 @@ function StepCard({
   )
 }
 
-export function GuidedFlow() {
+export function GuidedFlow({ storeDir }: { storeDir: string }) {
   const [outcomes, setOutcomes] = useState<Partial<Record<FlowStep['id'], Outcome>>>({})
   // Starts true: the automatic run below begins the instant this component
   // mounts, before any button could possibly be pressed. This flag only
@@ -286,7 +304,15 @@ export function GuidedFlow() {
   // subscription in ctxRef.
   const [busy, setBusy] = useState(true)
   const mountedRef = useRef(true)
-  const ctxRef = useRef<RunContext>({ unsubscribe: null, probeSignals: [] })
+  const ctxRef = useRef<RunContext>({ unsubscribe: null, probeSignals: [], storeDir })
+
+  // Declared before the run effect below, so a `storeDir` that changed
+  // between renders reaches the context before anything reads it. The ref's
+  // initial value already carries the mount-time one; this only keeps a
+  // later change from being missed, without mutating a ref during render.
+  useEffect(() => {
+    ctxRef.current.storeDir = storeDir
+  }, [storeDir])
 
   const commit = useCallback<Commit>((id, outcome) => {
     if (!mountedRef.current) return

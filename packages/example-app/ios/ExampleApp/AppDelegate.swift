@@ -23,9 +23,26 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     window = UIWindow(frame: UIScreen.main.bounds)
 
+    // The one thing JavaScript cannot work out for itself: a directory this
+    // process may write to. `createCryptoMachine` needs one, the library
+    // deliberately chooses none (a crypto library that picks its own on-disk
+    // location writes somewhere the product did not agree to), and React
+    // Native exposes no path API. So the platform's own answer travels to
+    // the root component as an initial property -- see App.tsx. This is the
+    // example app's own native code doing it: no dependency was added, and
+    // nothing was added to the library.
+    //
+    // Empty rather than a fallback path if the search somehow returns
+    // nothing: App.tsx turns that into a failing probe step, which is the
+    // honest outcome. Inventing a path here would move the failure to
+    // somewhere nobody agreed to write.
+    let storeDir = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true)
+      .first ?? ""
+
     factory.startReactNative(
       withModuleName: "ExampleApp",
       in: window,
+      initialProperties: ["storeDir": storeDir],
       launchOptions: launchOptions
     )
 
