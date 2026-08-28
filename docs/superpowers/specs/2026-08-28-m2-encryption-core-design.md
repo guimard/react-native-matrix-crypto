@@ -198,8 +198,16 @@ point: a store crate at a different version would pull a second, independently
 versioned `ruma` into the tree, and the dependency comment in
 `rust/matrix-crypto-core/Cargo.toml` exists precisely to prevent that.
 
-The crate is feature-gated, and `crypto-store` with `default-features = false` is the
-minimal configuration that provides a crypto store.
+The crate is feature-gated. The configuration is `default-features = false` with
+`crypto-store` and `bundled`.
+
+`bundled` compiles SQLite from source instead of linking a system one. It is not
+optional on mobile: Android's NDK sysroot provides no `libsqlite3` to link against, so
+without it every Android target fails at link time with
+`ld.lld: error: unable to find library -lsqlite3`. Beyond linking, a cryptographic
+store whose on-disk format depends on whichever SQLite the host happens to ship is a
+portability and reproducibility problem. It costs roughly a megabyte of binary, which
+§9's measurements leave ample room for.
 
 **Corrected during implementation.** This section first claimed that `matrix-sdk-base`
 enters only if you enable more than `crypto-store`. That is false. The published
@@ -312,26 +320,36 @@ developer on macOS building both platforms matches every filter, so the resolver
 cannot thin the download for the common case. The fallback helps only a project that
 ships to one platform, which is not the case worth optimising for.
 
-**Decision, in priority order.**
+**Decision, in priority order. Step 1 was taken, measured, and closed the gate;
+steps 2 and 3 are therefore not needed and were not attempted.**
 
-1. **Build the Rust as a `cdylib` per Android ABI instead of a `staticlib`, if it
-   works.** This attacks the dominant term directly rather than moving it between
-   packages. A static archive carries every object file including unreferenced ones;
-   a linked, stripped shared library carries what survived. The module's C++ JSI
-   adapter would link against the `.so` dynamically, and both land in the APK. It is
-   investigated with a measurement before any packaging change is designed on top of
-   it, and not before then: it blocks no cryptographic work, so sequencing it ahead of
-   the milestone's substance would delay M2 for a question M2 does not depend on.
-2. **Drop the root `react-native-matrix-crypto-release.aar`,** 30604 KB, if step 1
-   does not close the gap. The project's own `android/README.md` describes it as a
-   separate convenience artifact that nothing autolinks against, which makes it the
-   one genuinely redundant shipped component. Removing it is a packaging change with a
-   consumer-visible consequence and does not happen silently.
+1. **Build the Rust as a `cdylib` per Android ABI instead of a `staticlib`.** ✅ Done.
+   A static archive carries every object file including unreferenced ones; a linked,
+   stripped shared library carries what survived. ubrn expresses this as
+   `android.useSharedLibrary` in `ubrn.config.yaml`, which drives the generated
+   `CMakeLists.txt` between `STATIC IMPORTED` and `SHARED IMPORTED`, so the switch is
+   a configuration change plus regeneration rather than a hand edit of generated
+   output, and `gate:drift` stays green.
+
+   | configuration | aar KB | tarball KB | `android/` unpacked KB |
+   |---|---:|---:|---:|
+   | staticlib, measured after M2's store landed | 44060 | 263523 | 656809 |
+   | cdylib, same source, same features, four ABIs | 23236 | **67555** | 24958 |
+
+   The tarball falls 74.4% and the `jniLibs` component 96.2%, to 44% of the gate.
+   Verified with the example app's own `./gradlew :app:assembleDebug`, the real
+   autolinking path a consumer takes, rather than a bare `cargo build`; the resulting
+   APK carries both `libmatrix_crypto_ffi.so` and `libreact-native-matrix-crypto.so`.
+
+   Worth recording: the staticlib row is 263523 KB, not the 184608 KB measured before
+   M2. The store dependency added 79 MB. So `cdylib` did not merely close a gap that
+   already existed; it absorbed M2's own growth as well.
+
+2. **Drop the root `react-native-matrix-crypto-release.aar`,** 23236 KB. Not needed.
+   Retained.
 3. **Split per-platform packages, installed explicitly rather than resolved
-   automatically.** The consumer adds `react-native-matrix-crypto` plus the platform
-   packages they build for. This works where `optionalDependencies` does not, at the
-   cost of an install step the consumer must know about. It is the fallback, not the
-   plan.
+   automatically.** Not needed. Retained as the fallback if a later milestone's
+   dependencies push the tarball back over the gate.
 
 Whatever lands, `measure-artifacts.sh` must be corrected first so `tarballKB` states
 what it actually contains. A gate whose metric nobody trusts is worse than no gate,
