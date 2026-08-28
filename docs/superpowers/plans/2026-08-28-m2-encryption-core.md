@@ -787,13 +787,26 @@ git commit -m "feat(core): Ingest sync changes into the crypto machine"
 
 ---
 
-## Task 5: Encrypt
+## Task 5: Encrypt, and hand the product what it must send
 
 **Files:**
 - Modify: `rust/matrix-crypto-core/src/session.rs`, `rust/matrix-crypto-core/src/lib.rs`
 
 **Interfaces:**
 - Produces: `pub async fn encrypt_event(scope: &str, event_type: &str, payload_json: &str) -> Result<Envelope, SessionError>` where `pub struct Envelope { pub scope: String, pub algorithm: String, pub event_type: String, pub ciphertext: Vec<u8>, pub sender: String }`.
+- Produces: `pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionError>` and `pub async fn mark_request_sent(id: &str, response_json: &str) -> Result<(), SessionError>` where `pub struct OutgoingRequest { pub id: String, pub kind: String, pub body: String }`.
+
+**Read spec §3bis before starting.** The outbound pump is not an extra; it is why any
+of this reaches another device. `share_room_key` returns to-device requests, and
+`outgoing_requests()` (`matrix-sdk-crypto-0.18.0/src/machine/mod.rs:535`) yields device
+key uploads, one-time key uploads and key queries. A machine whose requests are never
+taken and never marked sent encrypts to nobody and never publishes its own keys. The
+first draft of this task discarded them, which would have produced software that
+passes every in-process test and cannot interoperate with anything.
+
+`mark_request_as_sent` is at `machine/mod.rs:602` and takes a `&TransactionId` plus a
+response. The `id` crossing the boundary is that transaction id as a string, handed
+back verbatim.
 
 The scope string parses to an `OwnedRoomId` inside this function. That name appears in no public identifier, which is exactly what the agility design buys.
 
@@ -843,7 +856,39 @@ pub async fn share_scope_key(scope: &str, users: &[String]) -> Result<(), Sessio
 
 It parses the scope, parses each user id, and calls
 `machine.share_room_key(&scope, users.iter().map(AsRef::as_ref), EncryptionSettings::default())`
-(signature at `matrix-sdk-crypto-0.18.0/src/machine/mod.rs:1239`). The returned `Vec<Arc<ToDeviceRequest>>` is what a product would send to its homeserver; M2 returns the count and leaves transport out, per spec §1.
+(signature at `matrix-sdk-crypto-0.18.0/src/machine/mod.rs:1239`). The returned `Vec<Arc<ToDeviceRequest>>` must be queued for `take_outgoing_requests` to hand out, **not discarded**: it is the session key on its way to the recipient's devices.
+
+Then the pump itself. `take_outgoing_requests` calls `machine.outgoing_requests()` and serialises each into the flat `{ id, kind, body }` shape; `mark_request_sent` parses the id back into a `TransactionId` and calls `machine.mark_request_as_sent`. Neither interprets the JSON.
+
+Add a test that proves the pump is load-bearing rather than decorative:
+
+```rust
+/// A fresh machine has device keys and one-time keys nobody has seen. If the
+/// pump were decorative, this would return nothing and the device would be
+/// invisible to every other client on the homeserver.
+#[test]
+fn a_fresh_machine_has_keys_waiting_to_be_uploaded() {
+    let requests = futures::executor::block_on(async {
+        crate::machine::create_machine(test_config()).await.unwrap();
+        take_outgoing_requests().await
+    })
+    .unwrap();
+
+    assert!(!requests.is_empty(), "a new device must have keys to publish");
+    assert!(requests.iter().any(|r| r.kind == "keys_upload"));
+}
+
+/// Sharing a scope key must produce something to send. A silent success here
+/// is the failure mode that passes every in-process test and cannot
+/// interoperate with anything.
+#[test]
+fn sharing_a_scope_key_produces_a_request_to_send() {
+    let before = /* count after draining the initial key upload */;
+    share_scope_key("!s:example.org", &["@bob:example.org"]).await.unwrap();
+    let after = futures::executor::block_on(take_outgoing_requests()).unwrap();
+    assert!(after.len() > before, "the session key must leave the process");
+}
+```
 
 Then `encrypt_event`, which calls
 `machine.encrypt_room_event_raw(&scope, event_type, &Raw::from_json_string(payload_json.to_owned())?)`
@@ -917,8 +962,8 @@ Same shape as Task 3: mirror with destructuring, exhaustive `match` with no wild
 - Modify: `rust/matrix-crypto-ffi/src/lib.rs`, `packages/react-native-matrix-crypto/src/facade.ts`, `packages/react-native-matrix-crypto/src/errors.ts`
 - Regenerate: both `generated/` directories
 
-- [ ] **Step 1: Mirror `Envelope`, `SyncOutcome` and `SessionError`**
-- [ ] **Step 2: Export `receive_sync_changes`, `encrypt_event`, `decrypt_event`, `share_scope_key`**
+- [ ] **Step 1: Mirror `Envelope`, `SyncOutcome`, `OutgoingRequest` and `SessionError`**
+- [ ] **Step 2: Export `receive_sync_changes`, `encrypt_event`, `decrypt_event`, `share_scope_key`, `take_outgoing_requests`, `mark_request_sent`**, and add `takeOutgoingRequests` / `markRequestSent` to the facade. These two are additions to the frozen surface, not changes to it.
 - [ ] **Step 3: Regenerate and run `yarn gate:drift`** — Expected: PASS
 - [ ] **Step 4: Apply the destructuring rule at `facade.ts:87`**, which the M1 final review flagged as the one site that does not follow it
 - [ ] **Step 5: Run `yarn --cwd packages/react-native-matrix-crypto test && yarn gate:agility`** — Expected: PASS. The agility gate is the real check here: `Envelope` must not gain a field or type whose name splits into `room`.
@@ -1048,7 +1093,8 @@ The question level 1 cannot answer: does a real Matrix client decrypt what we en
 
 Every line is a spec §10 exit criterion. M2 is not complete until all are checked.
 
-- [ ] Two machines in one test process exchange a group key and each decrypts the other's event
+- [ ] Two machines in one test process exchange a group key and each decrypts the other's event, with the key travelling through `take_outgoing_requests` rather than being handed over directly
+- [ ] A fresh machine yields a key upload request, so the device is discoverable by other clients
 - [ ] A third-party Matrix client decrypts an event this library produced, over a real homeserver
 - [ ] This library decrypts an event that client produced
 - [ ] A session survives a store reopen

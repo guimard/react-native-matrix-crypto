@@ -23,6 +23,12 @@ M2 turns five typed-but-throwing functions into working cryptography:
 | `receiveSyncChanges(syncDelta)` | throws `not_implemented` | feeds `/sync` output into the machine |
 | `encryptEvent(scope, type, payload)` | throws `not_implemented` | returns a real `EventEnvelope` |
 | `decryptEvent(rawEvent)` | throws `not_implemented` | returns the decrypted envelope |
+| `takeOutgoingRequests()` | **new in M2** | returns what the product must send to its homeserver |
+| `markRequestSent(id, response)` | **new in M2** | tells the machine a request was delivered |
+
+The last two are additions to the frozen surface, not changes to it, so no existing
+signature moves. They exist because of §3bis, and without them nothing else here
+works.
 
 Everything else on the facade keeps throwing `not_implemented` and moves to M3:
 `restoreCryptoMachine`, `getDeviceStatuses`, `requestVerification`,
@@ -82,6 +88,51 @@ Consequences the implementation must respect:
 it (`rust/matrix-crypto-core/src/identity.rs:27`). Once a real machine exists, that
 function must read the live machine's keys instead, otherwise it reports keys that
 belong to no session. Changing it is part of M2, not a follow-up.
+
+## 3bis. Outbound requests: the half the first draft of this spec forgot
+
+This section exists because a reconnaissance pass on level 2 interoperability found
+the gap while Task 5 was still unwritten. It is recorded rather than quietly patched,
+because the mistake is instructive: "the bridge does no networking" was silently read
+as "the bridge produces nothing to send", and those are not the same statement.
+
+`OlmMachine` is a state machine with an outbound side. `share_room_key` returns
+`Vec<Arc<ToDeviceRequest>>`, and `outgoing_requests()`
+(`matrix-sdk-crypto-0.18.0/src/machine/mod.rs:535`) yields device key uploads,
+one-time key uploads and key queries. **These are not diagnostics. They are the only
+way a session key reaches another device, and the only way this device's public keys
+reach the homeserver.** A caller that never sends them owns a machine that encrypts
+to nobody, holds keys nobody can find, and never learns that any of it happened.
+
+Discarding them, which the first draft did, would have produced software that passes
+every in-process test and cannot interoperate with anything. Level 1 would stay green
+because the test can hand one machine's output straight to the other. Only level 2
+would have caught it, weeks later, and it would have looked like a cryptography bug
+rather than a missing API.
+
+**The boundary does not move.** The bridge still performs no request. It hands the
+product a description of what to send, and the product, which already owns transport,
+sends it and reports back:
+
+```ts
+interface OutgoingRequest {
+  id: string          // opaque; hand it back verbatim to markRequestSent
+  kind: string        // open tag: 'keys_upload' | 'keys_query' | 'to_device' | (string & {})
+  body: string        // JSON, sent as-is
+}
+
+takeOutgoingRequests(): Promise<OutgoingRequest[]>
+markRequestSent(id: string, responseJson: string): Promise<void>
+```
+
+`kind` is an open tag for the same reason `algorithm` is: the set grows upstream, and
+a consumer must already handle a value it does not recognise. `body` and
+`responseJson` cross as strings the bridge does not interpret. Neither carries
+plaintext.
+
+This is the shape `matrix-sdk-crypto`'s own FFI bindings use, so it is not an
+invention, and it keeps §11's out-of-scope list intact: no network sync, no timeline,
+no transport.
 
 ## 4. The tokio runtime
 
@@ -284,7 +335,11 @@ because it produces confident wrong answers in both directions.
 M2 closes when all of the following hold:
 
 * Two crypto machines in one test process exchange a group key and each decrypts an
-  event the other encrypted.
+  event the other encrypted, with the key travelling through `takeOutgoingRequests`
+  rather than being handed over directly. A test that shortcuts the pump proves the
+  cryptography and hides the gap §3bis describes.
+* A freshly created machine yields a key upload request, so the device is
+  discoverable by other clients rather than invisible.
 * An encrypted event produced by this library is decrypted by a third-party Matrix
   client against a real homeserver, and an event that client produced is decrypted
   here.
