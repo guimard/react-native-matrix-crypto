@@ -22,7 +22,6 @@
     "ios",
     "*.podspec",
     "*.xcframework",
-    "*.aar",
     "LICENSE",
     "README.md",
     "!src/**/*.test.ts",
