@@ -212,6 +212,30 @@ export async function shareScopeKey(scope: CryptoScopeId, userIds: string[]): Pr
  * and discarding what this returns is the mistake section 3bis is named
  * for -- a machine that encrypts to nobody and never learns that any of it
  * happened.
+ *
+ * **The returned array is an unordered set, not a sequence.** Nothing about
+ * a request's position says anything about when it should be sent relative
+ * to the others: the underlying order is lexicographic on each request's own
+ * randomly-generated transaction id, which carries no meaning of its own. A
+ * product must not infer sequencing -- "send index 0 before index 1" -- from
+ * array position.
+ *
+ * **Every request returned here stays outstanding, and will be handed out
+ * again by the next call, until {@link markRequestSent} reports it sent.**
+ * Marking is not optional bookkeeping; it is what advances the underlying
+ * state machine. A product that calls this but never calls
+ * `markRequestSent` will keep receiving the same requests on every
+ * subsequent call, including -- for a to-device request the machine could
+ * not yet deliver -- a stale `m.room_key.withheld` notice sitting alongside
+ * the actual session key, in no reliable order relative to it (measured
+ * across ten runs of the same sequence: six with the notice first, four with
+ * the key first). The measured harm from that specific case is bounded --
+ * that withheld notice carries no scope and no session id of its own, so it
+ * names nothing for a recipient to act on, and a `matrix-sdk-crypto`-based
+ * recipient's own `add_withheld_info` deliberately ignores exactly this
+ * notice kind -- but relying on that is not a substitute for calling
+ * `markRequestSent`: it is the only thing that stops the duplication at the
+ * source.
  */
 export async function takeOutgoingRequests(): Promise<OutgoingRequest[]> {
   try {
@@ -228,6 +252,10 @@ export async function takeOutgoingRequests(): Promise<OutgoingRequest[]> {
  * was sent, handing back the server's raw JSON response so the machine can
  * update its own state. An addition to the frozen surface, not a change to
  * it -- see {@link takeOutgoingRequests}.
+ *
+ * **This call is what stops `id` being handed out again**, not a courtesy
+ * notification after the fact -- see {@link takeOutgoingRequests}'s own doc
+ * comment for what a product observes if it is skipped.
  */
 export async function markRequestSent(id: string, responseJson: string): Promise<void> {
   try {

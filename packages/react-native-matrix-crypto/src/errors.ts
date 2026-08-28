@@ -37,6 +37,12 @@ const BRAND = Symbol.for('react-native-matrix-crypto.CryptoError')
 
 const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   ['Rejected', 'rejected'],
+  // The one entry with no Rust variant, and never will have one: synthesised
+  // in TypeScript by facade.ts:17's `notImplemented` helper for every
+  // still-stubbed function, so it never crosses the FFI boundary at all.
+  // Not dead scaffolding like the `RevokedDevice`/`StoreCorrupt` entries two
+  // reviews found and removed -- this one is reachable today, from every
+  // M3-deferred function.
   ['NotImplemented', 'not_implemented'],
   ['MissingKey', 'missing_key'],
   ['UnsharedSession', 'unshared_session'],
