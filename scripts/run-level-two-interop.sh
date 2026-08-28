@@ -96,9 +96,19 @@ fail() {
 
 # --- teardown, on every path out -------------------------------------------
 
-# Every container this script starts carries this label, which is what makes
-# the sweep below possible.
+# Every container this script starts carries these two labels, which is what
+# makes the sweep below possible: the first says whose it is, the second says
+# when it was started.
 CONTAINER_LABEL=org.linagora.rnmc.level-two-interop
+STARTED_LABEL=org.linagora.rnmc.level-two-interop.started
+
+# How old a labelled container must be before the sweep will remove it.
+# Comfortably longer than this job's own CI timeout of 45 minutes, so a
+# concurrent run of this script -- two shells, or two jobs on one self-hosted
+# runner -- can never have its homeserver killed underneath it. A sweep that
+# removes a live run's container would be a worse bug than the debris it
+# exists to clear.
+STALE_AFTER_SECONDS=7200
 
 CONTAINER=""
 WORKDIR=""
@@ -163,19 +173,32 @@ else
     || fail "the Docker daemon is not reachable. Start it and try again."
   command -v openssl >/dev/null 2>&1 || fail "openssl is not on PATH."
 
-  # The one hole the trap below cannot close: a `kill -9` of this script, or a
+  # The one hole the traps cannot close: a `kill -9` of this script, or a
   # machine losing power, leaves the container running with nothing left to
-  # remove it. So each run first removes any container carrying this label,
-  # which can only be debris from exactly that. A homeserver holding a
-  # loopback port for the rest of a developer's week is a small thing, but it
-  # is the sort of small thing that makes people stop running a test.
-  STALE=$(docker ps -aq --filter "label=$CONTAINER_LABEL" 2>/dev/null || true)
-  if [ -n "$STALE" ]; then
-    echo "Removing $(printf '%s\n' "$STALE" | wc -l | tr -d ' ') container(s) left by a killed run."
-    # Deliberately word-split: one container id per argument.
-    # shellcheck disable=SC2086
-    docker rm -f $STALE >/dev/null 2>&1 || true
-  fi
+  # remove it. So each run first removes any container carrying this label
+  # that is older than STALE_AFTER_SECONDS, which can only be debris from
+  # exactly that. A homeserver holding a loopback port for the rest of a
+  # developer's week is a small thing, but it is the sort of small thing that
+  # makes people stop running a test.
+  #
+  # Bounded by age rather than swept wholesale, and the age is what matters:
+  # an unbounded sweep would kill the homeserver of a *concurrent* run of this
+  # same script. `docker ps` has no `until` filter (checked -- it is a
+  # `container prune` filter only), so each container records its own start
+  # time in a label and this compares it.
+  NOW=$(date +%s)
+  while read -r stale_id stale_started; do
+    [ -n "$stale_id" ] || continue
+    case "$stale_started" in
+      '' | *[!0-9]*) continue ;;
+    esac
+    [ "$(( NOW - stale_started ))" -gt "$STALE_AFTER_SECONDS" ] || continue
+    echo "Removing a homeserver left behind by a killed run ($stale_id)."
+    docker rm -f "$stale_id" >/dev/null 2>&1 || true
+  done <<EOF
+$(docker ps -a --filter "label=$CONTAINER_LABEL" \
+    --format "{{.ID}} {{.Label \"$STARTED_LABEL\"}}" 2>/dev/null || true)
+EOF
 
   # Generated per run, used once, and destroyed with the container. It is
   # registered with the Actions log masker before it is passed to anything,
@@ -210,7 +233,8 @@ else
       job cannot run, and that is a dependency rather than a defect in this
       library."
 
-  CONTAINER="rnmc-level-two-$$-$(date +%s)"
+  STARTED_AT=$(date +%s)
+  CONTAINER="rnmc-level-two-$$-$STARTED_AT"
   # `--entrypoint` because the image declares the binary as CMD with no
   # ENTRYPOINT, so bare arguments would replace it rather than be passed to
   # it.
@@ -231,6 +255,7 @@ else
   docker run -d \
     --name "$CONTAINER" \
     --label "$CONTAINER_LABEL" \
+    --label "$STARTED_LABEL=$STARTED_AT" \
     -p 127.0.0.1::8008 \
     --tmpfs /db:rw,size=512m \
     --entrypoint /sbin/conduwuit \
