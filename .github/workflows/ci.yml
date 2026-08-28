@@ -100,6 +100,25 @@ jobs:
     # produces, without ever diffing against what is committed -- so on a PR
     # with drifted bindings, this leg would otherwise go green against code
     # that is not what is actually committed.
+    #
+    # IF YOU ADD AN iOS END-TO-END LEG HERE, copy probe-android's assertion.
+    # The rule holds on both platforms: the leg must assert that it FOUND a
+    # `PROBE_SUMMARY n/n` line, exactly one, reading what was expected. It
+    # must never pass because no FAIL line appeared -- an app that crashed on
+    # launch and an app that was never installed both print no FAIL line
+    # either, and reading that absence as success is the failure this
+    # milestone has now found repeatedly.
+    #
+    # Two practical notes for whoever writes it. React Native does forward JS
+    # console output to the iOS system log, at info level under subsystem
+    # com.facebook.react.log, category javascript -- but `log stream` and
+    # `log show` exclude info-level messages unless asked (measured on a
+    # booted iOS 26.5 simulator, 2026-08-28: no level flag, zero PROBE_ lines;
+    # `--level info`, all fourteen including the summary). And it is not built
+    # here because of cost rather than feasibility: a release `ubrn build ios`
+    # plus pod install, xcodebuild, boot, install and launch is roughly an
+    # hour of macos-15 minutes per PR, against ubuntu minutes for
+    # probe-android, which already runs the same chain end to end.
     needs: gates
     runs-on: macos-15
     steps:
