@@ -23,6 +23,17 @@ jobs:
       - run: yarn gate:stubs
       - run: yarn gate:logger
       - run: yarn gate:agility
+      # gate:readme was written on 2026-08-28, added to package.json, and
+      # wired into no workflow at all. It worked, it was never invoked, and
+      # the README's gate table sat under the sentence "Every one of these
+      # runs in CI." while omitting it. A gate that exists and never runs is
+      # the pattern this milestone has now found repeatedly; this one was
+      # added while closing the others.
+      #
+      # It compares the root README against the copy npm publishes. Those two
+      # have already drifted once, in the direction a consumer arriving from
+      # npm would not see.
+      - run: yarn gate:readme
       - run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
       - run: cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
       # gate:boundary already runs matrix-crypto-core's own tests as part of
