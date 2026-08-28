@@ -95,6 +95,8 @@ Verified end to end on an iOS simulator and on an Android emulator: a record rou
 yarn add react-native-matrix-crypto
 ```
 
+A plain `yarn add` always resolves npm's `latest` tag; a prerelease version such as `0.1.0-rc.1` publishes only under its own tag, so installing one on purpose takes `yarn add react-native-matrix-crypto@rc` and a bare `yarn add` can never get one by accident.
+
 **No Rust toolchain is required.** The published package ships prebuilt binaries: an `.xcframework` for iOS, and for Android a prebuilt Rust library per ABI under `android/src/main/jniLibs/`, which this module's `CMakeLists.txt` links when your app autolinks it and builds its C++ from source. `yarn add` is all you need.
 
 Two different checks stand behind that sentence, and they establish different things.
@@ -336,9 +338,9 @@ If you add a gate, add the step that proves it fails on a real violation. A gate
 
 ### Releasing
 
-A release is a git tag. Pushing `v0.1.0` runs `.github/workflows/release.yml`, which calls the entire pull request workflow first — every gate above, both build legs, the emulator probe and the interoperability proof — then builds the full cross compile matrix for both platforms, packs one tarball, asserts that tarball really contains the prebuilt binaries, installs those same bytes with `cargo` and `rustc` scrubbed out of `PATH` and loads the module out of them, and only then publishes, with provenance. It publishes the exact tarball it checked rather than repacking, so there is no gap between what was verified and what is uploaded.
+A release is a git tag. Pushing `v0.1.0-rc.1` runs `.github/workflows/release.yml`, which calls the entire pull request workflow first — every gate above, both build legs, the emulator probe and the interoperability proof — then builds the full cross compile matrix for both platforms, packs one tarball, asserts that tarball really contains the prebuilt binaries, installs those same bytes with `cargo` and `rustc` scrubbed out of `PATH` and loads the module out of them, and only then publishes, with provenance and under the correct npm distribution tag. It publishes the exact tarball it checked rather than repacking, so there is no gap between what was verified and what is uploaded.
 
-Three things stop the run before anything is built: a tag that disagrees with the version in `packages/react-native-matrix-crypto/package.json`, a version already on the registry, and a missing `NPM_TOKEN` repository secret. Each says so by name.
+Four things stop the run before anything is built: a tag that disagrees with the version in `packages/react-native-matrix-crypto/package.json`, an npm distribution tag that disagrees with what that version implies (a prerelease reaching `latest`, or a plain version reaching anything else), a version already on the registry, and a missing `NPM_TOKEN` repository secret. Each says so by name.
 
 You can rehearse the publish without publishing and without a token:
 
@@ -346,7 +348,7 @@ You can rehearse the publish without publishing and without a token:
 ./scripts/rehearse-publish.sh
 ```
 
-That packs the package exactly as the release workflow packs it, runs the same assertion on the packed bytes, and finishes with `npm publish --dry-run`, which prints the file list npm would upload and uploads nothing. It needs the binaries on disk; its header carries the two `ubrn build` invocations that produce them, and if any are missing it names precisely which. To rehearse the other half, `./scripts/assert-release-ready.sh v0.1.0`.
+That packs the package exactly as the release workflow packs it, runs the same assertion on the packed bytes, and finishes with `npm publish --dry-run --tag <tag>`, which prints the file list npm would upload and the distribution tag it would publish under, and uploads nothing. It needs the binaries on disk; its header carries the two `ubrn build` invocations that produce them, and if any are missing it names precisely which. To rehearse the other half, `./scripts/assert-release-ready.sh v0.1.0-rc.1 rc`.
 
 The release assertions are deliberately not `gate:*` scripts. `gate:readme` requires every `gate:*` to run as a step in `ci.yml`, and these two need an artifact with binaries in it, which a pull request never has.
 
