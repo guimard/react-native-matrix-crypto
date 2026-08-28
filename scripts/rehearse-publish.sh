@@ -5,8 +5,9 @@ set -euo pipefail
 #
 #   ./scripts/rehearse-publish.sh
 #
-# Packs the package exactly as the release workflow packs it, runs the same
-# assertion the release workflow runs on the packed bytes, and then runs
+# Checks the tree the way the release workflow checks it, packs the package
+# exactly as the release workflow packs it, runs the same assertion the
+# release workflow runs on the packed bytes, and then runs
 # `npm publish --dry-run` on that tarball so you can read the file list npm
 # would upload. It needs no npm token, no tag, and no write access to
 # anything: `--dry-run` does everything except the upload.
@@ -61,7 +62,29 @@ fi
 OUT_DIR="${1:-$(mktemp -d)}"
 mkdir -p "$OUT_DIR"
 
-echo "== 1/3  Packing $NAME@$VERSION into $OUT_DIR"
+echo "== 1/4  Checking the tree this will pack from"
+echo
+# The release workflow runs this immediately after unpacking the two build
+# artifacts, and it runs here for the same reason: it separates "the binaries
+# are not on disk" from "the binaries are on disk and npm will not pack them",
+# which the tarball assertion in step 3 cannot tell apart.
+#
+# It also prints the npm version, which is the one number a local rehearsal
+# most needs to show. A rehearsal is only predictive of CI to the extent the
+# two agree about what `npm pack` includes, and on 2026-08-28 they did not:
+# this script passed on npm 12 while the release failed on the npm 10.9.8 that
+# `actions/setup-node` installs alongside the .nvmrc Node, over a "files"
+# entry the two versions read differently. Neither said which npm it was.
+if ! "$REPO_ROOT/scripts/assert-tree-ships-binaries.sh" "$PKG_DIR"; then
+  echo
+  echo "Nothing was packed. Build the binaries with the two ubrn commands in"
+  echo "the header of this script, or read the message above for why npm"
+  echo "would have dropped ones that are already there."
+  exit 1
+fi
+
+echo
+echo "== 2/4  Packing $NAME@$VERSION into $OUT_DIR"
 cd "$PKG_DIR"
 npm pack --pack-destination "$OUT_DIR" >/dev/null
 TGZ="$OUT_DIR/$(ls -t "$OUT_DIR" | head -1)"
@@ -72,7 +95,7 @@ fi
 echo "   $TGZ ($(du -k "$TGZ" | cut -f1) KB)"
 
 echo
-echo "== 2/3  Asserting the packed bytes carry the prebuilt binaries"
+echo "== 3/4  Asserting the packed bytes carry the prebuilt binaries"
 if ! "$REPO_ROOT/scripts/assert-tarball-ships-binaries.sh" "$TGZ" "$VERSION"; then
   echo
   echo "The tarball above is NOT publishable. If the missing pieces are"
@@ -82,7 +105,7 @@ if ! "$REPO_ROOT/scripts/assert-tarball-ships-binaries.sh" "$TGZ" "$VERSION"; th
 fi
 
 echo
-echo "== 3/3  npm publish --dry-run --tag $NPM_TAG"
+echo "== 4/4  npm publish --dry-run --tag $NPM_TAG"
 echo "   No token is used and nothing is uploaded."
 echo
 npm publish --dry-run --tag "$NPM_TAG" "$TGZ"
@@ -90,7 +113,7 @@ npm publish --dry-run --tag "$NPM_TAG" "$TGZ"
 echo
 echo "Rehearsal complete. Nothing was published."
 echo
-echo "The release workflow (.github/workflows/release.yml) does the same three"
+echo "The release workflow (.github/workflows/release.yml) does the same four"
 echo "steps on a tag push, then publishes THIS tarball -- the same bytes it"
 echo "asserted on -- with --provenance, which only works inside GitHub Actions"
 echo "and is therefore not part of this local rehearsal."

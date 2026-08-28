@@ -20,6 +20,14 @@ name: release
 # been watched rejecting a real defect; see
 # .superpowers/sdd/2026-08-28-m2-encryption-core/release-workflow-report.md.
 #
+# It also checks the tree it is about to pack FROM, in `pack` below, with
+# scripts/assert-tree-ships-binaries.sh. Proving the tarball is what
+# authorises the publish; proving the tree is what makes a failure legible,
+# because "the tarball has no xcframework" is the same sentence whether the
+# untar misfired, npm declined to pack what was there, or something deleted
+# it in between. That distinction is not academic: it is the whole of why the
+# first release attempt (run 33209898397) had to be diagnosed by hand.
+#
 # The gates are NOT re-declared here. `ci` below calls .github/workflows/ci.yml
 # as a reusable workflow, so a release runs the identical job graph a pull
 # request runs -- all seven gates, both build legs, the emulator probe and the
@@ -318,6 +326,21 @@ jobs:
           set -euo pipefail
           tar xzf "$RUNNER_TEMP/dl/ios-xcframework.tgz" -C packages/react-native-matrix-crypto
           tar xzf "$RUNNER_TEMP/dl/android-binaries.tgz" -C packages/react-native-matrix-crypto
+
+      # PROVE THE TREE, before proving the tarball. The step below packs, and
+      # the step after it opens the packed bytes -- which is the check that
+      # can authorise a publish, and the only one that could. But it says
+      # nothing about the tree it was packed from, so when it refuses it names
+      # itself rather than whatever went wrong, and three unrelated faults
+      # reach it looking identical: the untar landing somewhere else, npm
+      # declining to pack what is there, or something in between deleting it.
+      #
+      # Run 33209898397 (v0.1.0-rc.1) was the second of those and cost a tag
+      # to work out. This step separates them: it reads the binaries off disk
+      # first, and only then asks npm what it would pack. See the script's
+      # header for which failure means which.
+      - name: Assert the untar left the binaries where npm pack will look
+        run: ./scripts/assert-tree-ships-binaries.sh
 
       - name: Pack the tarball that will be published
         run: |
