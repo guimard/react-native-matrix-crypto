@@ -46,6 +46,30 @@ react {
     //   captured above instead, avoiding that resolution entirely.
     cliFile = new File(reactNativeNodeModulesDir, "cli.js")
 
+    /* Hermes Commands */
+    //   The same hoisting problem as the three resolutions above, and the one
+    //   that keeps a RELEASE build from working at all in this monorepo.
+    //   The React Native Gradle Plugin looks for the prebuilt Hermes compiler
+    //   at "<react.root>/node_modules/hermes-compiler/hermesc/%OS-BIN%/hermesc"
+    //   (PathUtils.kt, HERMES_COMPILER_NPM_DIR), and `react.root` defaults to
+    //   ../.. -- packages/example-app -- while Yarn hoists `hermes-compiler`
+    //   to the workspace root. RNGP finds nothing there and fails the build
+    //   with "Couldn't determine Hermesc location", naming a path
+    //   (node_modules/react-native/sdks/hermesc/%OS-BIN%/hermesc) that this
+    //   version of React Native does not even use.
+    //
+    //   Only release builds hit it: debug variants skip bundling entirely
+    //   (react.debuggableVariants), so nothing ever asked for hermesc before
+    //   CI needed an installable APK with the JS inside it.
+    //
+    //   `%OS-BIN%` is left in the string deliberately -- RNGP substitutes it
+    //   with osx-bin/linux64-bin/win64-bin itself, so the same line works on
+    //   a developer's mac and on an ubuntu runner.
+    hermesCommand = new File(
+        file(["node", "--print", "require.resolve('hermes-compiler/package.json')"].execute(null, rootDir).text.trim()).parentFile,
+        "hermesc/%OS-BIN%/hermesc",
+    ).toString()
+
     /* Variants */
     //   The list of variants to that are debuggable. For those we're going to
     //   skip the bundling of the JS bundle and the assets. Default is "debug", "debugOptimized".
