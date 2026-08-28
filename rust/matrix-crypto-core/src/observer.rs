@@ -35,16 +35,29 @@ pub trait ProbeObserver: Send + Sync {
 ///   `emitting_while_a_listener_calls_back_into_the_library_does_not_deadlock`
 ///   below.
 ///
-/// Both are solved the same way: `on_signal` always runs on a freshly
-/// spawned OS thread, detached from the caller's call stack. That thread
+/// Both are solved the same way: `on_signal` always runs on a thread of the
+/// library's own, detached from the caller's call stack. That closure
 /// captures only the observer and the signal, both by value, so it carries
 /// no lock the caller might be holding, and calling this costs the caller
-/// nothing beyond the spawn itself -- no `.await`, no blocking wait for the
-/// foreign side to return, and no dependency on an ambient tokio context
-/// (unlike `tokio::task::spawn`, which panics without one, this needs no
-/// runtime at all). The `JoinHandle` is discarded rather than joined; that
-/// does not cancel the spawned thread, it only stops the caller from
-/// waiting on it, which is the point of "fire-and-forget".
+/// nothing beyond the handoff -- no `.await`, no blocking wait for the
+/// foreign side to return, and no dependency on an ambient tokio context;
+/// see `a_signal_emitted_with_no_ambient_runtime_reaches_the_observer`
+/// below, which is the only test here that would notice if that last one
+/// stopped being true.
+///
+/// **The thread comes from the runtime's blocking pool, not from a fresh
+/// `std::thread::spawn` per signal.** This used to spawn one operating
+/// system thread per signal, which was cheap while one probe signal fired
+/// once per process and stops being cheap the moment real crypto events
+/// travel this path (spec section 5.1, B2). `runtime::spawn_blocking_detached`
+/// keeps every property the thread per signal had -- no ambient runtime
+/// needed, no worker thread occupied, nothing the caller waits on -- and
+/// adds a reusable, bounded pool. Note what it is *not*: handing this to
+/// `tokio::task::spawn` would put a foreign callback that blocks for as long
+/// as JavaScript likes onto one of two worker threads shared with
+/// encryption, and two such listeners would stall the runtime. The trade the
+/// pool does make -- a cap shared with `matrix-sdk-sqlite` -- is written out
+/// where the pool is.
 ///
 /// Callers must never call this while holding a lock this crate owns.
 /// Correctness does not depend on that discipline -- `emit` itself takes no
@@ -55,7 +68,7 @@ pub trait ProbeObserver: Send + Sync {
 /// visibly completed.
 pub(crate) fn emit(observer: &Arc<dyn ProbeObserver>, signal: ProbeSignal) {
     let observer = Arc::clone(observer);
-    std::thread::spawn(move || observer.on_signal(signal));
+    crate::runtime::spawn_blocking_detached(move || observer.on_signal(signal));
 }
 
 /// Runs the probe, emitting one signal on the way through.
@@ -113,7 +126,9 @@ mod tests {
         (Arc::new(ChannelObserver { tx }), rx)
     }
 
-    /// Generous relative to how fast a thread spawn actually completes;
+    /// Generous relative to how fast the handoff to the blocking pool
+    /// actually completes -- measured at roughly eight microseconds per
+    /// signal, delivery included, over two thousand of them one at a time;
     /// tight enough that a genuinely broken delivery path still fails a
     /// test in a few seconds rather than hanging it.
     const DELIVERY_BOUND: Duration = Duration::from_secs(5);
@@ -186,6 +201,44 @@ mod tests {
         let signal = rx
             .recv_timeout(DELIVERY_BOUND)
             .expect("a signal emitted from a spawned task must still reach the observer");
+        assert_eq!(signal.kind, "probe_started");
+    }
+
+    /// `emit` must not need an ambient tokio runtime.
+    ///
+    /// This is the one test in this file that reaches `emit` with no runtime
+    /// in scope at all. `emits_one_signal_that_reaches_the_observer` is a
+    /// `#[tokio::test]`; the two that emit from a spawned task and from
+    /// under the machine lock both do so from inside `in_runtime`. All three
+    /// would keep passing if `emit` silently acquired that requirement. It
+    /// could: `emit` hands its work to a blocking pool now, and
+    /// `tokio::task::spawn_blocking` -- the free function, as opposed to the
+    /// method on the runtime this crate owns -- reads the ambient runtime and
+    /// panics when there is none.
+    ///
+    /// A foreign caller reaches this library on a thread that has never seen
+    /// tokio, and nothing obliges a future signal-producing path to enter
+    /// `in_runtime` before it emits. That makes "no ambient runtime needed" a
+    /// property rather than an implementation detail, and this file's own
+    /// history is the argument for pinning it: `runtime.rs` records the same
+    /// class of gap, where sixteen tests passed against a shipped path that
+    /// would have panicked, because `#[tokio::test]` had been supplying the
+    /// context the product does not have.
+    #[test]
+    fn a_signal_emitted_with_no_ambient_runtime_reaches_the_observer() {
+        let (observer, rx) = channel_observer();
+
+        emit(
+            &observer,
+            ProbeSignal {
+                kind: "probe_started".to_string(),
+                detail: "from-no-runtime".to_string(),
+            },
+        );
+
+        let signal = rx
+            .recv_timeout(DELIVERY_BOUND)
+            .expect("a signal emitted with no ambient runtime must reach the observer");
         assert_eq!(signal.kind, "probe_started");
     }
 

@@ -26,6 +26,43 @@ fn runtime() -> &'static Runtime {
     })
 }
 
+/// Runs `work` on this library's blocking pool, and does not wait for it.
+///
+/// Three properties, each of which something in this crate depends on:
+///
+/// - **It needs no ambient runtime.** `tokio::task::spawn_blocking` is a free
+///   function that reads the thread's ambient runtime and panics when there is
+///   none. This reaches the runtime this crate owns directly, so it works from
+///   any thread, including a foreign one that has never seen tokio. That is
+///   the property `observer::emit` inherited from `std::thread::spawn` and
+///   must keep: a signal can be produced on a path a foreign caller drove
+///   without entering `in_runtime` first.
+/// - **It cannot stall the runtime's async work.** The blocking pool is a
+///   different set of threads from the two workers `in_runtime` schedules on,
+///   so work handed here may block for as long as it likes -- and a foreign
+///   callback may block for as long as the foreign side likes -- without
+///   stopping encryption or any other call in flight. Handing the same work to
+///   `spawn` would occupy a worker for its whole duration, and there are two.
+/// - **It is bounded, unlike a thread per call.** Tokio caps the pool (512
+///   threads by default) and reuses idle threads rather than creating one per
+///   task. Past the cap, work queues. That cap is shared rather than ours
+///   alone: `matrix-sdk-sqlite` reaches the same pool through `deadpool-sync`
+///   and `deadpool-runtime`, whose `spawn_blocking` is tokio's, so a caller
+///   that parked hundreds of pool threads would delay the crypto store too.
+///   That is a real trade against a thread per call, which has no shared cap
+///   to exhaust, and it is taken deliberately -- the alternative bound is the
+///   process's own thread table, which fails harder and later.
+pub(crate) fn spawn_blocking_detached<F>(work: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    // Dropped rather than awaited: that is what "detached" means here.
+    // Dropping the handle does not cancel the closure -- a blocking task
+    // handed to the pool runs to completion regardless -- it only stops
+    // anyone from waiting on it.
+    drop(runtime().spawn_blocking(work));
+}
+
 /// Runs `future` inside this library's runtime, so anything it calls sees a
 /// runtime context.
 ///
