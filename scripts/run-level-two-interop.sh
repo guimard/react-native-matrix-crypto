@@ -330,6 +330,27 @@ JSON
       account this script told it to create was not created."
   fi
   echo "Homeserver ready, and the account it was told to create can log in."
+
+  # Continuwuity does not reject a configuration key it does not recognise. It
+  # logs `Config parameter "x" is unknown to conduwuit, ignoring.` and starts
+  # anyway -- so a renamed or misspelled setting above would silently do
+  # nothing, and this script would go on asserting that federation is off and
+  # registration is closed while neither was actually applied. A setting that
+  # looks applied and is not is exactly the shape of defect this repository
+  # keeps finding, so it is checked rather than assumed.
+  #
+  # Only the key names are reproduced, never the log line and never the log:
+  # continuwuity echoes the generated password into its own startup output.
+  IGNORED=$(docker logs "$CONTAINER" 2>&1 \
+    | sed -n 's/.*Config parameter "\([a-z_0-9]*\)" is unknown to conduwuit.*/\1/p' \
+    | sort -u | tr '\n' ' ')
+  if [ -n "$IGNORED" ]; then
+    RUN_FAILED=1
+    fail "the homeserver ignored configuration this script relies on: $IGNORED
+      Continuwuity warns and carries on rather than refusing to start, so these
+      settings did nothing. Either the image moved and the keys were renamed, or
+      one is misspelled above. Fix the names rather than the assertion."
+  fi
 fi
 
 # --- 2. the counterparty's Python ------------------------------------------
