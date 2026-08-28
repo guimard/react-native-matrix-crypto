@@ -287,6 +287,19 @@ is how the machine learns which devices exist, so a product that never calls it 
 encrypt to nobody. That ordering constraint belongs in the facade's documentation,
 not in a runtime check the library cannot correctly make.
 
+**`shareScopeKey` tracks the users it is given.** This was found late, by a review
+noticing that the two-party test had to reach past the public surface to make the other
+party's devices tracked. Upstream's `mark_tracked_users_as_changed`
+(`matrix-sdk-crypto-0.18.0/src/store/mod.rs:291`) skips users the machine has never
+seen, and a sync payload's `changed_devices` routes only there, so nothing in the
+shipped surface could make a user tracked in the first place. A product would have
+called `shareScopeKey`, received no error, and encrypted to nobody.
+
+The alternative was an explicit `trackUsers`. It was rejected: it adds surface, and it
+lets a product omit a call whose absence fails silently. "Share to these users" already
+implies their devices matter, so making it implicit removes a way to hold the API wrong
+rather than documenting one.
+
 `decryptEvent(scope, rawEvent)` returns the decrypted envelope, or rejects with a typed
 error.
 
