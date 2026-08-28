@@ -260,9 +260,10 @@ ships to one platform, which is not the case worth optimising for.
    works.** This attacks the dominant term directly rather than moving it between
    packages. A static archive carries every object file including unreferenced ones;
    a linked, stripped shared library carries what survived. The module's C++ JSI
-   adapter would link against the `.so` dynamically, and both land in the APK. This is
-   the first thing M2's plan investigates, with a measurement, before any packaging
-   change is designed on top of it.
+   adapter would link against the `.so` dynamically, and both land in the APK. It is
+   investigated with a measurement before any packaging change is designed on top of
+   it, and not before then: it blocks no cryptographic work, so sequencing it ahead of
+   the milestone's substance would delay M2 for a question M2 does not depend on.
 2. **Drop the root `react-native-matrix-crypto-release.aar`,** 30604 KB, if step 1
    does not close the gap. The project's own `android/README.md` describes it as a
    separate convenience artifact that nothing autolinks against, which makes it the
