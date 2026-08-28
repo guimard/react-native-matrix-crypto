@@ -59,6 +59,28 @@ fi
 # because the union is open. A Megolm-specific IDENTIFIER is not.
 IDENTIFIERS=$(printf '%s' "$DTS" | sed "s/'[^']*'//g; s/\"[^\"]*\"//g")
 
+# Verify there is actually a public surface to scan. Without this, pointing
+# src/index.ts at an empty surface -- nothing exported, or a module reduced
+# to tsc's own trivial `export {};` marker for one that exports nothing --
+# would make every check below trivially pass: zero violations found
+# because there was nothing to check, indistinguishable from a genuinely
+# clean surface, and this gate would print PASS having scanned nothing at
+# all. The same failure mode assert-no-logger.sh's own scan-root checks
+# guard against for the Rust and TypeScript sides.
+#
+# A bare letter/underscore check is not enough here: `export {};` itself
+# is letters (confirmed empirically -- an emptied src/index.ts still
+# passed the check below when it only tested for that). A colon is the
+# simplest reliable signal that an actual *typed* declaration is present
+# -- a function parameter, an interface member, a typed export -- which
+# `export {};` has none of and every real declaration in this package's
+# public surface does.
+if ! printf '%s' "$IDENTIFIERS" | grep -q ':'; then
+  echo "FAIL: no typed declarations were found in the public surface to scan."
+  echo "      Refusing to pass having scanned nothing at all."
+  exit 1
+fi
+
 # Component-splitting, not a letter-pattern match. \b never fires inside
 # camelCase, so a plain `\bmegolm\b` grep misses `MegolmSession` and
 # `encryptMegolmEvent` entirely -- the normal way TypeScript names things,
