@@ -423,22 +423,53 @@ export async function shareScopeKey(scope: CryptoScopeId, userIds: string[]): Pr
  * product must not infer sequencing -- "send index 0 before index 1" -- from
  * array position.
  *
- * **Every request returned here stays outstanding, and will be handed out
- * again by the next call, until {@link markRequestSent} reports it sent.**
- * Marking is not optional bookkeeping; it is what advances the underlying
+ * **{@link markRequestSent} is not the only thing that ends a request's
+ * life. A later call to this function ends some of them too.** Three of the
+ * kinds handed out here -- `keys_upload`, `keys_query` and `keys_claim` --
+ * are evicted the moment a *subsequent* call hands out a fresh request of
+ * the same kind, whether or not the older one was ever marked sent.
+ * `markRequestSent` then rejects that older id with `unknown_request`.
+ *
+ * That is designed, not a defect, and it is worth knowing why, because
+ * `unknown_request` for an id a product is legitimately holding otherwise
+ * reads as a library bug. Those three requests describe a standing need
+ * ("these keys want uploading", "these users want querying") rather than
+ * one message. `matrix-sdk-crypto` re-derives that need from current state
+ * on every call, mints a new and uncorrelated id for it, and forgets the id
+ * it handed out last. So once a fresh one exists, the older id names
+ * nothing the machine is still waiting to hear about, and the fresh request
+ * in that same batch carries what the older one was for.
+ *
+ * **What a caller must do about it: resolve a batch before drawing the
+ * next.** Drain, send, and `markRequestSent` each response, and only then
+ * call this again. Sending and marking the members of a *single* batch
+ * concurrently is safe, because nothing in one batch evicts another member
+ * of it. What is not safe is a second drain overlapping unresolved requests
+ * from an earlier one: two pumps racing, or a drain on a timer alongside a
+ * drain after a write, will produce `unknown_request` for ids the product
+ * still holds.
+ *
+ * **On `unknown_request` for an id from an earlier batch, do not retry it.**
+ * Discard the response that id was going to carry and pump again. Nothing
+ * is lost: the need was re-derived rather than dropped, and the request that
+ * supersedes it is either already in hand or waiting in the next drain.
+ *
+ * **`to_device`, `signature_upload` and `room_message` ids are never
+ * evicted this way.** Each names one independently deliverable message, so
+ * it stays outstanding until `markRequestSent` resolves it. For every kind,
+ * marking is not optional bookkeeping; it is what advances the underlying
  * state machine. A product that calls this but never calls
- * `markRequestSent` will keep receiving the same requests on every
- * subsequent call, including -- for a to-device request the machine could
- * not yet deliver -- a stale `m.room_key.withheld` notice sitting alongside
- * the actual session key, in no reliable order relative to it (measured
- * across ten runs of the same sequence: six with the notice first, four with
- * the key first). The measured harm from that specific case is bounded --
- * that withheld notice carries no scope and no session id of its own, so it
- * names nothing for a recipient to act on, and a `matrix-sdk-crypto`-based
- * recipient's own `add_withheld_info` deliberately ignores exactly this
- * notice kind -- but relying on that is not a substitute for calling
- * `markRequestSent`: it is the only thing that stops the duplication at the
- * source.
+ * `markRequestSent` keeps being handed the same requests, including -- for
+ * a to-device request the machine could not yet deliver -- a stale
+ * `m.room_key.withheld` notice sitting alongside the actual session key, in
+ * no reliable order relative to it (measured across ten runs of the same
+ * sequence: six with the notice first, four with the key first). The
+ * measured harm from that specific case is bounded -- that withheld notice
+ * carries no scope and no session id of its own, so it names nothing for a
+ * recipient to act on, and a `matrix-sdk-crypto`-based recipient's own
+ * `add_withheld_info` deliberately ignores exactly this notice kind -- but
+ * relying on that is not a substitute for calling `markRequestSent`: it is
+ * the only thing that stops the duplication at the source.
  */
 export async function takeOutgoingRequests(): Promise<OutgoingRequest[]> {
   try {
@@ -467,6 +498,13 @@ export async function takeOutgoingRequests(): Promise<OutgoingRequest[]> {
  * **This call is what stops `id` being handed out again**, not a courtesy
  * notification after the fact -- see {@link takeOutgoingRequests}'s own doc
  * comment for what a product observes if it is skipped.
+ *
+ * **`unknown_request` does not always mean the id was never real.** A
+ * `keys_upload`, `keys_query` or `keys_claim` id is evicted when a later
+ * `takeOutgoingRequests` hands out a fresh request of the same kind, so an
+ * id held across a second drain rejects here even though this library did
+ * hand it out. See {@link takeOutgoingRequests} for why that is deliberate
+ * and what to do instead of retrying.
  */
 export async function markRequestSent(id: string, responseJson: string): Promise<void> {
   try {
