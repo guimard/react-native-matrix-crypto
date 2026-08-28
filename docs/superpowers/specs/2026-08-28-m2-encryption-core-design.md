@@ -198,12 +198,19 @@ point: a store crate at a different version would pull a second, independently
 versioned `ruma` into the tree, and the dependency comment in
 `rust/matrix-crypto-core/Cargo.toml` exists precisely to prevent that.
 
-The crate is feature-gated. The `crypto-store` feature is the one that provides the
-crypto store and it declares `matrix-sdk-crypto` as its own dependency, so it must be
-enabled explicitly and `default-features` left alone unless a measurement says
-otherwise. Enabling more than `crypto-store` pulls `matrix-sdk-base` in as well, which
-is the full client state store this library has no use for and which §9 gives a direct
-reason to avoid.
+The crate is feature-gated, and `crypto-store` with `default-features = false` is the
+minimal configuration that provides a crypto store.
+
+**Corrected during implementation.** This section first claimed that `matrix-sdk-base`
+enters only if you enable more than `crypto-store`. That is false. The published
+crate's own manifest reads
+`crypto-store = ["dep:matrix-sdk-base", "dep:matrix-sdk-crypto"]`, so `matrix-sdk-base`
+arrives with the crypto store itself and cannot be avoided by feature selection. The
+feature choice above is still the right one, and `ruma` still unifies to a single copy
+in the lockfile, verified. Only the reason given was wrong.
+
+The consequence belongs to §9 rather than here: the dependency tree is larger than
+this spec assumed, so the size measurement matters more, not less.
 
 `openCryptoStore(config)` takes the same `CryptoMachineConfig` as
 `createCryptoMachine`. The store path and passphrase come from that config; the
