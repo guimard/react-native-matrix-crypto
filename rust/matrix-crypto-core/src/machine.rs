@@ -4,6 +4,8 @@
 //! frozen in M1a. That already decided the ownership model: one machine per
 //! process, held here, never handed out.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
 // `matrix-sdk-crypto` does NOT re-export `ruma` at its own crate root (verified by
@@ -162,28 +164,66 @@ pub async fn open_store(config: MachineConfig) -> Result<(), MachineError> {
     init(config).await
 }
 
+/// The shape every `with_machine` closure must return: a boxed, pinned
+/// future that may borrow the `&OlmMachine` argument for its own lifetime,
+/// and is provably `Send`.
+///
+/// Two designs were tried and rejected before this one, in order:
+///
+/// 1. `FnOnce(&OlmMachine) -> Fut` with `Fut: Future<Output = T>` as its own
+///    generic parameter -- the brief's original shape. A plain closure
+///    returning an `async move` block that borrows the `&OlmMachine` it was
+///    handed does not type-check against it: `Fut` cannot vary with the
+///    closure argument's lifetime, so the borrow is rejected as potentially
+///    outliving the call, even though it plainly does not.
+/// 2. `AsyncFnOnce(&OlmMachine) -> T` -- ties its call future to the
+///    argument's lifetime correctly, which fixes (1). But `with_machine`'s
+///    whole call runs inside `in_runtime` (see its doc comment for why),
+///    which must prove the *composed* future `Send`, and an `AsyncFnOnce`'s
+///    associated future type cannot be named or bounded in stable Rust
+///    (`async_fn_traits` is nightly-only -- confirmed by trying it and
+///    reading rustc's own suggestion to use it). Generic code has no way to
+///    state "and this closure's produced future is also `Send`", so it
+///    cannot compile for an unconstrained `F`.
+///
+/// Boxing sidesteps both: the explicit lifetime in the return type keeps (2)'s
+/// fix for (1), and `+ Send` written directly on the trait object is a bound
+/// stable Rust can name, unlike the hidden associated type. Construct one
+/// with `Box::pin(async move { ... })`; the compiler infers the rest from
+/// this bound, no explicit cast needed.
+pub type MachineFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
 /// Runs `f` against the live machine.
 ///
-/// `AsyncFnOnce`, not `FnOnce(&OlmMachine) -> Fut` with `Fut: Future<Output =
-/// T>` as a separate generic parameter: a plain closure returning an `async
-/// move` block that borrows the `&OlmMachine` it was handed does not
-/// type-check against the latter (`Fut` cannot vary with the closure
-/// argument's lifetime, so the compiler rejects the borrow as potentially
-/// outliving it) even though the borrow is obviously fine here -- the lock
-/// guard it comes from outlives the call. `AsyncFnOnce` ties its call future
-/// to the argument's lifetime correctly and is the reason a later task's
-/// closure can call genuinely async `OlmMachine` methods (share a room key,
-/// encrypt, decrypt) and still hold the reference across their own `.await`.
+/// The whole call runs inside `in_runtime`, not just `build`/`init`. A review
+/// caught this the first time round: `tokio::sync::Mutex` needs no reactor,
+/// so a version of this function that only locked the mutex and called `f`
+/// compiled and passed every `#[tokio::test]`-based test, because
+/// `#[tokio::test]` supplies an ambient runtime that hides the gap entirely
+/// -- and then panicked the moment a caller's closure reached a
+/// store-touching `OlmMachine` method (`outgoing_requests`,
+/// `share_room_key`, encrypt, decrypt: anything Tasks 4-6 need) driven from
+/// the FFI's actual calling context, which supplies no such thing. See
+/// `with_machine_supplies_a_runtime_for_store_touching_calls`, which is
+/// deliberately not `#[tokio::test]` for exactly that reason and fails
+/// without this wrapping.
 ///
-/// The lock is released before this returns. No caller may emit a signal while
-/// holding it: a listener that calls back into the library would self-deadlock.
+/// The lock is acquired and `f` is called inside that borrowed runtime
+/// context, and released before this returns. No caller may emit a signal
+/// while holding it: a listener that calls back into the library would
+/// self-deadlock.
 pub async fn with_machine<F, T>(f: F) -> Result<T, MachineError>
 where
-    F: AsyncFnOnce(&OlmMachine) -> T,
+    F: for<'a> FnOnce(&'a OlmMachine) -> MachineFuture<'a, T> + Send + 'static,
+    T: Send + 'static,
 {
     let handle = held().ok_or(MachineError::NotInitialised)?;
-    let guard = handle.machine.lock().await;
-    Ok(f(&guard).await)
+    let result = in_runtime(async move {
+        let guard = handle.machine.lock().await;
+        f(&guard).await
+    })
+    .await;
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -244,7 +284,8 @@ mod tests {
     fn calls_before_creation_report_not_initialised() {
         let _guard = futures::executor::block_on(lock_for_test());
         reset_for_test();
-        let err = futures::executor::block_on(with_machine(async |_| ())).unwrap_err();
+        let err =
+            futures::executor::block_on(with_machine(move |_| Box::pin(async {}))).unwrap_err();
         assert_eq!(err, MachineError::NotInitialised);
     }
 
@@ -293,6 +334,32 @@ mod tests {
             !dir.path().join("store").exists(),
             "no store on a rejected config"
         );
+    }
+
+    /// Deliberately not `#[tokio::test]`, for the same reason `runtime.rs`'s
+    /// own tests are not (see that module's comment): an ambient runtime
+    /// would make `with_machine` look like it supplies one even if it does
+    /// nothing of the kind, which is exactly the gap a review found --
+    /// `identity.rs`'s `#[tokio::test]` suite stayed green while the FFI's
+    /// actual calling context (no ambient runtime) would have panicked the
+    /// first time a caller's closure touched the store.
+    #[test]
+    fn with_machine_supplies_a_runtime_for_store_touching_calls() {
+        let _guard = futures::executor::block_on(lock_for_test());
+        reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        futures::executor::block_on(create_machine(config_in(dir.path()))).unwrap();
+
+        // `outgoing_requests` is genuinely async and touches the store (it
+        // reads the account and queues a keys-upload request) -- unlike
+        // `identity_keys()`, which is synchronous and proves nothing here.
+        let outcome = futures::executor::block_on(with_machine(move |machine| {
+            Box::pin(async move { machine.outgoing_requests().await })
+        }));
+
+        outcome
+            .expect("with_machine itself must succeed")
+            .expect("a store-touching call inside the closure must succeed");
     }
 
     /// The criterion that separates working software from software that only

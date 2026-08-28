@@ -16,19 +16,28 @@ pub async fn device_identity_keys(
     user_id: &str,
     device_id: &str,
 ) -> Result<IdentityKeys, MachineError> {
-    // A true async closure (`async move |..|`), not a plain closure returning
-    // an `async move { }` block: `with_machine` needs the lending shape only
-    // an async closure provides. See its doc comment.
-    crate::machine::with_machine(async move |machine| {
-        if machine.user_id().as_str() != user_id || machine.device_id().as_str() != device_id {
-            return Err(MachineError::MalformedIdentifier {
-                detail: "identifiers do not match the active machine".to_string(),
-            });
-        }
-        let keys = machine.identity_keys();
-        Ok(IdentityKeys {
-            curve25519: keys.curve25519.to_base64(),
-            ed25519: keys.ed25519.to_base64(),
+    // Owned before the closure, not borrowed: `with_machine` now runs its
+    // whole call inside `in_runtime`, which requires the closure to be
+    // `Send + 'static` (see its doc comment) -- a closure borrowing these
+    // `&str` parameters would tie it to this call's stack frame instead.
+    let user_id = user_id.to_owned();
+    let device_id = device_id.to_owned();
+
+    // `Box::pin(async move { ... })`, not an async closure: `with_machine`
+    // takes `MachineFuture`, a boxed future, not `AsyncFnOnce` -- see its
+    // doc comment for why an async closure does not work here.
+    crate::machine::with_machine(move |machine| {
+        Box::pin(async move {
+            if machine.user_id().as_str() != user_id || machine.device_id().as_str() != device_id {
+                return Err(MachineError::MalformedIdentifier {
+                    detail: "identifiers do not match the active machine".to_string(),
+                });
+            }
+            let keys = machine.identity_keys();
+            Ok(IdentityKeys {
+                curve25519: keys.curve25519.to_base64(),
+                ed25519: keys.ed25519.to_base64(),
+            })
         })
     })
     .await?
