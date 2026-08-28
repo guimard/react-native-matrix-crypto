@@ -156,16 +156,21 @@ impl Homeserver {
         }
     }
 
-    /// Returns `(status, body)`. Never formats the token or the request body
-    /// into anything, including a panic: a `/keys/upload` body is key
-    /// material and an `Authorization` header is a live credential.
-    fn call(
+    /// Returns `(status, body)`, or `None` if the request could not be sent
+    /// at all. **Never panics**, which is what makes it usable from a `Drop`
+    /// during an unwind: a panic there would abort the process and replace a
+    /// readable assertion failure with a SIGABRT.
+    ///
+    /// Never formats the token or the request body into anything either: a
+    /// `/keys/upload` body is key material and an `Authorization` header is a
+    /// live credential.
+    fn try_call(
         &self,
         method: &str,
         path: &str,
         token: Option<&str>,
         body: Option<&str>,
-    ) -> (u16, String) {
+    ) -> Option<(u16, String)> {
         let url = format!("{}{path}", self.base);
         let mut request = self
             .agent
@@ -181,15 +186,30 @@ impl Homeserver {
         match result {
             Ok(response) => {
                 let status = response.status();
-                (status, response.into_string().unwrap_or_default())
+                Some((status, response.into_string().unwrap_or_default()))
             }
             Err(ureq::Error::Status(status, response)) => {
-                (status, response.into_string().unwrap_or_default())
+                Some((status, response.into_string().unwrap_or_default()))
             }
-            Err(ureq::Error::Transport(transport)) => {
-                panic!("{method} {path} could not be sent: {transport}")
-            }
+            Err(ureq::Error::Transport(_)) => None,
         }
+    }
+
+    /// The same call, for the test body rather than for teardown: a request
+    /// that cannot be sent at all is a failure worth stopping on. The
+    /// transport error is not reproduced, only that the call could not be
+    /// made -- `ureq`'s `Transport` display carries the URL, which is
+    /// harmless, but this keeps the one rule about what may reach a panic
+    /// message simple rather than case-by-case.
+    fn call(
+        &self,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        body: Option<&str>,
+    ) -> (u16, String) {
+        self.try_call(method, path, token, body)
+            .unwrap_or_else(|| panic!("{method} {path} could not be sent"))
     }
 
     /// The same call, insisting on a 2xx and a JSON body.
@@ -208,6 +228,138 @@ struct LoggedIn {
     token: String,
     user_id: String,
     device_id: String,
+}
+
+// ---------------------------------------------------------------------------
+// Teardown, on every path out
+// ---------------------------------------------------------------------------
+
+/// Everything this run created on somebody else's homeserver, removed by
+/// `Drop` rather than by statements at the end of the test.
+///
+/// The first version of this test tidied up after its last assertion, which
+/// meant every *failing* run left a device and a room behind on a shared
+/// server -- and a test whose failures accumulate debris on real
+/// infrastructure is a test people stop running. Six mutation runs left
+/// twelve devices and six rooms to be removed by hand before this existed.
+///
+/// `Drop` runs while the thread unwinds from a failed assertion, so the whole
+/// of this must be infallible: every call goes through `Homeserver::try_call`,
+/// which returns `None` rather than panicking, and every result is discarded.
+/// A panic raised during an unwind aborts the process, which would replace the
+/// assertion message somebody needs to read with a SIGABRT.
+///
+/// Deleting the counterparty's device is done from *here*, over
+/// `/delete_devices` with user-interactive auth, rather than by asking the nio
+/// subprocess to log itself out. The subprocess is exactly what may have died,
+/// and a teardown that depends on the thing that failed is not a teardown. The
+/// happy path still asks nio to log out politely (`op: quit`) and then calls
+/// `counterparty_logged_itself_out`, so the fallback costs a round trip only
+/// when it is actually needed.
+struct Teardown<'a> {
+    homeserver: &'a Homeserver,
+    token: String,
+    user_id: String,
+    password: String,
+    room_id: Option<String>,
+    devices: Vec<String>,
+}
+
+impl<'a> Teardown<'a> {
+    fn new(homeserver: &'a Homeserver, library: &LoggedIn, password: &str) -> Self {
+        Teardown {
+            homeserver,
+            token: library.token.clone(),
+            user_id: library.user_id.clone(),
+            password: password.to_string(),
+            room_id: None,
+            devices: Vec::new(),
+        }
+    }
+
+    fn owns_room(&mut self, room_id: &str) {
+        self.room_id = Some(room_id.to_string());
+    }
+
+    fn owns_device(&mut self, device_id: &str) {
+        self.devices.push(device_id.to_string());
+    }
+
+    fn counterparty_logged_itself_out(&mut self) {
+        self.devices.clear();
+    }
+
+    /// `POST /_matrix/client/v3/delete_devices`, answering the
+    /// user-interactive-auth challenge it always issues first. Infallible by
+    /// construction: every step that could fail returns early instead.
+    fn delete_devices(&self) {
+        let devices = json!({ "devices": self.devices }).to_string();
+        let Some((status, challenge)) = self.homeserver.try_call(
+            "POST",
+            "/_matrix/client/v3/delete_devices",
+            Some(&self.token),
+            Some(&devices),
+        ) else {
+            return;
+        };
+        if status != 401 {
+            return;
+        }
+        let Ok(challenge) = serde_json::from_str::<Value>(&challenge) else {
+            return;
+        };
+        let Some(session) = challenge["session"].as_str() else {
+            return;
+        };
+        // The password is used here and nowhere else in teardown, and this
+        // body is never formatted into any message.
+        let authenticated = json!({
+            "devices": self.devices,
+            "auth": {
+                "type": "m.login.password",
+                "identifier": { "type": "m.id.user", "user": self.user_id },
+                "password": self.password,
+                "session": session,
+            },
+        })
+        .to_string();
+        let _ = self.homeserver.try_call(
+            "POST",
+            "/_matrix/client/v3/delete_devices",
+            Some(&self.token),
+            Some(&authenticated),
+        );
+    }
+}
+
+impl Drop for Teardown<'_> {
+    fn drop(&mut self) {
+        if let Some(room_id) = &self.room_id {
+            let path = encode_segment(room_id);
+            let _ = self.homeserver.try_call(
+                "POST",
+                &format!("/_matrix/client/v3/rooms/{path}/leave"),
+                Some(&self.token),
+                Some("{}"),
+            );
+            let _ = self.homeserver.try_call(
+                "POST",
+                &format!("/_matrix/client/v3/rooms/{path}/forget"),
+                Some(&self.token),
+                Some("{}"),
+            );
+        }
+        if !self.devices.is_empty() {
+            self.delete_devices();
+        }
+        // Last: this deletes the device whose token every call above used.
+        let _ = self.homeserver.try_call(
+            "POST",
+            "/_matrix/client/v3/logout",
+            Some(&self.token),
+            Some("{}"),
+        );
+    }
 }
 
 fn login(homeserver: &Homeserver, user: &str, password: &str, display_name: &str) -> LoggedIn {
@@ -567,6 +719,14 @@ fn level_two_interoperability_over_a_real_homeserver() {
     // ---- 1. The library's device --------------------------------------
     let library = login(&homeserver, &user, &password, "level-two-interop-library");
 
+    // Declared here, before anything else exists on the homeserver, and
+    // *before* `nio` below, so that on an unwind `nio`'s own `Drop` kills the
+    // subprocess first and this one then removes what the run created. Every
+    // resource is registered with it the moment it comes into being, so there
+    // is no window in which something exists and is not owned by the
+    // teardown.
+    let mut teardown = Teardown::new(&homeserver, &library, &password);
+
     // ---- 2. An encrypted room both devices are in ----------------------
     // One account, so membership is already shared: there is nobody to
     // invite and nothing to join.
@@ -592,6 +752,7 @@ fn level_two_interoperability_over_a_real_homeserver() {
         .expect("createRoom returns a room id")
         .to_string();
     let scope_path = encode_segment(&scope);
+    teardown.owns_room(&scope);
 
     // ---- 3. The counterparty's device ----------------------------------
     let mut nio = NioParty::start(&python, &script, &nio_store);
@@ -614,6 +775,7 @@ fn level_two_interoperability_over_a_real_homeserver() {
         nio_device_id, library.device_id,
         "the counterparty must be a second device, not the same one"
     );
+    teardown.owns_device(&nio_device_id);
 
     // ---- 4. The library's machine, and its keys on the wire -------------
     run(create_machine(MachineConfig {
@@ -1016,28 +1178,14 @@ fn level_two_interoperability_over_a_real_homeserver() {
     );
 
     // ---- Tidy up ---------------------------------------------------------
-    // Best effort: the assertions above are the result, and a cleanup
-    // failure must not be reported as one. The counterparty logs itself out
-    // in its own `quit`.
+    // The room, this device and the counterparty's device are removed by
+    // `teardown`'s `Drop`, which runs on this path and on every failing one
+    // alike. All that is left here is the counterparty's own protocol
+    // shutdown: `quit` logs nio out and closes its HTTP session cleanly,
+    // which is nicer than being killed, and having succeeded it makes the
+    // guard's `/delete_devices` fallback unnecessary.
     nio.call(json!({ "op": "quit" }));
-    let _ = homeserver.call(
-        "POST",
-        &format!("/_matrix/client/v3/rooms/{scope_path}/leave"),
-        Some(&library.token),
-        Some("{}"),
-    );
-    let _ = homeserver.call(
-        "POST",
-        &format!("/_matrix/client/v3/rooms/{scope_path}/forget"),
-        Some(&library.token),
-        Some("{}"),
-    );
-    let _ = homeserver.call(
-        "POST",
-        "/_matrix/client/v3/logout",
-        Some(&library.token),
-        Some("{}"),
-    );
+    teardown.counterparty_logged_itself_out();
 }
 
 /// Re-runs this same test binary as a child, with the phase-two environment
