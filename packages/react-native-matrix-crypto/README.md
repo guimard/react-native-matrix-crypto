@@ -72,11 +72,14 @@ Being precise about that, because a cryptographic library that oversells itself 
 | Persistent encrypted store, surviving restart | working |
 | Encryption and decryption | working, proven between two crypto machines |
 | Interoperability with a third-party Matrix client | proven both directions against `matrix-nio`, over a real homeserver |
+| Crypto signal channel (`onCryptoSignal`) | present and typed, but **nothing emits a signal yet**, see below |
 | Sender authenticity | **not provided**, see below |
 | Device verification (SAS, QR) | **not implemented**, see the roadmap |
 | Secret export and import | **not implemented**, see the roadmap |
 
 The unimplemented functions exist today as final types that compile, and reject at runtime with a typed `not_implemented` error. That is intentional: a consuming team can build against the real shape while the cryptography underneath is written.
+
+`onCryptoSignal` is the quieter case, and worth stating plainly because it does not throw. The channel is real, subscribing and unsubscribing work, and a listener that throws cannot starve the others. What is missing is a producer: nothing in this milestone emits a `CryptoSignal`, so a listener registered today never fires. The conditions the three variants name do occur now, and reach you elsewhere: a missing key arrives as a rejected `decryptEvent` with kind `missing_key`, not as a `key_missing` signal. The earliest producer would be M3's device verification work, and whether trust changes ride this channel or get a call-shaped surface instead is still an open question in the M3 design. Subscribe if being ready costs you nothing; do not build a flow that waits to be told.
 
 **Two limits worth knowing before you build on this.**
 
@@ -120,20 +123,11 @@ Neither of those runs the cryptography. Loading the module in a plain Node proce
 What works today:
 
 ```ts
-import { getDeviceIdentityKeys, onCryptoSignal } from 'react-native-matrix-crypto'
+import { getDeviceIdentityKeys } from 'react-native-matrix-crypto'
 
 // Real cryptography. Creates an OlmMachine and returns its public identity keys.
 const keys = await getDeviceIdentityKeys('@alice:example.org', 'DEVICE1')
 // { curve25519: '...', ed25519: '...' }  43-character base64 each
-
-// Crypto state changes that belong to no call in flight.
-const unsubscribe = onCryptoSignal((signal) => {
-  switch (signal.kind) {
-    case 'trust_changed':      break
-    case 'unexpected_device':  break
-    case 'key_missing':        break
-  }
-})
 ```
 
 ### Encrypting, and the one ordering rule you cannot skip
