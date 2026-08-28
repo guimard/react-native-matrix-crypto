@@ -58,7 +58,7 @@ It is a reusable component. Any React Native project can consume it without carr
 
 ## Status
 
-**The bridge chain is complete and proven. The cryptographic surface is not yet implemented.**
+**The bridge chain is complete and proven. Encryption works between two crypto machines. It has not yet been proven against a third-party Matrix client.**
 
 Being precise about that, because a cryptographic library that oversells itself is worse than one that admits its state.
 
@@ -69,11 +69,20 @@ Being precise about that, because a cryptographic library that oversells itself 
 | Typed errors crossing the FFI boundary | verified |
 | Callback interface, Rust to JavaScript | verified |
 | Real `OlmMachine` identity keys | working |
-| Encryption and decryption | **not implemented**, see the roadmap |
+| Persistent encrypted store, surviving restart | working |
+| Encryption and decryption | working, proven between two crypto machines |
+| Interoperability with a third-party Matrix client | **not yet proven**, see the roadmap |
+| Sender authenticity | **not provided**, see below |
 | Device verification (SAS, QR) | **not implemented**, see the roadmap |
 | Secret export and import | **not implemented**, see the roadmap |
 
 The unimplemented functions exist today as final types that compile, and reject at runtime with a typed `not_implemented` error. That is intentional: a consuming team can build against the real shape while the cryptography underneath is written.
+
+**Two limits worth knowing before you build on this.**
+
+Decryption does not authenticate the sender. `EventEnvelope.sender` is the value the homeserver delivered, and a successfully decrypted event does not prove who sent it. That authentication comes from device verification, which is not implemented yet. Treat `sender` and `algorithm` as unauthenticated transport metadata until it is.
+
+Interoperability is proven only against ourselves so far. Two of our own crypto machines exchange keys and decrypt each other's events, which catches most defects but cannot catch a consistent misreading of the protocol, because both sides would misread it the same way. Until a third-party client decrypts what this library produces, treat the wire format as unverified.
 
 Verified end to end on an iOS simulator and on a physical Android device: a record round trip, a byte array returned reversed to prove Rust genuinely read it, an async call resolving as a Promise, a typed error reaching a JavaScript `catch`, one callback signal travelling back from Rust, and a real Curve25519 and Ed25519 key pair.
 
@@ -119,18 +128,56 @@ const unsubscribe = onCryptoSignal((signal) => {
 })
 ```
 
-The rest of the surface is typed and compiles today:
+### Encrypting, and the one ordering rule you cannot skip
+
+This library performs no network requests. It hands you a list of requests to send and
+expects you to tell it when you have sent them. That is not a detail: **a key reaches
+another device only through requests you send**, so a product that never drains the
+queue encrypts to nobody, silently and with no error.
 
 ```ts
-import { encryptEvent, asCryptoScopeId, isCryptoError } from 'react-native-matrix-crypto'
+import {
+  createCryptoMachine, shareScopeKey, takeOutgoingRequests, markRequestSent,
+  encryptEvent, decryptEvent, asCryptoScopeId,
+} from 'react-native-matrix-crypto'
 
-try {
-  await encryptEvent(asCryptoScopeId('!room:example.org'), 'm.room.message', { body: 'hi' })
-} catch (e) {
-  if (isCryptoError(e)) {
-    console.log(e.kind) // 'not_implemented', for now
+await createCryptoMachine({
+  userId: '@alice:example.org',
+  deviceId: 'DEVICE1',
+  storePath: `${documentsDir}/crypto`,
+  storePassphrase: secret,   // null is allowed, and means unencrypted at rest
+})
+
+const scope = asCryptoScopeId('!s:example.org')
+
+// Drain and send. Do this after every call that changes crypto state.
+async function pump() {
+  for (const request of await takeOutgoingRequests()) {
+    const response = await yourHomeserverClient.send(request)  // your transport
+    await markRequestSent(request.id, response)
   }
 }
+
+await pump()                                   // publishes this device's keys
+await shareScopeKey(scope, ['@bob:example.org'])
+await pump()                                   // asks the server about Bob's devices
+await shareScopeKey(scope, ['@bob:example.org'])
+await pump()                                   // now the key actually travels
+```
+
+**The first `shareScopeKey` for a user you have never encrypted to delivers nothing,
+and that is correct.** It starts tracking them and queues a query about their devices.
+That query only reaches your homeserver when you drain the queue, so nobody is known to
+share with yet. Call it again after pumping. The library cannot collapse these steps,
+because it sends nothing itself and therefore cannot wait for a reply.
+
+Once a key has travelled, encryption and decryption are ordinary:
+
+```ts
+const envelope = await encryptEvent(scope, 'm.room.message', { body: 'hi' })
+// send envelope.ciphertext as the content of an m.room.encrypted event
+
+const recovered = await decryptEvent(scope, incomingEvent)
 ```
 
 ### Design notes worth knowing
@@ -147,24 +194,28 @@ try {
 
 The milestone below is what turns this from a proven chain into a usable encryption library. Each item names what does not work today and what has to happen for it to work.
 
-### M2, the encryption core
+### M2, the encryption core, mostly landed
 
-| Not working today | What lands it |
+| Item | State |
 |---|---|
-| `encryptEvent`, `decryptEvent` | Megolm group sessions backed by `matrix-sdk-crypto`, exercised by two crypto machines encrypting to each other in one test process |
-| `createCryptoMachine`, `openCryptoStore` | persistent storage through `matrix-sdk-sqlite`, the store Element uses, so sessions survive an app restart |
-| `receiveSyncChanges` | feeding a homeserver's `/sync` response into the crypto machine, which is how it learns about other devices |
+| `encryptEvent`, `decryptEvent` | done, group sessions backed by `matrix-sdk-crypto` |
+| `createCryptoMachine`, `openCryptoStore` | done, persistent storage through `matrix-sdk-sqlite`, surviving restart |
+| `receiveSyncChanges` | done |
+| `shareScopeKey`, `takeOutgoingRequests`, `markRequestSent` | done, the outbound queue described above |
+| Two crypto machines exchanging a key and decrypting each other | done, in one test process, with the key travelling through the queue rather than handed over in test code |
+| A third-party Matrix client decrypting what this library produces | **the one thing left**, see below |
 
-Two known obstacles, both already diagnosed rather than discovered later:
+Both obstacles named when this milestone was planned turned out real, and both were resolved rather than absorbed:
 
-* **A tokio runtime becomes mandatory.** `OlmMachine::share_room_key`, which is Megolm key sharing and therefore unavoidable for group encryption, reaches `tokio::task::spawn` through `matrix-sdk-common`. Adding that runtime makes every callback that returns a value a blocking cross thread round trip. The plan is to make signal delivery non blocking so the cost is removed rather than absorbed.
-* **Binary size.** The published tarball is already a large fraction of its budget, and M2 retains more of `matrix-sdk-crypto` than the current single function does. Build profile optimisation comes first, and splitting into per platform packages is the fallback if that is not enough.
+* **A tokio runtime became mandatory**, because group key sharing reaches `tokio::task::spawn`. The core now owns one, and signal delivery is non blocking, so no callback holds a lock or waits on JavaScript.
+* **Binary size** went the other way from expected. Linking the Rust as a shared library instead of a static archive cut the published tarball by 74 percent, from 263 MB to 68 MB, which is 44 percent of its budget. Splitting into per platform packages was not needed.
 
-Interoperability is tested in two levels, in this order. First two party encryption in process, which is deterministic and catches most defects. Then a real homeserver and a third party client, which answers the question the first level cannot: whether a real Matrix client decrypts what we encrypt.
+**What remains is the level that matters most.** Two of our own crypto machines agreeing proves the implementation is self consistent; it cannot prove the wire format is right, because a consistent misreading of the protocol passes it cleanly. Only a third party client decrypting a real message answers that, and until it does, the format is unverified.
 
 ### M3 and beyond
 
 * device verification, SAS and QR
+* **sender authenticity**, which arrives with verification and not before. Until a device is verified, a decrypted event's sender is what the server said it was, so this is the item that turns `sender` from transport metadata into a claim you can rely on
 * secret export and import, for recovery
 * multi participant scenarios and federation neutral test coverage
 * cross implementation testing against both Synapse and Continuwuity
