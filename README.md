@@ -269,6 +269,9 @@ Every one of these runs in CI. Each has been observed rejecting a real violation
 | `gate:drift` | committed bindings match the Rust source |
 | `gate:logger` | the bridge contains no logger, in Rust, TypeScript and C++ alike |
 | `gate:agility` | no algorithm specific identifier reaches the public API |
+| `gate:stubs` | the committed turbo module is really wired up, not an empty shell |
+
+`gate:stubs` exists because of a specific near miss. `ubrn build --and-generate` can emit a turbo module that exports nothing, with exit code zero and no warning, when it reads an Android shared library whose symbol table was stripped. Nothing downstream noticed, and the build went green. `gate:drift` cannot catch it either: drift regenerates and compares, so two equally empty generations agree with each other perfectly.
 
 If you add a gate, add the step that proves it fails on a real violation. A gate nobody has watched fail is not known to work.
 
