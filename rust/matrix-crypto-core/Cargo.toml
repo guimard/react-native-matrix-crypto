@@ -61,3 +61,18 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 futures = { version = "0.3", default-features = false, features = ["executor"] }
 tempfile = "3"
+# A `[dev-dependencies]` entry, and it must stay one.
+#
+# The shipped library performs no networking -- spec section 2, and
+# `scripts/assert-core-boundary.sh` guards the neighbouring rule about
+# uniffi. Nothing under `src/` may ever reach for this. It exists for
+# `tests/level_two_interop.rs` alone, which is the level 2 proof (spec
+# section 8): the harness has to be the thing that talks to a real
+# homeserver, precisely because the library will not, and a test cannot
+# demonstrate that a third-party client decrypts our events without
+# somebody putting them on a real wire.
+#
+# `default-features = false, features = ["tls"]` rather than plain `"2"`:
+# the default additionally enables `gzip`, which this harness has no use
+# for and which would pull `flate2` into the dev graph for nothing.
+ureq = { version = "2", default-features = false, features = ["tls"] }
