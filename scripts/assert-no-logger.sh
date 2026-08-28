@@ -183,10 +183,26 @@ PKG_DIR="packages/react-native-matrix-crypto"
 # rule that holds. Deriving the roots means a directory added to "files"
 # tomorrow is covered without anyone remembering to come back here.
 #
-# Negations (`!src/**/*.test.ts`) and globs (`*.aar`, `*.xcframework`,
-# `*.podspec`) are skipped: the first remove files rather than name roots, and
-# the second name binaries. Test files inside a shipped directory ARE scanned,
-# which is what this gate already did for `src`.
+# Negations (`!src/**/*.test.ts`) are skipped: they remove files rather than
+# name roots. Test files inside a shipped directory ARE scanned, which is what
+# this gate already did for `src`.
+#
+# Globs used to be skipped wholesale, on the reasoning that they "name
+# binaries". Two of the three do. `*.podspec` does not: it is a Ruby program
+# CocoaPods executes on a consumer's machine, it is the file that decides
+# which iOS sources compile into their app, and skipping it left it shipped
+# and unscanned -- the same shape as the `interop/` gap above, found the same
+# way, by the M2 final review. So globs are expanded now, with exactly two
+# named exclusions:
+#
+#   *.aar, *.xcframework -- build outputs whose contents are compiled code.
+#     They are gitignored, so they are present or absent depending on whether
+#     a platform build has run, and a gate whose reach depends on that reports
+#     a different answer to two people looking at the same commit.
+#
+# An unrecognised glob shape throws rather than being silently dropped: a
+# `files` entry this cannot expand must fail loudly, since silently skipping
+# it is precisely the bug being fixed.
 #
 # FILE entries are kept alongside directory entries, because "files" names
 # some shipped sources individually: `android/cpp-adapter.cpp` is a shipped
@@ -196,8 +212,24 @@ SHIPPED_ROOTS=$(node -e '
   const fs = require("fs");
   const dir = process.argv[1];
   const pkg = JSON.parse(fs.readFileSync(dir + "/package.json", "utf8"));
+  const BINARY_GLOBS = new Set(["*.aar", "*.xcframework"]);
   for (const entry of pkg.files || []) {
-    if (entry.startsWith("!") || entry.includes("*")) continue;
+    if (entry.startsWith("!")) continue;
+    if (entry.includes("*")) {
+      if (BINARY_GLOBS.has(entry)) continue;
+      const m = /^\*(\.[A-Za-z0-9]+)$/.exec(entry);
+      if (!m) {
+        console.error("FAIL: this gate cannot expand the \"files\" entry " + entry + ".");
+        console.error("      It would then scan nothing under it while reporting a pass.");
+        console.error("      Teach the expansion this shape, or exclude it deliberately");
+        console.error("      the way *.aar and *.xcframework are excluded above.");
+        process.exit(1);
+      }
+      for (const f of fs.readdirSync(dir)) {
+        if (f.endsWith(m[1])) console.log(dir + "/" + f);
+      }
+      continue;
+    }
     const p = dir + "/" + entry;
     if (fs.existsSync(p)) console.log(p);
   }
@@ -505,12 +537,79 @@ fi
 
 KOTLIN_HITS=$(grep -nE "$FORBIDDEN_KOTLIN" $KOTLIN_FILES 2>/dev/null || true)
 
-if [ -n "${RUST_HITS}${TS_HITS}${NATIVE_HITS}${KOTLIN_HITS}" ]; then
+# ---------------------------------------------------------------------------
+# Swift: scanned before the first Swift file exists, deliberately
+# ---------------------------------------------------------------------------
+#
+# `ios` is in package.json's "files" and MatrixCrypto.podspec compiles
+# `ios/**/*.{h,m,mm,swift}` into every iOS consumer's app -- the `swift` in
+# that glob is ubrn's, not ours. Today `ios/` holds only MatrixCrypto.h and
+# MatrixCrypto.mm, so this scan finds nothing, and the M2 final review named
+# that as a hole rather than a violation: a `.swift` file added by a ubrn
+# upgrade would have shipped, compiled, and never been read by this gate.
+#
+# No "refuse to pass having scanned nothing" guard here, and that is the one
+# deliberate exception to the rule the other four sections follow. Those four
+# guard a count that is structurally guaranteed to be non-zero: this package
+# cannot ship without TypeScript, without a JSI translation unit, or without
+# an Android turbo module. Zero Swift files is the correct answer today, so a
+# guard would have to fail on a clean tree. What stands in for it is that the
+# Swift scan shares its roots with the native scan, which does carry the
+# guard and does read `ios/` -- so a broken derivation fails there first, and
+# a zero here means there is no Swift rather than that nothing was looked at.
+# The count is printed at the end for the same reason.
+FORBIDDEN_SWIFT='(^|[^_[:alnum:].])(print|debugPrint|dump)[[:space:]]*\(|NSLog[[:space:]]*\(|(^|[^_[:alnum:]])os_log|OSLog|(^|[^_[:alnum:].])Logger[[:space:]]*\(|FileHandle\.standard(Output|Error)|\.write[[:space:]]*\((to|toFile):|FileManager\.default\.createFile'
+
+SWIFT_FILES=$(find $SHIPPED_ROOTS -type f -name '*.swift' | sort)
+SWIFT_COUNT=$(printf '%s' "$SWIFT_FILES" | grep -c . || true)
+
+SWIFT_HITS=""
+if [ -n "${SWIFT_FILES//[[:space:]]/}" ]; then
+  SWIFT_HITS=$(grep -HnE "$FORBIDDEN_SWIFT" $SWIFT_FILES 2>/dev/null || true)
+fi
+
+# ---------------------------------------------------------------------------
+# Ruby: the podspec, which decides what compiles and can run shell
+# ---------------------------------------------------------------------------
+#
+# `*.podspec` was skipped by the root derivation above as though it named a
+# binary. It does not: CocoaPods evaluates it as Ruby on a consumer's machine
+# during `pod install`, and CocoaPods lets a podspec declare a
+# `script_phase` -- arbitrary shell that runs inside the consumer's Xcode
+# build, with its output going straight to their build log. Neither
+# `script_phase` nor `prepare_command` appears in ours, and both are rejected
+# here so that adding one is a decision someone makes on purpose rather than
+# a shell script that arrives with a ubrn upgrade and prints into a log this
+# repository promises not to write to.
+#
+# `File.read` is explicitly NOT forbidden: line 4 of the podspec reads
+# package.json to get the version, which is what a podspec is supposed to do.
+# It is writing, and printing, that this gate is about.
+FORBIDDEN_RUBY='(^|[^_[:alnum:].])(puts|pp|warn|print|p)[[:space:]]*[("'"'"']|\$stdout|\$stderr|STDOUT|STDERR|(File|IO)\.(write|open|new)|\.write[[:space:]]*\(|script_phase|prepare_command|Kernel\.(system|exec)|%x[({[]'
+
+RUBY_FILES=$(find $SHIPPED_ROOTS -type f -name '*.podspec' -o -type f -name '*.rb' | sort)
+
+# Same discipline as the TypeScript, native and Kotlin halves. This package
+# ships an iOS pod: `*.podspec` is in "files" and the podspec is what makes
+# the iOS half installable at all. Zero means the derivation broke.
+if [ -z "${RUBY_FILES//[[:space:]]/}" ]; then
+  echo "FAIL: no podspec was found under: $(echo $SHIPPED_ROOTS | tr '\n' ' ')"
+  echo "      This package ships an iOS pod, and package.json's \"files\""
+  echo "      names *.podspec. Zero podspecs means the scan broke. Refusing"
+  echo "      to pass having scanned nothing."
+  exit 1
+fi
+
+RUBY_HITS=$(grep -HnE "$FORBIDDEN_RUBY" $RUBY_FILES 2>/dev/null || true)
+
+if [ -n "${RUST_HITS}${TS_HITS}${NATIVE_HITS}${KOTLIN_HITS}${SWIFT_HITS}${RUBY_HITS}" ]; then
   echo "FAIL: the bridge must not log. Spec section 7.2."
   [ -n "$RUST_HITS" ] && echo "$RUST_HITS"
   [ -n "$TS_HITS" ] && echo "$TS_HITS"
   [ -n "$NATIVE_HITS" ] && printf '%s' "$NATIVE_HITS"
   [ -n "$KOTLIN_HITS" ] && echo "$KOTLIN_HITS"
+  [ -n "$SWIFT_HITS" ] && echo "$SWIFT_HITS"
+  [ -n "$RUBY_HITS" ] && echo "$RUBY_HITS"
   echo "      Diagnostics belong in a sink the product injects and owns."
   echo "      In generated C++ the ONLY tolerated write is ubrn's"
   echo "      'std::cout << \"Error in callback UniffiX: \" << error.what()' on a"
@@ -540,7 +639,8 @@ fi
 
 echo "PASS: no logger"
 echo "      Scanned for writes to a stream: Rust crate sources and integration"
-echo "      tests, shipped TypeScript, shipped C/C++/Objective-C, shipped Kotlin."
+echo "      tests, shipped TypeScript, shipped C/C++/Objective-C, shipped"
+echo "      Kotlin, shipped Swift ($SWIFT_COUNT files), the shipped podspec."
 echo "      Scanned for file writes: the same, minus the Rust integration tests,"
 echo "      which may write a fixture but may not print."
 echo "      Tolerated: $NATIVE_ALLOWED ubrn callback-error std::cout sites in generated C++,"
