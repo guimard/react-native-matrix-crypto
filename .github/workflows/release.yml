@@ -215,6 +215,22 @@ jobs:
     #     a convenience for a consumer who would rather not build from source.
     #     Nothing autolinks against it.
     #
+    # THOSE TWO OUTPUTS COME FROM TWO DIFFERENT TOOLS, and until 2026-08-28
+    # this job ran only one of them. `ubrn build android` writes the per-ABI
+    # `.so` files into jniLibs and NOTHING ELSE -- read from its source
+    # (ubrn_cli/src/jsi/android/commands.rs: `copy_into_jni_libs` is the whole
+    # of its output side) and then confirmed on a Mac by moving the working
+    # tree's `.aar` aside and running the four-ABI invocation below: it exited
+    # 0 and no `.aar` came back. The `.aar` is an Android Gradle Plugin
+    # artifact and only `assembleRelease` produces one. So this job asks
+    # Gradle for it explicitly, below, before collecting anything.
+    #
+    # What that omission would have cost, had it not been found first: `tar
+    # czf ... ./*.aar` on a runner with no `.aar` leaves the glob unexpanded,
+    # tar exits non-zero, and the release dies here -- after the full CI graph
+    # and both cross-compiles, roughly two hours in, with a message about a
+    # missing file rather than about a missing build step.
+    #
     # NOT `--and-generate`, and on Android that flag is actively harmful: it
     # exits 0, prints no warning, and rewrites src/index.tsx and the C++ shim
     # into stubs that register nothing with JSI. ci.yml's build-android
@@ -225,6 +241,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version-file: '.nvmrc', cache: yarn }
+      # For the Gradle step that produces the .aar. Same distribution and
+      # version as ci.yml's probe-android, which is the only other job in this
+      # repository that runs Gradle.
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
       - run: yarn install --frozen-lockfile
       - run: rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
       # Same exact pin and cache as ci.yml's build-android; cargo-ndk is a
@@ -244,6 +265,36 @@ jobs:
             --targets aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android \
             --release
       - run: yarn gate:stubs
+      - name: Assemble the prebuilt .aar
+        # AFTER the step above, never before: the Android Gradle Plugin packs
+        # `jni/<abi>/libmatrix_crypto_ffi.so` into the .aar out of
+        # android/src/main/jniLibs, so an .aar built first would carry
+        # whatever ABIs happened to be lying around -- or none.
+        #
+        # Built from the example app's Gradle project because that is where
+        # the settings.gradle that knows this module lives; the module is
+        # addressed directly (`:react-native-matrix-crypto:assembleRelease`)
+        # rather than through `:app`, which builds an APK and no .aar.
+        # -PreactNativeArchitectures is passed explicitly rather than left to
+        # the example app's gradle.properties, so this job says which ABIs it
+        # ships instead of inheriting them from an unrelated file.
+        #
+        # AGP writes it under android/build/outputs/aar/. The package root is
+        # where package.json's "files" allowlist (`*.aar`) looks, so it is
+        # copied there -- the same place the iOS xcframework already sits.
+        run: |
+          set -euo pipefail
+          cd packages/example-app/android
+          ./gradlew :react-native-matrix-crypto:assembleRelease \
+            -PreactNativeArchitectures=arm64-v8a,armeabi-v7a,x86_64,x86 \
+            --no-daemon
+          cd "$GITHUB_WORKSPACE/packages/react-native-matrix-crypto"
+          AAR=android/build/outputs/aar/react-native-matrix-crypto-release.aar
+          if [ ! -s "$AAR" ]; then
+            echo "FAIL: assembleRelease exited 0 and produced no $AAR."
+            exit 1
+          fi
+          cp "$AAR" ./react-native-matrix-crypto-release.aar
       - name: Collect the Android binaries
         run: |
           set -euo pipefail
@@ -252,9 +303,19 @@ jobs:
             echo "FAIL: ubrn build android exited 0 and produced no jniLibs."
             exit 1
           fi
+          # Named, not globbed. `tar czf ... ./*.aar` with no .aar present
+          # passes tar the literal string `./*.aar` and fails with "cannot
+          # stat", which reads as a tar problem rather than as a build that
+          # did not happen.
+          if [ ! -s react-native-matrix-crypto-release.aar ]; then
+            echo "FAIL: no react-native-matrix-crypto-release.aar at the package root."
+            echo "      The Gradle step above is what produces it; ubrn does not."
+            exit 1
+          fi
           echo "ABIs built:"
           ls android/src/main/jniLibs | sed 's/^/  /'
-          tar czf "$RUNNER_TEMP/android-binaries.tgz" android/src/main/jniLibs ./*.aar
+          tar czf "$RUNNER_TEMP/android-binaries.tgz" \
+            android/src/main/jniLibs react-native-matrix-crypto-release.aar
       - uses: actions/upload-artifact@v4
         with:
           name: android-binaries
