@@ -134,6 +134,39 @@ This is the shape `matrix-sdk-crypto`'s own FFI bindings use, so it is not an
 invention, and it keeps §11's out-of-scope list intact: no network sync, no timeline,
 no transport.
 
+### 3ter. Knowing a device is not the same as being able to reach it
+
+A second correction, found the same way as §3bis: by a review, one layer deeper, and
+recorded rather than quietly patched because the mistake repeats a pattern worth
+naming.
+
+§3bis established that the outbound requests must leave the process. It did not say
+which requests, and the omission matters. A group session key travels to another
+device wrapped in an Olm session, and an Olm session cannot exist until this device has
+claimed one of the other device's one-time keys. `/keys/query` teaches the machine that
+a device exists and what its identity keys are; it does not establish a channel to it.
+That is `/keys/claim`, and upstream exposes it as
+`OlmMachine::get_missing_sessions(users)`
+(`matrix-sdk-crypto-0.18.0/src/machine/mod.rs:794`), which returns an optional
+`(OwnedTransactionId, KeysClaimRequest)`.
+
+**A machine that never calls it can never deliver a key to anybody.** `share_room_key`
+still succeeds, and still produces to-device requests, but every one of them is an
+`m.room_key.withheld` notice carrying code `m.no_olm`: a message whose content is "I
+could not send you the key". The failure is silent, permanent, and looks exactly like
+success from inside the process.
+
+So the pump's request set includes a keys-claim step, and the ordering is not optional:
+
+1. `/keys/query`, so the machine knows the devices exist.
+2. `/keys/claim`, so an Olm session exists to each of them.
+3. `/sendToDevice`, carrying the group session key.
+
+The lesson repeats §3bis's exactly. There, "the bridge does no networking" was read as
+"the bridge produces nothing to send". Here, "the machine knows about the device" was
+read as "the machine can send to the device". Both are one true statement standing in
+for a different, false one, and both would have passed every in-process test.
+
 ## 4. The tokio runtime
 
 `tokio` is currently a dev-dependency only (`rust/matrix-crypto-core/Cargo.toml:20`).
