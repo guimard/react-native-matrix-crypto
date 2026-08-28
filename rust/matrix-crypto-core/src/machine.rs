@@ -16,7 +16,7 @@ use std::sync::{Arc, RwLock};
 // unifies on a single `ruma` in the tree rather than resolving two independently
 // versioned copies with incompatible types.
 use matrix_sdk_common::ruma::{OwnedDeviceId, OwnedUserId};
-use matrix_sdk_crypto::OlmMachine;
+use matrix_sdk_crypto::{CryptoStoreError, OlmMachine};
 use matrix_sdk_sqlite::SqliteCryptoStore;
 use tokio::sync::Mutex;
 
@@ -74,6 +74,21 @@ pub enum MachineError {
     MalformedIdentifier { detail: String },
     #[error("store error: {detail}")]
     Store { detail: String },
+    /// The store at `store_path` was created by a different account (a
+    /// different user id, device id, or both) than the one this
+    /// `MachineConfig` names. Kept distinct from `Store`: opening a store
+    /// that belongs to someone else is a recoverable configuration mistake
+    /// -- point this config at the right store, or the right account --
+    /// while `Store` covers failures reconfiguring cannot fix, like a full
+    /// disk or a permissions problem. Upstream surfaces this distinguishably
+    /// as `CryptoStoreError::MismatchedAccount`
+    /// (matrix-sdk-crypto-0.18.0/src/store/error.rs), which `build` below
+    /// matches on explicitly rather than folding into `Store`'s generic
+    /// detail. Fieldless, like `NotInitialised`/`AlreadyInitialised`: the
+    /// expected/actual user and device ids upstream's own variant carries
+    /// are exactly the identifiers this crate's errors must never contain.
+    #[error("the store belongs to a different account")]
+    MismatchedAccount,
 }
 
 struct Held {
@@ -116,8 +131,14 @@ async fn build(config: MachineConfig) -> Result<Held, MachineError> {
 
     let machine = OlmMachine::with_store(&user, &device, store, None)
         .await
-        .map_err(|e| MachineError::Store {
-            detail: store_error_detail(&e),
+        .map_err(|e| match e {
+            // Matched by variant, not text, same as every other upstream
+            // error this crate classifies -- see `session.rs`'s
+            // `classify_megolm_error` for the fuller form of this rule.
+            CryptoStoreError::MismatchedAccount { .. } => MachineError::MismatchedAccount,
+            other => MachineError::Store {
+                detail: store_error_detail(&other),
+            },
         })?;
 
     Ok(Held {
@@ -464,6 +485,34 @@ mod tests {
             first, second,
             "a reopened store must yield the same identity"
         );
+    }
+
+    /// A parked finding from Task 2's review: opening a store written by a
+    /// different account is a recoverable configuration mistake -- point
+    /// this config at the right store, or the right account -- not a
+    /// storage failure like a full disk, which reconfiguring cannot fix.
+    /// Before this test, both collapsed into the same opaque `Store {
+    /// detail: "the crypto store could not be opened" }`, indistinguishable
+    /// from each other. Upstream distinguishes the two itself
+    /// (`CryptoStoreError::MismatchedAccount`,
+    /// matrix-sdk-crypto-0.18.0/src/store/error.rs, raised by
+    /// `OlmMachine::with_store` exactly when the caller's user/device id
+    /// does not match the account already on disk); this test proves
+    /// `build` keeps that distinction instead of erasing it.
+    #[test]
+    fn reopening_a_store_with_a_different_account_is_reported_distinctly() {
+        let _guard = futures::executor::block_on(lock_for_test());
+        reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        futures::executor::block_on(create_machine(config_in(dir.path()))).unwrap();
+        reset_for_test(); // stands in for a process restart with the wrong config
+
+        let mut mismatched = config_in(dir.path());
+        mismatched.user_id = "@mallory:example.org".to_string();
+        let err = futures::executor::block_on(open_store(mismatched)).unwrap_err();
+
+        assert_eq!(err, MachineError::MismatchedAccount);
     }
 
     /// Regression test for a review finding: before `INIT_LOCK` serialised

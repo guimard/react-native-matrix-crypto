@@ -43,7 +43,13 @@ serde = { version = "1", features = ["derive"] }
 # beyond the major version: `matrix-sdk-crypto` and `ruma` already fix a
 # specific `serde_json` in the lockfile, and this crate has no reason to
 # disagree with it.
-serde_json = "1"
+#
+# `raw_value`, explicitly: `session.rs` captures a decrypted event's
+# `content` as a `Box<RawValue>` in `decrypt_event`, so this crate declares
+# the feature it needs rather than relying on `ruma-common` (which already
+# enables it for its own `Raw<T>`) to carry it in through Cargo's feature
+# unification -- the same reasoning as `serde`'s "derive" feature above.
+serde_json = { version = "1", features = ["raw_value"] }
 thiserror = "2"
 # `sync` added explicitly for `tokio::sync::Mutex` in `machine.rs`: this crate
 # calls it directly, so it declares the feature itself rather than relying on

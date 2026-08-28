@@ -12,6 +12,7 @@ export type CryptoErrorKind =
   | 'undecryptable'
   | 'store_corrupt'
   | 'store_unavailable'
+  | 'mismatched_account'
   | 'rejected'
   | 'malformed_identifier'
   | 'not_implemented'
@@ -46,6 +47,16 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   // the CryptoErrorKind union for genuine corruption, which decryption work
   // later in M2 can detect; nothing maps to it yet.
   ['Store', 'store_unavailable'],
+  // A parked finding from Task 2's review: opening a store that belongs to
+  // a different account (a different user id, device id, or both) is a
+  // recoverable configuration mistake -- point this config at the right
+  // store, or the right account -- not a storage failure like a full disk,
+  // which reconfiguring cannot fix. Kept out of 'store_unavailable' so a
+  // product can tell the two apart, matching Task 6's own decryption kinds:
+  // being able to run this classification once is not a reason to leave a
+  // distinguishable condition unclassified. Not in RETRIABLE: retrying with
+  // the same mismatched config fails the same way every time.
+  ['MismatchedAccount', 'mismatched_account'],
   ['MalformedIdentifier', 'malformed_identifier'],
   ['NotInitialised', 'not_initialised'],
   ['AlreadyInitialised', 'already_initialised'],

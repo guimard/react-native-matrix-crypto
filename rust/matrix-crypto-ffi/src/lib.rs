@@ -119,6 +119,8 @@ pub enum MachineFfiError {
     MalformedIdentifier { detail: String },
     #[error("store error: {detail}")]
     Store { detail: String },
+    #[error("the store belongs to a different account")]
+    MismatchedAccount,
 }
 
 impl From<matrix_crypto_core::MachineError> for MachineFfiError {
@@ -131,6 +133,7 @@ impl From<matrix_crypto_core::MachineError> for MachineFfiError {
                 Self::MalformedIdentifier { detail }
             }
             matrix_crypto_core::MachineError::Store { detail } => Self::Store { detail },
+            matrix_crypto_core::MachineError::MismatchedAccount => Self::MismatchedAccount,
         }
     }
 }

@@ -34,9 +34,11 @@ use matrix_sdk_common::ruma::serde::Raw;
 use matrix_sdk_common::ruma::{
     OneTimeKeyAlgorithm, OwnedRoomId, OwnedTransactionId, OwnedUserId, TransactionId, UInt,
 };
+use matrix_sdk_crypto::types::events::room::encrypted::EncryptedEvent;
 use matrix_sdk_crypto::types::requests::{AnyOutgoingRequest, ToDeviceRequest};
 use matrix_sdk_crypto::{
-    DecryptionSettings, EncryptionSettings, EncryptionSyncChanges, OlmMachine, TrustRequirement,
+    DecryptionSettings, EncryptionSettings, EncryptionSyncChanges, MegolmError, OlmMachine,
+    TrustRequirement,
 };
 use serde::Deserialize;
 
@@ -61,7 +63,8 @@ fn decryption_settings() -> DecryptionSettings {
     }
 }
 
-/// Errors from ingesting a batch of sync changes into the crypto machine.
+/// Errors from operating on the crypto machine: ingesting sync changes,
+/// encrypting, decrypting, and pumping outbound requests.
 ///
 /// Carries no payload content, ciphertext, device id or user id -- see spec
 /// section 7: upstream `Display` output can embed event content, so no
@@ -70,6 +73,14 @@ fn decryption_settings() -> DecryptionSettings {
 /// call for different product responses: nonsense the product sent itself
 /// is not the same problem as a crypto operation failing on well-formed
 /// input.
+///
+/// The four decryption kinds below (`MissingKey` through `Undecryptable`)
+/// exist for the same reason, one level more specific: decryption failure
+/// is normal Matrix operation, not a single exceptional condition, and
+/// collapsing all four into `Failed` would tell a product nothing about
+/// which of "retry", "request the key again", "warn about an untrusted
+/// device" or "show a placeholder" applies. See [`classify_megolm_error`]
+/// for exactly which upstream condition maps to which.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SessionError {
     /// `raw_json` did not parse into the shape this function accepts.
@@ -92,6 +103,33 @@ pub enum SessionError {
     /// nonsense".
     #[error("the request id does not match a pending request")]
     UnknownRequest,
+    /// [`decrypt_event`] found no record of the group session that
+    /// encrypted this event. Worth a retry: the key may simply not have
+    /// arrived yet, e.g. a later sync or a key request may still bring it
+    /// in.
+    #[error("no key is available to decrypt this event")]
+    MissingKey,
+    /// [`decrypt_event`] found a record that the group session was
+    /// explicitly withheld, or never shared with this device. Distinct
+    /// from `MissingKey`: this is a known fact about the session rather
+    /// than the mere absence of one, but it is still worth requesting
+    /// again.
+    #[error("the session that encrypted this event was not shared with this device")]
+    UnsharedSession,
+    /// [`decrypt_event`] could not trust the device that supposedly
+    /// encrypted this event -- either its identity does not match what
+    /// this machine has on record, or it does not meet the trust level
+    /// this call requires. Not worth retrying: the same input fails the
+    /// same way until the device is verified out of band.
+    #[error("the device that encrypted this event is not trusted")]
+    UnknownDevice,
+    /// [`decrypt_event`] ran the cryptographic operation and it did not
+    /// produce a usable plaintext: a corrupted or tampered ciphertext, a
+    /// malformed event, or a decrypted payload that is not a well-formed
+    /// Matrix event. Not worth retrying: the same input fails the same way
+    /// every time.
+    #[error("this event could not be decrypted")]
+    Undecryptable,
 }
 
 impl From<MachineError> for SessionError {
@@ -107,7 +145,8 @@ impl From<MachineError> for SessionError {
             // silently landing on `Failed`.
             MachineError::AlreadyInitialised
             | MachineError::MalformedIdentifier { .. }
-            | MachineError::Store { .. } => SessionError::Failed,
+            | MachineError::Store { .. }
+            | MachineError::MismatchedAccount => SessionError::Failed,
         }
     }
 }
@@ -248,8 +287,10 @@ pub struct Envelope {
     pub algorithm: String,
     pub event_type: String,
     pub ciphertext: Vec<u8>,
-    /// `@user:server`, verbatim -- the current machine's own user id, since
-    /// this is always this device's own outbound encryption.
+    /// `@user:server`, verbatim. From [`encrypt_event`], the current
+    /// machine's own user id, since that call is always this device's own
+    /// outbound encryption. From [`decrypt_event`], the sender recorded on
+    /// the event actually decrypted.
     pub sender: String,
 }
 
@@ -324,6 +365,146 @@ pub async fn encrypt_event(
     // device id -- never forwarded, per spec section 7, same as
     // `receive_sync_changes` above.
     result.map_err(|_upstream| SessionError::Failed)
+}
+
+/// The fields [`decrypt_event`] reads out of a successfully decrypted
+/// event's raw JSON. Private: this shape is this function's own
+/// implementation detail, never part of this crate's public declarations.
+/// `content` is captured as a `RawValue`, not a `serde_json::Value`, so it
+/// survives into the returned [`Envelope`] exactly as it came off the wire
+/// rather than round-tripping through a value tree that could reorder its
+/// keys.
+#[derive(Deserialize)]
+struct DecryptedEventFields {
+    #[serde(rename = "type")]
+    event_type: String,
+    sender: String,
+    content: Box<serde_json::value::RawValue>,
+}
+
+/// Maps an upstream Megolm decryption failure onto one of [`SessionError`]'s
+/// four dedicated kinds, by matching on the variant -- never on its
+/// rendered text, which can embed a session id or key material (e.g.
+/// `MismatchedIdentityKeys`'s own `Display` impl serialises the keys
+/// involved). Exhaustive, no wildcard, for the same reason
+/// `From<MachineError>` above is: a future `MegolmError` variant must fail
+/// this build instead of silently landing on one of these four.
+fn classify_megolm_error(error: MegolmError) -> SessionError {
+    match error {
+        // No record of the room key that encrypted this event. `None` --
+        // no explanation offered -- is the "just don't have it yet" case a
+        // product can retry or wait out; `Some(_)` means the sending
+        // device explicitly told us, via an `m.room_key.withheld`
+        // to-device message, that this session was withheld or never
+        // shared -- a distinct fact worth a distinct kind. Neither arm
+        // reads the withheld code's own value: even a well-known code is
+        // sender-supplied wire content, and no variant here carries a
+        // field to put it in.
+        MegolmError::MissingRoomKey(None) => SessionError::MissingKey,
+        MegolmError::MissingRoomKey(Some(_)) => SessionError::UnsharedSession,
+
+        // The device that sent this session's room key does not match the
+        // identity keys recorded in the room key's own to-device message --
+        // a spoofing-shaped condition about *who* encrypted this, not
+        // about the ciphertext itself.
+        MegolmError::MismatchedIdentityKeys(_) => SessionError::UnknownDevice,
+
+        // `decryption_settings()` always passes `TrustRequirement::Untrusted`
+        // in M2 (see its own doc comment), under which upstream's
+        // `check_sender_trust_requirement` unconditionally returns `Ok`
+        // (`matrix-sdk-crypto-0.18.0/src/machine/mod.rs`'s own match arm
+        // `TrustRequirement::Untrusted => true`) -- so this arm is
+        // unreachable today. Matched anyway, with no wildcard, for when M3
+        // tightens that requirement; grouped with the identity-mismatch
+        // case above because both describe the sending device's identity
+        // failing to clear a trust bar, not a broken ciphertext.
+        MegolmError::SenderIdentityNotTrusted(_) => SessionError::UnknownDevice,
+
+        // The event or its decrypted content was malformed, or the
+        // ciphertext itself could not be decoded or decrypted -- every
+        // case where this crate ran the operation and it did not produce a
+        // usable plaintext, as opposed to knowing exactly which key is
+        // absent.
+        MegolmError::EventError(_)
+        | MegolmError::JsonError(_)
+        | MegolmError::Decode(_)
+        | MegolmError::Decryption(_) => SessionError::Undecryptable,
+
+        // A storage failure, not a fact about this event's decryptability --
+        // the same bucket `machine.rs`'s own `Store` variant already falls
+        // into via `From<MachineError>` above.
+        MegolmError::Store(_) => SessionError::Failed,
+    }
+}
+
+/// Decrypts an event received for `scope`, returning the [`Envelope`]
+/// carrying the plaintext recovered from it.
+///
+/// `raw_json` is the `m.room.encrypted` event as received, verbatim.
+/// Decryption failure is normal Matrix operation -- a key that has not
+/// arrived yet, a session withheld, a device this machine does not
+/// recognise -- not an exceptional condition, which is why this can return
+/// four distinct [`SessionError`] kinds instead of one opaque failure; see
+/// [`classify_megolm_error`].
+pub async fn decrypt_event(scope: &str, raw_json: &str) -> Result<Envelope, SessionError> {
+    let room_id = parse_scope(scope)?;
+    let raw = Raw::<EncryptedEvent>::from_json_string(raw_json.to_owned())
+        .map_err(|_| SessionError::MalformedPayload)?;
+
+    // Read back from the event's own content, not hard-coded -- the same
+    // reasoning `encrypt_event` documents for its own `algorithm` field
+    // above. Falls back to empty, like that field, rather than failing the
+    // whole call over a display tag: an absent or non-string `algorithm`
+    // here does not stop `decrypt_room_event` below succeeding or failing
+    // on its own terms.
+    let algorithm = raw
+        .get_field::<serde_json::Value>("content")
+        .ok()
+        .flatten()
+        .and_then(|content| content.get("algorithm")?.as_str().map(str::to_owned))
+        .unwrap_or_default();
+
+    let scope = scope.to_owned();
+
+    // `with_machine` already runs inside the library's runtime and holds
+    // the machine lock for this closure's duration; see its own doc
+    // comment in `machine.rs`.
+    let result = with_machine(move |machine| {
+        Box::pin(async move {
+            machine
+                .decrypt_room_event(&raw, &room_id, &decryption_settings())
+                .await
+        })
+    })
+    .await?;
+
+    let decrypted = result.map_err(classify_megolm_error)?;
+
+    // Pulled out with a small `Deserialize` helper, not the full
+    // `AnyTimelineEvent` enum: this crate needs exactly these three fields
+    // and nothing about which of Matrix's many event types this is. Every
+    // field required, not defaulted: a successfully decrypted event
+    // missing any of them is not a display-tag gap the way a missing
+    // `algorithm` above is -- it means the Megolm layer authenticated a
+    // plaintext that is not a well-formed Matrix event, which this
+    // function reports as `Undecryptable` rather than handing the product
+    // a half-populated `Envelope`.
+    let DecryptedEventFields {
+        event_type,
+        sender,
+        content,
+    } = decrypted
+        .event
+        .deserialize_as_unchecked::<DecryptedEventFields>()
+        .map_err(|_upstream| SessionError::Undecryptable)?;
+
+    Ok(Envelope {
+        scope,
+        algorithm,
+        event_type,
+        ciphertext: content.get().as_bytes().to_vec(),
+        sender,
+    })
 }
 
 /// Ensures `scope` has a group session and shares it with the given users'
@@ -1094,5 +1275,251 @@ mod tests {
                 .await
                 .unwrap();
         });
+    }
+
+    // --- Task 6: decryption and error classification ------------------
+
+    /// The test that matters most here: not merely that `decrypt_event`
+    /// returns `Ok`, but that what comes back is the *exact* payload
+    /// `encrypt_event` started from. A round trip that only checked for
+    /// success would pass whether or not the cryptography did anything at
+    /// all.
+    ///
+    /// `share_scope_key`'s own upstream call creates a matching inbound
+    /// group session alongside the outbound one it shares
+    /// (`matrix-sdk-crypto-0.18.0/src/session_manager/group_sessions/mod.rs`'s
+    /// own doc comment on `create_outbound_group_session`: "This also
+    /// creates a matching inbound group session"), which is why one
+    /// machine can decrypt what it just encrypted for itself without a
+    /// second device anywhere in this test.
+    #[test]
+    fn decrypting_recovers_the_exact_payload_encrypt_event_started_from() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        // Keys in ascending byte order, like every other JSON literal this
+        // file's tests hand to `encrypt_event`: not load-bearing for
+        // encryption, but it is what makes the byte-for-byte assertion
+        // below meaningful without this test also having to reverse
+        // whatever key order `serde_json::Value` happens to use internally.
+        let payload = r#"{"body":"hello","msgtype":"m.text"}"#;
+
+        let envelope = futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+            share_scope_key("!s:example.org", &["@alice:example.org".to_string()])
+                .await
+                .unwrap();
+            let encrypted = encrypt_event("!s:example.org", "m.room.message", payload)
+                .await
+                .unwrap();
+
+            let content: serde_json::Value = serde_json::from_slice(&encrypted.ciphertext)
+                .expect("encrypt_event's own ciphertext is well-formed JSON");
+            let raw_event = serde_json::json!({
+                "sender": encrypted.sender,
+                "event_id": "$event1:example.org",
+                "origin_server_ts": 1_700_000_000_000u64,
+                "content": content,
+            })
+            .to_string();
+
+            decrypt_event("!s:example.org", &raw_event).await
+        })
+        .unwrap();
+
+        assert_eq!(
+            envelope.ciphertext,
+            payload.as_bytes(),
+            "the recovered plaintext must round-trip byte for byte"
+        );
+        assert_eq!(envelope.event_type, "m.room.message");
+        assert_eq!(envelope.sender, "@alice:example.org");
+        assert_eq!(envelope.scope, "!s:example.org");
+        assert!(
+            !envelope.algorithm.is_empty(),
+            "the algorithm tag must be populated"
+        );
+    }
+
+    /// The discriminating half of the round-trip test above: a decryptor
+    /// that always returned success (or always the same bytes) regardless
+    /// of the ciphertext would still pass a test that only checks the
+    /// happy path. Flipping one character of the ciphertext -- same
+    /// length, same base64 alphabet -- exercises the MAC/authentication
+    /// check itself, not a shape or length rejection earlier in the path,
+    /// and must make decryption fail rather than silently succeed or
+    /// return the wrong bytes.
+    #[test]
+    fn corrupting_the_ciphertext_makes_decryption_fail_rather_than_succeed_silently() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+            share_scope_key("!s:example.org", &["@alice:example.org".to_string()])
+                .await
+                .unwrap();
+            let encrypted = encrypt_event("!s:example.org", "m.room.message", r#"{"body":"hi"}"#)
+                .await
+                .unwrap();
+
+            let mut content: serde_json::Value = serde_json::from_slice(&encrypted.ciphertext)
+                .expect("encrypt_event's own ciphertext is well-formed JSON");
+            let original = content["ciphertext"]
+                .as_str()
+                .expect("a Megolm content always carries a ciphertext string")
+                .to_string();
+            let flipped = if let Some(rest) = original.strip_prefix('A') {
+                format!("B{rest}")
+            } else {
+                format!("A{}", &original[1..])
+            };
+            content["ciphertext"] = serde_json::Value::String(flipped);
+
+            let raw_event = serde_json::json!({
+                "sender": encrypted.sender,
+                "event_id": "$event2:example.org",
+                "origin_server_ts": 1_700_000_000_000u64,
+                "content": content,
+            })
+            .to_string();
+
+            decrypt_event("!s:example.org", &raw_event).await
+        })
+        .unwrap_err();
+
+        assert_eq!(err, SessionError::Undecryptable);
+    }
+
+    /// An event referring to a session this machine has no record of at
+    /// all -- the ordinary shape of "the key has not arrived yet" -- must
+    /// be reported as `MissingKey`, not folded into a generic failure a
+    /// product cannot act on differently from any other error.
+    #[test]
+    fn decrypting_an_event_for_a_session_never_shared_reports_missing_key() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+            share_scope_key("!s:example.org", &["@alice:example.org".to_string()])
+                .await
+                .unwrap();
+            let encrypted = encrypt_event("!s:example.org", "m.room.message", r#"{"body":"hi"}"#)
+                .await
+                .unwrap();
+
+            let mut content: serde_json::Value = serde_json::from_slice(&encrypted.ciphertext)
+                .expect("encrypt_event's own ciphertext is well-formed JSON");
+            assert!(
+                content["session_id"].is_string(),
+                "a Megolm content always carries a session_id string"
+            );
+            content["session_id"] =
+                serde_json::Value::String("AN_UNKNOWN_SESSION_NOBODY_SHARED".to_string());
+
+            let raw_event = serde_json::json!({
+                "sender": encrypted.sender,
+                "event_id": "$event3:example.org",
+                "origin_server_ts": 1_700_000_000_000u64,
+                "content": content,
+            })
+            .to_string();
+
+            decrypt_event("!s:example.org", &raw_event).await
+        })
+        .unwrap_err();
+
+        assert_eq!(err, SessionError::MissingKey);
+    }
+
+    /// This crate's own "no secret in any error" rule (spec section 7),
+    /// for decryption specifically: regardless of which of the four kinds
+    /// a failure is classified as, no fragment of the ciphertext that
+    /// caused it may survive into the rendered error. The four decryption
+    /// variants of `SessionError` are fieldless with fixed literal
+    /// messages precisely so this holds structurally; this test proves it
+    /// rather than leaving it to be trusted by inspection, reusing the
+    /// same "unknown session" shape as the `MissingKey` test above.
+    #[test]
+    fn no_decryption_error_carries_a_fragment_of_the_ciphertext() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        let (err, ciphertext_fragment) = futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+            share_scope_key("!s:example.org", &["@alice:example.org".to_string()])
+                .await
+                .unwrap();
+            let encrypted = encrypt_event("!s:example.org", "m.room.message", r#"{"body":"hi"}"#)
+                .await
+                .unwrap();
+
+            let mut content: serde_json::Value = serde_json::from_slice(&encrypted.ciphertext)
+                .expect("encrypt_event's own ciphertext is well-formed JSON");
+            let ciphertext_fragment = content["ciphertext"]
+                .as_str()
+                .expect("a Megolm content always carries a ciphertext string")[..16]
+                .to_string();
+            content["session_id"] =
+                serde_json::Value::String("AN_UNKNOWN_SESSION_NOBODY_SHARED".to_string());
+
+            let raw_event = serde_json::json!({
+                "sender": encrypted.sender,
+                "event_id": "$event4:example.org",
+                "origin_server_ts": 1_700_000_000_000u64,
+                "content": content,
+            })
+            .to_string();
+
+            let err = decrypt_event("!s:example.org", &raw_event)
+                .await
+                .unwrap_err();
+            (err, ciphertext_fragment)
+        });
+
+        assert_eq!(err, SessionError::MissingKey);
+        let rendered = err.to_string();
+        assert!(
+            !rendered.contains(&ciphertext_fragment),
+            "rendered error must not contain a fragment of the ciphertext: {rendered}"
+        );
+        assert!(!rendered.contains("ciphertext"));
+        assert!(!rendered.contains("!s:example.org"));
+    }
+
+    /// A malformed `raw_json` must be rejected before any cryptographic
+    /// work happens, the same precondition `a_malformed_scope_is_rejected`
+    /// already asserts for `encrypt_event`.
+    #[test]
+    fn malformed_raw_json_is_rejected_before_any_decryption_is_attempted() {
+        let err =
+            futures::executor::block_on(decrypt_event("!s:example.org", "{oops")).unwrap_err();
+        assert_eq!(err, SessionError::MalformedPayload);
+    }
+
+    /// Mirrors `a_malformed_scope_is_rejected`: an invalid scope must be
+    /// rejected before this function ever reaches the machine, for
+    /// `decrypt_event` exactly as for `encrypt_event`.
+    #[test]
+    fn a_malformed_scope_is_rejected_for_decryption_too() {
+        let err = futures::executor::block_on(decrypt_event("nonsense", "{}")).unwrap_err();
+        assert_eq!(err, SessionError::MalformedPayload);
     }
 }

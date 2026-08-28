@@ -125,6 +125,25 @@ describe('toCryptoError against the real UniFFI error shape', () => {
     expect(err.retriable).toBe(false)
   })
 
+  /**
+   * A parked finding from Task 2's review, addressed in Task 6: opening a
+   * store that belongs to a different account is a recoverable
+   * configuration mistake, not a storage failure like a full disk --
+   * conflating the two under 'store_unavailable' would send a product
+   * down the wrong recovery path. `MismatchedAccount` is a fieldless
+   * variant, like `NotInitialised` above, so `.message` carries no
+   * ": <message>" suffix either.
+   */
+  it('maps a real UniFFI-shaped MachineFfiError.MismatchedAccount to kind mismatched_account, not store_unavailable', () => {
+    const raw = new Error('MachineFfiError.MismatchedAccount')
+    expect(raw.name).toBe('Error')
+
+    const err = toCryptoError(raw)
+    expect(err.kind).toBe('mismatched_account')
+    expect(err.kind).not.toBe('store_unavailable')
+    expect(err.retriable).toBe(false)
+  })
+
   it('recovers the variant from the "<Type>.<Variant>" prefix of .message when .name is not a recognized kind', () => {
     const err = toCryptoError({ name: 'Error', message: 'ProbeFfiError.Rejected' })
     expect(err.kind).toBe('rejected')
