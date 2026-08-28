@@ -16,7 +16,9 @@ use std::sync::Mutex as StdMutex;
 // Each is renamed on import: their upstream names collide with either one
 // another (every endpoint module calls its own type `Response`) or with this
 // module's own public `OutgoingRequest`.
-use matrix_sdk_common::ruma::api::client::keys::claim_keys::v3::Response as KeysClaimResponse;
+use matrix_sdk_common::ruma::api::client::keys::claim_keys::v3::{
+    Request as KeysClaimRequest, Response as KeysClaimResponse,
+};
 use matrix_sdk_common::ruma::api::client::keys::get_keys::v3::Response as KeysQueryResponse;
 use matrix_sdk_common::ruma::api::client::keys::upload_keys::v3::Response as KeysUploadResponse;
 use matrix_sdk_common::ruma::api::client::keys::upload_signatures::v3::Response as SignatureUploadResponse;
@@ -24,7 +26,9 @@ use matrix_sdk_common::ruma::api::client::message::send_message_event::v3::Respo
 use matrix_sdk_common::ruma::api::client::sync::sync_events::DeviceLists;
 use matrix_sdk_common::ruma::api::client::to_device::send_event_to_device::v3::Response as ToDeviceHttpResponse;
 use matrix_sdk_common::ruma::api::IncomingResponse;
-use matrix_sdk_common::ruma::events::{AnyMessageLikeEventContent, AnyToDeviceEvent};
+use matrix_sdk_common::ruma::events::{
+    AnyMessageLikeEventContent, AnyToDeviceEvent, MessageLikeEventContent,
+};
 // `exports::http`, not a direct `http` dependency of this crate: it is the
 // exact `http` version `ruma`'s own `IncomingResponse::try_from_http_response`
 // requires, reached through `ruma`'s own re-export rather than a second,
@@ -277,7 +281,17 @@ fn parse_user(user_id: &str) -> Result<OwnedUserId, SessionError> {
 /// one -- see spec section 6/7. `algorithm` and the scope inside `scope` are
 /// both open: neither this struct nor anything that produces it may name a
 /// specific group-session algorithm.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// No `#[derive(Debug)]`: `ciphertext` is, depending on which function
+/// produced this, either the wire ciphertext or the plaintext this call
+/// just recovered, and `sender` is a user id -- both are exactly what the
+/// global "no ciphertext, no plaintext, no user id in any Debug output"
+/// rule names. `Debug` is hand-written below instead, redacting both, the
+/// same pattern `machine.rs`'s `MachineConfig` already uses and for the
+/// same reason: a future `{:?}`, a panic message that formats this struct,
+/// or a `#[derive(Debug)]` on something that embeds it would otherwise
+/// print either verbatim.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Envelope {
     pub scope: String,
     /// Open tag, e.g. the wire algorithm id upstream attached to the
@@ -292,6 +306,28 @@ pub struct Envelope {
     /// outbound encryption. From [`decrypt_event`], the sender recorded on
     /// the event actually decrypted.
     pub sender: String,
+}
+
+impl std::fmt::Debug for Envelope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Destructured, not field-accessed: a field added later must fail
+        // this to compile rather than be silently printed unredacted, the
+        // same discipline `MachineConfig::fmt` documents for itself.
+        let Envelope {
+            scope,
+            algorithm,
+            event_type,
+            ciphertext,
+            sender: _,
+        } = self;
+        f.debug_struct("Envelope")
+            .field("scope", scope)
+            .field("algorithm", algorithm)
+            .field("event_type", event_type)
+            .field("ciphertext_len", &ciphertext.len())
+            .field("sender", &"[redacted]")
+            .finish()
+    }
 }
 
 /// Encrypts `payload_json` (a JSON event content, opaque to this function)
@@ -514,37 +550,87 @@ pub async fn decrypt_event(scope: &str, raw_json: &str) -> Result<Envelope, Sess
 /// `matrix-sdk-common` during group key sharing, and the reason Task 1's
 /// runtime exists -- see the design doc section 4.
 ///
-/// The to-device requests upstream returns carry the session key itself, on
-/// its way to the recipients' devices. They are queued here for
+/// Two upstream calls, not one, per the design doc's section 3ter.
+/// `share_room_key` alone is not enough: encrypting a room key *to* a
+/// device requires an Olm session with it, and an Olm session cannot exist
+/// until this device has claimed one of the other device's one-time keys
+/// (a `/keys/claim` round trip). Skip that and `share_room_key` still
+/// "succeeds" -- but every to-device request it produces is an
+/// `m.room_key.withheld` notice with code `m.no_olm`, a message whose
+/// content is "I could not send you the key", not the key itself. That
+/// failure is silent and looks exactly like success from inside this
+/// process, which is exactly the class of mistake section 3bis's own
+/// discarded-requests story is about, one layer deeper.
+///
+/// So `get_missing_sessions` is called first and, if it reports a missing
+/// session, queues the `/keys/claim` request [`take_outgoing_requests`]
+/// must hand out before a *subsequent* `share_scope_key` call can actually
+/// deliver the key to that device -- this call still attempts
+/// `share_room_key` regardless, so any device that already has a session
+/// (or belongs to a different, already-established user) is not held back
+/// waiting on one that does not.
+///
+/// The to-device requests `share_room_key` returns carry the session key
+/// itself, on its way to the recipients' devices. They are queued here for
 /// [`take_outgoing_requests`] to hand out, never discarded -- discarding
 /// them is the mistake the design doc's section 3bis exists to prevent: the
 /// group session would exist locally, `encrypt_event` would happily
 /// produce ciphertext, and no other device would ever be able to read it.
 pub async fn share_scope_key(scope: &str, users: &[String]) -> Result<(), SessionError> {
     let room_id = parse_scope(scope)?;
-    let user_ids = users
+    let user_ids: Vec<OwnedUserId> = users
         .iter()
         .map(|user| parse_user(user))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<_, _>>()?;
 
-    let shared = with_machine(move |machine| {
+    let (missing, shared) = with_machine(move |machine| {
         Box::pin(async move {
-            machine
+            let missing = machine
+                .get_missing_sessions(user_ids.iter().map(AsRef::as_ref))
+                .await;
+            let shared = machine
                 .share_room_key(
                     &room_id,
                     user_ids.iter().map(AsRef::as_ref),
                     EncryptionSettings::default(),
                 )
-                .await
+                .await;
+            (missing, shared)
         })
     })
     .await?;
+
+    // Checked, and queued, before `shared`'s own result is even inspected:
+    // this is progress worth keeping regardless of whether the share
+    // attempt below succeeds, since it is the only way a *later*
+    // `share_scope_key` call can do better.
+    if let Some(claim) = missing.map_err(|_upstream| SessionError::Failed)? {
+        let mut state = STATE.lock().expect("request registry poisoned");
+        state.pending_claim = Some(claim);
+    }
 
     let to_device_requests = shared.map_err(|_upstream| SessionError::Failed)?;
 
     if !to_device_requests.is_empty() {
         let mut state = STATE.lock().expect("request registry poisoned");
-        state.queued_to_device.extend(to_device_requests);
+        // Keyed by `txn_id`, not appended to a growing `Vec`:
+        // `share_room_key` returns the *entire* persisted
+        // `to_share_with_set` on every call
+        // (matrix-sdk-crypto-0.18.0/src/session_manager/group_sessions/mod.rs:785,
+        // upstream's own comment: "The to-device requests get added to the
+        // outbound group session, this way we're making sure that they are
+        // persisted and scoped to the session"), so a second
+        // `share_scope_key` call before the first is marked sent would
+        // otherwise queue an identical request under a second `Vec` slot --
+        // the same message sent to the product twice, and the second
+        // `mark_request_sent` failing with `UnknownRequest` once the first
+        // consumes its id. Keying by `txn_id` makes the second call
+        // idempotent instead: same key, equivalent value, one entry.
+        for request in to_device_requests {
+            state
+                .queued_to_device
+                .insert(request.txn_id.to_string(), request);
+        }
     }
 
     Ok(())
@@ -582,32 +668,83 @@ impl PendingKind {
             PendingKind::RoomMessage => "room_message",
         }
     }
+
+    /// Whether a fresh request of this kind, just handed out by
+    /// [`take_outgoing_requests`], makes any *previously* handed-out,
+    /// still-unresolved id of the same kind permanently unresolvable.
+    ///
+    /// True for the three kinds where upstream re-derives "is this still
+    /// needed" from scratch on every call, minting a new, uncorrelated id
+    /// each time and forgetting whatever id it handed out last:
+    /// `keys_for_upload` recomputes from the account's current state
+    /// (`machine/mod.rs:825`); `users_for_key_query`'s own comment says
+    /// "Forget about any previous key queries in flight"
+    /// (`identities/manager.rs:832`); and `get_missing_sessions` documents
+    /// the identical single-slot behaviour on its own
+    /// `current_key_claim_request` ("there should only be one such request
+    /// active at a time", `session_manager/sessions.rs`). A stale id of one
+    /// of these three kinds names nothing upstream is tracking any more, so
+    /// it is evicted from [`RequestState::pending`] the moment a fresh one
+    /// of the same kind is handed out (see `take_outgoing_requests`) rather
+    /// than accumulating for the life of the process.
+    ///
+    /// False for `to_device` (each entry is a distinct, independently
+    /// resolvable message to a distinct recipient -- see
+    /// `queued_to_device`'s own `txn_id`-keyed de-duplication instead) and
+    /// for `signature_upload`/`room_message` (independent, per-flow
+    /// verification requests upstream does not describe as superseding one
+    /// another; unreachable in M2, since verification is deferred to M3,
+    /// but not given a blanket eviction rule that would be wrong once it
+    /// is reachable).
+    fn superseded_by_a_fresh_request(self) -> bool {
+        matches!(
+            self,
+            PendingKind::KeysUpload | PendingKind::KeysQuery | PendingKind::KeysClaim
+        )
+    }
 }
 
 /// Process-wide outbound-request bookkeeping this module owns.
 ///
-/// Two distinct jobs share one lock rather than two, so a caller can never
-/// observe one updated without the other:
+/// Three distinct jobs share one lock rather than three, so a caller can
+/// never observe one updated without the others:
 ///
 /// * `queued_to_device` -- to-device requests [`share_scope_key`] obtained
-///   from `share_room_key` but that have not yet been handed out by
-///   [`take_outgoing_requests`]. Drained (not cloned) when they are.
+///   from `share_room_key`, keyed by `txn_id`, that have not yet been
+///   handed out by [`take_outgoing_requests`]. Drained (not cloned) when
+///   they are; keyed rather than appended to a `Vec` so a second
+///   `share_scope_key` call before the first is marked sent cannot queue
+///   the same persisted request twice (see `share_scope_key`'s own
+///   comment).
+/// * `pending_claim` -- at most one outstanding `/keys/claim` request
+///   [`share_scope_key`] obtained from `get_missing_sessions`, not yet
+///   handed out. A single slot, not a queue, mirroring upstream's own
+///   "only one such request active at a time" model for the same request
+///   (see `PendingKind::superseded_by_a_fresh_request`'s doc comment): a
+///   second `share_scope_key` call before the first claim is taken
+///   overwrites it rather than accumulating a second one describing
+///   overlapping or stale missing-session state.
 /// * `pending` -- every request id this module has ever handed out via
 ///   [`take_outgoing_requests`] that has not yet been resolved by
 ///   [`mark_request_sent`], with the [`PendingKind`] needed to parse its
-///   response. Removed on resolution, so it cannot grow across a request's
-///   whole lifetime, only across its in-flight one.
+///   response. Removed on successful resolution only (a failed
+///   `mark_request_sent` leaves the entry in place, so the same id can be
+///   retried with corrected input); also evicted early for the three kinds
+///   `PendingKind::superseded_by_a_fresh_request` names, since a stale id
+///   of one of those can never be resolved regardless.
 ///
 /// A `std::sync::Mutex`, not `tokio::sync::Mutex`: every critical section
 /// below is a plain synchronous map/vec operation with no `.await` inside
 /// it.
 struct RequestState {
-    queued_to_device: Vec<std::sync::Arc<ToDeviceRequest>>,
+    queued_to_device: BTreeMap<String, std::sync::Arc<ToDeviceRequest>>,
+    pending_claim: Option<(OwnedTransactionId, KeysClaimRequest)>,
     pending: BTreeMap<String, PendingKind>,
 }
 
 static STATE: StdMutex<RequestState> = StdMutex::new(RequestState {
-    queued_to_device: Vec::new(),
+    queued_to_device: BTreeMap::new(),
+    pending_claim: None,
     pending: BTreeMap::new(),
 });
 
@@ -615,7 +752,45 @@ static STATE: StdMutex<RequestState> = StdMutex::new(RequestState {
 fn reset_request_state_for_test() {
     let mut state = STATE.lock().expect("request registry poisoned");
     state.queued_to_device.clear();
+    state.pending_claim = None;
     state.pending.clear();
+}
+
+/// Serialises `value`, mapping a failure to [`SessionError::Failed`] rather
+/// than swallowing it into an empty or default JSON value. `serde_json`'s
+/// own `json!` macro cannot fail this way (it panics internally instead, on
+/// the rare types whose `Serialize` impl can fail at all), but the several
+/// direct `serde_json::to_value`/`to_string` calls below are not routed
+/// through it -- this is their one shared, fallible chokepoint, so none of
+/// them is tempted to reach for `.unwrap_or_default()` and quietly hand out
+/// a `body` that looks like a valid request but carries none of its data.
+fn to_json<T: serde::Serialize>(value: &T) -> Result<serde_json::Value, SessionError> {
+    serde_json::to_value(value).map_err(|_| SessionError::Failed)
+}
+
+/// The wire body of a `/keys/claim` request: exactly `one_time_keys`, plus
+/// `timeout` when upstream set one. Upstream's own `Request` marks
+/// `timeout` `#[serde(skip_serializing_if = "Option::is_none")]` and
+/// `one_time_keys` with no such attribute (verified against
+/// `ruma-client-api-0.24.0/src/keys/claim_keys/v3.rs`); matched here rather
+/// than serialising `r.timeout` as an explicit `null` the way an earlier
+/// version of this function did for every optional field (finding 9: ruma
+/// omits these, so this does too, now that the fix is this cheap alongside
+/// the rest of this function's rewrite).
+///
+/// Shared between [`describe_outgoing`]'s `KeysClaim` arm (reachable only
+/// if a future upstream version starts returning one from
+/// `outgoing_requests()` itself -- see `PendingKind`'s own doc comment) and
+/// [`take_outgoing_requests`]'s draining of `RequestState::pending_claim`,
+/// the actual source of every `keys_claim` request this crate hands out
+/// today.
+fn describe_keys_claim(r: &KeysClaimRequest) -> Result<String, SessionError> {
+    let mut body = serde_json::Map::new();
+    body.insert("one_time_keys".to_string(), to_json(&r.one_time_keys)?);
+    if let Some(ms) = r.timeout.map(|d| d.as_millis() as u64) {
+        body.insert("timeout".to_string(), serde_json::json!(ms));
+    }
+    Ok(serde_json::Value::Object(body).to_string())
 }
 
 /// Flattens one upstream outgoing request into the `{ kind, body }` shape
@@ -631,64 +806,84 @@ fn reset_request_state_for_test() {
 /// `OutgoingRequest::try_into_http_request` -- that method additionally
 /// needs an auth scheme and a homeserver's supported-version list neither
 /// of which this bridge has any business deciding (the product owns
-/// transport, per spec section 6). Field names here are upstream's own
-/// wire field names (verified against the vendored `ruma-client-api`
-/// source per request kind), so the JSON this produces is the real request
-/// body for that endpoint, not a re-description of it.
-fn describe_outgoing(request: &AnyOutgoingRequest) -> (PendingKind, String) {
+/// transport, per spec section 6).
+///
+/// `keys_upload`, `keys_query`, `keys_claim` and `signature_upload` are
+/// exactly that endpoint's real wire body: field names, and which fields
+/// are omitted when absent or empty, checked field-by-field against the
+/// vendored `ruma-client-api-0.24.0` source for that endpoint (`keys_upload`:
+/// `keys/upload_keys/v3.rs`; `keys_query`: `keys/get_keys/v3.rs`;
+/// `keys_claim`: see [`describe_keys_claim`]; `signature_upload`:
+/// `keys/upload_signatures/v3.rs`, whose `Request` marks `signed_keys`
+/// `#[ruma_api(body)]` -- the wire body *is* that map at the top level, not
+/// a wrapper around it, which an earlier version of this function got
+/// wrong).
+///
+/// `to_device` and `room_message` are the two disclosed exceptions:
+/// alongside their real body field(s), each also carries the values ruma
+/// marks `#[ruma_api(path)]` for that endpoint (`event_type`/`txn_id` for
+/// `to_device`; `room_id`/`event_type`/`txn_id` for `room_message`), which
+/// the real endpoint's URL needs and the wire body itself omits. The
+/// product has no other way to obtain them from this crate, and an extra
+/// top-level JSON field is harmless to a server that ignores unknown keys.
+/// `room_message` previously omitted `event_type` here, which left the
+/// product no way to build that URL at all; that is fixed below.
+fn describe_outgoing(request: &AnyOutgoingRequest) -> Result<(PendingKind, String), SessionError> {
     match request {
-        AnyOutgoingRequest::KeysUpload(r) => (
-            PendingKind::KeysUpload,
-            serde_json::json!({
-                "device_keys": r.device_keys,
-                "one_time_keys": r.one_time_keys,
-                "fallback_keys": r.fallback_keys,
-            })
-            .to_string(),
-        ),
-        AnyOutgoingRequest::KeysQuery(r) => (
-            PendingKind::KeysQuery,
-            serde_json::json!({
-                "device_keys": r.device_keys,
-                "timeout": r.timeout.map(|d| d.as_millis() as u64),
-            })
-            .to_string(),
-        ),
-        AnyOutgoingRequest::KeysClaim(r) => (
-            PendingKind::KeysClaim,
-            serde_json::json!({
-                "one_time_keys": r.one_time_keys,
-                "timeout": r.timeout.map(|d| d.as_millis() as u64),
-            })
-            .to_string(),
-        ),
+        AnyOutgoingRequest::KeysUpload(r) => {
+            let mut body = serde_json::Map::new();
+            if let Some(device_keys) = &r.device_keys {
+                body.insert("device_keys".to_string(), to_json(device_keys)?);
+            }
+            if !r.one_time_keys.is_empty() {
+                body.insert("one_time_keys".to_string(), to_json(&r.one_time_keys)?);
+            }
+            if !r.fallback_keys.is_empty() {
+                body.insert("fallback_keys".to_string(), to_json(&r.fallback_keys)?);
+            }
+            Ok((
+                PendingKind::KeysUpload,
+                serde_json::Value::Object(body).to_string(),
+            ))
+        }
+        AnyOutgoingRequest::KeysQuery(r) => {
+            let mut body = serde_json::Map::new();
+            // Always present, even when empty: ruma's own `Request` has no
+            // `skip_serializing_if` on `device_keys`.
+            body.insert("device_keys".to_string(), to_json(&r.device_keys)?);
+            if let Some(ms) = r.timeout.map(|d| d.as_millis() as u64) {
+                body.insert("timeout".to_string(), serde_json::json!(ms));
+            }
+            Ok((
+                PendingKind::KeysQuery,
+                serde_json::Value::Object(body).to_string(),
+            ))
+        }
+        AnyOutgoingRequest::KeysClaim(r) => Ok((PendingKind::KeysClaim, describe_keys_claim(r)?)),
         AnyOutgoingRequest::ToDeviceRequest(r) => {
             // `ToDeviceRequest` is this crate's own type and derives
             // `Serialize` directly (unlike the `ruma` request types
-            // above), so the whole struct serialises as-is -- including
-            // `event_type`/`txn_id`, which the wire body itself omits (they
-            // are path segments on the real endpoint) but which the
-            // product needs to build that path, and which are harmless
-            // alongside `messages` for a server that ignores unknown
-            // top-level fields.
-            (
-                PendingKind::ToDevice,
-                serde_json::to_string(r).unwrap_or_default(),
-            )
+            // above), so the whole struct serialises as-is -- see this
+            // function's own doc comment for why `event_type`/`txn_id`
+            // alongside `messages` is deliberate, not a wire-accuracy bug.
+            let body = serde_json::to_string(r).map_err(|_| SessionError::Failed)?;
+            Ok((PendingKind::ToDevice, body))
         }
-        AnyOutgoingRequest::SignatureUpload(r) => (
+        AnyOutgoingRequest::SignatureUpload(r) => Ok((
             PendingKind::SignatureUpload,
-            serde_json::json!({ "signed_keys": r.signed_keys }).to_string(),
-        ),
-        AnyOutgoingRequest::RoomMessage(r) => (
-            PendingKind::RoomMessage,
-            serde_json::json!({
-                "room_id": r.room_id,
-                "txn_id": r.txn_id,
-                "content": &*r.content,
-            })
-            .to_string(),
-        ),
+            to_json(&r.signed_keys)?.to_string(),
+        )),
+        AnyOutgoingRequest::RoomMessage(r) => {
+            let mut body = serde_json::Map::new();
+            body.insert("room_id".to_string(), to_json(&r.room_id)?);
+            body.insert("event_type".to_string(), to_json(&r.content.event_type())?);
+            body.insert("txn_id".to_string(), to_json(&r.txn_id)?);
+            body.insert("content".to_string(), to_json(&*r.content)?);
+            Ok((
+                PendingKind::RoomMessage,
+                serde_json::Value::Object(body).to_string(),
+            ))
+        }
     }
 }
 
@@ -697,7 +892,14 @@ fn describe_outgoing(request: &AnyOutgoingRequest) -> (PendingKind, String) {
 /// never interprets, sent as-is; `kind` is an open tag mirroring upstream's
 /// own request kinds, not restricted to the ones listed in
 /// [`describe_outgoing`]'s match today.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// No `#[derive(Debug)]`: `body` is a to-device request's Olm-encrypted
+/// payload, or a key-upload/key-claim body carrying device keys and
+/// one-time keys, alongside user ids and device ids throughout -- exactly
+/// what the global no-secret rule forbids from any `Debug` output or panic
+/// message. `Debug` is hand-written below, printing `body`'s length rather
+/// than its content, the same pattern `Envelope` and `MachineConfig` use.
+#[derive(Clone, PartialEq, Eq)]
 pub struct OutgoingRequest {
     /// Opaque; hand it back verbatim to [`mark_request_sent`].
     pub id: String,
@@ -705,9 +907,21 @@ pub struct OutgoingRequest {
     pub body: String,
 }
 
+impl std::fmt::Debug for OutgoingRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let OutgoingRequest { id, kind, body } = self;
+        f.debug_struct("OutgoingRequest")
+            .field("id", id)
+            .field("kind", kind)
+            .field("body_len", &body.len())
+            .finish()
+    }
+}
+
 /// Drains every outstanding outbound request: device/one-time key uploads
 /// and key queries upstream still wants sent (`OlmMachine::outgoing_requests`),
-/// plus any to-device requests [`share_scope_key`] queued.
+/// any to-device requests [`share_scope_key`] queued, and any `/keys/claim`
+/// request it queued (design doc section 3ter).
 ///
 /// This is the half of the pump the design doc section 3bis is named for.
 /// A fresh machine's device keys and one-time keys are otherwise never
@@ -719,40 +933,81 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
             .await?
             .map_err(|_upstream| SessionError::Failed)?;
 
-    let mut state = STATE.lock().expect("request registry poisoned");
-    let mut out = Vec::with_capacity(upstream.len() + state.queued_to_device.len());
+    // Every `(id, kind, body)` this call will hand out, built in full
+    // before `state.pending` is touched: a serialisation failure partway
+    // through must not leave `pending` holding an id this call never
+    // actually returned to the caller, which nothing could ever resolve.
+    let mut fresh: Vec<(String, PendingKind, String)> = Vec::with_capacity(upstream.len() + 2);
 
     for request in &upstream {
         let id = request.request_id().to_string();
-        let (kind, body) = describe_outgoing(request.request());
-        state.pending.insert(id.clone(), kind);
-        out.push(OutgoingRequest {
-            id,
-            kind: kind.tag().to_string(),
-            body,
-        });
+        let (kind, body) = describe_outgoing(request.request())?;
+        fresh.push((id, kind, body));
     }
 
+    let mut state = STATE.lock().expect("request registry poisoned");
+
+    // Read, not drained, until every serialisation below has already
+    // succeeded: draining first (`mem::take`/`Option::take`) and only then
+    // discovering a serialisation failure would strand those items
+    // nowhere -- removed from the queue, but never reaching `pending` or
+    // the caller either, the same "no state change on a failure partway
+    // through" reasoning this function's own opening comment gives for
+    // building `fresh` before touching `state` at all.
+    //
     // The to-device `txn_id` doubles as the request id, per
     // `share_room_key`'s own doc comment (verified against
     // `matrix-sdk-crypto-0.18.0/src/session_manager/group_sessions/mod.rs`):
     // "the responses need to be passed back to the state machine ... using
-    // the to-device txn_id as request_id".
-    //
-    // Collected into an owned `Vec` before the loop, not iterated directly
-    // off `drain(..)`: `state` is a `MutexGuard`, and the borrow checker
-    // cannot see `queued_to_device` and `pending` as disjoint fields through
-    // its `DerefMut` the way it can on a plain struct, so holding the
-    // `drain` iterator open while also indexing into `state.pending` below
-    // does not borrow-check.
-    let queued: Vec<_> = state.queued_to_device.drain(..).collect();
-    for to_device in queued {
-        let id = to_device.txn_id.to_string();
-        let body = serde_json::to_string(to_device.as_ref()).unwrap_or_default();
-        state.pending.insert(id.clone(), PendingKind::ToDevice);
+    // the to-device txn_id as request_id" -- already true by construction
+    // here, since `queued_to_device` is itself keyed by `txn_id`. Cloned,
+    // not iterated by reference and drained afterwards in the same pass:
+    // `Arc<ToDeviceRequest>` clones are cheap (a refcount bump, not the
+    // request's own content), so this is not the deep copy it might look
+    // like.
+    let queued_to_device = state.queued_to_device.clone();
+    for (id, to_device) in &queued_to_device {
+        let body = serde_json::to_string(to_device.as_ref()).map_err(|_| SessionError::Failed)?;
+        fresh.push((id.clone(), PendingKind::ToDevice, body));
+    }
+
+    if let Some((txn_id, claim_request)) = &state.pending_claim {
+        let body = describe_keys_claim(claim_request)?;
+        fresh.push((txn_id.to_string(), PendingKind::KeysClaim, body));
+    }
+
+    // Every fallible step above has now succeeded, so the two queues can
+    // safely be drained for real.
+    state.queued_to_device.clear();
+    state.pending_claim = None;
+
+    // Evict every existing `pending` entry whose kind this batch is about
+    // to refresh, once per call rather than once per item -- per-item
+    // eviction would be wrong for `keys_query`, which can legitimately
+    // hand out *several* requests in the same batch when upstream splits a
+    // large user list across multiple `/keys/query` calls
+    // (`identities/manager.rs`'s own "convert the set of users into
+    // multiple /keys/query requests" comment): evicting after inserting
+    // the first of those siblings would discard the second. See
+    // `PendingKind::superseded_by_a_fresh_request`'s own doc comment for
+    // why eviction is correct here at all.
+    let refreshed_kinds: Vec<PendingKind> = fresh
+        .iter()
+        .map(|(_, kind, _)| *kind)
+        .filter(|kind| kind.superseded_by_a_fresh_request())
+        .collect();
+    if !refreshed_kinds.is_empty() {
+        state
+            .pending
+            .retain(|_, kind| !refreshed_kinds.contains(kind));
+    }
+
+    let mut out = Vec::with_capacity(fresh.len());
+    for (id, kind, body) in fresh {
+        state.pending.insert(id.clone(), kind);
         out.push(OutgoingRequest {
             id,
-            kind: PendingKind::ToDevice.tag().to_string(),
+            kind: kind.tag().to_string(),
             body,
         });
     }
@@ -859,17 +1114,33 @@ async fn mark_sent(
 /// this module handed out -- [`SessionError::UnknownRequest`] -- and
 /// `response_json` not parsing as the shape that request's kind expects --
 /// [`SessionError::MalformedPayload`].
+///
+/// The `pending` entry is looked up, not removed, before the mark is
+/// attempted, and removed only once it succeeds: a caller who sent a
+/// malformed `response_json` (or hit a transient upstream failure) can
+/// retry the same `id` with corrected input instead of being told
+/// `UnknownRequest` for a request that is, in fact, still exactly as
+/// pending as before this call.
 pub async fn mark_request_sent(id: &str, response_json: &str) -> Result<(), SessionError> {
     let kind = {
-        let mut state = STATE.lock().expect("request registry poisoned");
-        state.pending.remove(id)
+        let state = STATE.lock().expect("request registry poisoned");
+        state.pending.get(id).copied()
     }
     .ok_or(SessionError::UnknownRequest)?;
 
     let transaction_id: OwnedTransactionId = <&TransactionId>::from(id).to_owned();
     let body = response_json.as_bytes().to_vec();
 
-    with_machine(move |machine| Box::pin(mark_sent(machine, kind, transaction_id, body))).await?
+    let result =
+        with_machine(move |machine| Box::pin(mark_sent(machine, kind, transaction_id, body)))
+            .await?;
+
+    if result.is_ok() {
+        let mut state = STATE.lock().expect("request registry poisoned");
+        state.pending.remove(id);
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -1118,23 +1389,43 @@ mod tests {
         assert!(requests.iter().all(|r| !r.id.is_empty()));
     }
 
-    /// Sharing a scope key must produce something to send. A silent success
-    /// here is the failure mode section 3bis warns about: the outbound
-    /// group session would exist locally and `encrypt_event` would happily
-    /// produce ciphertext, but the session key would never leave the
-    /// process, so no other device could ever read it.
+    /// Parses `body` as JSON and returns its top-level `event_type` string.
+    /// Test-only: lets a test decode what an `OutgoingRequest.body` actually
+    /// says, the way a real product's transport code would, rather than
+    /// only checking `kind` -- see
+    /// `sharing_a_scope_key_delivers_the_key_only_after_a_keys_claim_round_trip`,
+    /// where checking `kind` alone is exactly the gap a review found.
+    fn decoded_event_type(body: &str) -> String {
+        serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|value| value.get("event_type")?.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "<no event_type in body>".to_string())
+    }
+
+    /// Sharing a scope key must actually deliver the session key, not
+    /// merely produce *something* to send -- design doc section 3ter. A
+    /// review found this test's original form asserted only
+    /// `kind == "to_device"`, which passes on an `m.room_key.withheld`
+    /// notice with code `m.no_olm`: a message whose content is "I could
+    /// not send you the key", not the key itself. That is exactly what
+    /// `share_room_key` produces for a device this machine has learned the
+    /// *identity* keys for (via `/keys/query`) but has no Olm session with
+    /// yet -- which is every device, the first time, since an Olm session
+    /// requires its own `/keys/claim` round trip.
     ///
-    /// Proven with a real second device, not a stranger's user id: sharing
-    /// to a user this machine has never learned any devices for
-    /// legitimately produces nothing to send (there is nobody to send to
-    /// yet). So this test first drives this module's own pump through a
-    /// real keys-query round trip -- the same one a real sync loop
-    /// performs -- to make that second device known, matching the design
-    /// doc's own two-machine testing guidance (spec section 8) and the M2
-    /// exit criterion that the key travel through `take_outgoing_requests`
-    /// rather than being handed over directly.
+    /// This test reproduces both halves of that finding as one permanent
+    /// regression: share *before* any session exists and assert the
+    /// withheld notice (proving the failure mode is real, and that this
+    /// test would have caught it as originally written), then complete the
+    /// `/keys/claim` round trip through this module's own pump and share
+    /// *again*, asserting the decoded `event_type` is `m.room.encrypted` --
+    /// the session key, not a notice that one could not be sent. Both
+    /// round trips (`/keys/query` then `/keys/claim`) are driven through
+    /// `take_outgoing_requests`/`mark_request_sent` themselves, not
+    /// short-circuited, matching the M2 exit criterion that the key travel
+    /// through the pump rather than being handed over directly.
     #[test]
-    fn sharing_a_scope_key_produces_a_request_to_send() {
+    fn sharing_a_scope_key_delivers_the_key_only_after_a_keys_claim_round_trip() {
         let _guard = futures::executor::block_on(crate::machine::lock_for_test());
         crate::machine::reset_for_test();
         reset_request_state_for_test();
@@ -1147,65 +1438,143 @@ mod tests {
         // exact mistake being made twice already in this milestone -- code
         // that only works because a test harness happened to supply an
         // ambient runtime.
-        let after = futures::executor::block_on(crate::in_runtime(async move {
-            crate::machine::create_machine(config_in(dir.path()))
+        let (before_claim, after_claim) =
+            futures::executor::block_on(crate::in_runtime(async move {
+                crate::machine::create_machine(config_in(dir.path()))
+                    .await
+                    .unwrap();
+
+                let bob_user: matrix_sdk_common::ruma::OwnedUserId =
+                    "@bob:example.org".parse().unwrap();
+                let bob_device: matrix_sdk_common::ruma::OwnedDeviceId = "BOBDEVICE".into();
+                let bob = matrix_sdk_crypto::OlmMachine::new(&bob_user, &bob_device).await;
+                let bob_upload = bob.outgoing_requests().await.unwrap();
+                let bob_device_keys = bob_upload
+                    .iter()
+                    .find_map(|r| match r.request() {
+                        AnyOutgoingRequest::KeysUpload(u) => u.device_keys.clone(),
+                        _ => None,
+                    })
+                    .expect("a fresh machine always has device keys to upload");
+                let bob_one_time_key = bob_upload
+                    .iter()
+                    .find_map(|r| match r.request() {
+                        AnyOutgoingRequest::KeysUpload(u) => u
+                            .one_time_keys
+                            .iter()
+                            .next()
+                            .map(|(id, key)| (id.clone(), key.clone())),
+                        _ => None,
+                    })
+                    .expect("a fresh machine always has one-time keys to upload");
+
+                // Step 1, `/keys/query`: tell the local machine bob's device
+                // list changed, so its own pump reports a real keys-query
+                // request to resolve -- rather than hand-inserting one, which
+                // would test response parsing alone and nothing about
+                // `take_outgoing_requests` itself noticing the change.
+                receive_sync_changes(&format!(
+                    r#"{{"changed_devices":{{"changed":["{bob_user}"],"left":[]}}}}"#
+                ))
                 .await
                 .unwrap();
 
-            let bob_user: matrix_sdk_common::ruma::OwnedUserId =
-                "@bob:example.org".parse().unwrap();
-            let bob_device: matrix_sdk_common::ruma::OwnedDeviceId = "BOBDEVICE".into();
-            let bob = matrix_sdk_crypto::OlmMachine::new(&bob_user, &bob_device).await;
-            let bob_upload = bob.outgoing_requests().await.unwrap();
-            let bob_device_keys = bob_upload
-                .iter()
-                .find_map(|r| match r.request() {
-                    AnyOutgoingRequest::KeysUpload(u) => u.device_keys.clone(),
-                    _ => None,
-                })
-                .expect("a fresh machine always has device keys to upload");
+                let query_id = take_outgoing_requests()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|r| r.kind == "keys_query")
+                    .expect("a changed device queues a keys query")
+                    .id;
 
-            // Tell the local machine bob's device list changed, so its own
-            // pump reports a real keys-query request to resolve -- rather
-            // than hand-inserting one, which would test the response
-            // parsing alone and nothing about `take_outgoing_requests`
-            // itself noticing the change.
-            receive_sync_changes(&format!(
-                r#"{{"changed_devices":{{"changed":["{bob_user}"],"left":[]}}}}"#
-            ))
-            .await
-            .unwrap();
+                let mut devices = BTreeMap::new();
+                devices.insert(
+                    bob_device.to_string(),
+                    serde_json::to_value(&bob_device_keys).unwrap(),
+                );
+                let mut by_user = BTreeMap::new();
+                by_user.insert(bob_user.to_string(), devices);
+                let query_response = serde_json::json!({ "device_keys": by_user }).to_string();
+                mark_request_sent(&query_id, &query_response).await.unwrap();
 
-            let query_id = take_outgoing_requests()
-                .await
-                .unwrap()
-                .into_iter()
-                .find(|r| r.kind == "keys_query")
-                .expect("a changed device queues a keys query")
-                .id;
+                // Share now, before any Olm session exists: this is the case
+                // the review's finding 1 is about. Both `before_claim` and
+                // `claim_id` are read from this one `take_outgoing_requests`
+                // call, not two separate ones: `pending_claim` is drained
+                // (taken, not cloned) the first time it is asked for, so a
+                // second call here would find nothing left to drain and prove
+                // nothing.
+                share_scope_key("!s:example.org", &[bob_user.to_string()])
+                    .await
+                    .unwrap();
+                let taken = take_outgoing_requests().await.unwrap();
+                let before_claim: Vec<String> = taken
+                    .iter()
+                    .filter(|r| r.kind == "to_device")
+                    .map(|r| decoded_event_type(&r.body))
+                    .collect();
 
-            let mut devices = BTreeMap::new();
-            devices.insert(
-                bob_device.to_string(),
-                serde_json::to_value(&bob_device_keys).unwrap(),
-            );
-            let mut by_user = BTreeMap::new();
-            by_user.insert(bob_user.to_string(), devices);
-            let response = serde_json::json!({ "device_keys": by_user }).to_string();
+                // Step 2, `/keys/claim`: `share_scope_key` above queued the
+                // request for the session it found missing; resolve it with
+                // one of bob's own genuinely self-signed one-time keys.
+                let claim_id = taken
+                    .into_iter()
+                    .find(|r| r.kind == "keys_claim")
+                    .expect("sharing to a device with no session queues a keys claim")
+                    .id;
 
-            mark_request_sent(&query_id, &response).await.unwrap();
+                let (otk_id, otk_key) = bob_one_time_key;
+                let mut otk_map = BTreeMap::new();
+                otk_map.insert(otk_id.to_string(), serde_json::to_value(&otk_key).unwrap());
+                let mut claim_devices = BTreeMap::new();
+                claim_devices.insert(
+                    bob_device.to_string(),
+                    serde_json::to_value(&otk_map).unwrap(),
+                );
+                let mut claim_by_user = BTreeMap::new();
+                claim_by_user.insert(
+                    bob_user.to_string(),
+                    serde_json::to_value(&claim_devices).unwrap(),
+                );
+                let claim_response =
+                    serde_json::json!({ "one_time_keys": claim_by_user }).to_string();
+                mark_request_sent(&claim_id, &claim_response).await.unwrap();
 
-            share_scope_key("!s:example.org", &[bob_user.to_string()])
-                .await
-                .unwrap();
+                // Step 3, `/sendToDevice`: share again, now that a session
+                // exists.
+                share_scope_key("!s:example.org", &[bob_user.to_string()])
+                    .await
+                    .unwrap();
+                let after_claim: Vec<String> = take_outgoing_requests()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter(|r| r.kind == "to_device")
+                    .map(|r| decoded_event_type(&r.body))
+                    .collect();
 
-            take_outgoing_requests().await
-        }))
-        .unwrap();
+                (before_claim, after_claim)
+            }));
 
+        assert_eq!(
+            before_claim,
+            vec!["m.room_key.withheld".to_string()],
+            "sharing before a session exists must be a withheld notice, not silently nothing and not the key"
+        );
+        // Not `assert_eq!` against a single-element vec: upstream does not
+        // retract the first attempt's withheld notice just because a
+        // second attempt can now succeed -- it was never marked sent, so
+        // `share_room_key` still considers it pending and this second
+        // `share_scope_key` call hands it out again alongside the new,
+        // genuinely encrypted request, both under distinct ids (proven by
+        // `queued_to_device`'s own `txn_id` keying not collapsing them into
+        // one). That stale-notice accumulation is upstream's own choice,
+        // not a defect this test is about; what matters here is that the
+        // real key is *among* what this call produces, not that it is the
+        // only thing.
         assert!(
-            after.iter().any(|r| r.kind == "to_device"),
-            "the session key must leave the process: {after:?}"
+            after_claim.contains(&"m.room.encrypted".to_string()),
+            "sharing after a keys-claim round trip must deliver the session key: {after_claim:?}"
         );
     }
 
@@ -1275,6 +1644,337 @@ mod tests {
                 .await
                 .unwrap();
         });
+    }
+
+    // --- Fix round 1: keys-claim wiring, body accuracy, dedup, redaction,
+    //     bounded pending, retriable marks ---------------------------
+
+    /// `describe_outgoing`'s own doc comment claims every body is that
+    /// endpoint's real wire body except the two disclosed exceptions
+    /// (`to_device`, `room_message`, both augmented with path-segment
+    /// values). Proven directly, one kind at a time, by constructing each
+    /// `AnyOutgoingRequest` variant by hand -- every field involved is
+    /// public, so no live machine is needed. A review found two kinds did
+    /// not match this claim before this fix: `signature_upload`'s body was
+    /// wrapped in an extra `{"signed_keys": ...}` layer ruma's own
+    /// `#[ruma_api(body)]` attribute says does not exist on the wire, and
+    /// `room_message` omitted `event_type` entirely, leaving the product
+    /// no way to build that endpoint's URL at all.
+    #[test]
+    fn describe_outgoing_produces_the_real_wire_body_for_every_kind() {
+        // keys_upload: device_keys/one_time_keys/fallback_keys all
+        // omitted, not `null`/`{}`, when absent or empty (finding 9).
+        // `Request::new()` is the only public constructor a
+        // `#[non_exhaustive]` ruma request type like this one has, and it
+        // always gives the all-absent/all-empty case.
+        let upload = matrix_sdk_common::ruma::api::client::keys::upload_keys::v3::Request::new();
+        let (kind, body) = describe_outgoing(&AnyOutgoingRequest::KeysUpload(upload)).unwrap();
+        assert_eq!(kind.tag(), "keys_upload");
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(
+            value.get("device_keys").is_none(),
+            "device_keys must be omitted when absent: {body}"
+        );
+        assert!(
+            value.get("one_time_keys").is_none(),
+            "one_time_keys must be omitted when empty: {body}"
+        );
+        assert!(
+            value.get("fallback_keys").is_none(),
+            "fallback_keys must be omitted when empty: {body}"
+        );
+
+        // keys_query: device_keys always present, even empty (ruma's own
+        // `Request` has no `skip_serializing_if` on it); timeout omitted
+        // when absent. Not `#[non_exhaustive]` (it is matrix-sdk-crypto's
+        // own type, not generated by ruma's request macro), so a struct
+        // literal works directly.
+        let query = matrix_sdk_crypto::types::requests::KeysQueryRequest {
+            timeout: None,
+            device_keys: BTreeMap::new(),
+        };
+        let (kind, body) = describe_outgoing(&AnyOutgoingRequest::KeysQuery(query)).unwrap();
+        assert_eq!(kind.tag(), "keys_query");
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(
+            value.get("device_keys").is_some(),
+            "device_keys must always be present, even empty: {body}"
+        );
+        assert!(
+            value.get("timeout").is_none(),
+            "timeout must be omitted when absent: {body}"
+        );
+
+        // keys_claim: `describe_keys_claim`'s own doc comment covers this;
+        // proven again here through the `AnyOutgoingRequest` match arm
+        // specifically, currently unreachable in practice (see
+        // `PendingKind::superseded_by_a_fresh_request`'s doc comment) but
+        // matched exhaustively anyway. `KeysClaimRequest::new` is the only
+        // public constructor this `#[non_exhaustive]` type has, and it
+        // always sets a 10-second timeout -- there is no public way to
+        // build one with `timeout: None`, so only the always-present case
+        // is checked directly here.
+        let claim = KeysClaimRequest::new(BTreeMap::new());
+        let (kind, body) = describe_outgoing(&AnyOutgoingRequest::KeysClaim(claim)).unwrap();
+        assert_eq!(kind.tag(), "keys_claim");
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(value.get("one_time_keys").is_some());
+        assert_eq!(
+            value.get("timeout").and_then(serde_json::Value::as_u64),
+            Some(10_000)
+        );
+
+        // signature_upload: the wire body *is* the signed_keys map, not a
+        // wrapper around it -- an empty map still proves the shape, since
+        // a wrapped body would render as `{"signed_keys":{}}`, not `{}`.
+        let signature =
+            matrix_sdk_common::ruma::api::client::keys::upload_signatures::v3::Request::new(
+                BTreeMap::new(),
+            );
+        let (kind, body) =
+            describe_outgoing(&AnyOutgoingRequest::SignatureUpload(signature)).unwrap();
+        assert_eq!(kind.tag(), "signature_upload");
+        assert_eq!(
+            body, "{}",
+            "signed_keys is the whole body, not wrapped: {body}"
+        );
+
+        // room_message: room_id, event_type, txn_id and content all
+        // present -- `event_type` is the one finding 3 found missing.
+        let content: matrix_sdk_common::ruma::events::AnyMessageLikeEventContent =
+            matrix_sdk_common::ruma::events::room::message::RoomMessageEventContent::text_plain(
+                "hi",
+            )
+            .into();
+        let room_message = matrix_sdk_crypto::types::requests::RoomMessageRequest {
+            room_id: "!s:example.org".parse().unwrap(),
+            txn_id: matrix_sdk_common::ruma::TransactionId::new(),
+            content: Box::new(content),
+        };
+        let (kind, body) =
+            describe_outgoing(&AnyOutgoingRequest::RoomMessage(Box::new(room_message))).unwrap();
+        assert_eq!(kind.tag(), "room_message");
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            value.get("room_id").and_then(|v| v.as_str()),
+            Some("!s:example.org")
+        );
+        assert_eq!(
+            value.get("event_type").and_then(|v| v.as_str()),
+            Some("m.room.message"),
+            "event_type must be present -- the product has no other way to build this endpoint's URL: {body}"
+        );
+        assert!(value.get("txn_id").is_some());
+        assert!(value.get("content").is_some());
+    }
+
+    /// Calling `share_scope_key` twice for the same scope before either
+    /// to-device request is marked sent must not queue the same persisted
+    /// request twice. A review measured the pre-fix behaviour producing
+    /// two entries with the same content and only one distinct id, so the
+    /// second `mark_request_sent` for it -- there being only one real id
+    /// to mark -- failed with `UnknownRequest` for what looks like a
+    /// perfectly ordinary double call.
+    ///
+    /// Uses the same withheld-notice-before-a-session-exists setup as
+    /// `sharing_a_scope_key_delivers_the_key_only_after_a_keys_claim_round_trip`
+    /// above, not a full keys-claim round trip: any to-device request is
+    /// subject to the same `queued_to_device` de-duplication, and a
+    /// withheld notice is the cheaper one to produce.
+    #[test]
+    fn sharing_the_same_scope_key_twice_before_marking_does_not_duplicate_the_request() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        let to_device: Vec<OutgoingRequest> =
+            futures::executor::block_on(crate::in_runtime(async move {
+                crate::machine::create_machine(config_in(dir.path()))
+                    .await
+                    .unwrap();
+
+                let bob_user: matrix_sdk_common::ruma::OwnedUserId =
+                    "@bob:example.org".parse().unwrap();
+                let bob_device: matrix_sdk_common::ruma::OwnedDeviceId = "BOBDEVICE".into();
+                let bob = matrix_sdk_crypto::OlmMachine::new(&bob_user, &bob_device).await;
+                let bob_upload = bob.outgoing_requests().await.unwrap();
+                let bob_device_keys = bob_upload
+                    .iter()
+                    .find_map(|r| match r.request() {
+                        AnyOutgoingRequest::KeysUpload(u) => u.device_keys.clone(),
+                        _ => None,
+                    })
+                    .expect("a fresh machine always has device keys to upload");
+
+                receive_sync_changes(&format!(
+                    r#"{{"changed_devices":{{"changed":["{bob_user}"],"left":[]}}}}"#
+                ))
+                .await
+                .unwrap();
+                let query_id = take_outgoing_requests()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|r| r.kind == "keys_query")
+                    .unwrap()
+                    .id;
+                let mut devices = BTreeMap::new();
+                devices.insert(
+                    bob_device.to_string(),
+                    serde_json::to_value(&bob_device_keys).unwrap(),
+                );
+                let mut by_user = BTreeMap::new();
+                by_user.insert(bob_user.to_string(), devices);
+                mark_request_sent(
+                    &query_id,
+                    &serde_json::json!({ "device_keys": by_user }).to_string(),
+                )
+                .await
+                .unwrap();
+
+                // Two calls, same scope and users, neither result ever
+                // marked sent.
+                share_scope_key("!s:example.org", &[bob_user.to_string()])
+                    .await
+                    .unwrap();
+                share_scope_key("!s:example.org", &[bob_user.to_string()])
+                    .await
+                    .unwrap();
+
+                take_outgoing_requests().await
+            }))
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.kind == "to_device")
+            .collect();
+
+        assert_eq!(
+            to_device.len(),
+            1,
+            "two share_scope_key calls before marking must not duplicate the queued request: {to_device:?}"
+        );
+    }
+
+    /// A stale `keys_upload`/`keys_query`/`keys_claim` id from an earlier
+    /// `take_outgoing_requests` call must not linger in `STATE.pending`
+    /// forever just because it was never marked sent -- upstream mints a
+    /// fresh, uncorrelated id for the same standing need on every call
+    /// (see `PendingKind::superseded_by_a_fresh_request`'s own doc
+    /// comment). A review measured three idle calls on a fresh machine
+    /// leaving six stale entries behind with no eviction at all; this
+    /// asserts the count after three calls is no larger than after one,
+    /// rather than a specific number, so it does not depend on exactly
+    /// which kinds an idle machine happens to report.
+    #[test]
+    fn a_stale_keys_upload_id_does_not_accumulate_across_repeated_calls() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        let (after_one, after_three) = futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+
+            take_outgoing_requests().await.unwrap();
+            let after_one = STATE
+                .lock()
+                .expect("request registry poisoned")
+                .pending
+                .len();
+
+            take_outgoing_requests().await.unwrap();
+            take_outgoing_requests().await.unwrap();
+            let after_three = STATE
+                .lock()
+                .expect("request registry poisoned")
+                .pending
+                .len();
+
+            (after_one, after_three)
+        });
+
+        assert_eq!(
+            after_one, after_three,
+            "repeated idle calls must not grow STATE.pending: {after_one} entries after one call, {after_three} after three"
+        );
+    }
+
+    /// A `mark_request_sent` call that fails (malformed `response_json`)
+    /// must not remove the request from `pending` -- the caller should be
+    /// able to retry the same id with corrected input. A review found the
+    /// pre-fix version removed the entry unconditionally, before even
+    /// attempting the mark, so a failed first attempt made every
+    /// subsequent retry fail with `UnknownRequest` regardless of how
+    /// well-formed the retry's own input was.
+    #[test]
+    fn a_failed_mark_can_be_retried_with_the_same_id() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+            let upload_id = take_outgoing_requests()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|r| r.kind == "keys_upload")
+                .expect("a fresh machine has a key upload to send")
+                .id;
+
+            let first = mark_request_sent(&upload_id, "not valid json at all").await;
+            assert_eq!(first, Err(SessionError::MalformedPayload));
+
+            // Same id, corrected input: must succeed, not `UnknownRequest`.
+            mark_request_sent(&upload_id, r#"{"one_time_key_counts":{}}"#)
+                .await
+                .unwrap();
+        });
+    }
+
+    /// `Envelope` and `OutgoingRequest`'s hand-written `Debug` impls must
+    /// never print ciphertext, plaintext, or a user id -- the global
+    /// no-secret rule extends explicitly to `Debug` output and panic
+    /// messages, and a review found the derived `Debug` this replaces
+    /// printed exactly these fields, including into a panic message in
+    /// this file's own decisive pump test.
+    #[test]
+    fn envelope_and_outgoing_request_debug_output_never_contains_the_secret_fields() {
+        let envelope = Envelope {
+            scope: "!s:example.org".to_string(),
+            algorithm: "m.megolm.v1.aes-sha2".to_string(),
+            event_type: "m.room.message".to_string(),
+            ciphertext: b"super-secret-ciphertext-marker".to_vec(),
+            sender: "@alice:example.org".to_string(),
+        };
+        let rendered = format!("{envelope:?}");
+        assert!(
+            !rendered.contains("super-secret-ciphertext-marker"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("@alice:example.org"), "{rendered}");
+        // Non-secret fields still appear, so this is not just an
+        // empty/panicking `Debug` impl standing in for a real one.
+        assert!(rendered.contains("!s:example.org"));
+        assert!(rendered.contains("m.room.message"));
+
+        let request = OutgoingRequest {
+            id: "some-transaction-id".to_string(),
+            kind: "to_device".to_string(),
+            body: r#"{"messages":{"@bob:example.org":{"BOBDEVICE":{"ciphertext":"secret-payload-marker"}}}}"#
+                .to_string(),
+        };
+        let rendered = format!("{request:?}");
+        assert!(!rendered.contains("secret-payload-marker"), "{rendered}");
+        assert!(!rendered.contains("@bob:example.org"), "{rendered}");
+        assert!(rendered.contains("some-transaction-id"));
+        assert!(rendered.contains("to_device"));
     }
 
     // --- Task 6: decryption and error classification ------------------
