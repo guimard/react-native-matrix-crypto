@@ -64,7 +64,15 @@ const SIGNAL_POLL_MS = 20
 async function waitUntil(predicate: () => boolean, budgetMs: number): Promise<void> {
   const deadline = Date.now() + budgetMs
   while (!predicate() && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, SIGNAL_POLL_MS))
+    // `setTimeout(resolve, ms)` is the idiomatic form and does not compile
+    // here. React Native types `setTimeout`'s callback as `() => void`, while
+    // `Promise`'s resolve is `(value: unknown) => void`, so passing it
+    // directly is rejected under the example app's settings even though the
+    // library's own typecheck accepts it: the two use different `lib` and
+    // `types`. Wrapping keeps both happy.
+    await new Promise<void>((resolve) => {
+      setTimeout(() => resolve(), SIGNAL_POLL_MS)
+    })
   }
 }
 
