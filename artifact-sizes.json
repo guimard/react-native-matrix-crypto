@@ -170,5 +170,28 @@
     ],
     "tarballIncludesXcframework": true,
     "tarballIncludesAar": true
+  },
+  {
+    "label": "release-pack-complete-ios-3-arch-android-4-abi",
+    "xcframeworkKB": 152128,
+    "aarKB": 29072,
+    "tarballKB": 94272,
+    "tarballUnpackedKB": 219772,
+    "tarballLargestContributors": [
+      {
+        "component": "MatrixCryptoFramework.xcframework",
+        "unpackedKB": 152122
+      },
+      {
+        "component": "android",
+        "unpackedKB": 38202
+      },
+      {
+        "component": "react-native-matrix-crypto-release.aar",
+        "unpackedKB": 29068
+      }
+    ],
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
   }
 ]
