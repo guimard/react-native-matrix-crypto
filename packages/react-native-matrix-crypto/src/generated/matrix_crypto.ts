@@ -1487,6 +1487,7 @@ export enum SessionFfiError_Tags {
   UnsharedSession = "UnsharedSession",
   UnknownDevice = "UnknownDevice",
   Undecryptable = "Undecryptable",
+  SessionRefused = "SessionRefused",
 }
 /**
  * Mirror of the core's session error, carrying the UniFFI error derive.
@@ -1495,6 +1496,21 @@ export enum SessionFfiError_Tags {
  * requires (via its `std::error::Error: Debug` supertrait bound) prints
  * only the variant name -- nothing to redact, unlike `Envelope`/
  * `OutgoingRequest` above.
+ *
+ * `SessionRefused` is declared last, after `Undecryptable`, not next to
+ * `UnsharedSession` where it reads most naturally: UniFFI assigns each
+ * variant's wire ordinal by declaration position (confirmed against the
+ * committed `src/generated/matrix_crypto.ts`, whose
+ * `FfiConverterTypeSessionFfiError.readFromCursor` switches on exactly
+ * `MalformedPayload` through `Undecryptable` as cases 1 through 8, in this
+ * declaration's own order), and this change deliberately does not run
+ * codegen to regenerate that file, so the committed bindings still only
+ * know cases 1 through 8. Inserting a ninth variant anywhere but the end
+ * would renumber every variant after it, so those stale bindings would
+ * misdecode `UnknownDevice` and `Undecryptable` too, not just fail cleanly
+ * on the one this build actually added. Appended last, the only
+ * consequence of the pending regeneration is that ordinal 9 itself
+ * (`SessionRefused`) is not yet recognised.
  */
 export const SessionFfiError = (() => {
   type MalformedPayload__interface = {
@@ -1717,6 +1733,35 @@ export const SessionFfiError = (() => {
     }
   }
 
+  type SessionRefused__interface = {
+    tag: SessionFfiError_Tags.SessionRefused;
+  };
+  class SessionRefused_
+    extends UniffiError
+    implements SessionRefused__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "SessionFfiError";
+    readonly tag = SessionFfiError_Tags.SessionRefused;
+    constructor() {
+      super("SessionFfiError", "SessionRefused");
+    }
+
+    static new(): SessionRefused_ {
+      return new SessionRefused_();
+    }
+
+    static instanceOf(obj: any): obj is SessionRefused_ {
+      return obj.tag === SessionFfiError_Tags.SessionRefused;
+    }
+    static hasInner(obj: any): obj is SessionRefused_ {
+      return false;
+    }
+  }
+
   function instanceOf(obj: any): obj is SessionFfiError {
     return obj[uniffiTypeNameSymbol] === "SessionFfiError";
   }
@@ -1731,6 +1776,7 @@ export const SessionFfiError = (() => {
     UnsharedSession: UnsharedSession_,
     UnknownDevice: UnknownDevice_,
     Undecryptable: Undecryptable_,
+    SessionRefused: SessionRefused_,
   });
 })();
 /**
@@ -1740,6 +1786,21 @@ export const SessionFfiError = (() => {
  * requires (via its `std::error::Error: Debug` supertrait bound) prints
  * only the variant name -- nothing to redact, unlike `Envelope`/
  * `OutgoingRequest` above.
+ *
+ * `SessionRefused` is declared last, after `Undecryptable`, not next to
+ * `UnsharedSession` where it reads most naturally: UniFFI assigns each
+ * variant's wire ordinal by declaration position (confirmed against the
+ * committed `src/generated/matrix_crypto.ts`, whose
+ * `FfiConverterTypeSessionFfiError.readFromCursor` switches on exactly
+ * `MalformedPayload` through `Undecryptable` as cases 1 through 8, in this
+ * declaration's own order), and this change deliberately does not run
+ * codegen to regenerate that file, so the committed bindings still only
+ * know cases 1 through 8. Inserting a ninth variant anywhere but the end
+ * would renumber every variant after it, so those stale bindings would
+ * misdecode `UnknownDevice` and `Undecryptable` too, not just fail cleanly
+ * on the one this build actually added. Appended last, the only
+ * consequence of the pending regeneration is that ordinal 9 itself
+ * (`SessionRefused`) is not yet recognised.
  */
 export type SessionFfiError = InstanceType<
   (typeof SessionFfiError)[
@@ -1750,7 +1811,8 @@ export type SessionFfiError = InstanceType<
     | "MissingKey"
     | "UnsharedSession"
     | "UnknownDevice"
-    | "Undecryptable"]
+    | "Undecryptable"
+    | "SessionRefused"]
 >;
 
 // FfiConverter for enum SessionFfiError
@@ -1775,6 +1837,8 @@ const FfiConverterTypeSessionFfiError = (() => {
           return new SessionFfiError.UnknownDevice();
         case 8:
           return new SessionFfiError.Undecryptable();
+        case 9:
+          return new SessionFfiError.SessionRefused();
         default:
           throw new UniffiInternalError.UnexpectedEnumCase();
       }
@@ -1813,6 +1877,10 @@ const FfiConverterTypeSessionFfiError = (() => {
           c.writeI32(8);
           return;
         }
+        case SessionFfiError_Tags.SessionRefused: {
+          c.writeI32(9);
+          return;
+        }
         default:
           // Throwing from here means that SessionFfiError_Tags hasn't matched an ordinal.
           throw new UniffiInternalError.UnexpectedEnumCase();
@@ -1842,6 +1910,9 @@ const FfiConverterTypeSessionFfiError = (() => {
           return 4;
         }
         case SessionFfiError_Tags.Undecryptable: {
+          return 4;
+        }
+        case SessionFfiError_Tags.SessionRefused: {
           return 4;
         }
         default:
