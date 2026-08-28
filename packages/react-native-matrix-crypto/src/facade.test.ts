@@ -7,21 +7,24 @@ const scope = asCryptoScopeId('!scope:example.org')
 
 // Only the native call itself is mocked -- there is no JSI host object under
 // vitest (Node), so `deviceIdentityKeys` can never actually run here. Every
-// other export, including the real generated `IdentityFfiError` class, comes
+// other export, including the real generated `MachineFfiError` class, comes
 // through `importOriginal` untouched, and `getDeviceIdentityKeys` /
 // `toCryptoError` below run completely unmocked. This is FIX 2's real
 // failure path: rust/matrix-crypto-core/src/identity.rs rejects a user id
-// that fails `OwnedUserId` parsing with `IdentityError::MalformedIdentifier
+// that fails `OwnedUserId` parsing with `MachineError::MalformedIdentifier
 // { detail: "user id" }`, which rust/matrix-crypto-ffi/src/lib.rs mirrors as
-// `IdentityFfiError::MalformedIdentifier { detail }` -- the exact shape
-// mocked below, not a hand-typed `{ name, reason }` fixture.
+// `MachineFfiError::MalformedIdentifier { detail }` -- the exact shape
+// mocked below, not a hand-typed `{ name, reason }` fixture. (Renamed from
+// `IdentityFfiError` in Task 2/3: `device_identity_keys` now reads the live,
+// store-backed machine, so its error is the machine's, not a throwaway
+// identity-only one.)
 vi.mock('./generated/matrix_crypto', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./generated/matrix_crypto')>()
   return {
     ...actual,
     deviceIdentityKeys: vi.fn(async (userId: string) => {
       if (userId !== 'bad-id') throw new Error('unexpected call in this fixture')
-      throw new actual.IdentityFfiError.MalformedIdentifier({ detail: 'user id' })
+      throw new actual.MachineFfiError.MalformedIdentifier({ detail: 'user id' })
     }),
   }
 })

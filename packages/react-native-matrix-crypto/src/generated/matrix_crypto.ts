@@ -23,6 +23,7 @@ import {
   FfiConverterArrayBuffer,
   FfiConverterObject,
   FfiConverterObjectWithCallbacks,
+  FfiConverterOptional,
   FfiConverterUInt8,
   RustBuffer,
   UniffiAbstractObject,
@@ -51,19 +52,59 @@ const uniffiIsDebug =
 // Public interface members begin here.
 
 /**
- * A plain `async fn`, matching `probe`: this function's own path --
- * `OlmMachine::new` plus an in-memory store -- calls no `spawn` and needs no
- * reactor, confirmed by reading the vendored source and by clean device runs
- * (iOS simulator and a physical Android device, no panic).
- *
- * That is scoped to this one function, not a resolution for
- * `matrix-sdk-crypto` as a whole. `matrix-sdk-common`, a mandatory
- * dependency, enables tokio's `rt` feature on every native target and
- * re-exports `tokio::task::spawn`; `matrix-sdk-crypto` calls it from
- * production code this crate does not yet expose, including
- * `OlmMachine::share_room_key` (the Megolm key-sharing entry point a later
- * milestone needs). See spec section 5.1: the async-runtime question is
- * scoped to what this task exercised, not closed for the crate.
+ * A plain `async fn`, matching `device_identity_keys` below: the core
+ * function this calls reaches for a runtime explicitly, via
+ * `matrix-crypto-core::runtime::in_runtime`, wherever the store it builds
+ * needs one -- so no `async_runtime` attribute is needed here either.
+ */
+export async function createCryptoMachine(
+  config: CryptoMachineConfig,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<void> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_create_crypto_machine(
+          FfiConverterTypeCryptoMachineConfig.lower(
+            config,
+            nativeModule().rustbuffer_alloc
+          )
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_void,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_void,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_void,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_void,
+      /*liftFunc:*/ (_v) => {},
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
+ * A plain `async fn`, matching `probe`: no `async_runtime` attribute is
+ * needed here either. `device_identity_keys` reads the live machine through
+ * `with_machine`, which locks a `tokio::sync::Mutex` -- a primitive that
+ * needs no reactor of its own, unlike the tokio filesystem and
+ * connection-pool primitives `create_machine`/`open_store` use internally to
+ * build that machine in the first place (see
+ * `matrix-crypto-core::runtime::in_runtime`, which supplies the runtime
+ * those need explicitly rather than relying on an ambient one).
  */
 export async function deviceIdentityKeys(
   userId: string,
@@ -105,8 +146,53 @@ export async function deviceIdentityKeys(
       },
       /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
       /*asyncOpts:*/ asyncOpts_,
-      /*errorHandler:*/ FfiConverterTypeIdentityFfiError.lift.bind(
-        FfiConverterTypeIdentityFfiError
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
+ * Reopens a store written by an earlier process. Mirrors `open_store`,
+ * which is the same operation as `create_machine` under a name that says
+ * what the caller means; see that function's own doc comment in
+ * `matrix-crypto-core::machine`.
+ */
+export async function openCryptoStore(
+  config: CryptoMachineConfig,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<void> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_open_crypto_store(
+          FfiConverterTypeCryptoMachineConfig.lower(
+            config,
+            nativeModule().rustbuffer_alloc
+          )
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_void,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_void,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_void,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_void,
+      /*liftFunc:*/ (_v) => {},
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
       )
     );
   } catch (__error: any) {
@@ -300,6 +386,67 @@ const stringConverter = (() => {
 const FfiConverterString = uniffiCreateFfiConverterString(stringConverter);
 
 /**
+ * Mirror of the core's machine config, carrying the UniFFI record derive.
+ *
+ * No `Debug` derive, unlike `ProbeReport`/`IdentityKeys` above: this record
+ * carries the store passphrase, which must never reach a log or an error
+ * message (see Global Constraints), and a derived `Debug` would leave it
+ * one accidental `{:?}` away from doing exactly that.
+ */
+export type CryptoMachineConfig = {
+  userId: string;
+  deviceId: string;
+  storePath: string;
+  storePassphrase?: string;
+};
+
+/**
+ * Generated factory for {@link CryptoMachineConfig} record objects.
+ */
+export const CryptoMachineConfig = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<CryptoMachineConfig, ReturnType<typeof defaults>>(
+      defaults
+    );
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<CryptoMachineConfig>,
+  });
+})();
+
+const FfiConverterTypeCryptoMachineConfig = (() => {
+  type TypeName = CryptoMachineConfig;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      return {
+        userId: FfiConverterString.readFromCursor(c),
+        deviceId: FfiConverterString.readFromCursor(c),
+        storePath: FfiConverterString.readFromCursor(c),
+        storePassphrase: FfiConverterOptionalString.readFromCursor(c),
+      };
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      FfiConverterString.writeIntoCursor(value.userId, c);
+      FfiConverterString.writeIntoCursor(value.deviceId, c);
+      FfiConverterString.writeIntoCursor(value.storePath, c);
+      FfiConverterOptionalString.writeIntoCursor(value.storePassphrase, c);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterString.allocationSize(value.userId) +
+        FfiConverterString.allocationSize(value.deviceId) +
+        FfiConverterString.allocationSize(value.storePath) +
+        FfiConverterOptionalString.allocationSize(value.storePassphrase)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
  * Mirror of the core's identity keys, carrying the UniFFI record derive.
  */
 export type IdentityKeys = {
@@ -447,16 +594,81 @@ const FfiConverterTypeProbeSignal = (() => {
   return new FFIConverter();
 })();
 
-// Error type: IdentityFfiError
-export enum IdentityFfiError_Tags {
+// Error type: MachineFfiError
+export enum MachineFfiError_Tags {
+  NotInitialised = "NotInitialised",
+  AlreadyInitialised = "AlreadyInitialised",
   MalformedIdentifier = "MalformedIdentifier",
+  Store = "Store",
 }
 /**
- * Mirror of the core's identity error, carrying the UniFFI error derive.
+ * Mirror of the core's machine error, carrying the UniFFI error derive.
+ *
+ * Replaces `IdentityFfiError`: the core function below now reads the live,
+ * store-backed machine through `matrix_crypto_core::with_machine` rather
+ * than building a throwaway one, so its error is the core's `MachineError`.
  */
-export const IdentityFfiError = (() => {
+export const MachineFfiError = (() => {
+  type NotInitialised__interface = {
+    tag: MachineFfiError_Tags.NotInitialised;
+  };
+  class NotInitialised_
+    extends UniffiError
+    implements NotInitialised__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.NotInitialised;
+    constructor() {
+      super("MachineFfiError", "NotInitialised");
+    }
+
+    static new(): NotInitialised_ {
+      return new NotInitialised_();
+    }
+
+    static instanceOf(obj: any): obj is NotInitialised_ {
+      return obj.tag === MachineFfiError_Tags.NotInitialised;
+    }
+    static hasInner(obj: any): obj is NotInitialised_ {
+      return false;
+    }
+  }
+
+  type AlreadyInitialised__interface = {
+    tag: MachineFfiError_Tags.AlreadyInitialised;
+  };
+  class AlreadyInitialised_
+    extends UniffiError
+    implements AlreadyInitialised__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.AlreadyInitialised;
+    constructor() {
+      super("MachineFfiError", "AlreadyInitialised");
+    }
+
+    static new(): AlreadyInitialised_ {
+      return new AlreadyInitialised_();
+    }
+
+    static instanceOf(obj: any): obj is AlreadyInitialised_ {
+      return obj.tag === MachineFfiError_Tags.AlreadyInitialised;
+    }
+    static hasInner(obj: any): obj is AlreadyInitialised_ {
+      return false;
+    }
+  }
+
   type MalformedIdentifier__interface = {
-    tag: IdentityFfiError_Tags.MalformedIdentifier;
+    tag: MachineFfiError_Tags.MalformedIdentifier;
     inner: Readonly<{ detail: string }>;
   };
   class MalformedIdentifier_
@@ -467,11 +679,11 @@ export const IdentityFfiError = (() => {
      * @private
      * This field is private and should not be used, use `tag` instead.
      */
-    readonly [uniffiTypeNameSymbol] = "IdentityFfiError";
-    readonly tag = IdentityFfiError_Tags.MalformedIdentifier;
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.MalformedIdentifier;
     readonly inner: Readonly<{ detail: string }>;
     constructor(inner: { detail: string }) {
-      super("IdentityFfiError", "MalformedIdentifier");
+      super("MachineFfiError", "MalformedIdentifier");
 
       this.inner = Object.freeze(inner);
     }
@@ -480,7 +692,7 @@ export const IdentityFfiError = (() => {
     }
 
     static instanceOf(obj: any): obj is MalformedIdentifier_ {
-      return obj.tag === IdentityFfiError_Tags.MalformedIdentifier;
+      return obj.tag === MachineFfiError_Tags.MalformedIdentifier;
     }
     static hasInner(obj: any): obj is MalformedIdentifier_ {
       return MalformedIdentifier_.instanceOf(obj);
@@ -491,30 +703,82 @@ export const IdentityFfiError = (() => {
     }
   }
 
-  function instanceOf(obj: any): obj is IdentityFfiError {
-    return obj[uniffiTypeNameSymbol] === "IdentityFfiError";
+  type Store__interface = {
+    tag: MachineFfiError_Tags.Store;
+    inner: Readonly<{ detail: string }>;
+  };
+  class Store_ extends UniffiError implements Store__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.Store;
+    readonly inner: Readonly<{ detail: string }>;
+    constructor(inner: { detail: string }) {
+      super("MachineFfiError", "Store");
+
+      this.inner = Object.freeze(inner);
+    }
+    static new(inner: { detail: string }): Store_ {
+      return new Store_(inner);
+    }
+
+    static instanceOf(obj: any): obj is Store_ {
+      return obj.tag === MachineFfiError_Tags.Store;
+    }
+    static hasInner(obj: any): obj is Store_ {
+      return Store_.instanceOf(obj);
+    }
+
+    static getInner(obj: Store_): Readonly<{ detail: string }> {
+      return obj.inner;
+    }
+  }
+
+  function instanceOf(obj: any): obj is MachineFfiError {
+    return obj[uniffiTypeNameSymbol] === "MachineFfiError";
   }
 
   return Object.freeze({
     instanceOf,
+    NotInitialised: NotInitialised_,
+    AlreadyInitialised: AlreadyInitialised_,
     MalformedIdentifier: MalformedIdentifier_,
+    Store: Store_,
   });
 })();
 /**
- * Mirror of the core's identity error, carrying the UniFFI error derive.
+ * Mirror of the core's machine error, carrying the UniFFI error derive.
+ *
+ * Replaces `IdentityFfiError`: the core function below now reads the live,
+ * store-backed machine through `matrix_crypto_core::with_machine` rather
+ * than building a throwaway one, so its error is the core's `MachineError`.
  */
-export type IdentityFfiError = InstanceType<
-  (typeof IdentityFfiError)["MalformedIdentifier"]
+export type MachineFfiError = InstanceType<
+  (typeof MachineFfiError)[
+    | "NotInitialised"
+    | "AlreadyInitialised"
+    | "MalformedIdentifier"
+    | "Store"]
 >;
 
-// FfiConverter for enum IdentityFfiError
-const FfiConverterTypeIdentityFfiError = (() => {
-  type TypeName = IdentityFfiError;
+// FfiConverter for enum MachineFfiError
+const FfiConverterTypeMachineFfiError = (() => {
+  type TypeName = MachineFfiError;
   class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
     readFromCursor(c: Cursor): TypeName {
       switch (c.readI32()) {
         case 1:
-          return new IdentityFfiError.MalformedIdentifier({
+          return new MachineFfiError.NotInitialised();
+        case 2:
+          return new MachineFfiError.AlreadyInitialised();
+        case 3:
+          return new MachineFfiError.MalformedIdentifier({
+            detail: FfiConverterString.readFromCursor(c),
+          });
+        case 4:
+          return new MachineFfiError.Store({
             detail: FfiConverterString.readFromCursor(c),
           });
         default:
@@ -523,20 +787,46 @@ const FfiConverterTypeIdentityFfiError = (() => {
     }
     writeIntoCursor(value: TypeName, c: Cursor): void {
       switch (value.tag) {
-        case IdentityFfiError_Tags.MalformedIdentifier: {
+        case MachineFfiError_Tags.NotInitialised: {
           c.writeI32(1);
+          return;
+        }
+        case MachineFfiError_Tags.AlreadyInitialised: {
+          c.writeI32(2);
+          return;
+        }
+        case MachineFfiError_Tags.MalformedIdentifier: {
+          c.writeI32(3);
+          const inner = value.inner;
+          FfiConverterString.writeIntoCursor(inner.detail, c);
+          return;
+        }
+        case MachineFfiError_Tags.Store: {
+          c.writeI32(4);
           const inner = value.inner;
           FfiConverterString.writeIntoCursor(inner.detail, c);
           return;
         }
         default:
-          // Throwing from here means that IdentityFfiError_Tags hasn't matched an ordinal.
+          // Throwing from here means that MachineFfiError_Tags hasn't matched an ordinal.
           throw new UniffiInternalError.UnexpectedEnumCase();
       }
     }
     allocationSize(value: TypeName): number {
       switch (value.tag) {
-        case IdentityFfiError_Tags.MalformedIdentifier: {
+        case MachineFfiError_Tags.NotInitialised: {
+          return 4;
+        }
+        case MachineFfiError_Tags.AlreadyInitialised: {
+          return 4;
+        }
+        case MachineFfiError_Tags.MalformedIdentifier: {
+          const inner = value.inner;
+          let size = 4;
+          size += FfiConverterString.allocationSize(inner.detail);
+          return size;
+        }
+        case MachineFfiError_Tags.Store: {
           const inner = value.inner;
           let size = 4;
           size += FfiConverterString.allocationSize(inner.detail);
@@ -816,6 +1106,9 @@ const uniffiCallbackInterfaceProbeObserver: {
   },
 };
 
+// FfiConverter for string | undefined
+const FfiConverterOptionalString = new FfiConverterOptional(FfiConverterString);
+
 /**
  * This should be called before anything else.
  *
@@ -839,11 +1132,27 @@ function uniffiEnsureInitialized() {
     );
   }
   if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_create_crypto_machine() !==
+    40844
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_create_crypto_machine"
+    );
+  }
+  if (
     nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_device_identity_keys() !==
-    34910
+    64524
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       "uniffi_matrix_crypto_ffi_checksum_func_device_identity_keys"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_open_crypto_store() !==
+    38682
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_open_crypto_store"
     );
   }
   if (
@@ -876,8 +1185,9 @@ function uniffiEnsureInitialized() {
 export default Object.freeze({
   initialize: uniffiEnsureInitialized,
   converters: {
-    FfiConverterTypeIdentityFfiError,
+    FfiConverterTypeCryptoMachineConfig,
     FfiConverterTypeIdentityKeys,
+    FfiConverterTypeMachineFfiError,
     FfiConverterTypeProbeFfiError,
     FfiConverterTypeProbeObserver,
     FfiConverterTypeProbeReport,

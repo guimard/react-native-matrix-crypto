@@ -1,6 +1,10 @@
 import type { CryptoAlgorithm, CryptoScopeId, EventEnvelope, TrustState } from './types'
 import { toCryptoError } from './errors'
-import { deviceIdentityKeys as nativeDeviceIdentityKeys } from './generated/matrix_crypto'
+import {
+  createCryptoMachine as nativeCreateCryptoMachine,
+  deviceIdentityKeys as nativeDeviceIdentityKeys,
+  openCryptoStore as nativeOpenCryptoStore,
+} from './generated/matrix_crypto'
 
 function notImplemented(name: string): Promise<never> {
   return Promise.reject(toCryptoError({ name: 'NotImplemented', reason: `${name} is not implemented yet` }))
@@ -21,12 +25,28 @@ export interface DeviceStatus {
   trust: TrustState
 }
 
-export function createCryptoMachine(_config: CryptoMachineConfig): Promise<void> {
-  return notImplemented('createCryptoMachine')
+export async function createCryptoMachine(config: CryptoMachineConfig): Promise<void> {
+  try {
+    await nativeCreateCryptoMachine({
+      userId: config.userId,
+      deviceId: config.deviceId,
+      storePath: config.storePath,
+    })
+  } catch (e) {
+    throw toCryptoError(e)
+  }
 }
 
-export function openCryptoStore(_config: CryptoMachineConfig): Promise<void> {
-  return notImplemented('openCryptoStore')
+export async function openCryptoStore(config: CryptoMachineConfig): Promise<void> {
+  try {
+    await nativeOpenCryptoStore({
+      userId: config.userId,
+      deviceId: config.deviceId,
+      storePath: config.storePath,
+    })
+  } catch (e) {
+    throw toCryptoError(e)
+  }
 }
 
 export function restoreCryptoMachine(_bundle: Uint8Array): Promise<void> {

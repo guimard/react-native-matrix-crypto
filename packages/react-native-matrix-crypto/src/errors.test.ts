@@ -89,6 +89,21 @@ describe('toCryptoError against the real UniFFI error shape', () => {
     expect(err.retriable).toBe(false)
   })
 
+  it('maps a real UniFFI-shaped MachineFfiError.NotInitialised to kind not_initialised', () => {
+    // A fieldless ("flat") variant carries no `.inner` at all -- confirmed
+    // against the actual generated `MachineFfiError.NotInitialised` in
+    // src/generated/matrix_crypto.ts, whose constructor takes no arguments
+    // and so calls `super("MachineFfiError", "NotInitialised")` with no
+    // third `message` argument, leaving `.message` exactly
+    // "MachineFfiError.NotInitialised" with no trailing ": <message>".
+    const raw = new Error('MachineFfiError.NotInitialised')
+    expect(raw.name).toBe('Error')
+
+    const err = toCryptoError(raw)
+    expect(err.kind).toBe('not_initialised')
+    expect(err.retriable).toBe(false)
+  })
+
   it('recovers the variant from the "<Type>.<Variant>" prefix of .message when .name is not a recognized kind', () => {
     const err = toCryptoError({ name: 'Error', message: 'ProbeFfiError.Rejected' })
     expect(err.kind).toBe('rejected')

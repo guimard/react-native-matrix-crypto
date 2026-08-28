@@ -177,9 +177,15 @@ interface NativeModuleInterface {
   ubrn_uniffi_matrix_crypto_ffi_fn_init_callback_vtable_probeobserver(
     vtable: UniffiVTableCallbackInterfaceMatrixCryptoProbeObserver
   ): void;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_create_crypto_machine(
+    config: Uint8Array
+  ): bigint;
   ubrn_uniffi_matrix_crypto_ffi_fn_func_device_identity_keys(
     userId: Uint8Array,
     deviceId: Uint8Array
+  ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_open_crypto_store(
+    config: Uint8Array
   ): bigint;
   ubrn_uniffi_matrix_crypto_ffi_fn_func_probe(
     input: Uint8Array,
@@ -196,7 +202,9 @@ interface NativeModuleInterface {
     uniffi_out_err: UniffiRustCallStatus
   ): void;
   ubrn_ffi_matrix_crypto_ffi_uniffi_contract_version(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_create_crypto_machine(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_device_identity_keys(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_open_crypto_store(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_probe(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_probe_with_observer(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_method_probeobserver_on_signal(): number;

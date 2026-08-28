@@ -14,6 +14,8 @@ export type CryptoErrorKind =
   | 'rejected'
   | 'malformed_identifier'
   | 'not_implemented'
+  | 'not_initialised'
+  | 'already_initialised'
   | 'unknown'
   | (string & {})
 
@@ -38,6 +40,8 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   ['Undecryptable', 'undecryptable'],
   ['StoreCorrupt', 'store_corrupt'],
   ['MalformedIdentifier', 'malformed_identifier'],
+  ['NotInitialised', 'not_initialised'],
+  ['AlreadyInitialised', 'already_initialised'],
 ])
 
 const RETRIABLE: ReadonlySet<CryptoErrorKind> = new Set(['missing_key', 'unshared_session'])

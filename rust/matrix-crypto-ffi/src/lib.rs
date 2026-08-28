@@ -135,6 +135,62 @@ impl From<matrix_crypto_core::MachineError> for MachineFfiError {
     }
 }
 
+/// Mirror of the core's machine config, carrying the UniFFI record derive.
+///
+/// No `Debug` derive, unlike `ProbeReport`/`IdentityKeys` above: this record
+/// carries the store passphrase, which must never reach a log or an error
+/// message (see Global Constraints), and a derived `Debug` would leave it
+/// one accidental `{:?}` away from doing exactly that.
+#[derive(uniffi::Record)]
+pub struct CryptoMachineConfig {
+    pub user_id: String,
+    pub device_id: String,
+    pub store_path: String,
+    pub store_passphrase: Option<String>,
+}
+
+impl From<CryptoMachineConfig> for matrix_crypto_core::MachineConfig {
+    fn from(value: CryptoMachineConfig) -> Self {
+        // Destructured, not field-accessed: a field added to the core config
+        // later must fail this build rather than being silently dropped. See
+        // Global Constraints.
+        let CryptoMachineConfig {
+            user_id,
+            device_id,
+            store_path,
+            store_passphrase,
+        } = value;
+        Self {
+            user_id,
+            device_id,
+            store_path,
+            store_passphrase,
+        }
+    }
+}
+
+/// A plain `async fn`, matching `device_identity_keys` below: the core
+/// function this calls reaches for a runtime explicitly, via
+/// `matrix-crypto-core::runtime::in_runtime`, wherever the store it builds
+/// needs one -- so no `async_runtime` attribute is needed here either.
+#[uniffi::export]
+pub async fn create_crypto_machine(config: CryptoMachineConfig) -> Result<(), MachineFfiError> {
+    matrix_crypto_core::create_machine(config.into())
+        .await
+        .map_err(Into::into)
+}
+
+/// Reopens a store written by an earlier process. Mirrors `open_store`,
+/// which is the same operation as `create_machine` under a name that says
+/// what the caller means; see that function's own doc comment in
+/// `matrix-crypto-core::machine`.
+#[uniffi::export]
+pub async fn open_crypto_store(config: CryptoMachineConfig) -> Result<(), MachineFfiError> {
+    matrix_crypto_core::open_store(config.into())
+        .await
+        .map_err(Into::into)
+}
+
 /// A plain `async fn`, matching `probe`: no `async_runtime` attribute is
 /// needed here either. `device_identity_keys` reads the live machine through
 /// `with_machine`, which locks a `tokio::sync::Mutex` -- a primitive that
