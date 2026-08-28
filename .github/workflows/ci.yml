@@ -32,6 +32,17 @@ jobs:
       # actually run on every PR, not just the core crate's 6.
       - run: cargo test --manifest-path rust/Cargo.toml
       - run: yarn --cwd packages/react-native-matrix-crypto typecheck
+      # The example app compiles the library's shipped `interop/` sources
+      # directly, under different `lib` and `types` settings than the library
+      # itself uses. A `new Promise((resolve) => setTimeout(resolve, ms))` in
+      # interop/suite.ts type-checked in the library and did NOT type-check
+      # here -- React Native types setTimeout's callback as `() => void` while
+      # Promise's resolve takes a value -- so the shipped suite stopped
+      # compiling against its own consumer, and the only reason anyone found
+      # out was a person running tsc by hand.
+      #
+      # Two typechecks, not one, because they are genuinely two questions.
+      - run: yarn --cwd packages/example-app typecheck
       - run: yarn --cwd packages/react-native-matrix-crypto test
 
   cold-consume:
