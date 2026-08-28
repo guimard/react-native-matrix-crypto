@@ -87,7 +87,7 @@ Decryption does not authenticate the sender. `EventEnvelope.sender` is the value
 
 The interoperability proof has a floor, and it is the ratchet. `matrix-nio`, a Matrix client written in Python by people who have never seen this code, decrypts what this library encrypts and this library decrypts what it sends, over a real homeserver, in two tests anyone can run: one driving the Rust core, one driving the published TypeScript API on an emulator. What neither proves is the ratchet itself. `matrix-nio` 0.26 and this library both call `vodozemac 0.10.0`, so a defect inside that crate, or a misreading shared below the protocol line, would pass both sides. What is genuinely tested by two independent implementations is everything above it: event shapes, the `/keys/*` payloads a real homeserver accepts and answers, to-device routing, and the order a session key has to travel in. That is where this library's own code lives.
 
-Verified end to end on an iOS simulator and on a physical Android device: a record round trip, a byte array returned reversed to prove Rust genuinely read it, an async call resolving as a Promise, a typed error reaching a JavaScript `catch`, one callback signal travelling back from Rust, and a real Curve25519 and Ed25519 key pair.
+Verified end to end on an iOS simulator and on an Android emulator: a record round trip, a byte array returned reversed to prove Rust genuinely read it, an async call resolving as a Promise, a typed error reaching a JavaScript `catch`, one callback signal travelling back from Rust, and a real Curve25519 and Ed25519 key pair.
 
 ## Installation
 

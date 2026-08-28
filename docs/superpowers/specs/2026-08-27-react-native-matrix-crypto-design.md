@@ -220,7 +220,7 @@ the UI. Therefore:
 **M1b outcome.** M1b exercised exactly one function, `device_identity_keys`
 (`OlmMachine::new` plus an in-memory store, no spawning). No `async_runtime`
 attribute was needed for it — confirmed by reading the vendored source and by
-clean runs on both the iOS simulator and a physical Android device, no reactor
+clean runs on both the iOS simulator and an Android emulator, no reactor
 panic.
 
 That result is scoped to the one function tested, not a resolution for
