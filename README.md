@@ -184,7 +184,13 @@ const recovered = await decryptEvent(scope, incomingEvent)
 
 **Scopes are opaque.** `CryptoScopeId` is a branded type, not a room id. Nothing in the public API says "room". The encryption algorithm travels as an open tag rather than an assumption, so a later move to MLS, or a hybrid post-quantum layer, can land without breaking this surface. A build gate rejects any Megolm, Olm or room specific identifier reaching the public declarations.
 
-**The library never logs.** Not sparingly, never. A cryptographic library that logs by default is how cleartext reaches a crash report. Errors return identifiers to their caller and are never written anywhere. Diagnostics, if you need them, belong in a sink your application owns. A build gate enforces this too.
+**The library writes no diagnostics of its own.** No `println!`, no `console.*`, no file writes, no `tracing` subscriber. Errors return identifiers to their caller. Diagnostics, if you need them, belong in a sink your application owns. A cryptographic library that logs by default is how cleartext reaches a crash report.
+
+There is one exception, and it is worth stating precisely rather than claiming an absolute that is not true. The UniFFI to JSI boundary code that `uniffi-bindgen-react-native` generates writes to `std::cout` when a JavaScript callback throws back across the boundary. There are five such sites in `cpp/generated/matrix_crypto.cpp`, one per callback trampoline; four survive into the shipped `libreact-native-matrix-crypto.so`, and on iOS the file compiles into your app. Each writes a fixed string naming the callback, then `jsi::JSError::what()`, which is the JavaScript exception's message and its stack.
+
+No call argument, ciphertext, key or identifier is interpolated into that stream. The JavaScript functions reached at those five sites are the generator's own, not yours. A callback you pass in runs inside the generated trampoline's TypeScript `try`/`catch`, which lowers a throw into a Rust call status before it can reach the C++ frame; `onCryptoSignal` listeners sit behind a second `try`/`catch` in `emitCryptoSignal` on top of that. What is left to reach the stream is the generator's own fixed-message internal errors, such as a stale handle after a hot reload.
+
+It cannot be switched off. The generator's C++ backend takes no configuration at all, the write is unconditional in a template compiled into the tool, and hand-editing generated code is forbidden here and caught by `gate:drift`. So `gate:logger` reads that file instead of skipping it, tolerates exactly that one three-line shape and nothing else anywhere in the shipped C, C++ or Objective-C, and prints how many sites it tolerated so the number is visible when it moves.
 
 **Errors carry no payload content.** `toCryptoError` reads a small set of known fields and never copies ciphertext, plaintext or arbitrary properties into a message.
 
@@ -261,7 +267,7 @@ Every one of these runs in CI. Each has been observed rejecting a real violation
 | `gate:workspaces` | the Cargo and yarn workspaces resolve |
 | `gate:boundary` | the core takes no direct `uniffi` dependency |
 | `gate:drift` | committed bindings match the Rust source |
-| `gate:logger` | the bridge contains no logger |
+| `gate:logger` | the bridge contains no logger, in Rust, TypeScript and C++ alike |
 | `gate:agility` | no algorithm specific identifier reaches the public API |
 
 If you add a gate, add the step that proves it fails on a real violation. A gate nobody has watched fail is not known to work.
