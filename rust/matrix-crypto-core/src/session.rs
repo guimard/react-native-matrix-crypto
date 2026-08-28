@@ -8,12 +8,36 @@
 //! (sharing a key, encrypting, decrypting) depends on.
 
 use std::collections::BTreeMap;
+use std::sync::Mutex as StdMutex;
 
+// Response types for the six kinds `OlmMachine::outgoing_requests` and
+// `share_room_key` can ever hand out (matched exhaustively against
+// `AnyOutgoingRequest` below, with no wildcard -- see `describe_outgoing`).
+// Each is renamed on import: their upstream names collide with either one
+// another (every endpoint module calls its own type `Response`) or with this
+// module's own public `OutgoingRequest`.
+use matrix_sdk_common::ruma::api::client::keys::claim_keys::v3::Response as KeysClaimResponse;
+use matrix_sdk_common::ruma::api::client::keys::get_keys::v3::Response as KeysQueryResponse;
+use matrix_sdk_common::ruma::api::client::keys::upload_keys::v3::Response as KeysUploadResponse;
+use matrix_sdk_common::ruma::api::client::keys::upload_signatures::v3::Response as SignatureUploadResponse;
+use matrix_sdk_common::ruma::api::client::message::send_message_event::v3::Response as RoomMessageResponse;
 use matrix_sdk_common::ruma::api::client::sync::sync_events::DeviceLists;
+use matrix_sdk_common::ruma::api::client::to_device::send_event_to_device::v3::Response as ToDeviceHttpResponse;
+use matrix_sdk_common::ruma::api::IncomingResponse;
 use matrix_sdk_common::ruma::events::AnyToDeviceEvent;
+// `exports::http`, not a direct `http` dependency of this crate: it is the
+// exact `http` version `ruma`'s own `IncomingResponse::try_from_http_response`
+// requires, reached through `ruma`'s own re-export rather than a second,
+// independently-versioned copy this crate would have to keep in step by hand.
+use matrix_sdk_common::ruma::exports::http;
 use matrix_sdk_common::ruma::serde::Raw;
-use matrix_sdk_common::ruma::{OneTimeKeyAlgorithm, UInt};
-use matrix_sdk_crypto::{DecryptionSettings, EncryptionSyncChanges, TrustRequirement};
+use matrix_sdk_common::ruma::{
+    OneTimeKeyAlgorithm, OwnedRoomId, OwnedTransactionId, OwnedUserId, TransactionId, UInt,
+};
+use matrix_sdk_crypto::types::requests::{AnyOutgoingRequest, ToDeviceRequest};
+use matrix_sdk_crypto::{
+    DecryptionSettings, EncryptionSettings, EncryptionSyncChanges, OlmMachine, TrustRequirement,
+};
 use serde::Deserialize;
 
 use crate::machine::{with_machine, MachineError};
@@ -57,6 +81,17 @@ pub enum SessionError {
     /// The crypto machine rejected or failed to process the sync changes.
     #[error("the crypto operation failed")]
     Failed,
+    /// `mark_request_sent` was called with an `id` this machine never
+    /// handed out through `take_outgoing_requests`, or already resolved.
+    ///
+    /// Kept distinct from `MalformedPayload`: the caller's `id` is
+    /// syntactically fine (any string parses as a `TransactionId`, which is
+    /// an opaque identifier with no format of its own) -- what is wrong is
+    /// that it does not match anything this process is waiting to hear
+    /// about, which calls for a different product response than "you sent
+    /// nonsense".
+    #[error("the request id does not match a pending request")]
+    UnknownRequest,
 }
 
 impl From<MachineError> for SessionError {
@@ -182,6 +217,386 @@ pub async fn receive_sync_changes(raw_json: &str) -> Result<SyncOutcome, Session
         // `detail` field to carry it in.
         Err(_upstream) => Err(SessionError::Failed),
     }
+}
+
+/// Parses the opaque scope string into the identifier it addresses today.
+///
+/// This is the one place that name appears in this module: a scope maps to
+/// a room id 1:1 for now, but that mapping is this function's own
+/// implementation detail, never a public identifier -- see spec section 6
+/// and the design doc's section 3bis. A later scope kind (e.g. an MLS group)
+/// would branch here without moving anything public.
+fn parse_scope(scope: &str) -> Result<OwnedRoomId, SessionError> {
+    scope.parse().map_err(|_| SessionError::MalformedPayload)
+}
+
+fn parse_user(user_id: &str) -> Result<OwnedUserId, SessionError> {
+    user_id.parse().map_err(|_| SessionError::MalformedPayload)
+}
+
+/// Ensures `scope` has a group session and shares it with the given users'
+/// known devices.
+///
+/// This is the call that reaches `tokio::task::spawn` through
+/// `matrix-sdk-common` during group key sharing, and the reason Task 1's
+/// runtime exists -- see the design doc section 4.
+///
+/// The to-device requests upstream returns carry the session key itself, on
+/// its way to the recipients' devices. They are queued here for
+/// [`take_outgoing_requests`] to hand out, never discarded -- discarding
+/// them is the mistake the design doc's section 3bis exists to prevent: the
+/// group session would exist locally, `encrypt_event` would happily
+/// produce ciphertext, and no other device would ever be able to read it.
+pub async fn share_scope_key(scope: &str, users: &[String]) -> Result<(), SessionError> {
+    let room_id = parse_scope(scope)?;
+    let user_ids = users
+        .iter()
+        .map(|user| parse_user(user))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let shared = with_machine(move |machine| {
+        Box::pin(async move {
+            machine
+                .share_room_key(
+                    &room_id,
+                    user_ids.iter().map(AsRef::as_ref),
+                    EncryptionSettings::default(),
+                )
+                .await
+        })
+    })
+    .await?;
+
+    let to_device_requests = shared.map_err(|_upstream| SessionError::Failed)?;
+
+    if !to_device_requests.is_empty() {
+        let mut state = STATE.lock().expect("request registry poisoned");
+        state.queued_to_device.extend(to_device_requests);
+    }
+
+    Ok(())
+}
+
+/// Which upstream response shape a request id crossing back in through
+/// [`mark_request_sent`] must be parsed as.
+///
+/// Recorded in [`STATE`] when the request crosses out through
+/// [`take_outgoing_requests`], consulted and removed when the matching
+/// response crosses back in. Private: never part of this crate's public
+/// declarations, so its variants carry whatever names describe upstream's
+/// own request kinds best, including ones the facade agility rule (design
+/// doc section 6 / M1 spec section 6) would reject as a *public* name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingKind {
+    KeysUpload,
+    KeysQuery,
+    KeysClaim,
+    ToDevice,
+    SignatureUpload,
+    RoomMessage,
+}
+
+impl PendingKind {
+    /// The public, open-tag `kind` string -- spec section 3bis's own
+    /// examples for the first three, extended the same way for the rest.
+    fn tag(self) -> &'static str {
+        match self {
+            PendingKind::KeysUpload => "keys_upload",
+            PendingKind::KeysQuery => "keys_query",
+            PendingKind::KeysClaim => "keys_claim",
+            PendingKind::ToDevice => "to_device",
+            PendingKind::SignatureUpload => "signature_upload",
+            PendingKind::RoomMessage => "room_message",
+        }
+    }
+}
+
+/// Process-wide outbound-request bookkeeping this module owns.
+///
+/// Two distinct jobs share one lock rather than two, so a caller can never
+/// observe one updated without the other:
+///
+/// * `queued_to_device` -- to-device requests [`share_scope_key`] obtained
+///   from `share_room_key` but that have not yet been handed out by
+///   [`take_outgoing_requests`]. Drained (not cloned) when they are.
+/// * `pending` -- every request id this module has ever handed out via
+///   [`take_outgoing_requests`] that has not yet been resolved by
+///   [`mark_request_sent`], with the [`PendingKind`] needed to parse its
+///   response. Removed on resolution, so it cannot grow across a request's
+///   whole lifetime, only across its in-flight one.
+///
+/// A `std::sync::Mutex`, not `tokio::sync::Mutex`: every critical section
+/// below is a plain synchronous map/vec operation with no `.await` inside
+/// it.
+struct RequestState {
+    queued_to_device: Vec<std::sync::Arc<ToDeviceRequest>>,
+    pending: BTreeMap<String, PendingKind>,
+}
+
+static STATE: StdMutex<RequestState> = StdMutex::new(RequestState {
+    queued_to_device: Vec::new(),
+    pending: BTreeMap::new(),
+});
+
+#[cfg(test)]
+fn reset_request_state_for_test() {
+    let mut state = STATE.lock().expect("request registry poisoned");
+    state.queued_to_device.clear();
+    state.pending.clear();
+}
+
+/// Flattens one upstream outgoing request into the `{ kind, body }` shape
+/// that crosses the boundary, alongside the [`PendingKind`] needed to parse
+/// its eventual response.
+///
+/// Matched exhaustively against `AnyOutgoingRequest`, with no wildcard: a
+/// variant upstream adds later must fail this build instead of silently
+/// falling through unhandled, the same reasoning `SessionError`'s own
+/// `From<MachineError>` above documents for itself.
+///
+/// Each body is built from the request's own public fields, not from
+/// `OutgoingRequest::try_into_http_request` -- that method additionally
+/// needs an auth scheme and a homeserver's supported-version list neither
+/// of which this bridge has any business deciding (the product owns
+/// transport, per spec section 6). Field names here are upstream's own
+/// wire field names (verified against the vendored `ruma-client-api`
+/// source per request kind), so the JSON this produces is the real request
+/// body for that endpoint, not a re-description of it.
+fn describe_outgoing(request: &AnyOutgoingRequest) -> (PendingKind, String) {
+    match request {
+        AnyOutgoingRequest::KeysUpload(r) => (
+            PendingKind::KeysUpload,
+            serde_json::json!({
+                "device_keys": r.device_keys,
+                "one_time_keys": r.one_time_keys,
+                "fallback_keys": r.fallback_keys,
+            })
+            .to_string(),
+        ),
+        AnyOutgoingRequest::KeysQuery(r) => (
+            PendingKind::KeysQuery,
+            serde_json::json!({
+                "device_keys": r.device_keys,
+                "timeout": r.timeout.map(|d| d.as_millis() as u64),
+            })
+            .to_string(),
+        ),
+        AnyOutgoingRequest::KeysClaim(r) => (
+            PendingKind::KeysClaim,
+            serde_json::json!({
+                "one_time_keys": r.one_time_keys,
+                "timeout": r.timeout.map(|d| d.as_millis() as u64),
+            })
+            .to_string(),
+        ),
+        AnyOutgoingRequest::ToDeviceRequest(r) => {
+            // `ToDeviceRequest` is this crate's own type and derives
+            // `Serialize` directly (unlike the `ruma` request types
+            // above), so the whole struct serialises as-is -- including
+            // `event_type`/`txn_id`, which the wire body itself omits (they
+            // are path segments on the real endpoint) but which the
+            // product needs to build that path, and which are harmless
+            // alongside `messages` for a server that ignores unknown
+            // top-level fields.
+            (
+                PendingKind::ToDevice,
+                serde_json::to_string(r).unwrap_or_default(),
+            )
+        }
+        AnyOutgoingRequest::SignatureUpload(r) => (
+            PendingKind::SignatureUpload,
+            serde_json::json!({ "signed_keys": r.signed_keys }).to_string(),
+        ),
+        AnyOutgoingRequest::RoomMessage(r) => (
+            PendingKind::RoomMessage,
+            serde_json::json!({
+                "room_id": r.room_id,
+                "txn_id": r.txn_id,
+                "content": &*r.content,
+            })
+            .to_string(),
+        ),
+    }
+}
+
+/// What the product must send to its homeserver, or feed to another
+/// device -- see the design doc section 3bis. `body` is JSON this module
+/// never interprets, sent as-is; `kind` is an open tag mirroring upstream's
+/// own request kinds, not restricted to the ones listed in
+/// [`describe_outgoing`]'s match today.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutgoingRequest {
+    /// Opaque; hand it back verbatim to [`mark_request_sent`].
+    pub id: String,
+    pub kind: String,
+    pub body: String,
+}
+
+/// Drains every outstanding outbound request: device/one-time key uploads
+/// and key queries upstream still wants sent (`OlmMachine::outgoing_requests`),
+/// plus any to-device requests [`share_scope_key`] queued.
+///
+/// This is the half of the pump the design doc section 3bis is named for.
+/// A fresh machine's device keys and one-time keys are otherwise never
+/// published, and a shared session key never leaves the process -- both
+/// silent failures that pass every test which never calls this.
+pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionError> {
+    let upstream =
+        with_machine(|machine| Box::pin(async move { machine.outgoing_requests().await }))
+            .await?
+            .map_err(|_upstream| SessionError::Failed)?;
+
+    let mut state = STATE.lock().expect("request registry poisoned");
+    let mut out = Vec::with_capacity(upstream.len() + state.queued_to_device.len());
+
+    for request in &upstream {
+        let id = request.request_id().to_string();
+        let (kind, body) = describe_outgoing(request.request());
+        state.pending.insert(id.clone(), kind);
+        out.push(OutgoingRequest {
+            id,
+            kind: kind.tag().to_string(),
+            body,
+        });
+    }
+
+    // The to-device `txn_id` doubles as the request id, per
+    // `share_room_key`'s own doc comment (verified against
+    // `matrix-sdk-crypto-0.18.0/src/session_manager/group_sessions/mod.rs`):
+    // "the responses need to be passed back to the state machine ... using
+    // the to-device txn_id as request_id".
+    //
+    // Collected into an owned `Vec` before the loop, not iterated directly
+    // off `drain(..)`: `state` is a `MutexGuard`, and the borrow checker
+    // cannot see `queued_to_device` and `pending` as disjoint fields through
+    // its `DerefMut` the way it can on a plain struct, so holding the
+    // `drain` iterator open while also indexing into `state.pending` below
+    // does not borrow-check.
+    let queued: Vec<_> = state.queued_to_device.drain(..).collect();
+    for to_device in queued {
+        let id = to_device.txn_id.to_string();
+        let body = serde_json::to_string(to_device.as_ref()).unwrap_or_default();
+        state.pending.insert(id.clone(), PendingKind::ToDevice);
+        out.push(OutgoingRequest {
+            id,
+            kind: PendingKind::ToDevice.tag().to_string(),
+            body,
+        });
+    }
+
+    Ok(out)
+}
+
+/// Builds a fixed-shape, status-200 `http::Response` around `body`, the
+/// shape `ruma`'s own `IncomingResponse::try_from_http_response` expects.
+///
+/// No custom headers and a status this module always controls itself
+/// (never read from `body`), so building it cannot fail -- the `expect`
+/// documents that rather than guarding against a case that cannot occur.
+fn http_response(body: Vec<u8>) -> http::Response<Vec<u8>> {
+    http::Response::builder()
+        .status(200)
+        .body(body)
+        .expect("a fixed-shape http::Response with no custom headers cannot fail to build")
+}
+
+/// Parses `body` as the response shape `kind` expects and hands it to
+/// `machine.mark_request_as_sent`.
+///
+/// Going through `IncomingResponse::try_from_http_response` rather than
+/// constructing each upstream `Response` type by hand is not a style
+/// choice: every one of these types is `#[non_exhaustive]`, and some (e.g.
+/// `KeysQuery`) expose no public constructor that accepts real field values
+/// at all -- `try_from_http_response` is the only public way to build a
+/// populated instance of every one of them from outside `ruma-client-api`.
+///
+/// For `ToDevice`, `SignatureUpload` and `RoomMessage`, upstream's own
+/// `mark_request_as_sent` ignores the response value entirely (it only
+/// matches the enum tag) -- confirmed by reading `machine/mod.rs:602`'s
+/// match arms, each `AnyIncomingResponse::Variant(_)` for those three. This
+/// function still parses `body` into the correctly-typed value rather than
+/// fabricating one, because "this module does not interpret the JSON" (spec
+/// section 3bis) means it does not act on the JSON's meaning, not that it
+/// skips deserialising it.
+async fn mark_sent(
+    machine: &OlmMachine,
+    kind: PendingKind,
+    transaction_id: OwnedTransactionId,
+    body: Vec<u8>,
+) -> Result<(), SessionError> {
+    let outcome = match kind {
+        PendingKind::KeysUpload => {
+            let response = KeysUploadResponse::try_from_http_response(http_response(body))
+                .map_err(|_| SessionError::MalformedPayload)?;
+            machine
+                .mark_request_as_sent(&transaction_id, &response)
+                .await
+        }
+        PendingKind::KeysQuery => {
+            let response = KeysQueryResponse::try_from_http_response(http_response(body))
+                .map_err(|_| SessionError::MalformedPayload)?;
+            machine
+                .mark_request_as_sent(&transaction_id, &response)
+                .await
+        }
+        PendingKind::KeysClaim => {
+            let response = KeysClaimResponse::try_from_http_response(http_response(body))
+                .map_err(|_| SessionError::MalformedPayload)?;
+            machine
+                .mark_request_as_sent(&transaction_id, &response)
+                .await
+        }
+        PendingKind::ToDevice => {
+            let response = ToDeviceHttpResponse::try_from_http_response(http_response(body))
+                .map_err(|_| SessionError::MalformedPayload)?;
+            machine
+                .mark_request_as_sent(&transaction_id, &response)
+                .await
+        }
+        PendingKind::SignatureUpload => {
+            let response = SignatureUploadResponse::try_from_http_response(http_response(body))
+                .map_err(|_| SessionError::MalformedPayload)?;
+            machine
+                .mark_request_as_sent(&transaction_id, &response)
+                .await
+        }
+        PendingKind::RoomMessage => {
+            let response = RoomMessageResponse::try_from_http_response(http_response(body))
+                .map_err(|_| SessionError::MalformedPayload)?;
+            machine
+                .mark_request_as_sent(&transaction_id, &response)
+                .await
+        }
+    };
+
+    // Upstream `Display` output here can embed device/session/user
+    // identifiers pulled straight from the response body -- never
+    // forwarded, per spec section 7.
+    outcome.map_err(|_upstream| SessionError::Failed)
+}
+
+/// Reports that the request named by `id` was sent, handing back the
+/// server's response so upstream can update its own state (device lists,
+/// one-time key counts, claimed keys -- depending on what `id` was).
+///
+/// `id` is converted to a `TransactionId` via `From<&str>`, which is
+/// infallible: upstream's own doc comment on the type says as much --
+/// "Transaction IDs in Matrix are opaque strings" with no format of their
+/// own to validate against. What can fail is `id` not matching anything
+/// this module handed out -- [`SessionError::UnknownRequest`] -- and
+/// `response_json` not parsing as the shape that request's kind expects --
+/// [`SessionError::MalformedPayload`].
+pub async fn mark_request_sent(id: &str, response_json: &str) -> Result<(), SessionError> {
+    let kind = {
+        let mut state = STATE.lock().expect("request registry poisoned");
+        state.pending.remove(id)
+    }
+    .ok_or(SessionError::UnknownRequest)?;
+
+    let transaction_id: OwnedTransactionId = <&TransactionId>::from(id).to_owned();
+    let body = response_json.as_bytes().to_vec();
+
+    with_machine(move |machine| Box::pin(mark_sent(machine, kind, transaction_id, body))).await?
 }
 
 #[cfg(test)]
@@ -312,5 +727,206 @@ mod tests {
         // An `m.dummy` event carries no room key, so this call must not be
         // mistaken for one that established a session.
         assert_eq!(outcome.new_session_count, 0);
+    }
+
+    // --- Task 5: the outbound pump -------------------------------------
+
+    /// A machine config pointing at `dir`, the non-leaking counterpart to
+    /// this file's own `test_config()` above (which calls `TempDir::keep`
+    /// deliberately, per Task 4's brief -- a trade a review already graded
+    /// low and non-blocking, and not this task's to fix). These tests
+    /// create real key material on disk and there are several of them, so
+    /// each gets its own `TempDir` bound in the test, dropped normally --
+    /// the same pattern `machine.rs`'s own `config_in` uses.
+    fn config_in(dir: &std::path::Path) -> crate::machine::MachineConfig {
+        crate::machine::MachineConfig {
+            user_id: "@alice:example.org".to_string(),
+            device_id: "DEVICE1".to_string(),
+            store_path: dir.join("store").to_string_lossy().into_owned(),
+            store_passphrase: Some("test-passphrase".to_string()),
+        }
+    }
+
+    /// A fresh machine has device keys and one-time keys nobody has seen. If
+    /// the pump were decorative, this would return nothing and the device
+    /// would be invisible to every other client on the homeserver.
+    #[test]
+    fn a_fresh_machine_has_keys_waiting_to_be_uploaded() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        let requests = futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+            take_outgoing_requests().await
+        })
+        .unwrap();
+
+        assert!(
+            !requests.is_empty(),
+            "a new device must have keys to publish"
+        );
+        assert!(requests.iter().any(|r| r.kind == "keys_upload"));
+        // Every request must carry a non-empty, distinct id a caller can
+        // hand back verbatim to `mark_request_sent`.
+        assert!(requests.iter().all(|r| !r.id.is_empty()));
+    }
+
+    /// Sharing a scope key must produce something to send. A silent success
+    /// here is the failure mode section 3bis warns about: the outbound
+    /// group session would exist locally and `encrypt_event` would happily
+    /// produce ciphertext, but the session key would never leave the
+    /// process, so no other device could ever read it.
+    ///
+    /// Proven with a real second device, not a stranger's user id: sharing
+    /// to a user this machine has never learned any devices for
+    /// legitimately produces nothing to send (there is nobody to send to
+    /// yet). So this test first drives this module's own pump through a
+    /// real keys-query round trip -- the same one a real sync loop
+    /// performs -- to make that second device known, matching the design
+    /// doc's own two-machine testing guidance (spec section 8) and the M2
+    /// exit criterion that the key travel through `take_outgoing_requests`
+    /// rather than being handed over directly.
+    #[test]
+    fn sharing_a_scope_key_produces_a_request_to_send() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        // Wrapped in this crate's own runtime, not a bare `block_on`: the
+        // second machine constructed below is a raw `matrix-sdk-crypto`
+        // `OlmMachine` this test drives directly (outside `with_machine`),
+        // and `machine.rs`'s own doc comment on `with_machine` records this
+        // exact mistake being made twice already in this milestone -- code
+        // that only works because a test harness happened to supply an
+        // ambient runtime.
+        let after = futures::executor::block_on(crate::in_runtime(async move {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+
+            let bob_user: matrix_sdk_common::ruma::OwnedUserId =
+                "@bob:example.org".parse().unwrap();
+            let bob_device: matrix_sdk_common::ruma::OwnedDeviceId = "BOBDEVICE".into();
+            let bob = matrix_sdk_crypto::OlmMachine::new(&bob_user, &bob_device).await;
+            let bob_upload = bob.outgoing_requests().await.unwrap();
+            let bob_device_keys = bob_upload
+                .iter()
+                .find_map(|r| match r.request() {
+                    AnyOutgoingRequest::KeysUpload(u) => u.device_keys.clone(),
+                    _ => None,
+                })
+                .expect("a fresh machine always has device keys to upload");
+
+            // Tell the local machine bob's device list changed, so its own
+            // pump reports a real keys-query request to resolve -- rather
+            // than hand-inserting one, which would test the response
+            // parsing alone and nothing about `take_outgoing_requests`
+            // itself noticing the change.
+            receive_sync_changes(&format!(
+                r#"{{"changed_devices":{{"changed":["{bob_user}"],"left":[]}}}}"#
+            ))
+            .await
+            .unwrap();
+
+            let query_id = take_outgoing_requests()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|r| r.kind == "keys_query")
+                .expect("a changed device queues a keys query")
+                .id;
+
+            let mut devices = BTreeMap::new();
+            devices.insert(
+                bob_device.to_string(),
+                serde_json::to_value(&bob_device_keys).unwrap(),
+            );
+            let mut by_user = BTreeMap::new();
+            by_user.insert(bob_user.to_string(), devices);
+            let response = serde_json::json!({ "device_keys": by_user }).to_string();
+
+            mark_request_sent(&query_id, &response).await.unwrap();
+
+            share_scope_key("!s:example.org", &[bob_user.to_string()])
+                .await
+                .unwrap();
+
+            take_outgoing_requests().await
+        }))
+        .unwrap();
+
+        assert!(
+            after.iter().any(|r| r.kind == "to_device"),
+            "the session key must leave the process: {after:?}"
+        );
+    }
+
+    /// An `id` this module never handed out (or already resolved) must be
+    /// rejected rather than silently accepted or mistaken for "not
+    /// initialised"/"failed".
+    #[test]
+    fn marking_an_unknown_request_as_sent_is_rejected() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+            mark_request_sent("not-a-request-this-machine-issued", "{}").await
+        })
+        .unwrap_err();
+
+        assert_eq!(err, SessionError::UnknownRequest);
+    }
+
+    /// Every test above already runs through bare `futures::executor::block_on`
+    /// with no `#[tokio::test]` anywhere in this file, so each is already
+    /// evidence for this property. This test exists anyway, self-contained
+    /// and separately named, so "does the pump work with no ambient
+    /// runtime" has one direct answer instead of an inference over the rest
+    /// of the file -- and so it exercises the whole pump in one sequence
+    /// (create, share, take, mark), not just the one call
+    /// `a_fresh_machine_has_keys_waiting_to_be_uploaded` above already
+    /// covers.
+    ///
+    /// `#[tokio::test]` supplies a runtime that would hide a missing
+    /// `with_machine`/`in_runtime` wrapping -- see `machine.rs`'s own
+    /// `with_machine_supplies_a_runtime_for_store_touching_calls` for the
+    /// precedent, and the design doc section 4 for why this exact mistake
+    /// has already happened twice in this milestone with a green suite both
+    /// times.
+    #[test]
+    fn the_pump_runs_with_no_ambient_tokio_runtime() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+            share_scope_key("!s:example.org", &["@alice:example.org".to_string()])
+                .await
+                .unwrap();
+
+            let requests = take_outgoing_requests().await.unwrap();
+            let upload = requests
+                .into_iter()
+                .find(|r| r.kind == "keys_upload")
+                .expect("a fresh machine has a key upload to send");
+
+            mark_request_sent(&upload.id, r#"{"one_time_key_counts":{}}"#)
+                .await
+                .unwrap();
+        });
     }
 }

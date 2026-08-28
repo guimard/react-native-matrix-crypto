@@ -18,4 +18,7 @@ pub use machine::{create_machine, open_store, with_machine, MachineConfig, Machi
 pub use observer::{probe_with_observer, ProbeObserver, ProbeSignal};
 pub use probe::{probe, ProbeReport};
 pub use runtime::in_runtime;
-pub use session::{receive_sync_changes, SessionError, SyncOutcome};
+pub use session::{
+    mark_request_sent, receive_sync_changes, share_scope_key, take_outgoing_requests,
+    OutgoingRequest, SessionError, SyncOutcome,
+};
