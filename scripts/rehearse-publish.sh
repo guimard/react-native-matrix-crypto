@@ -48,6 +48,16 @@ fi
 VERSION=$(node -p "require('$PKG_DIR/package.json').version")
 NAME=$(node -p "require('$PKG_DIR/package.json').name")
 
+# npm does not infer a distribution tag from the version: `npm publish` with
+# no --tag always sets `latest`, prerelease or not. Same derivation
+# release.yml's preflight job uses, so this rehearsal exercises exactly what
+# CI would do rather than the plain-version-only default.
+if printf '%s' "$VERSION" | grep -qE -- '^[0-9]+\.[0-9]+\.[0-9]+-'; then
+  NPM_TAG=$(printf '%s' "$VERSION" | sed -E 's/^[0-9]+\.[0-9]+\.[0-9]+-([0-9A-Za-z-]+).*/\1/')
+else
+  NPM_TAG="latest"
+fi
+
 OUT_DIR="${1:-$(mktemp -d)}"
 mkdir -p "$OUT_DIR"
 
@@ -72,10 +82,10 @@ if ! "$REPO_ROOT/scripts/assert-tarball-ships-binaries.sh" "$TGZ" "$VERSION"; th
 fi
 
 echo
-echo "== 3/3  npm publish --dry-run"
+echo "== 3/3  npm publish --dry-run --tag $NPM_TAG"
 echo "   No token is used and nothing is uploaded."
 echo
-npm publish --dry-run "$TGZ"
+npm publish --dry-run --tag "$NPM_TAG" "$TGZ"
 
 echo
 echo "Rehearsal complete. Nothing was published."
@@ -85,5 +95,5 @@ echo "steps on a tag push, then publishes THIS tarball -- the same bytes it"
 echo "asserted on -- with --provenance, which only works inside GitHub Actions"
 echo "and is therefore not part of this local rehearsal."
 echo
-echo "To rehearse the other half, the tag/manifest agreement:"
-echo "   ./scripts/assert-release-ready.sh v$VERSION"
+echo "To rehearse the other half, the tag/manifest/npm-tag agreement:"
+echo "   ./scripts/assert-release-ready.sh v$VERSION $NPM_TAG"

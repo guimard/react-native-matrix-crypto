@@ -69,13 +69,14 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
       will_publish: ${{ steps.resolve.outputs.will_publish }}
+      npm_tag: ${{ steps.resolve.outputs.npm_tag }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version-file: '.nvmrc' }
 
       - id: resolve
-        name: Resolve the tag and the version, and require that they agree
+        name: Resolve the tag, the version and the npm dist-tag, and require that they agree
         # github.* values are passed through env rather than interpolated into
         # the script body: a ref name is attacker-influenced text in the
         # general case, and `${{ }}` inside `run:` splices it into the shell
@@ -98,14 +99,34 @@ jobs:
             echo "::notice::Dispatch run: everything except the publish. Would release $TAG."
           fi
 
+          # npm does not infer a distribution tag from the version: `npm
+          # publish` with no --tag always sets `latest`, prerelease or not.
+          # A version carrying a semver prerelease component publishes under
+          # that component itself -- 0.1.0-rc.1 under `rc` -- so the tag a
+          # consumer types (`@rc`) is the same word already in the version;
+          # a plain version publishes under `latest`.
+          # assert-release-ready.sh re-derives this independently from the
+          # manifest below and refuses to pass if it disagrees with what is
+          # computed here, in either direction.
+          if printf '%s' "$VERSION" | grep -qE -- '^[0-9]+\.[0-9]+\.[0-9]+-'; then
+            NPM_TAG=$(printf '%s' "$VERSION" | sed -E 's/^[0-9]+\.[0-9]+\.[0-9]+-([0-9A-Za-z-]+).*/\1/')
+          else
+            NPM_TAG="latest"
+          fi
+
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "will_publish=$WILL_PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "npm_tag=$NPM_TAG" >> "$GITHUB_OUTPUT"
 
           # The assertion itself lives in a script so a contributor runs
           # byte-for-byte what CI runs, the same rule run-level-two-interop.sh
-          # and run-probe-on-emulator.sh follow.
-          ./scripts/assert-release-ready.sh "$TAG"
+          # and run-probe-on-emulator.sh follow. It re-derives both the tag's
+          # relationship to the manifest and, separately, the npm tag it
+          # expects from the manifest version, so a prerelease can never
+          # reach `latest` and a plain version can never reach anything else,
+          # regardless of what was computed above.
+          ./scripts/assert-release-ready.sh "$TAG" "$NPM_TAG"
 
       - name: Require the NPM_TOKEN secret before building anything
         env:
@@ -279,6 +300,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.preflight.outputs.version }}
+      NPM_TAG: ${{ needs.preflight.outputs.npm_tag }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -332,11 +354,15 @@ jobs:
       # scripts/rehearse-publish.sh, run here against the real artifact so the
       # file list npm would upload is in the run log next to the assertion
       # that approved it.
-      - name: npm publish --dry-run, showing the file list
+      - name: npm publish --dry-run, showing the file list and the tag
         run: |
           set -euo pipefail
           TGZ="$RUNNER_TEMP/release/react-native-matrix-crypto-$VERSION.tgz"
-          npm publish --dry-run --access public "$TGZ"
+          # --tag: without it npm always publishes to `latest`, prerelease or
+          # not -- see preflight's resolve step. This dry-run is the proof
+          # that the flag resolves the way preflight decided it should: its
+          # own output states "Publishing to ... with tag $NPM_TAG".
+          npm publish --dry-run --access public --tag "$NPM_TAG" "$TGZ"
 
       - name: Record what was packed, for the run summary
         run: |
@@ -347,6 +373,7 @@ jobs:
             echo
             echo "| | |"
             echo "|---|---|"
+            echo "| npm tag | \`$NPM_TAG\` |"
             echo "| packed size | $(du -k "$TGZ" | cut -f1) KB |"
             echo "| sha256 | \`$(sha256sum "$TGZ" | cut -d' ' -f1)\` |"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -407,6 +434,7 @@ jobs:
       id-token: write
     env:
       VERSION: ${{ needs.preflight.outputs.version }}
+      NPM_TAG: ${{ needs.preflight.outputs.npm_tag }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -451,10 +479,21 @@ jobs:
           # --access public: the default for an unscoped name, stated so that
           # renaming the package to a scope later does not silently make the
           # first publish private.
-          npm publish --provenance --access public "$TGZ"
+          #
+          # --tag: npm does not infer a distribution tag from the version --
+          # omit this flag and it always publishes to `latest`, prerelease or
+          # not. That would make a prerelease the version every plain `yarn
+          # add react-native-matrix-crypto` installs, which is exactly what a
+          # prerelease exists to prevent. preflight (assert-release-ready.sh)
+          # has already refused to reach this step if $NPM_TAG disagreed with
+          # what $VERSION implies, so this is a decision made before any
+          # build ran, not a value trusted for the first time here.
+          npm publish --provenance --access public --tag "$NPM_TAG" "$TGZ"
 
           {
             echo "### Published \`react-native-matrix-crypto@$VERSION\`"
+            echo
+            echo "Published under npm tag \`$NPM_TAG\`."
             echo
             echo "https://www.npmjs.com/package/react-native-matrix-crypto/v/$VERSION"
           } >> "$GITHUB_STEP_SUMMARY"

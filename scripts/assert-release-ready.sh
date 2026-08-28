@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Assert that a release tag and the manifest it is supposed to name agree,
-# before anything is built or published.
+# Assert that a release tag, the manifest and the npm distribution tag all
+# agree, before anything is built or published.
 #
 # A tag reading v0.1.0 against a manifest reading 0.2.0 publishes 0.2.0 and
 # leaves a tag pointing at a version that was never released. Nobody can
@@ -12,19 +12,28 @@ set -euo pipefail
 # so it is detected here, in the first thirty seconds of the release run,
 # rather than ninety minutes in.
 #
+# npm publish has a second way to go wrong that looks nothing like the first:
+# it does not infer a distribution tag from the version. Omit --tag and it
+# always sets `latest`, prerelease or not, so a version carrying a prerelease
+# suffix would become the version every plain `yarn add` installs -- exactly
+# what a prerelease exists to prevent. This script requires the caller to name
+# the npm tag it intends to use and refuses to pass if that tag disagrees with
+# what the manifest version implies, in either direction.
+#
 # The assertion lives in a script rather than in the workflow so that a
 # contributor can run byte-for-byte what CI runs:
 #
-#   ./scripts/assert-release-ready.sh v0.1.0
+#   ./scripts/assert-release-ready.sh v0.1.0-rc.1 rc
 #
-# Usage: scripts/assert-release-ready.sh <tag>
+# Usage: scripts/assert-release-ready.sh <tag> <npm-tag>
 
-if [ $# -lt 1 ]; then
-  echo "usage: $0 <tag>            e.g. $0 v0.1.0" >&2
+if [ $# -lt 2 ]; then
+  echo "usage: $0 <tag> <npm-tag>   e.g. $0 v0.1.0-rc.1 rc   or   $0 v0.1.0 latest" >&2
   exit 2
 fi
 
 TAG="$1"
+NPM_TAG="$2"
 MANIFEST="packages/react-native-matrix-crypto/package.json"
 
 if [ ! -s "$MANIFEST" ]; then
@@ -76,6 +85,43 @@ fi
 
 echo "Tag and manifest agree: $PKG_NAME@$PKG_VERSION from tag $TAG"
 
+# npm does not infer a distribution tag from the version -- `npm publish`
+# with no --tag always sets `latest`, prerelease or not. A version carrying a
+# semver prerelease component must publish under that component itself as the
+# npm tag (0.1.0-rc.1 under `rc`), never under `latest`; a plain version must
+# publish under `latest`, npm's own default, never under anything else. This
+# is re-derived here from the manifest, independently of whatever the caller
+# computed, and $NPM_TAG -- what the caller intends to pass to `npm publish
+# --tag` -- must match exactly, in both directions.
+if printf '%s' "$PKG_VERSION" | grep -qE -- '^[0-9]+\.[0-9]+\.[0-9]+-'; then
+  EXPECTED_NPM_TAG=$(printf '%s' "$PKG_VERSION" | sed -E 's/^[0-9]+\.[0-9]+\.[0-9]+-([0-9A-Za-z-]+).*/\1/')
+else
+  EXPECTED_NPM_TAG="latest"
+fi
+
+if [ "$EXPECTED_NPM_TAG" != "latest" ] && [ "$NPM_TAG" = "latest" ]; then
+  echo "FAIL: '$PKG_VERSION' is a prerelease but would publish under 'latest'."
+  echo "      That makes it the version every plain"
+  echo "      'yarn add react-native-matrix-crypto' installs -- precisely what"
+  echo "      a prerelease exists to prevent. Pass --tag '$EXPECTED_NPM_TAG'."
+  exit 1
+fi
+
+if [ "$EXPECTED_NPM_TAG" = "latest" ] && [ "$NPM_TAG" != "latest" ]; then
+  echo "FAIL: '$PKG_VERSION' is a plain version but would publish under"
+  echo "      '$NPM_TAG' instead of 'latest'. A release version belongs on"
+  echo "      the tag a bare 'yarn add' resolves, or nobody installs it."
+  exit 1
+fi
+
+if [ "$NPM_TAG" != "$EXPECTED_NPM_TAG" ]; then
+  echo "FAIL: '$PKG_VERSION' implies npm tag '$EXPECTED_NPM_TAG', but"
+  echo "      '$NPM_TAG' was given."
+  exit 1
+fi
+
+echo "npm dist-tag: $NPM_TAG"
+
 # A version already on the registry cannot be republished -- npm answers 403
 # with a message about "cannot publish over the previously published
 # versions", which reads like an authentication problem and is not one. Say so
@@ -107,4 +153,4 @@ else
 fi
 
 echo
-echo "PASS: ready to release $PKG_NAME@$PKG_VERSION as $TAG"
+echo "PASS: ready to release $PKG_NAME@$PKG_VERSION as $TAG, npm tag $NPM_TAG"
