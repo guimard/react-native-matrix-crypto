@@ -10,6 +10,9 @@ export type CryptoErrorKind =
   | 'unknown_device'
   | 'revoked_device'
   | 'undecryptable'
+  | 'malformed_payload'
+  | 'unknown_request'
+  | 'failed'
   | 'store_corrupt'
   | 'store_unavailable'
   | 'mismatched_account'
@@ -38,8 +41,14 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   ['MissingKey', 'missing_key'],
   ['UnsharedSession', 'unshared_session'],
   ['UnknownDevice', 'unknown_device'],
-  ['RevokedDevice', 'revoked_device'],
   ['Undecryptable', 'undecryptable'],
+  // The remaining three `SessionFfiError` variants (Task 7): `raw_json`
+  // that did not parse, an upstream crypto operation that failed for a
+  // reason spec section 7 forbids echoing, and a `mark_request_sent` id
+  // that does not match anything `take_outgoing_requests` handed out.
+  ['MalformedPayload', 'malformed_payload'],
+  ['Failed', 'failed'],
+  ['UnknownRequest', 'unknown_request'],
   // `MachineError::Store` means the store could not be opened -- often a
   // wrong passphrase or a permissions problem, not damaged data. Mapping it
   // to 'store_corrupt' would send a product down a destructive recovery path

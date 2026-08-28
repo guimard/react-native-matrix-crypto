@@ -158,9 +158,22 @@ extern "C" {
     /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_func_create_crypto_machine(
         RustBuffer config
     );
+    /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_func_decrypt_event(
+        RustBuffer scope, 
+        RustBuffer raw_json
+    );
     /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_func_device_identity_keys(
         RustBuffer user_id, 
         RustBuffer device_id
+    );
+    /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_func_encrypt_event(
+        RustBuffer scope, 
+        RustBuffer event_type, 
+        RustBuffer payload_json
+    );
+    /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_func_mark_request_sent(
+        RustBuffer id, 
+        RustBuffer response_json
     );
     /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_func_open_crypto_store(
         RustBuffer config
@@ -173,6 +186,15 @@ extern "C" {
         RustBuffer input, 
         RustBuffer payload, 
         /*handle*/ uint64_t observer
+    );
+    /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_func_receive_sync_changes(
+        RustBuffer raw_json
+    );
+    /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_func_share_scope_key(
+        RustBuffer scope, 
+        RustBuffer users
+    );
+    /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_func_take_outgoing_requests(
     );
     RustBuffer ffi_matrix_crypto_ffi_rustbuffer_alloc(
         uint64_t size, 
@@ -373,13 +395,25 @@ extern "C" {
     );
     uint16_t uniffi_matrix_crypto_ffi_checksum_func_create_crypto_machine(
     );
+    uint16_t uniffi_matrix_crypto_ffi_checksum_func_decrypt_event(
+    );
     uint16_t uniffi_matrix_crypto_ffi_checksum_func_device_identity_keys(
+    );
+    uint16_t uniffi_matrix_crypto_ffi_checksum_func_encrypt_event(
+    );
+    uint16_t uniffi_matrix_crypto_ffi_checksum_func_mark_request_sent(
     );
     uint16_t uniffi_matrix_crypto_ffi_checksum_func_open_crypto_store(
     );
     uint16_t uniffi_matrix_crypto_ffi_checksum_func_probe(
     );
     uint16_t uniffi_matrix_crypto_ffi_checksum_func_probe_with_observer(
+    );
+    uint16_t uniffi_matrix_crypto_ffi_checksum_func_receive_sync_changes(
+    );
+    uint16_t uniffi_matrix_crypto_ffi_checksum_func_share_scope_key(
+    );
+    uint16_t uniffi_matrix_crypto_ffi_checksum_func_take_outgoing_requests(
     );
     uint16_t uniffi_matrix_crypto_ffi_checksum_method_probeobserver_on_signal(
     );
@@ -2331,12 +2365,36 @@ NativeMatrixCrypto::NativeMatrixCrypto(
             return this->cpp_uniffi_matrix_crypto_ffi_fn_func_create_crypto_machine(rt, thisVal, args, count);
         }
     );
+    props["ubrn_uniffi_matrix_crypto_ffi_fn_func_decrypt_event"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_fn_func_decrypt_event"),
+        2,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_fn_func_decrypt_event(rt, thisVal, args, count);
+        }
+    );
     props["ubrn_uniffi_matrix_crypto_ffi_fn_func_device_identity_keys"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_fn_func_device_identity_keys"),
         2,
         [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_uniffi_matrix_crypto_ffi_fn_func_device_identity_keys(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_matrix_crypto_ffi_fn_func_encrypt_event"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_fn_func_encrypt_event"),
+        3,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_fn_func_encrypt_event(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_matrix_crypto_ffi_fn_func_mark_request_sent"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_fn_func_mark_request_sent"),
+        2,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_fn_func_mark_request_sent(rt, thisVal, args, count);
         }
     );
     props["ubrn_uniffi_matrix_crypto_ffi_fn_func_open_crypto_store"] = jsi::Function::createFromHostFunction(
@@ -2361,6 +2419,30 @@ NativeMatrixCrypto::NativeMatrixCrypto(
         3,
         [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_uniffi_matrix_crypto_ffi_fn_func_probe_with_observer(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_matrix_crypto_ffi_fn_func_receive_sync_changes"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_fn_func_receive_sync_changes"),
+        1,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_fn_func_receive_sync_changes(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_matrix_crypto_ffi_fn_func_share_scope_key"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_fn_func_share_scope_key"),
+        2,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_fn_func_share_scope_key(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_matrix_crypto_ffi_fn_func_take_outgoing_requests"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_fn_func_take_outgoing_requests"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_fn_func_take_outgoing_requests(rt, thisVal, args, count);
         }
     );
     props["ubrn_ffi_matrix_crypto_ffi_rust_future_poll_u8"] = jsi::Function::createFromHostFunction(
@@ -2755,12 +2837,36 @@ NativeMatrixCrypto::NativeMatrixCrypto(
             return this->cpp_uniffi_matrix_crypto_ffi_checksum_func_create_crypto_machine(rt, thisVal, args, count);
         }
     );
+    props["ubrn_uniffi_matrix_crypto_ffi_checksum_func_decrypt_event"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_checksum_func_decrypt_event"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_checksum_func_decrypt_event(rt, thisVal, args, count);
+        }
+    );
     props["ubrn_uniffi_matrix_crypto_ffi_checksum_func_device_identity_keys"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_checksum_func_device_identity_keys"),
         0,
         [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_uniffi_matrix_crypto_ffi_checksum_func_device_identity_keys(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_matrix_crypto_ffi_checksum_func_encrypt_event"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_checksum_func_encrypt_event"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_checksum_func_encrypt_event(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_matrix_crypto_ffi_checksum_func_mark_request_sent"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_checksum_func_mark_request_sent"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_checksum_func_mark_request_sent(rt, thisVal, args, count);
         }
     );
     props["ubrn_uniffi_matrix_crypto_ffi_checksum_func_open_crypto_store"] = jsi::Function::createFromHostFunction(
@@ -2785,6 +2891,30 @@ NativeMatrixCrypto::NativeMatrixCrypto(
         0,
         [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_uniffi_matrix_crypto_ffi_checksum_func_probe_with_observer(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_matrix_crypto_ffi_checksum_func_receive_sync_changes"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_checksum_func_receive_sync_changes"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_checksum_func_receive_sync_changes(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_matrix_crypto_ffi_checksum_func_share_scope_key"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_checksum_func_share_scope_key"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_checksum_func_share_scope_key(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_matrix_crypto_ffi_checksum_func_take_outgoing_requests"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_checksum_func_take_outgoing_requests"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_checksum_func_take_outgoing_requests(rt, thisVal, args, count);
         }
     );
     props["ubrn_uniffi_matrix_crypto_ffi_checksum_method_probeobserver_on_signal"] = jsi::Function::createFromHostFunction(
@@ -3032,8 +3162,29 @@ jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_create_crypt
         
         return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker, value);
 }
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_decrypt_event(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_matrix_crypto_ffi_fn_func_decrypt_event(uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1])
+        );
+
+        
+        return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker, value);
+}
 jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_device_identity_keys(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_matrix_crypto_ffi_fn_func_device_identity_keys(uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1])
+        );
+
+        
+        return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_encrypt_event(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_matrix_crypto_ffi_fn_func_encrypt_event(uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1]), uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[2])
+        );
+
+        
+        return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_mark_request_sent(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_matrix_crypto_ffi_fn_func_mark_request_sent(uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1])
         );
 
         
@@ -3055,6 +3206,27 @@ jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_probe(jsi::R
 }
 jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_probe_with_observer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_matrix_crypto_ffi_fn_func_probe_with_observer(uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1]), uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[2])
+        );
+
+        
+        return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_receive_sync_changes(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_matrix_crypto_ffi_fn_func_receive_sync_changes(uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0])
+        );
+
+        
+        return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_share_scope_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_matrix_crypto_ffi_fn_func_share_scope_key(uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1])
+        );
+
+        
+        return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_take_outgoing_requests(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_matrix_crypto_ffi_fn_func_take_outgoing_requests(
         );
 
         
@@ -3439,8 +3611,29 @@ jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_create
         
         return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
 }
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_decrypt_event(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_matrix_crypto_ffi_checksum_func_decrypt_event(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
 jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_device_identity_keys(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_matrix_crypto_ffi_checksum_func_device_identity_keys(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_encrypt_event(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_matrix_crypto_ffi_checksum_func_encrypt_event(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_mark_request_sent(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_matrix_crypto_ffi_checksum_func_mark_request_sent(
         );
 
         
@@ -3462,6 +3655,27 @@ jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_probe(
 }
 jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_probe_with_observer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_matrix_crypto_ffi_checksum_func_probe_with_observer(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_receive_sync_changes(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_matrix_crypto_ffi_checksum_func_receive_sync_changes(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_share_scope_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_matrix_crypto_ffi_checksum_func_share_scope_key(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_take_outgoing_requests(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_matrix_crypto_ffi_checksum_func_take_outgoing_requests(
         );
 
         

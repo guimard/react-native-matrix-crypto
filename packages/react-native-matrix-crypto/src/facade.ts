@@ -1,9 +1,16 @@
 import type { CryptoAlgorithm, CryptoScopeId, EventEnvelope, TrustState } from './types'
+import { asCryptoScopeId } from './types'
 import { toCryptoError } from './errors'
 import {
   createCryptoMachine as nativeCreateCryptoMachine,
+  decryptEvent as nativeDecryptEvent,
   deviceIdentityKeys as nativeDeviceIdentityKeys,
+  encryptEvent as nativeEncryptEvent,
+  markRequestSent as nativeMarkRequestSent,
   openCryptoStore as nativeOpenCryptoStore,
+  receiveSyncChanges as nativeReceiveSyncChanges,
+  shareScopeKey as nativeShareScopeKey,
+  takeOutgoingRequests as nativeTakeOutgoingRequests,
 } from './generated/matrix_crypto'
 
 function notImplemented(name: string): Promise<never> {
@@ -31,6 +38,23 @@ export interface CryptoMachineConfig {
 export interface DeviceStatus {
   deviceId: string
   trust: TrustState
+}
+
+/**
+ * What the product must send to its homeserver, or feed to another device
+ * -- design doc section 3bis. `body` is JSON this library never
+ * interprets, sent as-is; `kind` is an open tag mirroring upstream's own
+ * request kinds, deliberately typed `string` rather than a union for the
+ * same reason `CryptoAlgorithm` is open (the set grows upstream, and a
+ * consumer must already handle a value it does not recognise). Today's
+ * values are `'keys_upload'`, `'keys_query'`, `'keys_claim'`,
+ * `'to_device'`, `'signature_upload'` and `'room_message'`.
+ */
+export interface OutgoingRequest {
+  /** Opaque; hand it back verbatim to {@link markRequestSent}. */
+  id: string
+  kind: string
+  body: string
 }
 
 export async function createCryptoMachine(config: CryptoMachineConfig): Promise<void> {
@@ -68,20 +92,140 @@ export function restoreCryptoMachine(_bundle: Uint8Array): Promise<void> {
   return notImplemented('restoreCryptoMachine')
 }
 
-export function receiveSyncChanges(_syncDelta: unknown): Promise<void> {
-  return notImplemented('receiveSyncChanges')
+/**
+ * Feeds the encryption-relevant slice of a `/sync` response into the
+ * crypto machine -- design doc section 7. `syncDelta` is whatever
+ * JSON-serialisable value the product already fetched; this library never
+ * performs the request itself. The prerequisite every later crypto
+ * operation depends on: a product that never calls this encrypts to
+ * nobody, because this is how the machine learns which devices exist.
+ *
+ * Returns `void`, not the native call's own to-device/session counts: that
+ * return type is frozen from M1a. A product that needs those counts reads
+ * them off the sync response it already holds.
+ */
+export async function receiveSyncChanges(syncDelta: unknown): Promise<void> {
+  try {
+    await nativeReceiveSyncChanges(JSON.stringify(syncDelta))
+  } catch (e) {
+    throw toCryptoError(e)
+  }
 }
 
-export function encryptEvent(
-  _scope: CryptoScopeId,
-  _eventType: string,
-  _payload: unknown,
+export async function encryptEvent(
+  scope: CryptoScopeId,
+  eventType: string,
+  payload: unknown,
 ): Promise<EventEnvelope> {
-  return notImplemented('encryptEvent')
+  try {
+    const encrypted = await nativeEncryptEvent(scope, eventType, JSON.stringify(payload))
+    // Destructured, not returned/field-accessed directly: a field added to
+    // the generated record later must be a deliberate choice to expose,
+    // not something that leaks through this boundary unreviewed. See
+    // Global Constraints and the M1 final review finding fixed below at
+    // getDeviceIdentityKeys.
+    const { scope: encryptedScope, algorithm, eventType: encryptedEventType, ciphertext, sender } = encrypted
+    return {
+      scope: asCryptoScopeId(encryptedScope),
+      algorithm,
+      eventType: encryptedEventType,
+      // The generated binding speaks ArrayBuffer; EventEnvelope speaks
+      // Uint8Array, the idiomatic React Native shape -- same conversion
+      // probe.ts's runProbe already makes for ProbeResult.payload.
+      ciphertext: new Uint8Array(ciphertext),
+      sender,
+    }
+  } catch (e) {
+    throw toCryptoError(e)
+  }
 }
 
-export function decryptEvent(_rawEvent: unknown): Promise<EventEnvelope> {
-  return notImplemented('decryptEvent')
+/**
+ * Decrypts a previously-received `m.room.encrypted` event.
+ *
+ * `rawEvent` carries both the scope the event belongs to and the event
+ * itself, as `{ scope, event }`: the native call this delegates to needs
+ * an explicit scope to look up the right group session (upstream requires
+ * it as its own separate parameter, not something safe to infer from the
+ * unauthenticated, not-yet-decrypted event JSON), and the frozen M1a
+ * signature -- `(rawEvent: unknown) => Promise<EventEnvelope>` -- has no
+ * room for a second parameter to carry it. `{ scope, event }`, not the
+ * flatter `{ scope, ...event }`: the native call expects the event "as
+ * received, verbatim", and destructuring `event` back out preserves that,
+ * where reassembling a flattened object risks reordering or dropping a
+ * duplicate key that `JSON.stringify` would otherwise pass through
+ * untouched.
+ */
+export async function decryptEvent(rawEvent: unknown): Promise<EventEnvelope> {
+  const { scope, event } = (rawEvent ?? {}) as { scope?: unknown; event?: unknown }
+  if (typeof scope !== 'string') {
+    throw toCryptoError({ name: 'MalformedPayload' })
+  }
+  try {
+    const decrypted = await nativeDecryptEvent(scope, JSON.stringify(event))
+    // Destructured, not returned directly. See encryptEvent above.
+    const { scope: decryptedScope, algorithm, eventType, ciphertext, sender } = decrypted
+    return {
+      scope: asCryptoScopeId(decryptedScope),
+      algorithm,
+      eventType,
+      // See encryptEvent above: ArrayBuffer -> Uint8Array.
+      ciphertext: new Uint8Array(ciphertext),
+      sender,
+    }
+  } catch (e) {
+    throw toCryptoError(e)
+  }
+}
+
+/**
+ * Ensures `scope` has a group session and shares it with `userIds`' known
+ * devices -- the prerequisite `encryptEvent` documents for itself: a scope
+ * must have a group session before encryption can succeed. Not a change to
+ * the frozen surface; a new public name for what the core calls
+ * `share_scope_key`, chosen to say what it does without naming an
+ * algorithm (design doc section 3bis / spec section 6).
+ */
+export async function shareScopeKey(scope: CryptoScopeId, userIds: string[]): Promise<void> {
+  try {
+    await nativeShareScopeKey(scope, userIds)
+  } catch (e) {
+    throw toCryptoError(e)
+  }
+}
+
+/**
+ * Drains every outstanding request this library needs the product to send
+ * to its homeserver, or feed to another device -- design doc section 3bis.
+ * An addition to the frozen surface, not a change to it: `OlmMachine` has
+ * an outbound side (device/one-time key uploads, key queries, key claims,
+ * and the to-device requests that actually carry a shared session key),
+ * and discarding what this returns is the mistake section 3bis is named
+ * for -- a machine that encrypts to nobody and never learns that any of it
+ * happened.
+ */
+export async function takeOutgoingRequests(): Promise<OutgoingRequest[]> {
+  try {
+    const requests = await nativeTakeOutgoingRequests()
+    // Destructured per element, not returned directly. See encryptEvent above.
+    return requests.map(({ id, kind, body }) => ({ id, kind, body }))
+  } catch (e) {
+    throw toCryptoError(e)
+  }
+}
+
+/**
+ * Reports that the request named by `id` (from {@link takeOutgoingRequests})
+ * was sent, handing back the server's raw JSON response so the machine can
+ * update its own state. An addition to the frozen surface, not a change to
+ * it -- see {@link takeOutgoingRequests}.
+ */
+export async function markRequestSent(id: string, responseJson: string): Promise<void> {
+  try {
+    await nativeMarkRequestSent(id, responseJson)
+  } catch (e) {
+    throw toCryptoError(e)
+  }
 }
 
 export function getDeviceStatuses(_userId: string): Promise<DeviceStatus[]> {
@@ -119,7 +263,14 @@ export interface IdentityKeys {
 
 export async function getDeviceIdentityKeys(userId: string, deviceId: string): Promise<IdentityKeys> {
   try {
-    return await nativeDeviceIdentityKeys(userId, deviceId)
+    // Destructured, not returned directly: the M1 final review's deferred
+    // item (`facade.ts:87`), applied here. A field added to the generated
+    // record later must be a deliberate choice to expose through this
+    // boundary, not something that leaks through unreviewed because it
+    // structurally satisfies this function's own `IdentityKeys` shape. See
+    // Global Constraints.
+    const { curve25519, ed25519 } = await nativeDeviceIdentityKeys(userId, deviceId)
+    return { curve25519, ed25519 }
   } catch (e) {
     throw toCryptoError(e)
   }

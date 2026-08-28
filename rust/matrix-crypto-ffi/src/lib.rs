@@ -222,3 +222,205 @@ pub async fn device_identity_keys(
         })
         .map_err(Into::into)
 }
+
+/// Mirror of the core's sync outcome, carrying the UniFFI record derive.
+///
+/// Both counts are plain totals with no payload content, key material or
+/// identifier -- see Global Constraints -- so, unlike `Envelope` and
+/// `OutgoingRequest` below, a `Debug` derive is safe here.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SyncOutcome {
+    pub to_device_event_count: u32,
+    pub new_session_count: u32,
+}
+
+impl From<matrix_crypto_core::SyncOutcome> for SyncOutcome {
+    fn from(value: matrix_crypto_core::SyncOutcome) -> Self {
+        // Destructured, not field-accessed: a field added to the core
+        // struct later must fail this build rather than being silently
+        // dropped. See Global Constraints.
+        let matrix_crypto_core::SyncOutcome {
+            to_device_event_count,
+            new_session_count,
+        } = value;
+        Self {
+            to_device_event_count,
+            new_session_count,
+        }
+    }
+}
+
+/// Mirror of the core's envelope, carrying the UniFFI record derive.
+///
+/// No `Debug` derive: `ciphertext` is, depending on which call produced
+/// this, either the wire ciphertext or the plaintext just recovered from
+/// it, and `sender` is a user id -- exactly what the global no-secret rule
+/// forbids from any `Debug` output or panic message. The core's own
+/// `Envelope` hand-writes a redacting `Debug` for the same reason; this
+/// mirror simply carries none, the same choice `CryptoMachineConfig` above
+/// already makes for its own secret field.
+#[derive(Clone, uniffi::Record)]
+pub struct Envelope {
+    pub scope: String,
+    pub algorithm: String,
+    pub event_type: String,
+    pub ciphertext: Vec<u8>,
+    pub sender: String,
+}
+
+impl From<matrix_crypto_core::Envelope> for Envelope {
+    fn from(value: matrix_crypto_core::Envelope) -> Self {
+        // Destructured, not field-accessed. See Global Constraints.
+        let matrix_crypto_core::Envelope {
+            scope,
+            algorithm,
+            event_type,
+            ciphertext,
+            sender,
+        } = value;
+        Self {
+            scope,
+            algorithm,
+            event_type,
+            ciphertext,
+            sender,
+        }
+    }
+}
+
+/// Mirror of the core's outgoing request, carrying the UniFFI record
+/// derive.
+///
+/// No `Debug` derive: `body` can carry an Olm-encrypted payload, device
+/// keys or one-time keys, alongside user and device ids throughout -- the
+/// same reason `Envelope` above carries none. The core's own
+/// `OutgoingRequest` hand-writes a redacting `Debug`; this mirror simply
+/// carries none.
+#[derive(Clone, uniffi::Record)]
+pub struct OutgoingRequest {
+    pub id: String,
+    pub kind: String,
+    pub body: String,
+}
+
+impl From<matrix_crypto_core::OutgoingRequest> for OutgoingRequest {
+    fn from(value: matrix_crypto_core::OutgoingRequest) -> Self {
+        // Destructured, not field-accessed. See Global Constraints.
+        let matrix_crypto_core::OutgoingRequest { id, kind, body } = value;
+        Self { id, kind, body }
+    }
+}
+
+/// Mirror of the core's session error, carrying the UniFFI error derive.
+///
+/// Every variant is fieldless, so the `Debug` derive `thiserror::Error`
+/// requires (via its `std::error::Error: Debug` supertrait bound) prints
+/// only the variant name -- nothing to redact, unlike `Envelope`/
+/// `OutgoingRequest` above.
+#[derive(Debug, uniffi::Error, thiserror::Error)]
+pub enum SessionFfiError {
+    #[error("the payload could not be parsed")]
+    MalformedPayload,
+    #[error("no crypto machine has been created")]
+    NotInitialised,
+    #[error("the crypto operation failed")]
+    Failed,
+    #[error("the request id does not match a pending request")]
+    UnknownRequest,
+    #[error("no key is available to decrypt this event")]
+    MissingKey,
+    #[error("the session that encrypted this event was not shared with this device")]
+    UnsharedSession,
+    #[error("the device that encrypted this event is not trusted")]
+    UnknownDevice,
+    #[error("this event could not be decrypted")]
+    Undecryptable,
+}
+
+impl From<matrix_crypto_core::SessionError> for SessionFfiError {
+    fn from(e: matrix_crypto_core::SessionError) -> Self {
+        // Exhaustive, no wildcard arm. See Global Constraints.
+        match e {
+            matrix_crypto_core::SessionError::MalformedPayload => Self::MalformedPayload,
+            matrix_crypto_core::SessionError::NotInitialised => Self::NotInitialised,
+            matrix_crypto_core::SessionError::Failed => Self::Failed,
+            matrix_crypto_core::SessionError::UnknownRequest => Self::UnknownRequest,
+            matrix_crypto_core::SessionError::MissingKey => Self::MissingKey,
+            matrix_crypto_core::SessionError::UnsharedSession => Self::UnsharedSession,
+            matrix_crypto_core::SessionError::UnknownDevice => Self::UnknownDevice,
+            matrix_crypto_core::SessionError::Undecryptable => Self::Undecryptable,
+        }
+    }
+}
+
+/// Feeds the encryption-relevant slice of a `/sync` response into the
+/// crypto machine. A plain `async fn`, matching every export above: the
+/// core reaches for its own runtime wherever it needs one. Mirrors
+/// `receive_sync_changes`; see its own doc comment in
+/// `matrix-crypto-core::session`.
+#[uniffi::export]
+pub async fn receive_sync_changes(raw_json: String) -> Result<SyncOutcome, SessionFfiError> {
+    matrix_crypto_core::receive_sync_changes(&raw_json)
+        .await
+        .map(Into::into)
+        .map_err(Into::into)
+}
+
+/// Encrypts `payload_json` for `scope`. Mirrors `encrypt_event`; see its
+/// own doc comment in `matrix-crypto-core::session`.
+#[uniffi::export]
+pub async fn encrypt_event(
+    scope: String,
+    event_type: String,
+    payload_json: String,
+) -> Result<Envelope, SessionFfiError> {
+    matrix_crypto_core::encrypt_event(&scope, &event_type, &payload_json)
+        .await
+        .map(Into::into)
+        .map_err(Into::into)
+}
+
+/// Decrypts `raw_json`, an event received for `scope`. Mirrors
+/// `decrypt_event`; see its own doc comment in
+/// `matrix-crypto-core::session`.
+#[uniffi::export]
+pub async fn decrypt_event(scope: String, raw_json: String) -> Result<Envelope, SessionFfiError> {
+    matrix_crypto_core::decrypt_event(&scope, &raw_json)
+        .await
+        .map(Into::into)
+        .map_err(Into::into)
+}
+
+/// Ensures `scope` has a group session and shares it with `users`' known
+/// devices. Mirrors `share_scope_key`; see its own doc comment in
+/// `matrix-crypto-core::session` for why this is two upstream calls, not
+/// one, and the design doc section 3ter for why the ordering matters.
+#[uniffi::export]
+pub async fn share_scope_key(scope: String, users: Vec<String>) -> Result<(), SessionFfiError> {
+    matrix_crypto_core::share_scope_key(&scope, &users)
+        .await
+        .map_err(Into::into)
+}
+
+/// Drains every outstanding outbound request. Mirrors
+/// `take_outgoing_requests`; see its own doc comment in
+/// `matrix-crypto-core::session` and the design doc section 3bis for why
+/// this exists at all: discarding what this returns is the mistake that
+/// section is named for.
+#[uniffi::export]
+pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionFfiError> {
+    matrix_crypto_core::take_outgoing_requests()
+        .await
+        .map(|requests| requests.into_iter().map(Into::into).collect())
+        .map_err(Into::into)
+}
+
+/// Reports that the request named by `id` was sent, handing back the
+/// server's response. Mirrors `mark_request_sent`; see its own doc comment
+/// in `matrix-crypto-core::session`.
+#[uniffi::export]
+pub async fn mark_request_sent(id: String, response_json: String) -> Result<(), SessionFfiError> {
+    matrix_crypto_core::mark_request_sent(&id, &response_json)
+        .await
+        .map_err(Into::into)
+}

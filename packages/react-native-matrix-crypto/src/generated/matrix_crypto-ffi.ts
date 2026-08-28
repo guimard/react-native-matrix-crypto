@@ -180,9 +180,22 @@ interface NativeModuleInterface {
   ubrn_uniffi_matrix_crypto_ffi_fn_func_create_crypto_machine(
     config: Uint8Array
   ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_decrypt_event(
+    scope: Uint8Array,
+    rawJson: Uint8Array
+  ): bigint;
   ubrn_uniffi_matrix_crypto_ffi_fn_func_device_identity_keys(
     userId: Uint8Array,
     deviceId: Uint8Array
+  ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_encrypt_event(
+    scope: Uint8Array,
+    eventType: Uint8Array,
+    payloadJson: Uint8Array
+  ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_mark_request_sent(
+    id: Uint8Array,
+    responseJson: Uint8Array
   ): bigint;
   ubrn_uniffi_matrix_crypto_ffi_fn_func_open_crypto_store(
     config: Uint8Array
@@ -196,6 +209,14 @@ interface NativeModuleInterface {
     payload: Uint8Array,
     observer: bigint
   ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_receive_sync_changes(
+    rawJson: Uint8Array
+  ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_share_scope_key(
+    scope: Uint8Array,
+    users: Uint8Array
+  ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_take_outgoing_requests(): bigint;
   ubrn_uniffi_matrix_crypto_ffi_fn_method_probeobserver_on_signal(
     uniffiSelf: bigint,
     signal: Uint8Array,
@@ -203,10 +224,16 @@ interface NativeModuleInterface {
   ): void;
   ubrn_ffi_matrix_crypto_ffi_uniffi_contract_version(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_create_crypto_machine(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_decrypt_event(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_device_identity_keys(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_encrypt_event(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_mark_request_sent(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_open_crypto_store(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_probe(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_probe_with_observer(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_receive_sync_changes(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_share_scope_key(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_take_outgoing_requests(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_method_probeobserver_on_signal(): number;
   ubrn_uniffi_internal_fn_method_probeobserver_ffi__bless_pointer(
     pointer: bigint,

@@ -20,10 +20,12 @@ import {
   type UniffiRustCallStatus,
   AbstractFfiConverterByteArray,
   Cursor,
+  FfiConverterArray,
   FfiConverterArrayBuffer,
   FfiConverterObject,
   FfiConverterObjectWithCallbacks,
   FfiConverterOptional,
+  FfiConverterUInt32,
   FfiConverterUInt8,
   RustBuffer,
   UniffiAbstractObject,
@@ -97,6 +99,63 @@ export async function createCryptoMachine(
 }
 
 /**
+ * Decrypts `raw_json`, an event received for `scope`. Mirrors
+ * `decrypt_event`; see its own doc comment in
+ * `matrix-crypto-core::session`.
+ */
+export async function decryptEvent(
+  scope: string,
+  rawJson: string,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<Envelope> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_decrypt_event(
+          FfiConverterString.lower(scope, nativeModule().rustbuffer_alloc),
+          FfiConverterString.lower(rawJson, nativeModule().rustbuffer_alloc)
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_rust_buffer,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      // Borrowed view over foreign memory: the call site owns the free,
+      // as on the sync paths. Unconditional — a no-op where buffers are
+      // already JS-owned.
+      /*liftFunc:*/ (__rb) => {
+        try {
+          return FfiConverterTypeEnvelope.lift(__rb);
+        } finally {
+          nativeModule().rustbuffer_free(__rb);
+        }
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeSessionFfiError.lift.bind(
+        FfiConverterTypeSessionFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
  * A plain `async fn`, matching `probe`: no `async_runtime` attribute is
  * needed here either. `device_identity_keys` reads the live machine through
  * `with_machine`, which locks a `tokio::sync::Mutex` -- a primitive that
@@ -148,6 +207,110 @@ export async function deviceIdentityKeys(
       /*asyncOpts:*/ asyncOpts_,
       /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
         FfiConverterTypeMachineFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
+ * Encrypts `payload_json` for `scope`. Mirrors `encrypt_event`; see its
+ * own doc comment in `matrix-crypto-core::session`.
+ */
+export async function encryptEvent(
+  scope: string,
+  eventType: string,
+  payloadJson: string,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<Envelope> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_encrypt_event(
+          FfiConverterString.lower(scope, nativeModule().rustbuffer_alloc),
+          FfiConverterString.lower(eventType, nativeModule().rustbuffer_alloc),
+          FfiConverterString.lower(payloadJson, nativeModule().rustbuffer_alloc)
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_rust_buffer,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      // Borrowed view over foreign memory: the call site owns the free,
+      // as on the sync paths. Unconditional — a no-op where buffers are
+      // already JS-owned.
+      /*liftFunc:*/ (__rb) => {
+        try {
+          return FfiConverterTypeEnvelope.lift(__rb);
+        } finally {
+          nativeModule().rustbuffer_free(__rb);
+        }
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeSessionFfiError.lift.bind(
+        FfiConverterTypeSessionFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
+ * Reports that the request named by `id` was sent, handing back the
+ * server's response. Mirrors `mark_request_sent`; see its own doc comment
+ * in `matrix-crypto-core::session`.
+ */
+export async function markRequestSent(
+  id: string,
+  responseJson: string,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<void> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_mark_request_sent(
+          FfiConverterString.lower(id, nativeModule().rustbuffer_alloc),
+          FfiConverterString.lower(
+            responseJson,
+            nativeModule().rustbuffer_alloc
+          )
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_void,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_void,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_void,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_void,
+      /*liftFunc:*/ (_v) => {},
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeSessionFfiError.lift.bind(
+        FfiConverterTypeSessionFfiError
       )
     );
   } catch (__error: any) {
@@ -323,6 +486,164 @@ export async function probeWithObserver(
   }
 }
 
+/**
+ * Feeds the encryption-relevant slice of a `/sync` response into the
+ * crypto machine. A plain `async fn`, matching every export above: the
+ * core reaches for its own runtime wherever it needs one. Mirrors
+ * `receive_sync_changes`; see its own doc comment in
+ * `matrix-crypto-core::session`.
+ */
+export async function receiveSyncChanges(
+  rawJson: string,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<SyncOutcome> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_receive_sync_changes(
+          FfiConverterString.lower(rawJson, nativeModule().rustbuffer_alloc)
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_rust_buffer,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      // Borrowed view over foreign memory: the call site owns the free,
+      // as on the sync paths. Unconditional — a no-op where buffers are
+      // already JS-owned.
+      /*liftFunc:*/ (__rb) => {
+        try {
+          return FfiConverterTypeSyncOutcome.lift(__rb);
+        } finally {
+          nativeModule().rustbuffer_free(__rb);
+        }
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeSessionFfiError.lift.bind(
+        FfiConverterTypeSessionFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
+ * Ensures `scope` has a group session and shares it with `users`' known
+ * devices. Mirrors `share_scope_key`; see its own doc comment in
+ * `matrix-crypto-core::session` for why this is two upstream calls, not
+ * one, and the design doc section 3ter for why the ordering matters.
+ */
+export async function shareScopeKey(
+  scope: string,
+  users: Array<string>,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<void> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_share_scope_key(
+          FfiConverterString.lower(scope, nativeModule().rustbuffer_alloc),
+          FfiConverterSequenceString.lower(
+            users,
+            nativeModule().rustbuffer_alloc
+          )
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_void,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_void,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_void,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_void,
+      /*liftFunc:*/ (_v) => {},
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeSessionFfiError.lift.bind(
+        FfiConverterTypeSessionFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
+ * Drains every outstanding outbound request. Mirrors
+ * `take_outgoing_requests`; see its own doc comment in
+ * `matrix-crypto-core::session` and the design doc section 3bis for why
+ * this exists at all: discarding what this returns is the mistake that
+ * section is named for.
+ */
+export async function takeOutgoingRequests(asyncOpts_?: {
+  signal: AbortSignal;
+}): Promise<Array<OutgoingRequest>> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_take_outgoing_requests();
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_rust_buffer,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      // Borrowed view over foreign memory: the call site owns the free,
+      // as on the sync paths. Unconditional — a no-op where buffers are
+      // already JS-owned.
+      /*liftFunc:*/ (__rb) => {
+        try {
+          return FfiConverterSequenceTypeOutgoingRequest.lift(__rb);
+        } finally {
+          nativeModule().rustbuffer_free(__rb);
+        }
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeSessionFfiError.lift.bind(
+        FfiConverterTypeSessionFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
 // Hermes (React Native ≥ 0.74) ships TextEncoder and encodeInto, but not
 // TextDecoder. For single-string decode (bytesToString), we polyfill via the
 // C++ string_from_buffer helper using a duck-typed object matching the
@@ -447,6 +768,72 @@ const FfiConverterTypeCryptoMachineConfig = (() => {
 })();
 
 /**
+ * Mirror of the core's envelope, carrying the UniFFI record derive.
+ *
+ * No `Debug` derive: `ciphertext` is, depending on which call produced
+ * this, either the wire ciphertext or the plaintext just recovered from
+ * it, and `sender` is a user id -- exactly what the global no-secret rule
+ * forbids from any `Debug` output or panic message. The core's own
+ * `Envelope` hand-writes a redacting `Debug` for the same reason; this
+ * mirror simply carries none, the same choice `CryptoMachineConfig` above
+ * already makes for its own secret field.
+ */
+export type Envelope = {
+  scope: string;
+  algorithm: string;
+  eventType: string;
+  ciphertext: ArrayBuffer;
+  sender: string;
+};
+
+/**
+ * Generated factory for {@link Envelope} record objects.
+ */
+export const Envelope = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<Envelope, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<Envelope>,
+  });
+})();
+
+const FfiConverterTypeEnvelope = (() => {
+  type TypeName = Envelope;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      return {
+        scope: FfiConverterString.readFromCursor(c),
+        algorithm: FfiConverterString.readFromCursor(c),
+        eventType: FfiConverterString.readFromCursor(c),
+        ciphertext: FfiConverterArrayBuffer.readFromCursor(c),
+        sender: FfiConverterString.readFromCursor(c),
+      };
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      FfiConverterString.writeIntoCursor(value.scope, c);
+      FfiConverterString.writeIntoCursor(value.algorithm, c);
+      FfiConverterString.writeIntoCursor(value.eventType, c);
+      FfiConverterArrayBuffer.writeIntoCursor(value.ciphertext, c);
+      FfiConverterString.writeIntoCursor(value.sender, c);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterString.allocationSize(value.scope) +
+        FfiConverterString.allocationSize(value.algorithm) +
+        FfiConverterString.allocationSize(value.eventType) +
+        FfiConverterArrayBuffer.allocationSize(value.ciphertext) +
+        FfiConverterString.allocationSize(value.sender)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
  * Mirror of the core's identity keys, carrying the UniFFI record derive.
  */
 export type IdentityKeys = {
@@ -488,6 +875,65 @@ const FfiConverterTypeIdentityKeys = (() => {
       return (
         FfiConverterString.allocationSize(value.curve25519) +
         FfiConverterString.allocationSize(value.ed25519)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Mirror of the core's outgoing request, carrying the UniFFI record
+ * derive.
+ *
+ * No `Debug` derive: `body` can carry an Olm-encrypted payload, device
+ * keys or one-time keys, alongside user and device ids throughout -- the
+ * same reason `Envelope` above carries none. The core's own
+ * `OutgoingRequest` hand-writes a redacting `Debug`; this mirror simply
+ * carries none.
+ */
+export type OutgoingRequest = {
+  id: string;
+  kind: string;
+  body: string;
+};
+
+/**
+ * Generated factory for {@link OutgoingRequest} record objects.
+ */
+export const OutgoingRequest = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<OutgoingRequest, ReturnType<typeof defaults>>(
+      defaults
+    );
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<OutgoingRequest>,
+  });
+})();
+
+const FfiConverterTypeOutgoingRequest = (() => {
+  type TypeName = OutgoingRequest;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      return {
+        id: FfiConverterString.readFromCursor(c),
+        kind: FfiConverterString.readFromCursor(c),
+        body: FfiConverterString.readFromCursor(c),
+      };
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      FfiConverterString.writeIntoCursor(value.id, c);
+      FfiConverterString.writeIntoCursor(value.kind, c);
+      FfiConverterString.writeIntoCursor(value.body, c);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterString.allocationSize(value.id) +
+        FfiConverterString.allocationSize(value.kind) +
+        FfiConverterString.allocationSize(value.body)
       );
     }
   }
@@ -588,6 +1034,58 @@ const FfiConverterTypeProbeSignal = (() => {
       return (
         FfiConverterString.allocationSize(value.kind) +
         FfiConverterString.allocationSize(value.detail)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Mirror of the core's sync outcome, carrying the UniFFI record derive.
+ *
+ * Both counts are plain totals with no payload content, key material or
+ * identifier -- see Global Constraints -- so, unlike `Envelope` and
+ * `OutgoingRequest` below, a `Debug` derive is safe here.
+ */
+export type SyncOutcome = {
+  toDeviceEventCount: number;
+  newSessionCount: number;
+};
+
+/**
+ * Generated factory for {@link SyncOutcome} record objects.
+ */
+export const SyncOutcome = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<SyncOutcome, ReturnType<typeof defaults>>(
+      defaults
+    );
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<SyncOutcome>,
+  });
+})();
+
+const FfiConverterTypeSyncOutcome = (() => {
+  type TypeName = SyncOutcome;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      return {
+        toDeviceEventCount: FfiConverterUInt32.readFromCursor(c),
+        newSessionCount: FfiConverterUInt32.readFromCursor(c),
+      };
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      FfiConverterUInt32.writeIntoCursor(value.toDeviceEventCount, c);
+      FfiConverterUInt32.writeIntoCursor(value.newSessionCount, c);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterUInt32.allocationSize(value.toDeviceEventCount) +
+        FfiConverterUInt32.allocationSize(value.newSessionCount)
       );
     }
   }
@@ -979,6 +1477,381 @@ const FfiConverterTypeProbeFfiError = (() => {
   return new FFIConverter();
 })();
 
+// Error type: SessionFfiError
+export enum SessionFfiError_Tags {
+  MalformedPayload = "MalformedPayload",
+  NotInitialised = "NotInitialised",
+  Failed = "Failed",
+  UnknownRequest = "UnknownRequest",
+  MissingKey = "MissingKey",
+  UnsharedSession = "UnsharedSession",
+  UnknownDevice = "UnknownDevice",
+  Undecryptable = "Undecryptable",
+}
+/**
+ * Mirror of the core's session error, carrying the UniFFI error derive.
+ *
+ * Every variant is fieldless, so the `Debug` derive `thiserror::Error`
+ * requires (via its `std::error::Error: Debug` supertrait bound) prints
+ * only the variant name -- nothing to redact, unlike `Envelope`/
+ * `OutgoingRequest` above.
+ */
+export const SessionFfiError = (() => {
+  type MalformedPayload__interface = {
+    tag: SessionFfiError_Tags.MalformedPayload;
+  };
+  class MalformedPayload_
+    extends UniffiError
+    implements MalformedPayload__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "SessionFfiError";
+    readonly tag = SessionFfiError_Tags.MalformedPayload;
+    constructor() {
+      super("SessionFfiError", "MalformedPayload");
+    }
+
+    static new(): MalformedPayload_ {
+      return new MalformedPayload_();
+    }
+
+    static instanceOf(obj: any): obj is MalformedPayload_ {
+      return obj.tag === SessionFfiError_Tags.MalformedPayload;
+    }
+    static hasInner(obj: any): obj is MalformedPayload_ {
+      return false;
+    }
+  }
+
+  type NotInitialised__interface = {
+    tag: SessionFfiError_Tags.NotInitialised;
+  };
+  class NotInitialised_
+    extends UniffiError
+    implements NotInitialised__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "SessionFfiError";
+    readonly tag = SessionFfiError_Tags.NotInitialised;
+    constructor() {
+      super("SessionFfiError", "NotInitialised");
+    }
+
+    static new(): NotInitialised_ {
+      return new NotInitialised_();
+    }
+
+    static instanceOf(obj: any): obj is NotInitialised_ {
+      return obj.tag === SessionFfiError_Tags.NotInitialised;
+    }
+    static hasInner(obj: any): obj is NotInitialised_ {
+      return false;
+    }
+  }
+
+  type Failed__interface = {
+    tag: SessionFfiError_Tags.Failed;
+  };
+  class Failed_ extends UniffiError implements Failed__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "SessionFfiError";
+    readonly tag = SessionFfiError_Tags.Failed;
+    constructor() {
+      super("SessionFfiError", "Failed");
+    }
+
+    static new(): Failed_ {
+      return new Failed_();
+    }
+
+    static instanceOf(obj: any): obj is Failed_ {
+      return obj.tag === SessionFfiError_Tags.Failed;
+    }
+    static hasInner(obj: any): obj is Failed_ {
+      return false;
+    }
+  }
+
+  type UnknownRequest__interface = {
+    tag: SessionFfiError_Tags.UnknownRequest;
+  };
+  class UnknownRequest_
+    extends UniffiError
+    implements UnknownRequest__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "SessionFfiError";
+    readonly tag = SessionFfiError_Tags.UnknownRequest;
+    constructor() {
+      super("SessionFfiError", "UnknownRequest");
+    }
+
+    static new(): UnknownRequest_ {
+      return new UnknownRequest_();
+    }
+
+    static instanceOf(obj: any): obj is UnknownRequest_ {
+      return obj.tag === SessionFfiError_Tags.UnknownRequest;
+    }
+    static hasInner(obj: any): obj is UnknownRequest_ {
+      return false;
+    }
+  }
+
+  type MissingKey__interface = {
+    tag: SessionFfiError_Tags.MissingKey;
+  };
+  class MissingKey_ extends UniffiError implements MissingKey__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "SessionFfiError";
+    readonly tag = SessionFfiError_Tags.MissingKey;
+    constructor() {
+      super("SessionFfiError", "MissingKey");
+    }
+
+    static new(): MissingKey_ {
+      return new MissingKey_();
+    }
+
+    static instanceOf(obj: any): obj is MissingKey_ {
+      return obj.tag === SessionFfiError_Tags.MissingKey;
+    }
+    static hasInner(obj: any): obj is MissingKey_ {
+      return false;
+    }
+  }
+
+  type UnsharedSession__interface = {
+    tag: SessionFfiError_Tags.UnsharedSession;
+  };
+  class UnsharedSession_
+    extends UniffiError
+    implements UnsharedSession__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "SessionFfiError";
+    readonly tag = SessionFfiError_Tags.UnsharedSession;
+    constructor() {
+      super("SessionFfiError", "UnsharedSession");
+    }
+
+    static new(): UnsharedSession_ {
+      return new UnsharedSession_();
+    }
+
+    static instanceOf(obj: any): obj is UnsharedSession_ {
+      return obj.tag === SessionFfiError_Tags.UnsharedSession;
+    }
+    static hasInner(obj: any): obj is UnsharedSession_ {
+      return false;
+    }
+  }
+
+  type UnknownDevice__interface = {
+    tag: SessionFfiError_Tags.UnknownDevice;
+  };
+  class UnknownDevice_ extends UniffiError implements UnknownDevice__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "SessionFfiError";
+    readonly tag = SessionFfiError_Tags.UnknownDevice;
+    constructor() {
+      super("SessionFfiError", "UnknownDevice");
+    }
+
+    static new(): UnknownDevice_ {
+      return new UnknownDevice_();
+    }
+
+    static instanceOf(obj: any): obj is UnknownDevice_ {
+      return obj.tag === SessionFfiError_Tags.UnknownDevice;
+    }
+    static hasInner(obj: any): obj is UnknownDevice_ {
+      return false;
+    }
+  }
+
+  type Undecryptable__interface = {
+    tag: SessionFfiError_Tags.Undecryptable;
+  };
+  class Undecryptable_ extends UniffiError implements Undecryptable__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "SessionFfiError";
+    readonly tag = SessionFfiError_Tags.Undecryptable;
+    constructor() {
+      super("SessionFfiError", "Undecryptable");
+    }
+
+    static new(): Undecryptable_ {
+      return new Undecryptable_();
+    }
+
+    static instanceOf(obj: any): obj is Undecryptable_ {
+      return obj.tag === SessionFfiError_Tags.Undecryptable;
+    }
+    static hasInner(obj: any): obj is Undecryptable_ {
+      return false;
+    }
+  }
+
+  function instanceOf(obj: any): obj is SessionFfiError {
+    return obj[uniffiTypeNameSymbol] === "SessionFfiError";
+  }
+
+  return Object.freeze({
+    instanceOf,
+    MalformedPayload: MalformedPayload_,
+    NotInitialised: NotInitialised_,
+    Failed: Failed_,
+    UnknownRequest: UnknownRequest_,
+    MissingKey: MissingKey_,
+    UnsharedSession: UnsharedSession_,
+    UnknownDevice: UnknownDevice_,
+    Undecryptable: Undecryptable_,
+  });
+})();
+/**
+ * Mirror of the core's session error, carrying the UniFFI error derive.
+ *
+ * Every variant is fieldless, so the `Debug` derive `thiserror::Error`
+ * requires (via its `std::error::Error: Debug` supertrait bound) prints
+ * only the variant name -- nothing to redact, unlike `Envelope`/
+ * `OutgoingRequest` above.
+ */
+export type SessionFfiError = InstanceType<
+  (typeof SessionFfiError)[
+    | "MalformedPayload"
+    | "NotInitialised"
+    | "Failed"
+    | "UnknownRequest"
+    | "MissingKey"
+    | "UnsharedSession"
+    | "UnknownDevice"
+    | "Undecryptable"]
+>;
+
+// FfiConverter for enum SessionFfiError
+const FfiConverterTypeSessionFfiError = (() => {
+  type TypeName = SessionFfiError;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      switch (c.readI32()) {
+        case 1:
+          return new SessionFfiError.MalformedPayload();
+        case 2:
+          return new SessionFfiError.NotInitialised();
+        case 3:
+          return new SessionFfiError.Failed();
+        case 4:
+          return new SessionFfiError.UnknownRequest();
+        case 5:
+          return new SessionFfiError.MissingKey();
+        case 6:
+          return new SessionFfiError.UnsharedSession();
+        case 7:
+          return new SessionFfiError.UnknownDevice();
+        case 8:
+          return new SessionFfiError.Undecryptable();
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase();
+      }
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      switch (value.tag) {
+        case SessionFfiError_Tags.MalformedPayload: {
+          c.writeI32(1);
+          return;
+        }
+        case SessionFfiError_Tags.NotInitialised: {
+          c.writeI32(2);
+          return;
+        }
+        case SessionFfiError_Tags.Failed: {
+          c.writeI32(3);
+          return;
+        }
+        case SessionFfiError_Tags.UnknownRequest: {
+          c.writeI32(4);
+          return;
+        }
+        case SessionFfiError_Tags.MissingKey: {
+          c.writeI32(5);
+          return;
+        }
+        case SessionFfiError_Tags.UnsharedSession: {
+          c.writeI32(6);
+          return;
+        }
+        case SessionFfiError_Tags.UnknownDevice: {
+          c.writeI32(7);
+          return;
+        }
+        case SessionFfiError_Tags.Undecryptable: {
+          c.writeI32(8);
+          return;
+        }
+        default:
+          // Throwing from here means that SessionFfiError_Tags hasn't matched an ordinal.
+          throw new UniffiInternalError.UnexpectedEnumCase();
+      }
+    }
+    allocationSize(value: TypeName): number {
+      switch (value.tag) {
+        case SessionFfiError_Tags.MalformedPayload: {
+          return 4;
+        }
+        case SessionFfiError_Tags.NotInitialised: {
+          return 4;
+        }
+        case SessionFfiError_Tags.Failed: {
+          return 4;
+        }
+        case SessionFfiError_Tags.UnknownRequest: {
+          return 4;
+        }
+        case SessionFfiError_Tags.MissingKey: {
+          return 4;
+        }
+        case SessionFfiError_Tags.UnsharedSession: {
+          return 4;
+        }
+        case SessionFfiError_Tags.UnknownDevice: {
+          return 4;
+        }
+        case SessionFfiError_Tags.Undecryptable: {
+          return 4;
+        }
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase();
+      }
+    }
+  }
+  return new FFIConverter();
+})();
+
 /**
  * `with_foreign` makes this implementable from JavaScript.
  */
@@ -1150,6 +2023,14 @@ const uniffiCallbackInterfaceProbeObserver: {
 // FfiConverter for string | undefined
 const FfiConverterOptionalString = new FfiConverterOptional(FfiConverterString);
 
+// FfiConverter for Array<string>
+const FfiConverterSequenceString = new FfiConverterArray(FfiConverterString);
+
+// FfiConverter for Array<OutgoingRequest>
+const FfiConverterSequenceTypeOutgoingRequest = new FfiConverterArray(
+  FfiConverterTypeOutgoingRequest
+);
+
 /**
  * This should be called before anything else.
  *
@@ -1181,11 +2062,35 @@ function uniffiEnsureInitialized() {
     );
   }
   if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_decrypt_event() !==
+    26398
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_decrypt_event"
+    );
+  }
+  if (
     nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_device_identity_keys() !==
     64524
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       "uniffi_matrix_crypto_ffi_checksum_func_device_identity_keys"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_encrypt_event() !==
+    45005
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_encrypt_event"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_mark_request_sent() !==
+    29280
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_mark_request_sent"
     );
   }
   if (
@@ -1212,6 +2117,30 @@ function uniffiEnsureInitialized() {
     );
   }
   if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_receive_sync_changes() !==
+    20143
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_receive_sync_changes"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_share_scope_key() !==
+    59510
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_share_scope_key"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_take_outgoing_requests() !==
+    24897
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_take_outgoing_requests"
+    );
+  }
+  if (
     nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_method_probeobserver_on_signal() !==
     23850
   ) {
@@ -1227,11 +2156,15 @@ export default Object.freeze({
   initialize: uniffiEnsureInitialized,
   converters: {
     FfiConverterTypeCryptoMachineConfig,
+    FfiConverterTypeEnvelope,
     FfiConverterTypeIdentityKeys,
     FfiConverterTypeMachineFfiError,
+    FfiConverterTypeOutgoingRequest,
     FfiConverterTypeProbeFfiError,
     FfiConverterTypeProbeObserver,
     FfiConverterTypeProbeReport,
     FfiConverterTypeProbeSignal,
+    FfiConverterTypeSessionFfiError,
+    FfiConverterTypeSyncOutcome,
   },
 });

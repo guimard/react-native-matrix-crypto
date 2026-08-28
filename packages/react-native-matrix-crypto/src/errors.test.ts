@@ -159,6 +159,48 @@ describe('toCryptoError against the real UniFFI error shape', () => {
     expect(err.sender).toBe('@b:server2')
   })
 
+  /**
+   * The three `SessionFfiError` variants Task 6 could not yet exercise
+   * end to end (its own F9): `SessionError` had no FFI mirror at all, so
+   * these were forward scaffolding, present in `KIND_BY_NAME` but
+   * unreachable from a real generated error. Task 7 gives `SessionError`
+   * that mirror; this proves the map entry was already correct, not that
+   * it becomes correct now.
+   */
+  it('maps a real UniFFI-shaped SessionFfiError.MalformedPayload to kind malformed_payload', () => {
+    const err = toCryptoError(new Error('SessionFfiError.MalformedPayload'))
+    expect(err.kind).toBe('malformed_payload')
+    expect(err.retriable).toBe(false)
+  })
+
+  it('maps a real UniFFI-shaped SessionFfiError.Failed to kind failed', () => {
+    const err = toCryptoError(new Error('SessionFfiError.Failed'))
+    expect(err.kind).toBe('failed')
+    expect(err.retriable).toBe(false)
+  })
+
+  it('maps a real UniFFI-shaped SessionFfiError.UnknownRequest to kind unknown_request', () => {
+    const err = toCryptoError(new Error('SessionFfiError.UnknownRequest'))
+    expect(err.kind).toBe('unknown_request')
+    expect(err.retriable).toBe(false)
+  })
+
+  /**
+   * Regression for the `RevokedDevice` cleanup (flagged by Task 6's review,
+   * finding F3, fixed here): `KIND_BY_NAME` used to map
+   * `['RevokedDevice', 'revoked_device']`, a name that exists in neither
+   * Rust crate -- confirmed by a whole-tree grep. Unlike the `StoreCorrupt`
+   * bug it is modelled on, it shadowed no real condition, but it was dead
+   * scaffolding and a trap for whoever next assumed the map was
+   * authoritative. This asserts the entry is gone: an error naming that
+   * variant now falls through to 'unknown' like any other unrecognised
+   * name, rather than continuing to "work" by accident.
+   */
+  it('no longer maps RevokedDevice specially: it falls through to unknown', () => {
+    const err = toCryptoError(new Error('MachineFfiError.RevokedDevice'))
+    expect(err.kind).toBe('unknown')
+  })
+
   it('still recovers the variant when .message carries a trailing ": <message>" suffix', () => {
     // `UniffiError`'s constructor (`node_modules/@ubjs/core/src/errors.ts`)
     // takes an optional third `message` argument and, when given one,
