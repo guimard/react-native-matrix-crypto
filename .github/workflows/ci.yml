@@ -57,10 +57,37 @@ jobs:
       - run: yarn --cwd packages/react-native-matrix-crypto test
 
   cold-consume:
-    # The only real proof of spec section 4bis.2: the consumer installs no
-    # Rust toolchain. GitHub's hosted ubuntu-latest runner ships a Rust
+    # Spec section 4bis.2: installing this package requires no Rust
+    # toolchain. GitHub's hosted ubuntu-latest runner ships a Rust
     # toolchain by default, so cargo/rustc are scrubbed from PATH for this
     # job rather than left alone -- otherwise this job would prove nothing.
+    #
+    # WHAT THIS JOB DOES NOT PROVE, said here because the README used to say
+    # it did. It called this "a job that installs the real tarball", and the
+    # tarball is not the real one: .gitignore ignores *.xcframework and *.aar
+    # and `git ls-files` tracks neither, so the checkout this job packs from
+    # holds no prebuilt binary at all. Measured 2026-08-28 by packing a
+    # `git archive HEAD` checkout, which is exactly what actions/checkout
+    # gives this job: 68 KB, zero .aar, .xcframework, .so, .a or .dylib
+    # entries. The published tarball is 68 MB and is built by the release
+    # workflow.
+    #
+    # It cannot be fixed by packing harder. The binaries are build outputs of
+    # the two build legs -- an hour of macos-15 minutes for the xcframework --
+    # so packing them means paying for both builds on every PR to test a
+    # locally assembled tarball that still is not the published one. And the
+    # final step cannot load the module even if they were there:
+    # `require('react-native-matrix-crypto')` in plain node throws
+    # ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING, because `main` is
+    # src/index.ts and node refuses to strip types inside node_modules
+    # (observed 2026-08-28). A JSI turbo module needs a React Native runtime
+    # regardless. probe-android is the job that runs the shipped chain.
+    #
+    # So this job asserts the narrower property it can actually establish,
+    # and the README now claims that and no more: with cargo and rustc
+    # unreachable, the package installs, nothing in it can invoke a compiler
+    # while installing, and its entry point resolves to a real file inside
+    # the installed package.
     #
     # PATH is scrubbed rather than deleting the runner's toolchain from disk
     # (e.g. `sudo rm -f $(command -v cargo)`): deletion is destructive --
@@ -105,10 +132,59 @@ jobs:
           echo "Confirmed: cargo and rustc are unreachable"
 
           TARBALL=$(cd packages/react-native-matrix-crypto && npm pack --silent)
+          TARBALL_PATH="$GITHUB_WORKSPACE/packages/react-native-matrix-crypto/$TARBALL"
+          if [ ! -s "$TARBALL_PATH" ]; then
+            echo "FAIL: npm pack produced no tarball at $TARBALL_PATH"
+            echo "      Refusing to pass having installed nothing."
+            exit 1
+          fi
+          echo "Packed $TARBALL ($(du -h "$TARBALL_PATH" | cut -f1)):"
+          tar tzf "$TARBALL_PATH" | sed 's#^package/##' | cut -d/ -f1 | sort -u | sed 's/^/  /'
+
           mkdir -p /tmp/consumer && cd /tmp/consumer
           npm init -y >/dev/null
-          npm install "$GITHUB_WORKSPACE/packages/react-native-matrix-crypto/$TARBALL"
-          node -e "require.resolve('react-native-matrix-crypto'); console.log('resolved with no Rust toolchain')"
+          npm install "$TARBALL_PATH"
+
+          # Read the INSTALLED package, which is what a consumer gets, not
+          # the one in the checkout.
+          #
+          # The PATH scrub proves cargo is unreachable. This proves the
+          # package never asks for it: npm runs preinstall/install/postinstall
+          # and (for some install shapes) prepare, and node-gyp compiles
+          # whenever a binding.gyp is present even with no script declared.
+          # A package with none of those cannot compile anything at install
+          # time on any consumer's machine, which is the property "no Rust
+          # toolchain is required" actually rests on.
+          node -e '
+            const fs = require("fs");
+            const dir = "node_modules/react-native-matrix-crypto";
+            const pkg = JSON.parse(fs.readFileSync(dir + "/package.json", "utf8"));
+            const forbidden = ["preinstall", "install", "postinstall", "prepare"];
+            const found = forbidden.filter(s => (pkg.scripts || {})[s]);
+            if (found.length) {
+              console.error("FAIL: the installed package declares install-time scripts: " + found.join(", "));
+              console.error("      Any of them can invoke a compiler on a consumer machine.");
+              process.exit(1);
+            }
+            if (fs.existsSync(dir + "/binding.gyp")) {
+              console.error("FAIL: the installed package ships a binding.gyp, so npm would");
+              console.error("      run node-gyp against it at install time.");
+              process.exit(1);
+            }
+            const resolved = require.resolve("react-native-matrix-crypto");
+            const expected = fs.realpathSync(dir);
+            if (!fs.realpathSync(resolved).startsWith(expected)) {
+              console.error("FAIL: react-native-matrix-crypto resolved to " + resolved);
+              console.error("      which is outside the installed package at " + expected + ".");
+              process.exit(1);
+            }
+            if (fs.statSync(resolved).size === 0) {
+              console.error("FAIL: the entry point " + resolved + " is empty.");
+              process.exit(1);
+            }
+            console.log("Installed with no Rust toolchain reachable, no install-time");
+            console.log("script, no binding.gyp; entry point resolves to " + resolved);
+          '
 
   build-ios:
     # On pull requests this leg builds only the simulator slice, because

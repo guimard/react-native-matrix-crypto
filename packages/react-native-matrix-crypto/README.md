@@ -92,7 +92,9 @@ Verified end to end on an iOS simulator and on a physical Android device: a reco
 yarn add react-native-matrix-crypto
 ```
 
-**No Rust toolchain is required.** The published package ships prebuilt binaries, an `.xcframework` for iOS and an `.aar` for Android, so `yarn add` is all a consumer needs. This is verified in CI by a job that installs the real tarball on a machine with `cargo` and `rustc` removed from `PATH`.
+**No Rust toolchain is required.** The published package ships prebuilt binaries, an `.xcframework` for iOS and an `.aar` for Android, so `yarn add` is all a consumer needs.
+
+CI verifies the part of that a pull request can verify, and it is worth being exact about which part. A job packs this repository, installs the result on a machine with every directory carrying `cargo` or `rustc` scrubbed out of `PATH`, and asserts that the installed package declares no `preinstall`, `install`, `postinstall` or `prepare` script and ships no `binding.gyp` — so nothing in it can reach for a compiler on your machine either. What that job does not check is the binaries: they are build outputs, ignored by git and produced by the release workflow, so the tarball a pull request can pack contains none of them. Running the shipped chain is the Android emulator job's business, not that one's.
 
 ### Requirements
 
