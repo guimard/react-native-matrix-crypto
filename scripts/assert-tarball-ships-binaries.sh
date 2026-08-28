@@ -264,33 +264,34 @@ fi
 echo
 echo "--- Android: the prebuilt .aar ---"
 
-# NOT required, and this used to require it.
+# NOT required, and not expected either, as of 2026-08-28.
 #
-# The reason given for requiring it was a README sentence: "A fully prebuilt,
-# already linked `.aar` ships alongside those, for a consumer who would rather
-# not build from source at all." No such consumer exists, and no mechanism
-# serves one. React Native autolinking includes `android/build.gradle` as a
-# Gradle subproject and builds the module from source; nothing in that file,
-# in `android/CMakeLists.txt`, in `MatrixCrypto.podspec` or in the example
-# app's Gradle setup names the `.aar`, and no document tells a consumer how to
-# use it. M2 spec section 9 step 2 records it as "Not needed. Retained."
+# It used to require one, on the strength of a README sentence: "A fully
+# prebuilt, already linked `.aar` ships alongside those, for a consumer who
+# would rather not build from source at all." No such consumer existed, and
+# no mechanism served one. React Native autolinking includes
+# `android/build.gradle` as a Gradle subproject and builds the module from
+# source; nothing in that file, in `android/CMakeLists.txt`, in
+# `MatrixCrypto.podspec` or in the example app's Gradle setup ever named the
+# `.aar`, and no document told a consumer how to use it.
 #
 # So a sentence with no mechanism behind it had become a hard release
-# requirement, over a file that is 29068 KB of the 219772 KB unpacked tarball
-# and duplicates the per-ABI `.so` files checked directly above.
+# requirement, over a file that was 29068 KB of the 219772 KB unpacked
+# tarball and duplicated the per-ABI `.so` files checked directly above.
+# `package.json`'s "files" no longer names `*.aar`, and the release workflow
+# no longer builds one. M2 spec section 9 step 2 records the decision and the
+# before/after measurement.
 #
-# What survives is the narrower true claim: `package.json`'s "files" names
-# `*.aar`, so while one ships it must be a real archive carrying every ABI,
-# because a broken 29 MB zip in the artifact is worse than no zip. Whether it
-# should ship at all is a packaging decision, deliberately left open here
-# rather than settled by a gate: see the M2 spec section 9 step 2.
+# This section stays rather than being deleted: if an `.aar` ever reappears
+# in the tarball, by a future "files" change or a stray build artifact, it
+# must be a real archive carrying every ABI, not a silent placeholder.
 AAR=$(printf '%s\n' "$FILE_LIST" | grep -E '\.aar$' | head -1 || true)
 if [ -z "$AAR" ]; then
-  echo "  --  no .aar in the tarball. Not a failure: nothing autolinks against"
-  echo "      it and no consumer path uses it. See this section's comment."
+  echo "  --  no .aar in the tarball. Expected: it is not built or shipped any"
+  echo "      more. See this section's comment."
 else
   require_binary "$AAR" zip \
-    "package.json's \"files\" ships it, so while it ships it must be real code rather than an empty archive."
+    "an .aar reappeared in the tarball; if it ships it must be real code rather than an empty archive."
   # A zip with the right name and no native code in it would pass every check
   # above. Look inside.
   if [ -n "${ABIS//[[:space:]]/}" ] && command -v unzip >/dev/null 2>&1; then

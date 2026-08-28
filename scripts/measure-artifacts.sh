@@ -11,6 +11,17 @@ XC=$(find packages -name '*.xcframework' -maxdepth 4 | head -1)
 AAR=$(find packages -name '*.aar' -maxdepth 5 | head -1)
 
 XC_KB=$(size_of "${XC:-/nonexistent}")
+# aarKB below measures the .aar build output on disk exactly as it always
+# has -- unchanged by the 2026-08-28 decision (spec section 9 step 2) to stop
+# building and shipping one. That decision means this column will normally
+# read 0 from here on: release.yml no longer runs the Gradle step that
+# produced an .aar, so `find` finds nothing. A developer with a stray one
+# left on disk from before that change still sees its real size here, while
+# tarballIncludesAar (below) correctly reports it is not in the packed
+# tarball -- which is the useful signal, not a bug. Kept as a live
+# measurement rather than dropped or hardcoded to zero, so every row in
+# artifact-sizes.json keeps meaning the same thing it always meant: what this
+# script found on disk for that label, not a value it stopped looking for.
 AAR_KB=$(size_of "${AAR:-/nonexistent}")
 
 # `npm pack --dry-run --json` output shape is not stable across npm versions:

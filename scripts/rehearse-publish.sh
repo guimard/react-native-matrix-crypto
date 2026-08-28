@@ -21,29 +21,17 @@ set -euo pipefail
 #   yarn exec ubrn -- build android --config ../../ubrn.config.yaml \
 #     --targets aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android --release
 #
-# THREE commands, not two. `ubrn build android` writes the per-ABI `.so`
-# files into android/src/main/jniLibs and nothing else -- it produces no
-# `.aar`, which is an Android Gradle Plugin artifact. Measured, not assumed:
-# the working tree's `.aar` was moved aside, the four-ABI invocation above was
-# run, it exited 0, and no `.aar` came back. So, third, and only ever AFTER
-# the Android command above, because Gradle packs the `.so` files it finds in
-# jniLibs into the archive:
+# Two commands, the whole recipe. A root `.aar` used to be a third output,
+# built with Gradle's `assembleRelease` and copied to the package root --
+# removed 2026-08-28 along with `*.aar` from package.json's "files": nothing
+# autolinked against it, no document told a consumer how to, and it was 13%
+# of the unpacked package for a file nothing loaded. See M2 spec section 9
+# step 2.
 #
-#   cd packages/example-app/android
-#   ./gradlew :react-native-matrix-crypto:assembleRelease \
-#     -PreactNativeArchitectures=arm64-v8a,armeabi-v7a,x86_64,x86
-#   cp ../../react-native-matrix-crypto/android/build/outputs/aar/react-native-matrix-crypto-release.aar \
-#      ../../react-native-matrix-crypto/
-#
-# The copy is the step that is easy to forget and impossible to notice:
-# package.json's "files" allowlist matches `*.aar` at the package root, and
-# AGP writes to android/build/outputs/aar/, so an `.aar` that is built but not
-# copied is packed by npm without complaint -- as nothing at all.
-#
-# The iOS leg needs macOS and Xcode; the Android legs need the NDK, cargo-ndk
-# and a JDK. If you have only some of the three, this script will still run
-# and the assertion will tell you precisely which binaries are missing --
-# which is a useful thing to see, and exactly what it would say to the release
+# The iOS leg needs macOS and Xcode; the Android leg needs the NDK and
+# cargo-ndk. If you have only one of the two, this script will still run and
+# the assertion will tell you precisely which binaries are missing -- which
+# is a useful thing to see, and exactly what it would say to the release
 # workflow.
 #
 # The tarball is packed into a temporary directory rather than into the
