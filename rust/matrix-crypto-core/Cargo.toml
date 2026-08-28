@@ -11,12 +11,22 @@ repository.workspace = true
 # matrix-sdk-crypto 0.18.0 already requires matrix-sdk-common = "0.18.0" transitively.
 # Depending on it directly at the same version reaches ruma's types through that
 # re-export instead of adding a second, independently versioned `ruma`. See the
-# comment in src/identity.rs.
+# comment in src/machine.rs.
 matrix-sdk-common = "0.18.0"
 matrix-sdk-crypto = "0.18.0"
+# `crypto-store` and nothing else: it is the feature that provides the crypto
+# store and declares `matrix-sdk-crypto` as its own dependency. Enabling more
+# pulls in `matrix-sdk-base`, the full client state store this library has no
+# use for. Version-matched to matrix-sdk-crypto so Cargo unifies on one `ruma`.
+matrix-sdk-sqlite = { version = "0.18.0", default-features = false, features = ["crypto-store"] }
 thiserror = "2"
-tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+# `sync` added explicitly for `tokio::sync::Mutex` in `machine.rs`: this crate
+# calls it directly, so it declares the feature itself rather than relying on
+# `matrix-sdk-sqlite`'s own "sync" (enabled for its own reasons) to carry it
+# in through Cargo's feature unification.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 futures = { version = "0.3", default-features = false, features = ["executor"] }
+tempfile = "3"

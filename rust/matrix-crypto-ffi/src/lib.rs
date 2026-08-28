@@ -104,31 +104,50 @@ pub struct IdentityKeys {
     pub ed25519: String,
 }
 
-/// Mirror of the core's identity error, carrying the UniFFI error derive.
+/// Mirror of the core's machine error, carrying the UniFFI error derive.
+///
+/// Replaces `IdentityFfiError`: the core function below now reads the live,
+/// store-backed machine through `matrix_crypto_core::with_machine` rather
+/// than building a throwaway one, so its error is the core's `MachineError`.
 #[derive(Debug, uniffi::Error, thiserror::Error)]
-pub enum IdentityFfiError {
+pub enum MachineFfiError {
+    #[error("no crypto machine has been created")]
+    NotInitialised,
+    #[error("a crypto machine already exists with a different configuration")]
+    AlreadyInitialised,
     #[error("malformed identifier: {detail}")]
     MalformedIdentifier { detail: String },
+    #[error("store error: {detail}")]
+    Store { detail: String },
 }
 
-/// A plain `async fn`, matching `probe`: this function's own path --
-/// `OlmMachine::new` plus an in-memory store -- calls no `spawn` and needs no
-/// reactor, confirmed by reading the vendored source and by clean device runs
-/// (iOS simulator and a physical Android device, no panic).
-///
-/// That is scoped to this one function, not a resolution for
-/// `matrix-sdk-crypto` as a whole. `matrix-sdk-common`, a mandatory
-/// dependency, enables tokio's `rt` feature on every native target and
-/// re-exports `tokio::task::spawn`; `matrix-sdk-crypto` calls it from
-/// production code this crate does not yet expose, including
-/// `OlmMachine::share_room_key` (the Megolm key-sharing entry point a later
-/// milestone needs). See spec section 5.1: the async-runtime question is
-/// scoped to what this task exercised, not closed for the crate.
+impl From<matrix_crypto_core::MachineError> for MachineFfiError {
+    fn from(e: matrix_crypto_core::MachineError) -> Self {
+        // Exhaustive, no wildcard arm. See Global Constraints.
+        match e {
+            matrix_crypto_core::MachineError::NotInitialised => Self::NotInitialised,
+            matrix_crypto_core::MachineError::AlreadyInitialised => Self::AlreadyInitialised,
+            matrix_crypto_core::MachineError::MalformedIdentifier { detail } => {
+                Self::MalformedIdentifier { detail }
+            }
+            matrix_crypto_core::MachineError::Store { detail } => Self::Store { detail },
+        }
+    }
+}
+
+/// A plain `async fn`, matching `probe`: no `async_runtime` attribute is
+/// needed here either. `device_identity_keys` reads the live machine through
+/// `with_machine`, which locks a `tokio::sync::Mutex` -- a primitive that
+/// needs no reactor of its own, unlike the tokio filesystem and
+/// connection-pool primitives `create_machine`/`open_store` use internally to
+/// build that machine in the first place (see
+/// `matrix-crypto-core::runtime::in_runtime`, which supplies the runtime
+/// those need explicitly rather than relying on an ambient one).
 #[uniffi::export]
 pub async fn device_identity_keys(
     user_id: String,
     device_id: String,
-) -> Result<IdentityKeys, IdentityFfiError> {
+) -> Result<IdentityKeys, MachineFfiError> {
     matrix_crypto_core::device_identity_keys(&user_id, &device_id)
         .await
         .map(|k| {
@@ -142,9 +161,5 @@ pub async fn device_identity_keys(
                 ed25519,
             }
         })
-        .map_err(|e| match e {
-            matrix_crypto_core::IdentityError::MalformedIdentifier { detail } => {
-                IdentityFfiError::MalformedIdentifier { detail }
-            }
-        })
+        .map_err(Into::into)
 }
