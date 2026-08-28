@@ -16,6 +16,11 @@ jobs:
       - run: yarn gate:workspaces
       - run: yarn gate:boundary
       - run: yarn gate:drift
+      # gate:drift proves the committed bindings MATCH the Rust source. It
+      # cannot prove they WORK: it regenerates and diffs, so two equally
+      # broken generations agree with each other. gate:stubs reads the
+      # committed artifacts and asserts the turbo module is actually wired up.
+      - run: yarn gate:stubs
       - run: yarn gate:logger
       - run: yarn gate:agility
       - run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
@@ -121,6 +126,21 @@ jobs:
             --config ../../ubrn.config.yaml \
             --targets aarch64-apple-ios-sim \
             --release --and-generate
+      # Not redundant with the `gates` job, and not safe to delete as such.
+      # `gates` runs on a different runner with its own checkout: nothing it
+      # does can see the tree `--and-generate` leaves behind HERE. This step
+      # is the only check that reads that tree.
+      #
+      # `--and-generate` above rewrites src/index.tsx and the C++ install shim
+      # from whatever it can read out of the artifact it just built. On the
+      # Android leg that produces silent stubs -- see
+      # scripts/assert-generated-not-stubbed.sh for the mechanism and the
+      # evidence, and the build-android job below for why that leg no longer
+      # passes the flag. This leg feeds it a static archive, which carries the
+      # UniFFI metadata symbols the extraction needs, so it regenerates
+      # identical output today -- but "today" is a property of the config and
+      # of ubrn's version, not a guarantee.
+      - run: yarn gate:stubs
       - run: ./scripts/measure-artifacts.sh ci-ios
       - uses: actions/upload-artifact@v4
         with: { name: artifact-sizes-ios, path: artifact-sizes.json }
@@ -128,10 +148,9 @@ jobs:
   build-android:
     # `needs: gates` is not about runner minutes: `gates` runs gate:drift,
     # the only check proving the committed bindings match the Rust source.
-    # This job's own `--and-generate` regenerates and builds whatever it
-    # produces, without ever diffing against what is committed -- so on a PR
-    # with drifted bindings, this leg would otherwise go green against code
-    # that is not what is actually committed.
+    # This job builds whatever is in the checkout without ever diffing it
+    # against the Rust surface, so on a PR with drifted bindings this leg
+    # would otherwise go green against code that is not what is committed.
     needs: gates
     runs-on: ubuntu-latest
     steps:
@@ -161,11 +180,32 @@ jobs:
       - name: Build the x86_64 Android slice
         run: |
           # Same yarn --cwd + exec quirk as build-ios; see that job's comment.
+          #
+          # DELIBERATELY NOT `--and-generate`. On Android that flag exits 0,
+          # prints no warning, and rewrites src/index.tsx and
+          # cpp/react-native-matrix-crypto.cpp into stubs: no
+          # `export * from './generated/matrix_crypto'`, and an
+          # installRustCrate() whose body is a bare `return true;` with no JSI
+          # registration at all. ubrn.config.yaml sets
+          # `android.useSharedLibrary: true`, so the artifact handed to
+          # metadata extraction is the cdylib, whose UniFFI metadata lives in
+          # .dynsym while the extractor reads .symtab -- zero modules found,
+          # and both files are rendered from templates that loop over the
+          # module list. Reproduced 2026-08-28 against ubrn 0.31.0-5;
+          # scripts/assert-generated-not-stubbed.sh carries the full evidence.
+          # Nothing here needs regenerating anyway: gate:drift in `gates`
+          # already proves the committed bindings match the Rust source, and
+          # this job only needs the compiled slice.
           cd packages/react-native-matrix-crypto
           yarn exec ubrn -- build android \
             --config ../../ubrn.config.yaml \
             --targets x86_64-linux-android \
-            --release --and-generate
+            --release
+      # The tripwire for the paragraph above: if anyone puts `--and-generate`
+      # back, or a future ubrn regresses the same way on its own, the stub is
+      # caught here. Not redundant with `gates` -- that job has its own
+      # runner and its own checkout and cannot see this tree.
+      - run: yarn gate:stubs
       - run: ./scripts/measure-artifacts.sh ci-android
       - uses: actions/upload-artifact@v4
         with: { name: artifact-sizes-android, path: artifact-sizes.json }

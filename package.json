@@ -10,6 +10,7 @@
     "gate:boundary": "./scripts/assert-core-boundary.sh",
     "gate:drift": "./scripts/assert-no-drift.sh",
     "gate:logger": "./scripts/assert-no-logger.sh",
-    "gate:agility": "./scripts/assert-facade-agility.sh"
+    "gate:agility": "./scripts/assert-facade-agility.sh",
+    "gate:stubs": "./scripts/assert-generated-not-stubbed.sh"
   }
 }
