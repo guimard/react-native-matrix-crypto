@@ -366,6 +366,28 @@ An earlier instruction of mine during implementation asked for the authenticated
 to be surfaced from `encryption_info`. That was wrong, and it was refused with the
 upstream source as evidence, correctly.
 
+### 7.2 Both halves of the trust decision, named rather than defaulted
+
+M2 has no verified devices, and that single absence forces a choice on each side of the
+crypto. Both are named here because one of them would otherwise ship as an unexamined
+library default.
+
+**Inbound**, `DecryptionSettings` takes `TrustRequirement::Untrusted`. Anything stricter
+rejects every event, because nothing is verified.
+
+**Outbound**, `share_room_key` takes `EncryptionSettings::default()`, which carries
+`CollectStrategy::AllDevices`. Upstream marks that "not recommended, per the guidance of
+[MSC4153]", because it shares with every unblacklisted device rather than only devices
+signed by their owner. The recommended identity-based strategy is not available to us:
+it gives room keys to nobody whose identity is unpublished, and no identity is published
+until cross-signing exists, which is M3's work.
+
+The asymmetry worth noticing is that the inbound choice had to be written, so it was
+argued for, while the outbound one arrives free with `default()` and could have shipped
+without anyone deciding it. Both construction sites now carry the same comment,
+`// M2: verification lands in M3; revisit this with it.`, so one grep finds the whole
+decision rather than half of it.
+
 ## 8. Testing: two levels, in this order
 
 M1 §8.0 already fixed the ordering. M2 executes it.

@@ -726,6 +726,19 @@ pub async fn share_scope_key(scope: &str, users: &[String]) -> Result<(), Sessio
                 .share_room_key(
                     &room_id,
                     user_ids.iter().map(AsRef::as_ref),
+                    // M2: verification lands in M3; revisit this with it.
+                    //
+                    // `EncryptionSettings::default()` carries
+                    // `CollectStrategy::AllDevices`, which upstream marks "not
+                    // recommended, per the guidance of MSC4153" because it
+                    // shares with every unblacklisted device rather than only
+                    // devices signed by their owner. It is named here rather
+                    // than inherited silently: it is the outbound mirror of
+                    // this milestone's `TrustRequirement::Untrusted`, and it is
+                    // forced by the same absence. The recommended
+                    // identity-based strategy gives room keys to nobody whose
+                    // identity is unpublished, and no identity is published
+                    // until cross-signing exists, which is M3's work.
                     EncryptionSettings::default(),
                 )
                 .await;
