@@ -15,27 +15,33 @@ set -euo pipefail
 # two-space against four-space indentation -- with nothing semantically
 # different at all.
 #
-# Scrubbing the formatters here rather than in CI makes the property hold
-# wherever codegen runs, including on a developer machine that has them.
-# The same PATH-scrubbing idiom the cold-consume CI job uses for cargo and
-# rustc, and for the same reason: proving a tool is unreachable beats
-# deleting it.
-_scrubbed_path=""
-_IFS_SAVE="$IFS"
-IFS=:
-for _dir in $PATH; do
-  [ -n "$_dir" ] || continue
-  if [ -x "$_dir/clang-format" ] || [ -x "$_dir/prettier" ]; then
-    continue
-  fi
-  _scrubbed_path="${_scrubbed_path:+$_scrubbed_path:}$_dir"
-done
-IFS="$_IFS_SAVE"
-PATH="$_scrubbed_path"
+# How ubrn actually behaves, read from its source rather than guessed
+# (node_modules/uniffi-bindgen-react-native/crates/ubrn_common/src/fmt.rs):
+#
+#   - It locates clang-format with `which`, so PATH decides, and invokes it
+#     IN PLACE: `clang-format -i --style=file --fallback-style=LLVM <files>`.
+#     With no .clang-format in the tree it therefore applies LLVM style.
+#   - It resolves prettier from `node_modules/.bin/prettier`, NOT from PATH.
+#     PATH cannot influence prettier at all; the only guard against it is the
+#     one assert-no-drift.sh already documents, namely not adding it as a
+#     devDependency.
+#
+# So: shadow clang-format with an inert stand-in, first on PATH. `which`
+# finds it, ubrn runs it, and because the real invocation is in-place rather
+# than a pipe, doing nothing leaves the files exactly as generated. This is
+# deliberately NOT the PATH-directory-scrubbing the cold-consume job uses:
+# on ubuntu-latest clang-format lives in /usr/bin alongside `cc`, so removing
+# whole directories takes the linker with it and cargo fails to build.
+_fmt_shim="$(mktemp -d)"
+trap 'rm -rf "$_fmt_shim"' EXIT
+printf '#!/bin/sh\nexit 0\n' > "$_fmt_shim/clang-format"
+chmod +x "$_fmt_shim/clang-format"
+PATH="$_fmt_shim:$PATH"
 export PATH
 
-if command -v clang-format >/dev/null 2>&1 || command -v prettier >/dev/null 2>&1; then
-  echo "FAIL: a formatter is still reachable; codegen output would not be reproducible." >&2
+if [ "$(command -v clang-format)" != "$_fmt_shim/clang-format" ]; then
+  echo "FAIL: clang-format does not resolve to the inert stand-in;" >&2
+  echo "      codegen output would depend on the host's formatter." >&2
   exit 1
 fi
 
