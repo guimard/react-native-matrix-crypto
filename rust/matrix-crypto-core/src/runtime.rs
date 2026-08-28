@@ -40,7 +40,9 @@ where
     match runtime().spawn(future).await {
         Ok(value) => value,
         Err(joined) => std::panic::resume_unwind(
-            joined.try_into_panic().unwrap_or_else(|_| Box::new("crypto task cancelled")),
+            joined
+                .try_into_panic()
+                .unwrap_or_else(|_| Box::new("crypto task cancelled")),
         ),
     }
 }
@@ -56,7 +58,9 @@ mod tests {
     #[test]
     fn a_spawn_inside_in_runtime_succeeds_with_no_ambient_runtime() {
         let doubled = futures::executor::block_on(in_runtime(async {
-            tokio::task::spawn(async { 21 * 2 }).await.expect("task joined")
+            tokio::task::spawn(async { 21 * 2 })
+                .await
+                .expect("task joined")
         }));
 
         assert_eq!(doubled, 42);
