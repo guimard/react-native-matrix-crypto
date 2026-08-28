@@ -26,13 +26,22 @@
              Metro is reached at 10.0.2.2:8081 or localhost:8081, both of
              which are named here.
 
-  10.0.2.2 is the standard Android emulator's alias for the host's loopback
-  interface; 127.0.0.1 and localhost are what the same host looks like when
-  adb reverse is in play. None of the three is routable off the machine.
+  127.0.0.1 and localhost cannot leave the machine. 10.0.2.2 is different and
+  the difference is worth stating: on the Android emulator it is a magic
+  alias for the host's loopback interface, but it is also an ordinary
+  RFC1918 address in 10.0.0.0/8, so on a physical handset attached to a
+  corporate or home 10/8 network it routes normally to whichever host holds
+  it. This app probes http://10.0.2.2:8449/plan unauthenticated on every
+  launch and acts on the reply, so on such a network a host answering there
+  could hand this demo app a homeserver address and an access token. Nothing
+  of the user's is at risk, because this app holds nothing of the user's,
+  but the exposure is real and it is the price of running the proof in a
+  release build.
 
   RULE FOR ANYONE ADDING A DOMAIN BELOW: a name here is a name this app may
-  speak unencrypted HTTP to. Only add one that cannot leave the developer's
-  own machine. A real product ships no such file.
+  speak unencrypted HTTP to, on every network it is ever attached to, not
+  only on the developer's own machine. Weigh it as 10.0.2.2 is weighed
+  above. A real product ships no such file.
 -->
 <network-security-config>
   <base-config cleartextTrafficPermitted="false" />

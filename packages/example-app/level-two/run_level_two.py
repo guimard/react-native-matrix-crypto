@@ -29,26 +29,61 @@ infrastructure and cleanup, and asserts only two things itself: that a
 summary line was found, and that the run's device is gone from the
 homeserver afterwards.
 
-CREDENTIALS
+CREDENTIALS, AND WHERE THEY ARE VISIBLE
 
-There are none to manage, and that is the point of the container. Every
-account here is created by this program, on a homeserver that does not
-outlive it, with a password generated per run and never written anywhere but
-a mode-600 file in a temporary directory that is deleted on exit. The app is
-handed a device-scoped access token in the body of a loopback HTTP response:
-never a file, never an initial property (see the rule in MainActivity.kt),
-never a log line. The run revokes that token itself, as an asserted step,
-and the container's destruction revokes everything else by removing the
+There is nothing durable to manage, and that is the point of the container.
+Every account here is created by this program, on a homeserver that does not
+outlive it, with a password generated per run. The app is handed a
+device-scoped access token in the body of a loopback HTTP response: never a
+file, never an initial property (see the rule in MainActivity.kt), never a
+log line -- and that last claim is checked on every run, not asserted, by
+`assert_nothing_leaked`. The run revokes the token itself, as an asserted
+step, and destroying the container revokes everything else by removing the
 homeserver that issued it.
+
+Three local channels do carry a value while a run is in flight. They are
+named here rather than left to be discovered, because a threat model that
+lists only the channel you closed is worse than none:
+
+  * `docker logs` and `docker inspect .Config.Env` carry both account
+    passwords in cleartext, for the life of the container. Continuwuity's
+    admin console echoes a password it was told to set into its own startup
+    output regardless of log level, and the env file this program writes
+    becomes the container's environment. `scripts/run-level-two-interop.sh`
+    documents the same fact for the same reason. This program never reads or
+    prints either -- and when it does dump container output on a bring-up
+    failure it redacts both passwords first, and refuses to print at all if
+    the redaction did not take.
+  * The mode-600 env file in this run's temporary directory, until teardown
+    deletes it. Deleted from a `finally`, an `atexit` hook, and swept by name
+    at startup, the same three ways the container is.
+  * `GET http://127.0.0.1:8449/plan` serves the access token to any process
+    on this machine, unauthenticated, for the life of the run. There is no
+    fix available: the app must ask before it has anything to authenticate
+    with. The mitigation is the structural one -- the token authenticates
+    only to a homeserver inside a container that dies a minute later.
+
+What is *not* a channel: `ps`. The passwords reach `docker run` through
+`--env-file`, never through `-e`, so they are not in any process's argv.
 
 TEARDOWN
 
-In a `finally`, plus an `atexit` hook, plus a SIGTERM handler, and the
-container is force-removed by name at *startup* too, so a previous run that
-was killed outright cannot leak into this one. A failing run tears down
-exactly as a passing one does -- task 12's level 2 tidied up after its last
-assertion instead, and twelve devices and six rooms had to be removed by
-hand from a shared homeserver.
+Everything this run creates on a server lives inside the container, on a
+tmpfs, so `docker rm --force` is a complete teardown rather than a list to
+remember. That removal happens in a `finally`, in an `atexit` hook, and
+under a SIGTERM handler; the container is also force-removed by name and
+swept by label at *startup*, so a run killed outright cannot leak into the
+next one. The temporary directory -- which holds the mode-600 env file and
+the counterparty's store -- is defended the same three ways, and swept at
+startup too. A failing run tears down exactly as a passing one does: task
+12's level 2 tidied up after its last assertion instead, and twelve devices
+and six rooms had to be removed by hand from a shared homeserver.
+
+One thing teardown deliberately does not touch: the app stays installed on
+the emulator, with the crypto store this run created in its private files
+directory. It is removed by the next run's `adb uninstall`, which is also
+what makes each run the cold start its first step asserts. The store is
+encrypted, and everything it could decrypt died with the container.
 
 USAGE
 
@@ -84,11 +119,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # --- Fixed configuration ----------------------------------------------------
 
-# Pinned to an exact build, not `latest`: a homeserver that changes under a
-# proof changes what the proof means. This is the same digest the operator's
-# own prototype runs, so a green run here says something about that
-# deployment too.
-HOMESERVER_IMAGE = "forgejo.ellis.link/continuwuation/continuwuity:sha-59c2649"
+# Pinned by DIGEST, not by tag: a homeserver that changes under a proof
+# changes what the proof means, and a tag can be re-pushed to point at
+# different bytes. `:sha-59c2649` names a source commit and looks like a pin
+# without being one -- an earlier version of this file used it and this
+# comment claimed it was a digest, which is the kind of sentence this
+# milestone exists to stop shipping.
+#
+# The same digest `scripts/run-level-two-interop.sh` pins for the core's
+# level 2, so both proofs run against identical bytes.
+HOMESERVER_IMAGE = (
+    "forgejo.ellis.link/continuwuation/continuwuity"
+    "@sha256:b5f5d7454a3e8dda041fc82084088409f2c34905ff51274955d52050203a87af"
+)
 
 CONTAINER_NAME = "rnmc-level-two-homeserver"
 
@@ -105,8 +148,11 @@ CONDUCTOR_PORT = 8449
 # time. Both publish on 127.0.0.1 only, so neither is reachable off the host.
 EMULATOR_HOST_ALIAS = "10.0.2.2"
 
-# Set on the container so a sweep, here or elsewhere, can find one this
-# program left behind if it were ever killed with SIGKILL.
+# Set on the container and read by `sweep_containers`, which runs before this
+# program creates anything, so a container left behind by a run that was
+# killed outright is removed even if its name had since been changed. Its own
+# sibling, `scripts/run-level-two-interop.sh`, filters on a different label,
+# so neither sweep can take the other's container out from under it.
 CONTAINER_LABEL = "org.linagora.rnmc.level-two-facade"
 
 SERVER_NAME = "level-two.test"
@@ -123,6 +169,23 @@ DEFAULT_APK = "packages/example-app/android/app/build/outputs/apk/release/app-re
 SUMMARY_TIMEOUT_SECONDS = int(os.environ.get("LEVEL_TWO_TIMEOUT_SECONDS", "420"))
 
 SUMMARY_PATTERN = re.compile(r"^LEVEL2_(MUTATED_)?SUMMARY \d+/\d+")
+
+# How many steps the app's suite must report. Pinned HERE, on the outside,
+# not read off the summary the app printed.
+#
+# Without this line the runner checks only that everything reported passed,
+# and the denominator is whatever the artifact under test says it is: drop a
+# step from `LEVEL_TWO_STEPS` and the run prints `LEVEL2_SUMMARY 12/12` and
+# this program calls it a pass. That is exactly the "a summary that counts
+# fewer steps than it should is indistinguishable from a pass" failure the
+# suite's own header says this milestone has hit under several names, one
+# level up: the thing being measured was declaring its own denominator.
+#
+# `scripts/run-probe-on-emulator.sh` already established the convention with
+# `EXPECTED_SUMMARY="PROBE_SUMMARY 12/12"`, and for the same reason. If you
+# add or remove a step, change this number in the same commit -- this program
+# failing until you do is the point.
+EXPECTED_STEPS = 13
 
 # Every mutation the app's suite carries, and the step each must turn red.
 # Named here as well as in the suite so the runner can say what it expects
@@ -488,6 +551,76 @@ def remove_container():
     run_command(["docker", "rm", "--force", CONTAINER_NAME], timeout=120)
 
 
+def sweep_containers():
+    """Removes any container this program left behind, by its own label.
+
+    The fixed name plus the force-remove above is what actually protects the
+    ordinary paths. This exists so the label is read by something rather than
+    only set -- and it catches a container from a run whose name was changed
+    under it, which the name alone would not.
+    """
+    listed = run_command(
+        ["docker", "ps", "-aq", "--filter", f"label={CONTAINER_LABEL}"], timeout=60)
+    stale = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
+    for container in stale:
+        run_command(["docker", "rm", "--force", container], timeout=120)
+    return len(stale)
+
+
+def sweep_workdirs(keep=None):
+    """Removes this program's temporary directories, including orphans.
+
+    The container is defended three ways -- a `finally`, an `atexit` hook and
+    a force-remove at startup -- and until this existed the temporary
+    directory had only the `finally`. That is the wrong asymmetry: the
+    directory is where the mode-600 env file with both account passwords
+    lives, so the hard-kill path the container is most defended on was the
+    one path that left a credential on disk indefinitely.
+    """
+    root = tempfile.gettempdir()
+    removed = 0
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return 0
+    for entry in entries:
+        if not entry.startswith("rnmc-level-two-"):
+            continue
+        path = os.path.join(root, entry)
+        if keep is not None and os.path.abspath(path) == os.path.abspath(keep):
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        removed += 1
+    return removed
+
+
+def show_homeserver_output(passwords):
+    """Prints the container's own last words, with both passwords removed.
+
+    Only on a bring-up failure, and only after redaction: continuwuity echoes
+    a password it was told to set into its own startup output, so the raw log
+    is exactly the thing that must not reach a terminal or a CI transcript.
+    A passing run prints none of this.
+
+    The redaction is checked rather than trusted. If either value survives
+    it, this prints nothing at all and says so -- a diagnostic is worth less
+    than a credential, and a redaction that quietly failed is the shape of
+    control this milestone keeps finding.
+    """
+    raw = run_command(["docker", "logs", "--tail", "40", CONTAINER_NAME], timeout=60)
+    output = (raw.stdout or "") + (raw.stderr or "")
+    if not output.strip():
+        return
+    for password in passwords.values():
+        output = output.replace(password, "<redacted>")
+    if any(password in output for password in passwords.values()):
+        log("the homeserver's output is withheld: a password survived redaction")
+        return
+    log("--- homeserver output (passwords redacted) ---")
+    print(output.rstrip(), flush=True)
+    log("--- end homeserver output ---")
+
+
 def start_homeserver(workdir, passwords):
     """Starts the throwaway homeserver and waits for it to answer.
 
@@ -504,13 +637,25 @@ def start_homeserver(workdir, passwords):
 
     The environment goes in a mode-600 file rather than on the `docker run`
     command line, where `ps` would show every password to every user on this
-    machine.
+    machine. That closes the narrower of two same-audience channels and not
+    the wider one: whatever is in this file becomes the container's
+    environment, so `docker inspect .Config.Env` shows it, and continuwuity
+    echoes a password it was told to set into its own startup output whatever
+    the log level, so `docker logs` shows it too. Both die with the
+    container; neither is closable from here; see this module's own
+    CREDENTIALS section, and `scripts/run-level-two-interop.sh`, which knew
+    the second half first.
     """
     remove_container()
     # Pulled explicitly rather than left to `docker run`, so "the image is
     # not here and cannot be fetched" is reported as itself instead of as a
     # homeserver that never answered. Continuwuity publishes only to its own
     # Forgejo registry, which is a single point of failure worth naming.
+    #
+    # Skipping the pull when the image is already local is only safe because
+    # HOMESERVER_IMAGE is a digest: a cached digest is the same bytes by
+    # definition. It would NOT be safe for a tag, which is what this
+    # short-circuit silently did before the pin was corrected.
     if run_command(["docker", "image", "inspect", HOMESERVER_IMAGE], timeout=60).returncode != 0:
         log(f"pulling {HOMESERVER_IMAGE}")
         pulled = run_command(["docker", "pull", HOMESERVER_IMAGE], timeout=900)
@@ -567,12 +712,15 @@ def start_homeserver(workdir, passwords):
     while time.time() < deadline:
         running = run_command(
             ["docker", "inspect", "-f", "{{.State.Running}}", CONTAINER_NAME]).stdout.strip()
-        require(running == "true", "the homeserver container exited before it was ready")
+        if running != "true":
+            show_homeserver_output(passwords)
+            raise RunFailed("the homeserver container exited before it was ready")
         status, _ = homeserver.call("GET", "/_matrix/client/versions")
         if status == 200:
             log(f"homeserver up on 127.0.0.1:{port} (container {CONTAINER_NAME})")
             return homeserver, port
         time.sleep(1)
+    show_homeserver_output(passwords)
     raise RunFailed("the homeserver never answered /_matrix/client/versions within 90s")
 
 
@@ -623,8 +771,12 @@ def assert_nothing_leaked(plan, passwords):
     in logcat, not only the app's own.
 
     Reports how many lines matched and which category, never the value.
+
+    `-b all` rather than the default buffer set: the default is main, system
+    and crash, and "nothing reached the log" should mean the log, not the
+    part of it this program happened to ask for.
     """
-    dump = adb("logcat", "-d", "-v", "brief", timeout=180).stdout
+    dump = adb("logcat", "-b", "all", "-d", "-v", "brief", timeout=180).stdout
     lines = dump.splitlines()
     watched = [
         ("the access token", plan["accessToken"]),
@@ -635,10 +787,18 @@ def assert_nothing_leaked(plan, passwords):
         ("the library device's id", plan["deviceId"]),
         ("the room id", plan["roomId"]),
     ]
+    # An empty watched value would match nothing and quietly shrink what this
+    # check covers, while the line below still claimed the full count. That is
+    # a check reporting success without examining what it claims to, which is
+    # the failure this whole run is built to make impossible.
+    missing = [label for label, value in watched if not value]
+    require(not missing,
+            "these values were empty and so could not be searched for: "
+            + ", ".join(missing)
+            + ".\n      This check cannot report on a value it was not given.")
+
     leaked = []
     for label, value in watched:
-        if not value:
-            continue
         hits = sum(1 for line in lines if value in line)
         if hits:
             leaked.append(f"{label} ({hits} line(s))")
@@ -646,7 +806,7 @@ def assert_nothing_leaked(plan, passwords):
             "values from this run reached the system log: " + ", ".join(leaked)
             + ".\n      Nothing this run mints may be printable. Find what printed it.")
     log(f"nothing leaked: none of this run's {len(watched)} values appears anywhere in "
-        f"{len(lines)} logcat lines")
+        f"{len(lines)} logcat lines, across every buffer")
 
 
 def wait_for_summary():
@@ -713,7 +873,19 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     atexit.register(remove_container)
 
+    # Before anything is created: remove what a previous run may have been
+    # killed before removing. Containers by label as well as by name, and
+    # temporary directories, which until now nothing swept.
+    swept_containers = sweep_containers()
+    swept_workdirs = sweep_workdirs()
+    if swept_containers or swept_workdirs:
+        log(f"swept {swept_containers} orphaned container(s) and "
+            f"{swept_workdirs} orphaned temporary director(ies) from an earlier run")
+
     workdir = tempfile.mkdtemp(prefix="rnmc-level-two-")
+    # Registered immediately, so the window in which a hard kill could leave
+    # the env file behind is the same nil window the container already had.
+    atexit.register(shutil.rmtree, workdir, True)
     passwords = {
         LIBRARY_LOCALPART: secrets.token_urlsafe(24),
         NIO_LOCALPART: secrets.token_urlsafe(24),
@@ -802,6 +974,24 @@ def main():
                 f"expected a {expected_prefix} line for mutation {arguments.mutation!r}, got: {summary}")
 
         passed, total = (int(part) for part in summary.split()[1].split("/"))
+
+        # Before anything about pass or fail: the denominator, checked against
+        # a number that lives out here rather than one the app chose.
+        require(total == EXPECTED_STEPS,
+                f"the run reported {total} steps and this program expects {EXPECTED_STEPS}.\n"
+                "      The set of level 2 steps changed. Update EXPECTED_STEPS in\n"
+                "      packages/example-app/level-two/run_level_two.py in the same commit that\n"
+                "      changed it -- this failing until you do is the point.")
+
+        # And that every promised step actually reported a verdict. The app
+        # reconciles its own results against its own list; this checks the same
+        # thing from outside, so a harness that printed a summary without
+        # printing the checks behind it cannot pass either.
+        verdicts = [line for line in lines if line.startswith("LEVEL2_CHECK ")]
+        require(len(verdicts) == EXPECTED_STEPS,
+                f"the run printed {len(verdicts)} LEVEL2_CHECK lines for a summary of "
+                f"{total}; expected {EXPECTED_STEPS}.")
+
         if arguments.mutation == "none":
             require(passed == total, f"{total - passed} step(s) failed. See the FAIL lines above.")
             log(f"PASS: every one of the {total} steps passed, through the published surface")

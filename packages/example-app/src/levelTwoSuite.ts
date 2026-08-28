@@ -111,6 +111,37 @@ const ROOM_EVENT_TYPE = 'm.room.message'
 const ENCRYPTED_EVENT_TYPE = 'm.room.encrypted'
 
 /**
+ * How `matrix-nio` words a refusal that came from the ratchet rather than
+ * from bookkeeping around it.
+ *
+ * `olm_machine.py`'s `decrypt_megolm_event` raises three different
+ * `EncryptionError`s and only one of them means "the ciphertext did not
+ * authenticate":
+ *
+ * * `"Error decrypting megolm event: {vodozemac error}"` -- the session's own
+ *   decrypt threw. **This one**, and the colon is what distinguishes it.
+ * * `"Error decrypting megolm event, no session found with session id ..."` --
+ *   the key never arrived. A comma, and a different fact entirely.
+ * * `"Duplicate message index, possible replay attack from ..."` -- raised
+ *   *after* a successful decrypt, and the false pass the control was
+ *   rewritten to escape.
+ *
+ * Matching a counterparty's message text is brittle by nature. It is worth
+ * it here for the same reason `level_two_interop.rs` gives: the alternative,
+ * asserting only that the control did not decrypt, cannot tell the three
+ * apart, and telling them apart is the entire value of the control. A
+ * reworded upstream breaks this loudly, which is the correct failure.
+ *
+ * Kept character-for-character identical to the core proof's own
+ * `NIO_RATCHET_REFUSAL`, so the two level 2 proofs cannot disagree about
+ * what a refusal means without one of them going red.
+ */
+const NIO_RATCHET_REFUSAL = 'Error decrypting megolm event: '
+
+/** The refusal that means "I have seen this message index", not "this did not authenticate". */
+const NIO_REPLAY_REFUSAL = 'Duplicate message index'
+
+/**
  * The passphrase for this run's store.
  *
  * Not a credential and not an example of how to choose one: the store lives
@@ -699,18 +730,24 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
         }
         const refused = outcome.decrypted !== true
         const reason = String(outcome.reason ?? '')
-        // Positive, not merely "the reason is not a replay": a reason that
-        // is absent would satisfy a negative assertion vacuously, which is
-        // the same shape as the bug this control was rewritten to escape.
+        // Positive, and specific to the one refusal that means the ciphertext
+        // did not authenticate. A reason that is absent would satisfy a
+        // negative assertion vacuously, which is the same shape as the bug
+        // this control was rewritten to escape -- and a merely-positive test
+        // like `/decrypt/i` would also accept NIO_NO_SESSION_REFUSAL, so the
+        // control could silently degrade into "the key never arrived" and
+        // stay green. See NIO_RATCHET_REFUSAL for the three wordings.
         const forTheRightReason =
-          /decrypt/i.test(reason) && reason.indexOf('Duplicate message index') === -1
+          reason.indexOf(NIO_RATCHET_REFUSAL) !== -1 &&
+          reason.indexOf(NIO_REPLAY_REFUSAL) === -1
         return {
           ok: refused && forTheRightReason,
           detail:
             refused && forTheRightReason
               ? 'a freshly encrypted event with one flipped ciphertext character was refused by ' +
-                'the counterparty, and refused as a decryption failure rather than as a replay'
-              : `the counterparty reported refused: ${refused}, refused for a decryption failure: ` +
+                'the counterparty, and refused by the ratchet rather than for a missing key or a ' +
+                'repeated message index'
+              : `the counterparty reported refused: ${refused}, refused by the ratchet: ` +
                 `${forTheRightReason}`,
         }
       },

@@ -13,10 +13,17 @@ import type { LevelTwoPlan } from './levelTwoTransport'
  * Three things make that true, and each of them exists because this
  * milestone has already been fooled once:
  *
- * * **The denominator is fixed.** It is `LEVEL_TWO_STEPS.length` and nothing
- *   else. A step that could not run prints FAIL; it never vanishes, because
- *   a vanishing step takes the denominator with it and `n/n` still reads as
- *   a pass.
+ * * **The denominator cannot shrink below the promised step list, and is
+ *   pinned outside this file.** What is printed is `results.length`, and
+ *   reconciliation against `LEVEL_TWO_STEPS` below makes that a floor rather
+ *   than a ceiling: a step that could not run prints FAIL and never
+ *   vanishes, while a harness-level throw *adds* a check and prints a larger
+ *   denominator. So this file can over-count and cannot under-count. It
+ *   cannot pin the number itself, because a summary the artifact under test
+ *   both produces and validates is not pinned at all -- `EXPECTED_STEPS` in
+ *   `level-two/run_level_two.py` is what asserts it is thirteen, from
+ *   outside, the way `scripts/run-probe-on-emulator.sh` does for
+ *   `PROBE_SUMMARY`.
  * * **A sabotaged run says so in its own summary line.** The suite carries
  *   its mutations permanently rather than being edited to add them, and a
  *   run with one prints `LEVEL2_MUTATED_SUMMARY`, never `LEVEL2_SUMMARY`.
