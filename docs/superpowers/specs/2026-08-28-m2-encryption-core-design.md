@@ -22,13 +22,21 @@ M2 turns five typed-but-throwing functions into working cryptography:
 | `openCryptoStore(config)` | throws `not_implemented` | opens a persistent, passphrase-encrypted store |
 | `receiveSyncChanges(syncDelta)` | throws `not_implemented` | feeds `/sync` output into the machine |
 | `encryptEvent(scope, type, payload)` | throws `not_implemented` | returns a real `EventEnvelope` |
-| `decryptEvent(scope, rawEvent)` | throws `not_implemented` | returns the decrypted envelope |
+| `decryptEvent(rawEvent)` | throws `not_implemented` | **gains `scope` as a first parameter** and returns the decrypted envelope |
 | `takeOutgoingRequests()` | **new in M2** | returns what the product must send to its homeserver |
 | `markRequestSent(id, response)` | **new in M2** | tells the machine a request was delivered |
+| `shareScopeKey(scope, userIds)` | **new in M2** | makes a scope's session key reachable by the named users' devices |
 
-The last two are additions to the frozen surface, not changes to it, so no existing
-signature moves. They exist because of §3bis, and without them nothing else here
-works.
+**Three functions are added to the frozen surface, not two.** They are additions
+rather than changes to it: `takeOutgoingRequests` and `markRequestSent` exist because
+of §3bis, `shareScopeKey` because of §3ter and §7, and without all three nothing else
+here works. `shareScopeKey` in particular carries the hardest ordering contract on the
+whole surface, the one a product cannot infer and fails silently by getting wrong, so
+it belongs where the contract is stated and not only where §7 explains it.
+
+**One frozen signature does move**, and this section used to say none did.
+`decryptEvent` gains the scope as its first parameter. §7 records why the frozen shape
+could not express what decryption needs, and why that is the bar for breaking one.
 
 Everything else on the facade keeps throwing `not_implemented` and moves to M3:
 `restoreCryptoMachine`, `getDeviceStatuses`, `requestVerification`,
