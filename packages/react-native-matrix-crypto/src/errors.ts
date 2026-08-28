@@ -43,8 +43,32 @@ export type CryptoErrorKind =
 
 export interface CryptoError extends Error {
   kind: CryptoErrorKind
+  /**
+   * **Always `undefined` in M2.** Declared, and never populated: every
+   * `SessionFfiError` variant is fieldless by construction, so nothing on
+   * the decryption path can carry a scope across the FFI boundary for
+   * `toCryptoError` to find. See `sender` below for why the fields stay.
+   *
+   * A product handling a failed `decryptEvent` must therefore take the
+   * scope from the call it made, not from the error it caught.
+   */
   scope?: CryptoScopeId
-  /** Fully qualified `@user:server`, verbatim. Spec section 10. */
+  /**
+   * Fully qualified `@user:server`, verbatim. Spec section 10.
+   *
+   * **Always `undefined` in M2**, for the same reason as `scope` above:
+   * `SessionFfiError` is fieldless throughout, `MachineFfiError` carries
+   * only `detail` and `ProbeFfiError` only `reason`, so no FFI error
+   * variant can carry a sender. Both fields are optional and both are read
+   * defensively by `toCryptoError`, so a later milestone that starts
+   * populating them is additive rather than breaking. That is why they are
+   * declared now and said to be empty, rather than removed and re-added.
+   *
+   * Note that a sender would not become authoritative merely by appearing
+   * here. Spec section 7.1 applies to it exactly as it applies to
+   * `EventEnvelope.sender`: until device verification lands, a sender is
+   * unauthenticated transport metadata.
+   */
   sender?: string
   /** The bridge reports transience. The product layer decides what to do. */
   retriable: boolean
