@@ -300,6 +300,23 @@ lets a product omit a call whose absence fails silently. "Share to these users" 
 implies their devices matter, so making it implicit removes a way to hold the API wrong
 rather than documenting one.
 
+**The first share to a never-seen user delivers nothing, by construction.** It tracks
+the user and arms a keys query; the query only reaches the homeserver through the next
+`takeOutgoingRequests`, so no device is known yet and there is nobody to share with.
+The product must pump, feed the response back with `markRequestSent`, and call
+`shareScopeKey` again. This is §3ter's ordering seen from the caller's side, and it is
+an obligation on the product rather than something the library can hide: the library
+performs no request, so it cannot wait for one.
+
+Tracking happens **after** the share rather than before, deliberately. Flagging first
+arms upstream's `get_user_devices_for_encryption` to wait up to five seconds for an
+outstanding keys query, and that wait is unsatisfiable here by construction: the request
+reaches the product only through a later `takeOutgoingRequests`, and the machine lock is
+held throughout, so no concurrent caller could satisfy it either. Measured on the
+two-party test at 7.47 seconds flagging first against 2.47 seconds flagging last, with
+identical outcomes. Flagging last arms nothing, because the flag exists for the pump,
+which runs afterwards.
+
 `decryptEvent(scope, rawEvent)` returns the decrypted envelope, or rejects with a typed
 error.
 
