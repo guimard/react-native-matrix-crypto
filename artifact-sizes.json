@@ -101,5 +101,51 @@
     ],
     "tarballIncludesXcframework": true,
     "tarballIncludesAar": true
+  },
+  {
+    "label": "task11-staticlib-post-t2",
+    "xcframeworkKB": 104460,
+    "aarKB": 44060,
+    "tarballKB": 263523,
+    "tarballUnpackedKB": 805590,
+    "tarballLargestContributors": [
+      {
+        "component": "android",
+        "unpackedKB": 656809
+      },
+      {
+        "component": "MatrixCryptoFramework.xcframework",
+        "unpackedKB": 104453
+      },
+      {
+        "component": "react-native-matrix-crypto-release.aar",
+        "unpackedKB": 44057
+      }
+    ],
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
+  },
+  {
+    "label": "task11-cdylib-post-t2",
+    "xcframeworkKB": 104460,
+    "aarKB": 23236,
+    "tarballKB": 67555,
+    "tarballUnpackedKB": 152915,
+    "tarballLargestContributors": [
+      {
+        "component": "MatrixCryptoFramework.xcframework",
+        "unpackedKB": 104453
+      },
+      {
+        "component": "android",
+        "unpackedKB": 24958
+      },
+      {
+        "component": "react-native-matrix-crypto-release.aar",
+        "unpackedKB": 23232
+      }
+    ],
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
   }
 ]
