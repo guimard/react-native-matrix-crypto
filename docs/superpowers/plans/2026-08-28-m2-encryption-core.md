@@ -36,7 +36,7 @@ Every task's requirements implicitly include this section.
 * `rust/matrix-crypto-core/src/machine.rs` — process-wide machine and store lifecycle.
 * `rust/matrix-crypto-core/src/session.rs` — sync ingestion, encrypt, decrypt.
 * `rust/matrix-crypto-core/tests/two_parties.rs` — the level 1 interop test, an integration test because it drives the public core API only.
-* `packages/react-native-matrix-crypto/interop/crypto-suite.ts` — level 1 assertions shared between Node and device.
+* `packages/react-native-matrix-crypto/interop/crypto-suite.ts` — level 1 assertions shared between Node and device. **Created by Task 10**, which is also the only task that touches it.
 
 **Modified:**
 
@@ -257,7 +257,7 @@ git commit -m "feat(core): Own a tokio runtime for the crypto work"
   - `pub struct MachineConfig { pub user_id: String, pub device_id: String, pub store_path: String, pub store_passphrase: Option<String> }`
   - `pub async fn create_machine(config: MachineConfig) -> Result<(), MachineError>`
   - `pub async fn open_store(config: MachineConfig) -> Result<(), MachineError>`
-  - `pub async fn with_machine<F, T>(f: F) -> Result<T, MachineError>` — the accessor every later task uses.
+  - `pub async fn with_machine<F, Fut, T>(f: F) -> Result<T, MachineError> where F: FnOnce(&OlmMachine) -> Fut, Fut: Future<Output = T>` — the accessor every later task uses.
   - `pub enum MachineError { NotInitialised, AlreadyInitialised, MalformedIdentifier { detail: String }, Store { detail: String } }`
 
 - [ ] **Step 1: Add the store dependency**
@@ -533,20 +533,43 @@ This is called out as its own step because the `OnceLock` shape reads correctly 
 
 - [ ] **Step 6: Rewire `device_identity_keys`**
 
-In `rust/matrix-crypto-core/src/identity.rs`, replace the throwaway-machine body. The function loses its parameters: identity now belongs to the live machine, and accepting a user id that the machine might not match would let it report keys belonging to no session.
+In `rust/matrix-crypto-core/src/identity.rs`, replace the throwaway-machine body so it reads the live machine.
+
+**Keep both parameters.** `getDeviceIdentityKeys(userId, deviceId)` is a frozen M1a signature, already shipped and already exercised by the on-device probe. Dropping the parameters would be a breaking change to a surface whose purpose is not to break, and would cascade through `matrix-crypto-ffi`, the generated bindings, the facade and the probe. The parameters become an assertion that caller and library agree on who this device is:
 
 ```rust
 /// The live machine's own public identity keys.
-pub async fn device_identity_keys() -> Result<IdentityKeys, MachineError> {
-    crate::machine::with_machine(|machine| async move {
-        let keys = machine.identity_keys();
-        IdentityKeys { curve25519: keys.curve25519.to_base64(), ed25519: keys.ed25519.to_base64() }
+///
+/// The identifiers are checked rather than used: the machine already knows
+/// who it is, and a caller who disagrees is a caller about to attribute these
+/// keys to the wrong identity.
+pub async fn device_identity_keys(
+    user_id: &str,
+    device_id: &str,
+) -> Result<IdentityKeys, MachineError> {
+    crate::machine::with_machine(|machine| {
+        let user_id = user_id.to_owned();
+        let device_id = device_id.to_owned();
+        async move {
+            if machine.user_id().as_str() != user_id || machine.device_id().as_str() != device_id {
+                return Err(MachineError::MalformedIdentifier {
+                    detail: "identifiers do not match the active machine".to_string(),
+                });
+            }
+            let keys = machine.identity_keys();
+            Ok(IdentityKeys {
+                curve25519: keys.curve25519.to_base64(),
+                ed25519: keys.ed25519.to_base64(),
+            })
+        }
     })
-    .await
+    .await?
 }
 ```
 
-Delete `IdentityError`; `MachineError::MalformedIdentifier` replaces it. Update `lib.rs` re-exports and the existing identity tests, which must now create a machine first.
+Delete `IdentityError` and replace it with `MachineError` in `rust/matrix-crypto-ffi/src/lib.rs:109-147`, which currently mirrors it. **That FFI edit belongs to this task**: leaving it for Task 3 would leave the workspace not compiling between the two, and a task must end with `cargo check --manifest-path rust/Cargo.toml` green across the whole workspace, not just `-p matrix-crypto-core`.
+
+The two existing identity tests must now create a machine first, and gain a third asserting that mismatched identifiers are refused.
 
 - [ ] **Step 7: Run the full core suite**
 
