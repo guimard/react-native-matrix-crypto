@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Spec section 7.2: the bridge has no logger. Generated code is excluded
-# because we do not control it; the example app is excluded because it is
-# not the bridge.
+# Spec section 7.2: the bridge has no logger. The example app is excluded
+# because it is not the bridge.
+#
+# Generated code is NOT excluded wholesale, and the C++ half of it used not to
+# be scanned at all. `cpp/generated/matrix_crypto.cpp` carries five
+# `std::cout` writes on UniFFI callback error paths, it is compiled into the
+# shipped `libreact-native-matrix-crypto.so` and into every consumer's iOS
+# binary, and until 2026-08-28 this gate had never read a line of C++. It
+# reported "no logger" over a surface it did not open. See the C++ section
+# below for what is now scanned, what is tolerated there, and why.
 
 # What counts as generated is scripts/generated-paths.txt, shared with
 # scripts/assert-no-drift.sh. See that file's header for the C9 history.
@@ -179,12 +186,107 @@ fi
 
 TS_HITS=$(grep -nE '\bconsole\.[a-z]+' $TS_FILES 2>/dev/null || true)
 
-if [ -n "${RUST_HITS}${TS_HITS}" ]; then
+# ---------------------------------------------------------------------------
+# C++ and Objective-C++: the shipped native surface
+# ---------------------------------------------------------------------------
+#
+# This section did not exist until 2026-08-28. The gate had never read a line
+# of C++, and every write to a stream anywhere in the shipped bridge is in
+# C++: five `std::cout` calls in cpp/generated/matrix_crypto.cpp, one per
+# UniFFI callback trampoline, each on a `catch (const jsi::JSError &error)`
+# path. `strings` on the release AAR's libreact-native-matrix-crypto.so finds
+# four of the five literals plus an undefined `_ZNSt6__ndk14coutE`, so they
+# are in the shipped binary and not merely in the shipped source. The fifth
+# (UniffiForeignFutureDroppedCallback) is dropped by the linker only because
+# nothing references it today.
+#
+# THESE CANNOT BE CONFIGURED AWAY. ubrn's C++ generator takes no configuration
+# at all (`pub(crate) struct CppConfig {}` is literally empty), the write is
+# unconditional in the askama template compiled into the binary
+# (crates/ubrn_bindgen/src/bindings/gen_cpp/templates/CallbackFunction.cpp),
+# no CLI flag overrides templates, and the `logLevel` knob in uniffi.toml
+# governs generated TypeScript only. Editing the generated file is forbidden
+# and gate:drift would catch it. So the honest choices were to fail forever or
+# to tolerate exactly this shape and say so in the README and the spec. We
+# tolerate exactly this shape and say so.
+#
+# WHAT IS TOLERATED, and only inside a path gate:drift regenerates:
+#
+#     } catch (const jsi::JSError &error) {
+#         std::cout << "Error in callback <Name>: "
+#                 << error.what() << std::endl;
+#
+# All three lines must match. That pins the write to a fixed literal plus
+# `jsi::JSError::what()`, which is the JS exception's `.message` and `.stack`
+# (jsi.cpp: `what_ = message_ + "\n\n" + stack_`). It is not a general amnesty
+# for generated C++: any other `std::cout`, any other stream, any platform
+# logger, or this same site with one more `<<` on it, fails.
+#
+# A callback interface added in M2 generates this same shape and passes
+# without anyone editing this file. A CHANGED shape does not, which is the
+# point: if a ubrn upgrade starts printing an argument rather than a fixed
+# literal, this gate fails and someone re-reads the template.
+FORBIDDEN_NATIVE='std::(cout|cerr|clog|wcout|wcerr)|(^|[^_[:alnum:]])(printf|fprintf|vprintf|vfprintf|puts|fputs|perror|syslog|NSLog|RCTLog)[[:space:]]*[(]|__android_log|os_log|(^|[^_[:alnum:]])ALOG[A-Z]*[[:space:]]*[(]'
+
+NATIVE_FILES=$(find $SHIPPED_ROOTS -type f \( \
+  -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \
+  -o -name '*.h' -o -name '*.hh' -o -name '*.hpp' \
+  -o -name '*.m' -o -name '*.mm' \) | sort)
+
+# Same discipline as the TypeScript half. This package is a JSI turbo module:
+# it ships the C++ translation unit that installs the host object. Zero native
+# sources means the derivation broke, not that the C++ is clean.
+if [ -z "${NATIVE_FILES//[[:space:]]/}" ]; then
+  echo "FAIL: no C/C++/Objective-C source was found under: $(echo $SHIPPED_ROOTS | tr '\n' ' ')"
+  echo "      This package ships a JSI turbo module; zero native sources means"
+  echo "      the scan broke. Refusing to pass having scanned nothing."
+  exit 1
+fi
+
+NATIVE_HITS=""
+for f in $NATIVE_FILES; do
+  gen=0
+  if is_generated "$f"; then gen=1; fi
+  out=$(awk -v FORBIDDEN="$FORBIDDEN_NATIVE" -v GEN="$gen" -v FNAME="$f" '
+    function is_ubrn_callback_site(i) {
+      return (line[i]   ~ /^[[:space:]]*std::cout << "Error in callback [A-Za-z0-9_]+: "$/ &&
+              line[i+1] ~ /^[[:space:]]*<< error[.]what[(][)] << std::endl;$/ &&
+              line[i-1] ~ /^[[:space:]]*[}] catch [(]const jsi::JSError &error[)] [{]$/)
+    }
+    { line[NR] = $0 }
+    END {
+      for (i = 1; i <= NR; i++) {
+        if (line[i] !~ FORBIDDEN) continue
+        if (GEN == 1 && is_ubrn_callback_site(i)) continue
+        printf "%s:%d:%s\n", FNAME, i, line[i]
+      }
+    }
+  ' "$f")
+  if [ -n "$out" ]; then
+    NATIVE_HITS="$NATIVE_HITS$out
+"
+  fi
+done
+
+# Count the tolerated sites and print the number on success. An allowlist
+# whose size nobody sees is an allowlist that rots: this makes the count move
+# in the CI log the day the Rust surface grows a callback interface.
+NATIVE_ALLOWED=$(grep -hcE '^[[:space:]]*std::cout << "Error in callback [A-Za-z0-9_]+: "$' \
+  $NATIVE_FILES 2>/dev/null | awk '{ s += $1 } END { print s + 0 }')
+
+if [ -n "${RUST_HITS}${TS_HITS}${NATIVE_HITS}" ]; then
   echo "FAIL: the bridge must not log. Spec section 7.2."
   [ -n "$RUST_HITS" ] && echo "$RUST_HITS"
   [ -n "$TS_HITS" ] && echo "$TS_HITS"
+  [ -n "$NATIVE_HITS" ] && printf '%s' "$NATIVE_HITS"
   echo "      Diagnostics belong in a sink the product injects and owns."
+  echo "      In generated C++ the ONLY tolerated write is ubrn's"
+  echo "      'std::cout << \"Error in callback X: \" << error.what()' on a"
+  echo "      catch(jsi::JSError) path, and all three of its lines must match."
   exit 1
 fi
 
 echo "PASS: no logger"
+echo "      Scanned: Rust crates, shipped TypeScript, shipped C/C++/Objective-C."
+echo "      Tolerated: $NATIVE_ALLOWED ubrn callback-error std::cout sites in generated C++,"
+echo "      documented in README.md and design spec section 7.2."
