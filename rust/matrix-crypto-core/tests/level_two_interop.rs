@@ -79,6 +79,28 @@ const NIO_PAYLOAD_BODY: &str = "encrypted by matrix-nio";
 /// see the comment at its send site for why that is the point.
 const CONTROL_PAYLOAD_BODY: &str = "the control that must never decrypt";
 
+/// How `matrix-nio` words a refusal that came from the ratchet rather than
+/// from bookkeeping around it.
+///
+/// `olm_machine.py`'s `decrypt_megolm_event` raises three different
+/// `EncryptionError`s, and only this one means "the ciphertext did not
+/// authenticate":
+///
+/// * `"Error decrypting megolm event: {vodozemac error}"` -- `session.decrypt`
+///   threw. **This one**, and the colon is what distinguishes it.
+/// * `"Error decrypting megolm event, no session found with session id ..."` --
+///   the key never arrived. A comma, and a different fact entirely.
+/// * `"Duplicate message index, possible replay attack from ..."` -- raised
+///   *after* a successful decrypt, and the false pass the control was
+///   rewritten to escape.
+///
+/// Matching on a counterparty's message text is brittle by nature. It is
+/// worth it here because the alternative -- asserting only that the control
+/// did not decrypt -- cannot tell the three apart, and telling them apart is
+/// the entire value of the control. A reworded upstream breaks this loudly,
+/// which is the correct failure.
+const NIO_RATCHET_REFUSAL: &str = "Error decrypting megolm event: ";
+
 const HOMESERVER_ENV: &str = "MATRIX_INTEROP_HOMESERVER";
 const USER_ENV: &str = "MATRIX_INTEROP_USER";
 const PASSWORD_ENV: &str = "MATRIX_INTEROP_PASSWORD";
@@ -1055,14 +1077,28 @@ fn level_two_interoperability_over_a_real_homeserver() {
         "the corrupted-ciphertext control must NOT decrypt. It did, which means this \
          test would pass whether or not the cryptography is correct: {corrupted_outcome}"
     );
-    // Named, because the reason is what makes the control worth anything: a
-    // refusal for nio's replay rule rather than for the flipped character
-    // would be the failure this control was rewritten to escape.
-    let refusal = corrupted_outcome["reason"].as_str().unwrap_or_default();
+    // Asserted positively, on what the reason must *be*.
+    //
+    // This used to assert negatively -- that the reason was not the
+    // duplicate-index one -- over `reason.as_str().unwrap_or_default()`. That
+    // passes when `reason` is absent, and passes on `op_collect`'s own
+    // `"never attempted"` fallback. Neither is reachable through today's
+    // loop, but nothing here defended that, and a check that passes because
+    // something is missing is the same shape as the replay trap this control
+    // was rewritten to escape. Asking for the field and requiring what it
+    // says closes both at once.
+    let refusal = corrupted_outcome["reason"].as_str().unwrap_or_else(|| {
+        panic!("the counterparty must say why it refused the control: {corrupted_outcome}")
+    });
     assert!(
-        !refusal.contains("Duplicate message index"),
-        "the control was refused as a replay, not as corrupt, so it proves nothing \
-         about the ciphertext: {refusal}"
+        refusal.contains(NIO_RATCHET_REFUSAL),
+        "the control must have been refused by the megolm ratchet itself, not by \
+         bookkeeping around it. matrix-nio words the three refusals differently and \
+         only one of them is the right answer here: {NIO_RATCHET_REFUSAL:?} when \
+         `session.decrypt` threw, \"Error decrypting megolm event, no session found\" \
+         (comma, not colon) when the key never arrived, and \"Duplicate message \
+         index\" when the index was replayed -- which is exactly the false pass this \
+         control was rewritten to escape. It said: {refusal}"
     );
 
     // ---- 8. Direction 2: matrix-nio encrypts, the library decrypts -------
