@@ -9,3 +9,10 @@ Pods/
 .cxx/
 jniLibs/
 .DS_Store
+# Not produced by the documented invocations, checked 2026-08-28: both Python
+# programs here (packages/example-app/level-two/run_level_two.py and
+# rust/matrix-crypto-core/tests/interop/nio_party.py) are run as scripts and
+# import nothing local, and CPython does not cache __main__. Ignored anyway,
+# because the day one of them grows a helper module, or someone runs pytest,
+# is not the day to notice.
+__pycache__/
