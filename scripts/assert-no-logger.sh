@@ -49,14 +49,51 @@ RUST_HITS=$(for root in $RUST_SRC_DIRS; do
   grep -rnE '(println!|eprintln!|print!|eprint!|dbg!|use\s+(log|tracing)::)' "$root" 2>/dev/null || true
 done)
 
-TS_ROOT="packages/react-native-matrix-crypto/src"
+PKG_DIR="packages/react-native-matrix-crypto"
 
-# Verify the TypeScript scan root exists before scanning.
-if [ ! -d "$TS_ROOT" ]; then
-  echo "FAIL: scan root '$TS_ROOT' does not exist."
-  echo "      The gate cannot pass over a target that is not there."
+# Derive the TypeScript scan roots from package.json's "files" allowlist --
+# i.e. from what actually ships -- instead of naming a directory here.
+#
+# This gate scanned only `src` until 2026-08-28, and `interop/` had by then
+# been in "files" for two tasks, carrying 445 lines of library TypeScript that
+# nothing ever looked at. There was no violation in it; the rule was simply
+# unenforced over half the shipped surface, which is indistinguishable from a
+# rule that holds. Deriving the roots means a directory added to "files"
+# tomorrow is covered without anyone remembering to come back here.
+#
+# Negations (`!src/**/*.test.ts`) and globs (`*.aar`, `*.xcframework`,
+# `*.podspec`) are skipped: the first remove files rather than name roots, and
+# the second name binaries. Test files inside a shipped directory ARE scanned,
+# which is what this gate already did for `src`.
+TS_ROOTS=$(node -e '
+  const fs = require("fs");
+  const dir = process.argv[1];
+  const pkg = JSON.parse(fs.readFileSync(dir + "/package.json", "utf8"));
+  for (const entry of pkg.files || []) {
+    if (entry.startsWith("!") || entry.includes("*")) continue;
+    const p = dir + "/" + entry;
+    if (fs.existsSync(p) && fs.statSync(p).isDirectory()) console.log(p);
+  }
+' "$PKG_DIR")
+
+# Refuse to pass having scanned nothing: an unreadable package.json, an empty
+# "files", or a renamed directory would leave TS_ROOTS empty, the find below
+# would return nothing, and this gate would print PASS having read no
+# TypeScript at all.
+if [ -z "${TS_ROOTS//[[:space:]]/}" ]; then
+  echo "FAIL: no shipped TypeScript scan root could be derived from"
+  echo "      $PKG_DIR/package.json's \"files\"."
+  echo "      Refusing to pass having scanned nothing."
   exit 1
 fi
+
+for root in $TS_ROOTS; do
+  if [ ! -d "$root" ]; then
+    echo "FAIL: scan root '$root' does not exist."
+    echo "      The gate cannot pass over a target that is not there."
+    exit 1
+  fi
+done
 
 # For TypeScript/TSX: the bridge may not use console.*.
 # uniffi-bindgen-react-native uses two different header conventions:
@@ -68,14 +105,23 @@ fi
 # that no hand-written file in this package mentions the tool name there
 # (probe.ts imports from ./generated/matrix_crypto on line 1, which does not
 # contain the tool name).
-TS_FILES=$(find "$TS_ROOT" \
+TS_FILES=$(find $TS_ROOTS \
   -type f \( -name '*.ts' -o -name '*.tsx' \) \
   -exec sh -c 'head -3 "$1" | grep -q "uniffi-bindgen-react-native" || echo "$1"' _ {} \;)
 
-TS_HITS=""
-if [ -n "$TS_FILES" ]; then
-  TS_HITS=$(echo "$TS_FILES" | xargs grep -nE '\bconsole\.[a-z]+' 2>/dev/null || true)
+# The second half of the "scanned nothing" guard. The roots exist and were
+# derived from what ships, but if every file under them were excluded -- or if
+# the find above stopped matching -- the grep would return no hits, which is
+# byte-for-byte what a clean tree looks like. This package's public entry
+# point is TypeScript, so zero hand-written TypeScript files means the scan
+# broke, not that the bridge is clean.
+if [ -z "${TS_FILES//[[:space:]]/}" ]; then
+  echo "FAIL: no hand-written TypeScript was found under: $(echo $TS_ROOTS | tr '\n' ' ')"
+  echo "      Refusing to pass having scanned nothing."
+  exit 1
 fi
+
+TS_HITS=$(echo "$TS_FILES" | xargs grep -nE '\bconsole\.[a-z]+' 2>/dev/null || true)
 
 if [ -n "$RUST_HITS$TS_HITS" ]; then
   echo "FAIL: the bridge must not log. Spec section 7.2."
