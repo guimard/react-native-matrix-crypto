@@ -19,6 +19,6 @@ pub use observer::{probe_with_observer, ProbeObserver, ProbeSignal};
 pub use probe::{probe, ProbeReport};
 pub use runtime::in_runtime;
 pub use session::{
-    mark_request_sent, receive_sync_changes, share_scope_key, take_outgoing_requests,
-    OutgoingRequest, SessionError, SyncOutcome,
+    encrypt_event, mark_request_sent, receive_sync_changes, share_scope_key,
+    take_outgoing_requests, Envelope, OutgoingRequest, SessionError, SyncOutcome,
 };

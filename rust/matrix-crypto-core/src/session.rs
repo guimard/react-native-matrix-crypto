@@ -24,7 +24,7 @@ use matrix_sdk_common::ruma::api::client::message::send_message_event::v3::Respo
 use matrix_sdk_common::ruma::api::client::sync::sync_events::DeviceLists;
 use matrix_sdk_common::ruma::api::client::to_device::send_event_to_device::v3::Response as ToDeviceHttpResponse;
 use matrix_sdk_common::ruma::api::IncomingResponse;
-use matrix_sdk_common::ruma::events::AnyToDeviceEvent;
+use matrix_sdk_common::ruma::events::{AnyMessageLikeEventContent, AnyToDeviceEvent};
 // `exports::http`, not a direct `http` dependency of this crate: it is the
 // exact `http` version `ruma`'s own `IncomingResponse::try_from_http_response`
 // requires, reached through `ruma`'s own re-export rather than a second,
@@ -232,6 +232,98 @@ fn parse_scope(scope: &str) -> Result<OwnedRoomId, SessionError> {
 
 fn parse_user(user_id: &str) -> Result<OwnedUserId, SessionError> {
     user_id.parse().map_err(|_| SessionError::MalformedPayload)
+}
+
+/// An event encrypted for a scope, or the plaintext recovered by decrypting
+/// one -- see spec section 6/7. `algorithm` and the scope inside `scope` are
+/// both open: neither this struct nor anything that produces it may name a
+/// specific group-session algorithm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Envelope {
+    pub scope: String,
+    /// Open tag, e.g. the wire algorithm id upstream attached to the
+    /// encrypted content -- read back from that content itself (inside
+    /// `encrypt_event`) rather than hard-coded, so a future algorithm
+    /// upstream adds needs no change here.
+    pub algorithm: String,
+    pub event_type: String,
+    pub ciphertext: Vec<u8>,
+    /// `@user:server`, verbatim -- the current machine's own user id, since
+    /// this is always this device's own outbound encryption.
+    pub sender: String,
+}
+
+/// Encrypts `payload_json` (a JSON event content, opaque to this function)
+/// for `scope`, returning the [`Envelope`] to hand back across the
+/// boundary.
+///
+/// Order matters and is enforced by upstream, not by a check here: a scope
+/// must have a group session before this can succeed --
+/// [`share_scope_key`] establishes one. Calling this first is a caller
+/// error upstream reports as a panic (`encrypt_room_event_raw`'s own
+/// documented behaviour), which is deliberate -- see the design doc section
+/// 7 and section 4's note on why `panic = "unwind"` stays: UniFFI's
+/// `catch_unwind` turns it into a catchable error at the boundary rather
+/// than a runtime check this layer cannot correctly make (it cannot tell "no
+/// session yet" from "session legitimately empty" without reaching into
+/// upstream's own state).
+pub async fn encrypt_event(
+    scope: &str,
+    event_type: &str,
+    payload_json: &str,
+) -> Result<Envelope, SessionError> {
+    let room_id = parse_scope(scope)?;
+    let content = Raw::<AnyMessageLikeEventContent>::from_json_string(payload_json.to_owned())
+        .map_err(|_| SessionError::MalformedPayload)?;
+
+    let scope = scope.to_owned();
+    let event_type = event_type.to_owned();
+
+    // `with_machine` already runs inside the library's runtime and holds
+    // the machine lock for this closure's duration; see its own doc comment
+    // in `machine.rs`.
+    let result = with_machine(move |machine| {
+        Box::pin(async move {
+            machine
+                .encrypt_room_event_raw(&room_id, &event_type, &content)
+                .await
+                .map(|encrypted| {
+                    // `encrypted`'s type is never named: it lives in a
+                    // private module of `matrix-sdk-crypto` and is only
+                    // reachable here, unnamed, through inference on this
+                    // closure parameter (confirmed by trying to name it
+                    // and reading rustc's own "private module" error).
+                    //
+                    // Read back from the encrypted content itself, not
+                    // matched against upstream's `AlgorithmInfo` enum: this
+                    // needs no arm for a future algorithm upstream adds,
+                    // and it is what actually went over the wire in
+                    // `ciphertext`, not a second, possibly-diverging
+                    // description of it.
+                    let algorithm = encrypted
+                        .content
+                        .get_field::<String>("algorithm")
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default();
+                    let ciphertext = encrypted.content.json().get().as_bytes().to_vec();
+
+                    Envelope {
+                        scope,
+                        algorithm,
+                        event_type,
+                        ciphertext,
+                        sender: machine.user_id().as_str().to_string(),
+                    }
+                })
+        })
+    })
+    .await?;
+
+    // Upstream `Display` output on a Megolm error can embed a session id or
+    // device id -- never forwarded, per spec section 7, same as
+    // `receive_sync_changes` above.
+    result.map_err(|_upstream| SessionError::Failed)
 }
 
 /// Ensures `scope` has a group session and shares it with the given users'
@@ -729,7 +821,7 @@ mod tests {
         assert_eq!(outcome.new_session_count, 0);
     }
 
-    // --- Task 5: the outbound pump -------------------------------------
+    // --- Task 5: encryption and the outbound pump ---------------------
 
     /// A machine config pointing at `dir`, the non-leaking counterpart to
     /// this file's own `test_config()` above (which calls `TempDir::keep`
@@ -745,6 +837,76 @@ mod tests {
             store_path: dir.join("store").to_string_lossy().into_owned(),
             store_passphrase: Some("test-passphrase".to_string()),
         }
+    }
+
+    #[test]
+    fn encrypting_produces_ciphertext_that_is_not_the_plaintext() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        let envelope = futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+            share_scope_key("!s:example.org", &["@alice:example.org".to_string()])
+                .await
+                .unwrap();
+            encrypt_event(
+                "!s:example.org",
+                "m.room.message",
+                r#"{"body":"hello","msgtype":"m.text"}"#,
+            )
+            .await
+        })
+        .unwrap();
+
+        assert!(!envelope.ciphertext.is_empty());
+        assert!(
+            !String::from_utf8_lossy(&envelope.ciphertext).contains("hello"),
+            "the plaintext must not survive in the ciphertext"
+        );
+        assert_eq!(envelope.sender, "@alice:example.org");
+        assert_eq!(envelope.scope, "!s:example.org");
+        assert_eq!(envelope.event_type, "m.room.message");
+        assert!(
+            !envelope.algorithm.is_empty(),
+            "the algorithm tag must be populated"
+        );
+    }
+
+    /// A scope that is not a valid identifier must be rejected before any
+    /// cryptographic work happens.
+    #[test]
+    fn a_malformed_scope_is_rejected() {
+        let err = futures::executor::block_on(encrypt_event("nonsense", "m.room.message", "{}"))
+            .unwrap_err();
+        assert_eq!(err, SessionError::MalformedPayload);
+    }
+
+    /// This crate's own "no secret in any error" rule (spec section 7):
+    /// regardless of what triggers `MalformedPayload`, the input that
+    /// triggered it must not survive into the rendered error.
+    #[test]
+    fn an_error_never_echoes_the_input_that_caused_it() {
+        let secret_like_payload = "super-secret-plaintext-marker";
+        let err = futures::executor::block_on(encrypt_event(
+            "not-a-valid-scope",
+            "m.room.message",
+            secret_like_payload,
+        ))
+        .unwrap_err();
+
+        let rendered = err.to_string();
+        assert!(
+            !rendered.contains(secret_like_payload),
+            "rendered error must not contain the input: {rendered}"
+        );
+        assert!(
+            !rendered.contains("not-a-valid-scope"),
+            "rendered error must not contain the input: {rendered}"
+        );
     }
 
     /// A fresh machine has device keys and one-time keys nobody has seen. If
@@ -890,11 +1052,11 @@ mod tests {
     /// Every test above already runs through bare `futures::executor::block_on`
     /// with no `#[tokio::test]` anywhere in this file, so each is already
     /// evidence for this property. This test exists anyway, self-contained
-    /// and separately named, so "does the pump work with no ambient
+    /// and separately named, so "does Task 5's surface work with no ambient
     /// runtime" has one direct answer instead of an inference over the rest
-    /// of the file -- and so it exercises the whole pump in one sequence
-    /// (create, share, take, mark), not just the one call
-    /// `a_fresh_machine_has_keys_waiting_to_be_uploaded` above already
+    /// of the file -- and so it exercises the full new surface in one
+    /// sequence (create, share, encrypt, take, mark), not just the one
+    /// call `a_fresh_machine_has_keys_waiting_to_be_uploaded` above already
     /// covers.
     ///
     /// `#[tokio::test]` supplies a runtime that would hide a missing
@@ -917,6 +1079,10 @@ mod tests {
             share_scope_key("!s:example.org", &["@alice:example.org".to_string()])
                 .await
                 .unwrap();
+            let envelope = encrypt_event("!s:example.org", "m.dummy", r#"{"body":"hi"}"#)
+                .await
+                .unwrap();
+            assert!(!envelope.ciphertext.is_empty());
 
             let requests = take_outgoing_requests().await.unwrap();
             let upload = requests
