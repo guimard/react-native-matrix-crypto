@@ -31,7 +31,7 @@ export { onCryptoSignal } from './signals'
 export type { ProbeResult, ProbeSignal } from './probe'
 export { runProbe } from './probe'
 
-export type { CryptoMachineConfig, DeviceStatus, IdentityKeys } from './facade'
+export type { CryptoMachineConfig, DeviceStatus, IdentityKeys, OutgoingRequest } from './facade'
 export {
   confirmVerification,
   createCryptoMachine,
@@ -42,8 +42,11 @@ export {
   getDeviceStatuses,
   getSupportedAlgorithms,
   importSecrets,
+  markRequestSent,
   openCryptoStore,
   receiveSyncChanges,
   requestVerification,
   restoreCryptoMachine,
+  shareScopeKey,
+  takeOutgoingRequests,
 } from './facade'

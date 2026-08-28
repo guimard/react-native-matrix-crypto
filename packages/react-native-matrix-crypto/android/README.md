@@ -30,7 +30,8 @@ this repository to catch it first (Task 11's iOS gap and this are the same class
 defect, in opposite directions: there, a binary that should have shipped didn't; here,
 a binary that must keep shipping could quietly stop).
 
-The root-level `*.aar` (also in `"files"`) is a separate, additional convenience
-artifact — a fully prebuilt, already-linked module for a consumer who would rather not
-build from source at all. It does not replace `jniLibs`; nothing autolinks against it
-automatically.
+A root-level `*.aar` used to ship too, as a separate, additional convenience artifact —
+a fully prebuilt, already-linked module for a consumer who would rather not build from
+source at all. It never replaced `jniLibs`, and nothing ever autolinked against it
+automatically; it was dropped from `package.json`'s `"files"` in the M2 cleanup (root
+README, Installation section) because that consumer had no mechanism to reach it.

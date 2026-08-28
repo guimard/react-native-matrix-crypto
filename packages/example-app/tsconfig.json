@@ -1,5 +1,27 @@
 {
   "extends": "@react-native/typescript-config",
+  "compilerOptions": {
+    // @react-native/typescript-config sets `"types": ["jest"]`, which is the
+    // right default for an app scaffolded from the React Native template and
+    // wrong for this one: it has no Jest tests, `@types/jest` is not
+    // installed, and a bare `tsc --noEmit` therefore fails with
+    //
+    //   error TS2688: Cannot find type definition file for 'jest'.
+    //
+    // before it has looked at a single line of this app. That is why nothing
+    // ran this app's typecheck for the whole of M2, and why the shipped
+    // interop suite was able to stop compiling against its own consumer
+    // without anyone noticing.
+    //
+    // Overridden here rather than fixed by installing `@types/jest`: adding a
+    // test framework's types to a workspace that has no tests would be
+    // describing a dependency that does not exist, and it would put the fix
+    // in the lockfile instead of where the wrong setting is. `types` only
+    // governs which `@types/*` packages are included automatically -- every
+    // import in this app, React Native's own types included, still resolves
+    // normally.
+    "types": ["react"]
+  },
   "include": ["**/*.ts", "**/*.tsx"],
   "exclude": ["**/node_modules", "**/Pods"]
 }

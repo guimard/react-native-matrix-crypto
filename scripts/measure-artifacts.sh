@@ -11,6 +11,17 @@ XC=$(find packages -name '*.xcframework' -maxdepth 4 | head -1)
 AAR=$(find packages -name '*.aar' -maxdepth 5 | head -1)
 
 XC_KB=$(size_of "${XC:-/nonexistent}")
+# aarKB below measures the .aar build output on disk exactly as it always
+# has -- unchanged by the 2026-08-28 decision (spec section 9 step 2) to stop
+# building and shipping one. That decision means this column will normally
+# read 0 from here on: release.yml no longer runs the Gradle step that
+# produced an .aar, so `find` finds nothing. A developer with a stray one
+# left on disk from before that change still sees its real size here, while
+# tarballIncludesAar (below) correctly reports it is not in the packed
+# tarball -- which is the useful signal, not a bug. Kept as a live
+# measurement rather than dropped or hardcoded to zero, so every row in
+# artifact-sizes.json keeps meaning the same thing it always meant: what this
+# script found on disk for that label, not a value it stopped looking for.
 AAR_KB=$(size_of "${AAR:-/nonexistent}")
 
 # `npm pack --dry-run --json` output shape is not stable across npm versions:
@@ -40,16 +51,85 @@ AAR_KB=$(size_of "${AAR:-/nonexistent}")
 # it did before this task -- the whole point of "record the components
 # separately and label the projection explicitly" rather than reporting a
 # tarball size that quietly stopped including what it claims to.
-PACK_INFO=$(cd packages/react-native-matrix-crypto && npm pack --dry-run --json 2>/dev/null | node -e '
-  const j = JSON.parse(require("fs").readFileSync(0, "utf8"));
-  const entry = Array.isArray(j) ? j[0] : Object.values(j)[0];
-  const files = entry?.files ?? [];
+#
+# Task 11 (size-reduction-report.md, Finding 3): `tarballKB` alone -- built
+# from `entry.size`, the *compressed* .tgz byte count -- has never told
+# anyone what is actually inside the tarball, only its gzip result. That
+# silently changes with how compressible the shipped bytes happen to be
+# (LTO'd code compresses worse than unstripped code at the same *unpacked*
+# size), which is exactly how a real xcframework/aar win upstream ended up
+# looking like a regression downstream. `xcframeworkKB`/`aarKB` above are
+# real signal for the two build outputs this project produces, but they are
+# not the whole tarball -- `package.json`'s "files" allowlist also ships
+# `android/src/main`, which carries four pre-link `jniLibs/*.a` archives
+# neither of those two numbers ever sees. Report the actual composition,
+# not just the two outputs this repo happens to build: the per-file
+# `files[]` listing in the same `npm pack --dry-run --json` payload gives
+# real, *unpacked* (pre-gzip) sizes, which is the number that answers "what
+# is in here" without the compression-ratio noise `tarballKB` carries.
+#
+# One correctness trap already bit a previous attempt at exactly this fix:
+# `npm pack --dry-run --json`'s payload is not reliably on one particular
+# stream across npm versions/invocations -- a prior attempt piped it through
+# `2>/dev/null`, assuming stdout, and silently lost the whole per-file
+# listing when it did not land there. Do not repeat that: capture BOTH
+# streams to real files and accept whichever one actually parses as the
+# expected `{ files: [...] }` shape, rather than betting on either.
+PACK_STDOUT=$(mktemp)
+PACK_STDERR=$(mktemp)
+trap 'rm -f "$PACK_STDOUT" "$PACK_STDERR"' EXIT
+(cd packages/react-native-matrix-crypto && npm pack --dry-run --json) \
+  >"$PACK_STDOUT" 2>"$PACK_STDERR" || true
+
+PACK_INFO=$(node -e '
+  const fs = require("fs");
+  function tryParse(path) {
+    try {
+      const j = JSON.parse(fs.readFileSync(path, "utf8"));
+      const entry = Array.isArray(j) ? j[0] : Object.values(j)[0];
+      if (entry && Array.isArray(entry.files)) return entry;
+    } catch {
+      // Not this stream -- try the other one.
+    }
+    return null;
+  }
+  const [stdoutPath, stderrPath] = process.argv.slice(1);
+  const entry = tryParse(stdoutPath) || tryParse(stderrPath);
+  if (!entry) {
+    console.error(
+      "measure-artifacts.sh: npm pack --dry-run --json produced no " +
+      "parseable { files: [...] } payload on stdout or stderr"
+    );
+    process.exit(1);
+  }
+  const files = entry.files;
+
+  // Composition, not just two component sizes: group every packed file by
+  // its top-level path segment -- the shipped component it belongs to
+  // (".xcframework", the whole "android" tree including jniLibs, the root
+  // ".aar", "src", "cpp", ...) -- and sum the real *unpacked* (pre-gzip)
+  // byte size of each group. This needs no hardcoded knowledge of which
+  // components exist; it reports whatever is actually in "files" today.
+  const buckets = new Map();
+  for (const f of files) {
+    const top = f.path.includes("/") ? f.path.split("/")[0] : f.path;
+    buckets.set(top, (buckets.get(top) || 0) + f.size);
+  }
+  const largestContributors = [...buckets.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([component, size]) => ({ component, unpackedKB: Math.round(size / 1024) }));
+
+  const unpackedSize = entry.unpackedSize ?? files.reduce((a, f) => a + f.size, 0);
+
   console.log(JSON.stringify({
-    tarballKB: Math.round((entry?.size ?? 0) / 1024),
+    tarballKB: Math.round((entry.size ?? 0) / 1024),
+    tarballUnpackedKB: Math.round(unpackedSize / 1024),
     includesXcframework: files.some((f) => f.path.includes(".xcframework/")),
     includesAar: files.some((f) => f.path.endsWith(".aar")),
+    largestContributors,
   }));
-')
+' "$PACK_STDOUT" "$PACK_STDERR")
 
 node -e "
   const fs = require('fs');
@@ -59,6 +139,17 @@ node -e "
     xcframeworkKB: Number(process.argv[2]),
     aarKB: Number(process.argv[3]),
     tarballKB: pack.tarballKB,
+    // Real, unpacked (pre-gzip) size of everything 'files' ships -- the
+    // number Finding 3 needed and 'tarballKB' (a compressed byte count)
+    // cannot give: it does not move with how well the payload happens to
+    // gzip, only with what is actually shipped.
+    tarballUnpackedKB: pack.tarballUnpackedKB,
+    // The tarball's actual composition: the largest contributors by
+    // unpacked size, grouped by shipped component, computed fresh from
+    // npm's own per-file listing on every run -- not assumed to still be
+    // 'just the xcframework and the aar' the way xcframeworkKB/aarKB alone
+    // read. See size-reduction-report.md Finding 3.
+    tarballLargestContributors: pack.largestContributors,
     // Explicit, per spec section 10's ~150 MB M1b gate comparing a single
     // combined tarball across both platforms (Task 14): whether *this*
     // tarballKB actually reflects each binary, rather than a platform that
@@ -79,5 +170,5 @@ node -e "
   const i = all.findIndex((r) => r.label === row.label);
   if (i === -1) all.push(row); else all[i] = row;
   fs.writeFileSync(path, JSON.stringify(all, null, 2) + '\n');
-  console.log(JSON.stringify(row));
+  console.log(JSON.stringify(row, null, 2));
 " "${1:-unlabelled}" "$XC_KB" "$AAR_KB" "$PACK_INFO"

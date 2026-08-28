@@ -1,0 +1,25 @@
+# See size-reduction-report.md, "Finding 2". `[profile.release] lto = true`
+# on this workspace's `staticlib` crate-type (matrix-crypto-ffi) makes rustc
+# embed full, uncompressed LLVM bitcode (Mach-O section __LLVM,__bitcode) in
+# every compiled object file for Apple targets, historically so a downstream
+# Xcode/App Store re-optimization pass could consume it. Apple dropped that
+# requirement in Xcode 14 (2022); nothing in this project's iOS pipeline
+# reads it — the raw .a ships straight into the .xcframework with no further
+# link step. Measured effect of leaving it on: the shipped xcframework grew
+# from 152856 KB to 292720 KB (+91%) for zero runtime benefit. Disabling
+# bitcode embedding for just the three Apple targets this workspace builds
+# removes it entirely (confirmed empirically: otool -l on the resulting
+# object files shows no __LLVM segment) and lets LTO's real, wanted effect
+# (dead-code elimination, cross-crate inlining) show through instead.
+#
+# Android is unaffected either way -- embed-bitcode is an Apple-target-only
+# rustc codegen flag, and Android's own CMake/NDK link step already discards
+# unreferenced sections from the input .a regardless.
+[target.aarch64-apple-ios]
+rustflags = ["-C", "embed-bitcode=no"]
+
+[target.aarch64-apple-ios-sim]
+rustflags = ["-C", "embed-bitcode=no"]
+
+[target.x86_64-apple-ios]
+rustflags = ["-C", "embed-bitcode=no"]

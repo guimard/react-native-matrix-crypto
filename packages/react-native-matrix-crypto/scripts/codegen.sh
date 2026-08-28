@@ -1,6 +1,50 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Make codegen output independent of what happens to be installed on the
+# machine running it.
+#
+# ubrn formats its emitted C++ with `clang-format` and its TypeScript with
+# `prettier` when it finds them, and silently skips formatting when it does
+# not. assert-no-drift.sh already warned against adding either as a
+# devDependency for this reason, but a devDependency was never the only
+# vector: GitHub's ubuntu-latest image ships clang-format system-wide while
+# a stock macOS developer machine does not. The same commit therefore
+# generated differently formatted C++ in CI than locally, and the drift gate
+# failed on pure whitespace -- `jsi::Runtime &rt` against `jsi::Runtime& rt`,
+# two-space against four-space indentation -- with nothing semantically
+# different at all.
+#
+# How ubrn actually behaves, read from its source rather than guessed
+# (node_modules/uniffi-bindgen-react-native/crates/ubrn_common/src/fmt.rs):
+#
+#   - It locates clang-format with `which`, so PATH decides, and invokes it
+#     IN PLACE: `clang-format -i --style=file --fallback-style=LLVM <files>`.
+#     With no .clang-format in the tree it therefore applies LLVM style.
+#   - It resolves prettier from `node_modules/.bin/prettier`, NOT from PATH.
+#     PATH cannot influence prettier at all; the only guard against it is the
+#     one assert-no-drift.sh already documents, namely not adding it as a
+#     devDependency.
+#
+# So: shadow clang-format with an inert stand-in, first on PATH. `which`
+# finds it, ubrn runs it, and because the real invocation is in-place rather
+# than a pipe, doing nothing leaves the files exactly as generated. This is
+# deliberately NOT the PATH-directory-scrubbing the cold-consume job uses:
+# on ubuntu-latest clang-format lives in /usr/bin alongside `cc`, so removing
+# whole directories takes the linker with it and cargo fails to build.
+_fmt_shim="$(mktemp -d)"
+trap 'rm -rf "$_fmt_shim"' EXIT
+printf '#!/bin/sh\nexit 0\n' > "$_fmt_shim/clang-format"
+chmod +x "$_fmt_shim/clang-format"
+PATH="$_fmt_shim:$PATH"
+export PATH
+
+if [ "$(command -v clang-format)" != "$_fmt_shim/clang-format" ]; then
+  echo "FAIL: clang-format does not resolve to the inert stand-in;" >&2
+  echo "      codegen output would depend on the host's formatter." >&2
+  exit 1
+fi
+
 # Regenerates the UniFFI/JSI bindings from the Rust FFI crate. Invoked via
 # `yarn codegen` from this package's directory (packages/react-native-matrix-crypto/),
 # so every relative path below is relative to there.

@@ -38,5 +38,183 @@
     "tarballKB": 128031,
     "tarballIncludesXcframework": true,
     "tarballIncludesAar": true
+  },
+  {
+    "label": "opt-strip",
+    "xcframeworkKB": 152788,
+    "aarKB": 31492,
+    "tarballKB": 128038,
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
+  },
+  {
+    "label": "opt-strip-lto",
+    "xcframeworkKB": 292720,
+    "aarKB": 30604,
+    "tarballKB": 242936,
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
+  },
+  {
+    "label": "opt-strip-lto-nobc",
+    "xcframeworkKB": 104460,
+    "aarKB": 30604,
+    "tarballKB": 184608,
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
+  },
+  {
+    "label": "opt-strip-lto-nobc-z",
+    "xcframeworkKB": 142324,
+    "aarKB": 30172,
+    "tarballKB": 156398,
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
+  },
+  {
+    "label": "opt-strip-lto-nobc-final",
+    "xcframeworkKB": 104460,
+    "aarKB": 30604,
+    "tarballKB": 184608,
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
+  },
+  {
+    "label": "task11-honest-metric-staticlib",
+    "xcframeworkKB": 104460,
+    "aarKB": 30604,
+    "tarballKB": 184608,
+    "tarballUnpackedKB": 550134,
+    "tarballLargestContributors": [
+      {
+        "component": "android",
+        "unpackedKB": 414821
+      },
+      {
+        "component": "MatrixCryptoFramework.xcframework",
+        "unpackedKB": 104453
+      },
+      {
+        "component": "react-native-matrix-crypto-release.aar",
+        "unpackedKB": 30603
+      }
+    ],
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
+  },
+  {
+    "label": "task11-staticlib-post-t2",
+    "xcframeworkKB": 104460,
+    "aarKB": 44060,
+    "tarballKB": 263523,
+    "tarballUnpackedKB": 805590,
+    "tarballLargestContributors": [
+      {
+        "component": "android",
+        "unpackedKB": 656809
+      },
+      {
+        "component": "MatrixCryptoFramework.xcframework",
+        "unpackedKB": 104453
+      },
+      {
+        "component": "react-native-matrix-crypto-release.aar",
+        "unpackedKB": 44057
+      }
+    ],
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
+  },
+  {
+    "label": "task11-cdylib-post-t2",
+    "xcframeworkKB": 104460,
+    "aarKB": 23236,
+    "tarballKB": 67555,
+    "tarballUnpackedKB": 152915,
+    "tarballLargestContributors": [
+      {
+        "component": "MatrixCryptoFramework.xcframework",
+        "unpackedKB": 104453
+      },
+      {
+        "component": "android",
+        "unpackedKB": 24958
+      },
+      {
+        "component": "react-native-matrix-crypto-release.aar",
+        "unpackedKB": 23232
+      }
+    ],
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
+  },
+  {
+    "label": "release-pack-rehearsal-ios-sim-slice-only",
+    "xcframeworkKB": 50552,
+    "aarKB": 23236,
+    "tarballKB": 43460,
+    "tarballUnpackedKB": 83420,
+    "tarballLargestContributors": [
+      {
+        "component": "MatrixCryptoFramework.xcframework",
+        "unpackedKB": 50547
+      },
+      {
+        "component": "react-native-matrix-crypto-release.aar",
+        "unpackedKB": 23232
+      },
+      {
+        "component": "android",
+        "unpackedKB": 9261
+      }
+    ],
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
+  },
+  {
+    "label": "release-pack-complete-ios-3-arch-android-4-abi",
+    "xcframeworkKB": 152128,
+    "aarKB": 29072,
+    "tarballKB": 94272,
+    "tarballUnpackedKB": 219772,
+    "tarballLargestContributors": [
+      {
+        "component": "MatrixCryptoFramework.xcframework",
+        "unpackedKB": 152122
+      },
+      {
+        "component": "android",
+        "unpackedKB": 38202
+      },
+      {
+        "component": "react-native-matrix-crypto-release.aar",
+        "unpackedKB": 29068
+      }
+    ],
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
+  },
+  {
+    "label": "release-pack-aar-dropped-from-files",
+    "xcframeworkKB": 152128,
+    "aarKB": 29072,
+    "tarballKB": 65288,
+    "tarballUnpackedKB": 190717,
+    "tarballLargestContributors": [
+      {
+        "component": "MatrixCryptoFramework.xcframework",
+        "unpackedKB": 152122
+      },
+      {
+        "component": "android",
+        "unpackedKB": 38202
+      },
+      {
+        "component": "cpp",
+        "unpackedKB": 182
+      }
+    ],
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": false
   }
 ]

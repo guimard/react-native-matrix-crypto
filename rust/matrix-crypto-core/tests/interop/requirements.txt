@@ -1,0 +1,71 @@
+# The level 2 counterparty, pinned.
+#
+# `nio_party.py` is driven as a subprocess by `tests/level_two_interop.rs`,
+# and it is the whole point of that test that the client on the other end is
+# not this library. A floating `matrix-nio[e2e]` would make the proof depend
+# on whatever PyPI resolved on the day, which is the opposite of what a
+# milestone exit criterion should rest on.
+#
+# The full transitive closure is pinned, not just the direct requirement, and
+# `scripts/run-level-two-interop.sh` installs it with `--no-deps` so pip
+# installs exactly this list and resolves nothing. Add a dependency here only
+# by regenerating the list:
+#
+#   python3 -m venv /tmp/nio && /tmp/nio/bin/pip install 'matrix-nio[e2e]==<v>'
+#   /tmp/nio/bin/pip freeze
+#
+# Versions rather than hashes, deliberately. `vodozemac` and several of the
+# aiohttp stack ship platform-specific wheels, so a `--require-hashes` file
+# generated on one platform refuses to install on another -- and this list has
+# to work on a linux/amd64 CI runner and on a contributor's macOS or Linux
+# machine alike. A PyPI release is immutable per version and per file, so
+# pinning the version fixes the artifact for every platform at once; what it
+# does not defend against is PyPI itself serving something different, which
+# hashes would.
+#
+# WHAT THE COUNTERPARTY'S INDEPENDENCE IS AND IS NOT
+#
+# matrix-nio 0.26 moved its ratchet from libolm to `vodozemac`, which is the
+# same crate `matrix-sdk-crypto` uses -- `rust/Cargo.lock` carries vodozemac
+# 0.10.0, and the pin below is the Python binding for the same version. So a
+# defect inside vodozemac passes both sides of this test. Everything above it
+# -- event shapes, `/keys/*` payloads, to-device routing, the megolm event
+# body, session lifecycle -- is two independent implementations agreeing or
+# not, and that is the layer this library's own code lives in.
+#
+# Generated from `matrix-nio[e2e]==0.26.0` on CPython 3.12.
+
+matrix-nio==0.26.0
+
+# The e2e extra.
+vodozemac==0.10.0
+atomicwrites==1.4.1
+cachetools==7.1.7
+peewee==3.19.0
+pycryptodome==3.23.0
+
+# matrix-nio's own runtime dependencies.
+aiofiles==25.1.0
+aiohttp==3.14.3
+aiohttp_socks==0.12.0
+h11==0.16.0
+h2==4.4.1
+jsonschema==4.26.0
+unpaddedbase64==2.1.0
+
+# Transitively required by the above.
+aiohappyeyeballs==2.7.1
+aiosignal==1.4.0
+attrs==26.1.0
+frozenlist==1.8.0
+hpack==4.2.0
+hyperframe==6.1.0
+idna==3.19
+jsonschema-specifications==2025.9.1
+multidict==6.7.1
+propcache==0.5.2
+python-socks==3.0.0
+referencing==0.37.0
+rpds-py==2026.6.3
+typing_extensions==4.16.0
+yarl==1.24.5

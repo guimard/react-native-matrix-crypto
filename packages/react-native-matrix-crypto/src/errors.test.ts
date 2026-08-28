@@ -89,6 +89,61 @@ describe('toCryptoError against the real UniFFI error shape', () => {
     expect(err.retriable).toBe(false)
   })
 
+  it('maps a real UniFFI-shaped MachineFfiError.NotInitialised to kind not_initialised', () => {
+    // A fieldless ("flat") variant carries no `.inner` at all -- confirmed
+    // against the actual generated `MachineFfiError.NotInitialised` in
+    // src/generated/matrix_crypto.ts, whose constructor takes no arguments
+    // and so calls `super("MachineFfiError", "NotInitialised")` with no
+    // third `message` argument, leaving `.message` exactly
+    // "MachineFfiError.NotInitialised" with no trailing ": <message>".
+    const raw = new Error('MachineFfiError.NotInitialised')
+    expect(raw.name).toBe('Error')
+
+    const err = toCryptoError(raw)
+    expect(err.kind).toBe('not_initialised')
+    expect(err.retriable).toBe(false)
+  })
+
+  /**
+   * Regression for FIX 2: `errors.ts` used to map `['StoreCorrupt',
+   * 'store_corrupt']`, a Rust variant that has never existed --
+   * `MachineFfiError`'s real variant is `Store` (see the generated
+   * `MachineFfiError_Tags` in src/generated/matrix_crypto.ts), so a genuine
+   * store failure fell through `KIND_BY_NAME` to `kind: 'unknown'`. `Store`
+   * is a fielded variant (it carries `.inner.detail`), but its `.message` is
+   * still exactly "MachineFfiError.Store" with no ": <message>" suffix: the
+   * generated `Store_` constructor calls `super("MachineFfiError", "Store")`
+   * with no third argument, matching `NotInitialised` above.
+   */
+  it('maps a real UniFFI-shaped MachineFfiError.Store to kind store_unavailable, not store_corrupt', () => {
+    const raw = new Error('MachineFfiError.Store')
+    expect(raw.name).toBe('Error')
+
+    const err = toCryptoError(raw)
+    expect(err.kind).toBe('store_unavailable')
+    expect(err.kind).not.toBe('store_corrupt')
+    expect(err.retriable).toBe(false)
+  })
+
+  /**
+   * A parked finding from Task 2's review, addressed in Task 6: opening a
+   * store that belongs to a different account is a recoverable
+   * configuration mistake, not a storage failure like a full disk --
+   * conflating the two under 'store_unavailable' would send a product
+   * down the wrong recovery path. `MismatchedAccount` is a fieldless
+   * variant, like `NotInitialised` above, so `.message` carries no
+   * ": <message>" suffix either.
+   */
+  it('maps a real UniFFI-shaped MachineFfiError.MismatchedAccount to kind mismatched_account, not store_unavailable', () => {
+    const raw = new Error('MachineFfiError.MismatchedAccount')
+    expect(raw.name).toBe('Error')
+
+    const err = toCryptoError(raw)
+    expect(err.kind).toBe('mismatched_account')
+    expect(err.kind).not.toBe('store_unavailable')
+    expect(err.retriable).toBe(false)
+  })
+
   it('recovers the variant from the "<Type>.<Variant>" prefix of .message when .name is not a recognized kind', () => {
     const err = toCryptoError({ name: 'Error', message: 'ProbeFfiError.Rejected' })
     expect(err.kind).toBe('rejected')
@@ -102,6 +157,96 @@ describe('toCryptoError against the real UniFFI error shape', () => {
     expect(err.kind).toBe('missing_key')
     expect(err.message).toContain('no room key for this session')
     expect(err.sender).toBe('@b:server2')
+  })
+
+  /**
+   * The three `SessionFfiError` variants Task 6 could not yet exercise
+   * end to end (its own F9): `SessionError` had no FFI mirror at all, so
+   * these were forward scaffolding, present in `KIND_BY_NAME` but
+   * unreachable from a real generated error. Task 7 gives `SessionError`
+   * that mirror; this proves the map entry was already correct, not that
+   * it becomes correct now.
+   */
+  it('maps a real UniFFI-shaped SessionFfiError.MalformedPayload to kind malformed_payload', () => {
+    const err = toCryptoError(new Error('SessionFfiError.MalformedPayload'))
+    expect(err.kind).toBe('malformed_payload')
+    expect(err.retriable).toBe(false)
+  })
+
+  it('maps a real UniFFI-shaped SessionFfiError.Failed to kind failed', () => {
+    const err = toCryptoError(new Error('SessionFfiError.Failed'))
+    expect(err.kind).toBe('failed')
+    expect(err.retriable).toBe(false)
+  })
+
+  it('maps a real UniFFI-shaped SessionFfiError.UnknownRequest to kind unknown_request', () => {
+    const err = toCryptoError(new Error('SessionFfiError.UnknownRequest'))
+    expect(err.kind).toBe('unknown_request')
+    expect(err.retriable).toBe(false)
+  })
+
+  /**
+   * `KIND_BY_NAME` is keyed on the variant name alone, so the entry written
+   * for `MachineFfiError.MalformedIdentifier` already serves the
+   * `SessionFfiError` variant a malformed scope now raises. That is
+   * convenient rather than obviously correct, and it is exactly the shape
+   * that goes unnoticed: nothing in errors.ts names either enum, so a
+   * reader cannot tell from this file that two of them reach one entry.
+   * Both are asserted, and asserted to agree.
+   */
+  it('maps SessionFfiError.MalformedIdentifier to the same kind as the machine variant', () => {
+    const fromSession = toCryptoError(new Error('SessionFfiError.MalformedIdentifier'))
+    const fromMachine = toCryptoError(new Error('MachineFfiError.MalformedIdentifier'))
+    expect(fromSession.kind).toBe('malformed_identifier')
+    expect(fromMachine.kind).toBe('malformed_identifier')
+    expect(fromSession.retriable).toBe(false)
+  })
+
+  /**
+   * The reason the variant exists at all: a bad scope and a bad payload
+   * must not land on one kind. Asserted here as well as in the Rust,
+   * because this is the layer a consumer actually reads a kind off.
+   */
+  it('keeps a malformed identifier and a malformed payload on distinct kinds', () => {
+    const identifier = toCryptoError(new Error('SessionFfiError.MalformedIdentifier'))
+    const payload = toCryptoError(new Error('SessionFfiError.MalformedPayload'))
+    expect(identifier.kind).not.toBe(payload.kind)
+  })
+
+  /**
+   * G26 in the milestone's own ledger, dispatched: policy withheld codes
+   * (`m.blacklisted`, `m.unauthorised`) must not be retriable, while the
+   * circumstantial ones `unshared_session` still covers (`m.unavailable`,
+   * `m.no_olm`) must stay retriable. Both are asserted together, not just
+   * the new kind alone, because the property this proves is the contrast
+   * between the two siblings, not either one in isolation -- the same
+   * reasoning `error_mapping.rs`'s Rust-side test gives for asserting
+   * `SessionRefused` and `UnsharedSession` side by side.
+   */
+  it('maps a real UniFFI-shaped SessionFfiError.SessionRefused to a non-retriable kind, unlike its sibling UnsharedSession', () => {
+    const refused = toCryptoError(new Error('SessionFfiError.SessionRefused'))
+    expect(refused.kind).toBe('session_refused')
+    expect(refused.retriable).toBe(false)
+
+    const unshared = toCryptoError(new Error('SessionFfiError.UnsharedSession'))
+    expect(unshared.kind).toBe('unshared_session')
+    expect(unshared.retriable).toBe(true)
+  })
+
+  /**
+   * Regression for the `RevokedDevice` cleanup (flagged by Task 6's review,
+   * finding F3, fixed here): `KIND_BY_NAME` used to map
+   * `['RevokedDevice', 'revoked_device']`, a name that exists in neither
+   * Rust crate -- confirmed by a whole-tree grep. Unlike the `StoreCorrupt`
+   * bug it is modelled on, it shadowed no real condition, but it was dead
+   * scaffolding and a trap for whoever next assumed the map was
+   * authoritative. This asserts the entry is gone: an error naming that
+   * variant now falls through to 'unknown' like any other unrecognised
+   * name, rather than continuing to "work" by accident.
+   */
+  it('no longer maps RevokedDevice specially: it falls through to unknown', () => {
+    const err = toCryptoError(new Error('MachineFfiError.RevokedDevice'))
+    expect(err.kind).toBe('unknown')
   })
 
   it('still recovers the variant when .message carries a trailing ": <message>" suffix', () => {

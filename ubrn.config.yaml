@@ -5,3 +5,14 @@ rust:
 bindings:
   ts: src/generated
   cpp: cpp/generated
+# Task 11: link the Rust crate into the module's .so as a shared library
+# (cdylib) instead of importing it as a static archive. A static archive
+# carries every object file including unreferenced ones; a linked, stripped
+# shared library carries only what survived -- see task-11-report.md. This
+# is the documented ubrn knob for the choice (docs/src/reference/config-yaml.md,
+# "useSharedLibrary"); it drives generated/android/CMakeLists.txt's
+# STATIC IMPORTED vs SHARED IMPORTED choice, so switching it here and
+# running `yarn codegen` is the whole change -- no generated file is
+# hand-edited.
+android:
+  useSharedLibrary: true

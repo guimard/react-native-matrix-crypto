@@ -11,10 +11,68 @@ repository.workspace = true
 # matrix-sdk-crypto 0.18.0 already requires matrix-sdk-common = "0.18.0" transitively.
 # Depending on it directly at the same version reaches ruma's types through that
 # re-export instead of adding a second, independently versioned `ruma`. See the
-# comment in src/identity.rs.
+# comment in src/machine.rs.
 matrix-sdk-common = "0.18.0"
 matrix-sdk-crypto = "0.18.0"
+# `crypto-store` and nothing else beyond `bundled`: `crypto-store` is the
+# feature that provides the crypto store and declares `matrix-sdk-crypto` as
+# its own dependency. Enabling more of `matrix-sdk-sqlite`'s *other* features
+# (`state-store`, `event-cache`) would additionally pull in the full client
+# state store this library has no use for. Version-matched to
+# matrix-sdk-crypto so Cargo unifies on one `ruma`.
+#
+# `bundled` compiles SQLite from source instead of linking a system one.
+# Without it, `libsqlite3-sys` links against whatever `libsqlite3` the host
+# provides -- fine on macOS, which ships one, but the Android NDK sysroot
+# provides none, so every Android target failed to link
+# (`ld.lld: error: unable to find library -lsqlite3`) until this was added.
+# This is the right answer, not just the expedient one, even where a system
+# library does exist: Android has no stable system SQLite across API levels
+# to link against in the first place, and a cryptographic store whose
+# on-disk format depends on whichever SQLite the host happens to ship is a
+# portability and reproducibility problem, not just a linking one. Costs
+# roughly a megabyte of binary; the size work has room for it.
+matrix-sdk-sqlite = { version = "0.18.0", default-features = false, features = ["crypto-store", "bundled"] }
+# `derive`, explicitly: this crate writes `#[derive(Deserialize)]` itself in
+# `session.rs`, so it declares the feature it needs rather than relying on
+# `matrix-sdk-crypto`/`ruma` enabling it for their own reasons and Cargo's
+# feature unification carrying it in -- the same reasoning as `tokio`'s
+# "sync" feature below.
+serde = { version = "1", features = ["derive"] }
+# The wire format `receive_sync_changes` accepts. Version left unpinned
+# beyond the major version: `matrix-sdk-crypto` and `ruma` already fix a
+# specific `serde_json` in the lockfile, and this crate has no reason to
+# disagree with it.
+#
+# `raw_value`, explicitly: `session.rs` captures a decrypted event's
+# `content` as a `Box<RawValue>` in `decrypt_event`, so this crate declares
+# the feature it needs rather than relying on `ruma-common` (which already
+# enables it for its own `Raw<T>`) to carry it in through Cargo's feature
+# unification -- the same reasoning as `serde`'s "derive" feature above.
+serde_json = { version = "1", features = ["raw_value"] }
 thiserror = "2"
+# `sync` added explicitly for `tokio::sync::Mutex` in `machine.rs`: this crate
+# calls it directly, so it declares the feature itself rather than relying on
+# `matrix-sdk-sqlite`'s own "sync" (enabled for its own reasons) to carry it
+# in through Cargo's feature unification.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+futures = { version = "0.3", default-features = false, features = ["executor"] }
+tempfile = "3"
+# A `[dev-dependencies]` entry, and it must stay one.
+#
+# The shipped library performs no networking -- spec section 2, and
+# `scripts/assert-core-boundary.sh` guards the neighbouring rule about
+# uniffi. Nothing under `src/` may ever reach for this. It exists for
+# `tests/level_two_interop.rs` alone, which is the level 2 proof (spec
+# section 8): the harness has to be the thing that talks to a real
+# homeserver, precisely because the library will not, and a test cannot
+# demonstrate that a third-party client decrypts our events without
+# somebody putting them on a real wire.
+#
+# `default-features = false, features = ["tls"]` rather than plain `"2"`:
+# the default additionally enables `gzip`, which this harness has no use
+# for and which would pull `flate2` into the dev graph for nothing.
+ureq = { version = "2", default-features = false, features = ["tls"] }

@@ -1,0 +1,499 @@
+name: release
+
+# Publish react-native-matrix-crypto to npm, triggered by a git tag.
+#
+# THE ONE THING THIS WORKFLOW EXISTS TO GUARANTEE. The README's promise is
+# that the published package ships prebuilt binaries, so a consumer needs no
+# Rust toolchain. That promise had been stated since M1 and proved by nothing:
+# the `.xcframework`, the `.aar` and `android/src/main/jniLibs/` are build
+# outputs and all three are gitignored, so the tarball `cold-consume` packed
+# from a fresh checkout contained no binary at all -- 68 KB, measured
+# 2026-08-28 -- and that job passed anyway, because it asked only whether
+# `npm pack` had produced a file.
+#
+# This workflow is the only thing that ever holds an artifact with binaries in
+# it. So it does not trust `ubrn build` exiting zero. It packs the tarball, and
+# then opens it and reads what is inside before anything is published --
+# scripts/assert-tarball-ships-binaries.sh -- and then installs those same
+# bytes on a machine with cargo and rustc scrubbed out of PATH and loads the
+# module out of them -- scripts/cold-consume-tarball.sh. Both assertions have
+# been watched rejecting a real defect; see
+# .superpowers/sdd/2026-08-28-m2-encryption-core/release-workflow-report.md.
+#
+# The gates are NOT re-declared here. `ci` below calls .github/workflows/ci.yml
+# as a reusable workflow, so a release runs the identical job graph a pull
+# request runs -- all seven gates, both build legs, the emulator probe and the
+# level 2 interoperability proof -- rather than a release-shaped copy of them
+# that can drift weaker. That is why ci.yml gained a `workflow_call:` trigger
+# and nothing else.
+#
+# NOTHING HERE CONTAINS A SECRET. The npm token is read from the repository
+# secret NPM_TOKEN at the moment of publishing, through the .npmrc
+# actions/setup-node writes into the runner's temp directory. If the secret is
+# absent, `preflight` says so by name in the first thirty seconds rather than
+# letting `npm publish` fail ninety minutes later with an authentication error
+# that reads like a registry problem.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # A dispatch run does everything a tag run does EXCEPT publish, so the whole
+  # mechanism can be rehearsed against a real built artifact before the first
+  # tag is ever pushed. The `publish` job is gated on the ref actually being a
+  # tag, not on an input anyone could tick.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never cancel a run that might be mid-publish: an interrupted `npm publish`
+  # leaves a version that cannot be republished. Queue instead.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    # Everything that can be known before spending an hour of runner time on
+    # builds. All three of these have a failure mode that is expensive or
+    # confusing to discover later:
+    #   - a tag disagreeing with the manifest publishes a version nobody can
+    #     tie back to a commit;
+    #   - a version already on the registry cannot be republished, and npm
+    #     reports that as a 403 that reads like an auth failure;
+    #   - a missing NPM_TOKEN fails inside `npm publish` with ENEEDAUTH,
+    #     which says nothing about which secret is missing.
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      will_publish: ${{ steps.resolve.outputs.will_publish }}
+      npm_tag: ${{ steps.resolve.outputs.npm_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: '.nvmrc' }
+
+      - id: resolve
+        name: Resolve the tag, the version and the npm dist-tag, and require that they agree
+        # github.* values are passed through env rather than interpolated into
+        # the script body: a ref name is attacker-influenced text in the
+        # general case, and `${{ }}` inside `run:` splices it into the shell
+        # before bash ever sees it.
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./packages/react-native-matrix-crypto/package.json').version")
+
+          if [ "$REF_TYPE" = "tag" ]; then
+            TAG="$REF_NAME"
+            WILL_PUBLISH=true
+          else
+            # A workflow_dispatch run is not on a tag. Rehearse against the
+            # tag this commit WOULD be released under, and publish nothing.
+            TAG="v$VERSION"
+            WILL_PUBLISH=false
+            echo "::notice::Dispatch run: everything except the publish. Would release $TAG."
+          fi
+
+          # npm does not infer a distribution tag from the version: `npm
+          # publish` with no --tag always sets `latest`, prerelease or not.
+          # A version carrying a semver prerelease component publishes under
+          # that component itself -- 0.1.0-rc.1 under `rc` -- so the tag a
+          # consumer types (`@rc`) is the same word already in the version;
+          # a plain version publishes under `latest`.
+          # assert-release-ready.sh re-derives this independently from the
+          # manifest below and refuses to pass if it disagrees with what is
+          # computed here, in either direction.
+          if printf '%s' "$VERSION" | grep -qE -- '^[0-9]+\.[0-9]+\.[0-9]+-'; then
+            NPM_TAG=$(printf '%s' "$VERSION" | sed -E 's/^[0-9]+\.[0-9]+\.[0-9]+-([0-9A-Za-z-]+).*/\1/')
+          else
+            NPM_TAG="latest"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "will_publish=$WILL_PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "npm_tag=$NPM_TAG" >> "$GITHUB_OUTPUT"
+
+          # The assertion itself lives in a script so a contributor runs
+          # byte-for-byte what CI runs, the same rule run-level-two-interop.sh
+          # and run-probe-on-emulator.sh follow. It re-derives both the tag's
+          # relationship to the manifest and, separately, the npm tag it
+          # expects from the manifest version, so a prerelease can never
+          # reach `latest` and a plain version can never reach anything else,
+          # regardless of what was computed above.
+          ./scripts/assert-release-ready.sh "$TAG" "$NPM_TAG"
+
+      - name: Require the NPM_TOKEN secret before building anything
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          WILL_PUBLISH: ${{ steps.resolve.outputs.will_publish }}
+        run: |
+          set -euo pipefail
+          if [ -n "${NPM_TOKEN:-}" ]; then
+            echo "Repository secret NPM_TOKEN is present."
+            exit 0
+          fi
+          if [ "$WILL_PUBLISH" != "true" ]; then
+            echo "::warning::NPM_TOKEN is not set. This dispatch run publishes nothing, so it continues."
+            exit 0
+          fi
+          echo "FAIL: the repository secret NPM_TOKEN is not set."
+          echo
+          echo "      This run is on a tag, so it would publish, and it cannot."
+          echo "      Add it at:"
+          echo "        Settings -> Secrets and variables -> Actions -> New repository secret"
+          echo "        Name:  NPM_TOKEN"
+          echo "        Value: an npm Automation (or Granular) access token with"
+          echo "               publish rights to react-native-matrix-crypto"
+          echo
+          echo "      An Automation token is the right kind: it bypasses the 2FA"
+          echo "      prompt that would otherwise hang a non-interactive publish."
+          echo
+          echo "      Failing here rather than in 'npm publish', which reports a"
+          echo "      missing token as ENEEDAUTH and names no secret."
+          exit 1
+
+  ci:
+    # The whole pull-request job graph, called rather than copied. If a gate
+    # goes red, or the emulator probe fails, or the level 2 interoperability
+    # proof fails, nothing downstream runs and nothing is published.
+    needs: preflight
+    uses: ./.github/workflows/ci.yml
+
+  build-ios-release:
+    # The full cross-compile matrix, which the pull-request build-ios job
+    # deliberately does not pay for: it builds the simulator slice only,
+    # because macOS runners are the cost centre. Device arm64 is added here
+    # because an app on a real iPhone links against it, and x86_64 simulator
+    # because the README's platform table promises Intel Macs.
+    #
+    # NOT `--and-generate`, unlike the pull-request leg. A release must ship
+    # exactly the bindings that are committed and that gate:drift (in `ci`
+    # above) has just proved match the Rust source. Regenerating at release
+    # time would make the published JavaScript a function of whichever ubrn
+    # version the runner resolved, which is not a thing anyone can review.
+    needs: [preflight, ci]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: '.nvmrc', cache: yarn }
+      - run: yarn install --frozen-lockfile
+      - run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+      - name: Build the full iOS xcframework
+        run: |
+          # `yarn --cwd <pkg> exec` does not change the child's working
+          # directory in this yarn 1.x install, so `--config ../../...` would
+          # resolve from the wrong place. A real `cd` sidesteps it; ci.yml's
+          # build-ios carries the full explanation.
+          cd packages/react-native-matrix-crypto
+          yarn exec ubrn -- build ios \
+            --config ../../ubrn.config.yaml \
+            --targets aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios \
+            --release
+      # This runner's tree is the one the artifact comes from, and no other job
+      # can see it. gate:stubs is the only check that reads it.
+      - run: yarn gate:stubs
+      - name: Collect the xcframework
+        run: |
+          set -euo pipefail
+          cd packages/react-native-matrix-crypto
+          # Refuse to hand an empty artifact downstream. The pack job would
+          # catch it, but it would catch it as "the tarball has no
+          # xcframework", which points at the wrong job.
+          if [ ! -d MatrixCryptoFramework.xcframework ]; then
+            echo "FAIL: ubrn build ios exited 0 and produced no xcframework."
+            exit 1
+          fi
+          tar czf "$RUNNER_TEMP/ios-xcframework.tgz" MatrixCryptoFramework.xcframework
+          echo "Slices built:"
+          ls MatrixCryptoFramework.xcframework | sed 's/^/  /'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-xcframework
+          path: ${{ runner.temp }}/ios-xcframework.tgz
+          # Already gzipped; re-zipping it costs minutes and saves nothing.
+          compression-level: 0
+          retention-days: 7
+
+  build-android-release:
+    # All four ABIs android/build.gradle declares. The pull-request leg builds
+    # x86_64 alone, which is what an emulator needs and what a phone does not.
+    #
+    # The output that matters is
+    # android/src/main/jniLibs/<abi>/libmatrix_crypto_ffi.so -- the prebuilt
+    # Rust library android/CMakeLists.txt imports as my_rust_lib. THIS is what
+    # makes "no Rust toolchain required" true on Android: a consuming app
+    # autolinks this module and builds its C++ from source, linking against
+    # these. Miss one ABI and every consumer targeting it fails at
+    # configureCMakeRelease.
+    #
+    # A root .aar used to be built here too, by a Gradle `assembleRelease`
+    # step added 2026-08-28 for exactly that purpose, as a convenience for a
+    # consumer who would rather not build from source. Removed the same day,
+    # once the M2 final review established that no such consumer had a
+    # mechanism to reach: autolinking builds android/build.gradle as a Gradle
+    # subproject from source, and nothing in that file, in
+    # android/CMakeLists.txt, in the podspec or in the example app's Gradle
+    # setup ever named the archive. It was 29068 KB of the 219772 KB unpacked
+    # package, thirteen percent, duplicating the .so files above. See M2 spec
+    # section 9 step 2 and
+    # .superpowers/sdd/2026-08-28-m2-encryption-core/aar-removal-report.md.
+    # `package.json`'s "files" no longer names `*.aar`.
+    #
+    # NOT `--and-generate`, and on Android that flag is actively harmful: it
+    # exits 0, prints no warning, and rewrites src/index.tsx and the C++ shim
+    # into stubs that register nothing with JSI. ci.yml's build-android
+    # documents the mechanism; gate:stubs below is the tripwire.
+    needs: [preflight, ci]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: '.nvmrc', cache: yarn }
+      - run: yarn install --frozen-lockfile
+      - run: rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+      # Same exact pin and cache as ci.yml's build-android; cargo-ndk is a
+      # required, explicit prerequisite of `ubrn build android`.
+      - id: cargo-ndk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-ndk
+          key: cargo-ndk-${{ runner.os }}-4.1.2
+      - if: steps.cargo-ndk-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Build all four Android ABIs
+        run: |
+          cd packages/react-native-matrix-crypto
+          yarn exec ubrn -- build android \
+            --config ../../ubrn.config.yaml \
+            --targets aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android \
+            --release
+      - run: yarn gate:stubs
+      - name: Collect the Android binaries
+        run: |
+          set -euo pipefail
+          cd packages/react-native-matrix-crypto
+          if [ ! -d android/src/main/jniLibs ]; then
+            echo "FAIL: ubrn build android exited 0 and produced no jniLibs."
+            exit 1
+          fi
+          echo "ABIs built:"
+          ls android/src/main/jniLibs | sed 's/^/  /'
+          tar czf "$RUNNER_TEMP/android-binaries.tgz" android/src/main/jniLibs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-binaries
+          path: ${{ runner.temp }}/android-binaries.tgz
+          compression-level: 0
+          retention-days: 7
+
+  pack:
+    # Assemble the two platforms into one tarball, and then refuse to let it
+    # go any further unless it actually contains them.
+    needs: [preflight, build-ios-release, build-android-release]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      NPM_TAG: ${{ needs.preflight.outputs.npm_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: '.nvmrc' }
+      - uses: actions/download-artifact@v4
+        with:
+          name: ios-xcframework
+          path: ${{ runner.temp }}/dl
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-binaries
+          path: ${{ runner.temp }}/dl
+      - name: Unpack both platforms into the package
+        run: |
+          set -euo pipefail
+          tar xzf "$RUNNER_TEMP/dl/ios-xcframework.tgz" -C packages/react-native-matrix-crypto
+          tar xzf "$RUNNER_TEMP/dl/android-binaries.tgz" -C packages/react-native-matrix-crypto
+
+      - name: Pack the tarball that will be published
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release"
+          cd packages/react-native-matrix-crypto
+          npm pack --pack-destination "$RUNNER_TEMP/release"
+          ls -l "$RUNNER_TEMP/release"
+
+      # THE GATE. Everything above this line is a build exiting zero, which is
+      # not evidence. This step opens the packed bytes and reads them.
+      - name: Refuse to publish a tarball that does not carry the binaries
+        run: |
+          set -euo pipefail
+          TGZ="$RUNNER_TEMP/release/react-native-matrix-crypto-$VERSION.tgz"
+          ./scripts/assert-tarball-ships-binaries.sh "$TGZ" "$VERSION"
+
+      # Spec section 10: artifact size decides whether binaries can ship inside
+      # the npm tarball at all, so the published artifact is measured the same
+      # way every other measurement in artifact-sizes.json was -- including the
+      # corrected composition metric, which reports what is actually in the
+      # tarball rather than only the two build outputs this repo produces.
+      - name: Measure and record the published artifact
+        # Through env, not spliced into the script body: preflight has already
+        # required the tag to be 'v' plus a semantic version, but a ref name
+        # reaching a shell through `${{ }}` is a habit worth not having.
+        env:
+          TAG: ${{ needs.preflight.outputs.tag }}
+        run: ./scripts/measure-artifacts.sh "release-$TAG"
+      - uses: actions/upload-artifact@v4
+        with: { name: artifact-sizes-release, path: artifact-sizes.json }
+
+      # The same rehearsal a contributor runs locally with
+      # scripts/rehearse-publish.sh, run here against the real artifact so the
+      # file list npm would upload is in the run log next to the assertion
+      # that approved it.
+      - name: npm publish --dry-run, showing the file list and the tag
+        run: |
+          set -euo pipefail
+          TGZ="$RUNNER_TEMP/release/react-native-matrix-crypto-$VERSION.tgz"
+          # --tag: without it npm always publishes to `latest`, prerelease or
+          # not -- see preflight's resolve step. This dry-run is the proof
+          # that the flag resolves the way preflight decided it should: its
+          # own output states "Publishing to ... with tag $NPM_TAG".
+          npm publish --dry-run --access public --tag "$NPM_TAG" "$TGZ"
+
+      - name: Record what was packed, for the run summary
+        run: |
+          set -euo pipefail
+          TGZ="$RUNNER_TEMP/release/react-native-matrix-crypto-$VERSION.tgz"
+          {
+            echo "### Packed \`react-native-matrix-crypto@$VERSION\`"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| npm tag | \`$NPM_TAG\` |"
+            echo "| packed size | $(du -k "$TGZ" | cut -f1) KB |"
+            echo "| sha256 | \`$(sha256sum "$TGZ" | cut -d' ' -f1)\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: ${{ runner.temp }}/release/*.tgz
+          compression-level: 0
+          retention-days: 7
+
+  cold-consume-release:
+    # The proof the README's Installation section rests on, against the real
+    # artifact. ci.yml's cold-consume runs the same PATH-scrubbing technique on
+    # every pull request, but on a source checkout that has no binaries in it;
+    # this one runs on the tarball that is about to be published, and loads the
+    # module rather than only resolving a path to it. See the header of
+    # scripts/cold-consume-tarball.sh for exactly what "loads" means in a
+    # process with no JSI host object, and for what is deliberately left to
+    # probe-android.
+    needs: [preflight, pack]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: '.nvmrc', cache: yarn }
+      # For the bundler the load step uses, at the version yarn.lock pins.
+      # This install happens before PATH is scrubbed, and installs no Rust
+      # anything; the scrub is inside the script, around the consumer install.
+      - run: yarn install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-tarball
+          path: ${{ runner.temp }}/release
+      - run: ./scripts/cold-consume-tarball.sh "$RUNNER_TEMP/release/react-native-matrix-crypto-$VERSION.tgz"
+
+  publish:
+    # The last job, and the only one that needs a secret or a token.
+    #
+    # It publishes the exact bytes the two jobs above approved -- the tarball
+    # artifact, not a fresh `npm pack` of a re-downloaded tree -- so there is
+    # no gap between what was verified and what is uploaded. And it re-runs the
+    # binaries assertion on the downloaded file first, because "the artifact
+    # that arrived is the artifact that was checked" is an assumption about
+    # artifact plumbing, and this is the one place where being wrong about it
+    # is unrecoverable: a published version cannot be replaced.
+    needs: [preflight, ci, pack, cold-consume-release]
+    if: needs.preflight.outputs.will_publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required for --provenance: npm signs the attestation with a short-lived
+      # OIDC token from this workflow run. Without this line npm fails with
+      # "Provenance generation in GitHub Actions requires 'write' access to the
+      # 'id-token' permission".
+      id-token: write
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      NPM_TAG: ${{ needs.preflight.outputs.npm_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          # Writes an .npmrc into the runner's temp directory that reads the
+          # token from NODE_AUTH_TOKEN. No token is ever written into a file
+          # in this repository.
+          registry-url: 'https://registry.npmjs.org'
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-tarball
+          path: ${{ runner.temp }}/release
+
+      - name: Re-assert the binaries on the bytes about to be uploaded
+        run: |
+          set -euo pipefail
+          TGZ="$RUNNER_TEMP/release/react-native-matrix-crypto-$VERSION.tgz"
+          ./scripts/assert-tarball-ships-binaries.sh "$TGZ" "$VERSION"
+
+      - name: Publish to npm with provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "FAIL: the repository secret NPM_TOKEN is not set."
+            echo "      preflight should have caught this; see its message."
+            exit 1
+          fi
+          TGZ="$RUNNER_TEMP/release/react-native-matrix-crypto-$VERSION.tgz"
+
+          # --provenance: npm attaches a signed statement tying this exact
+          # tarball to this workflow run, this commit and this repository, and
+          # the registry shows it on the package page. It is supported for this
+          # configuration: a public GitHub repository (verified), GitHub
+          # Actions as the runner, id-token: write granted above, a public
+          # unscoped package, and package.json's repository.url pointing at
+          # the repository this workflow runs in -- npm checks that match and
+          # refuses otherwise.
+          #
+          # --access public: the default for an unscoped name, stated so that
+          # renaming the package to a scope later does not silently make the
+          # first publish private.
+          #
+          # --tag: npm does not infer a distribution tag from the version --
+          # omit this flag and it always publishes to `latest`, prerelease or
+          # not. That would make a prerelease the version every plain `yarn
+          # add react-native-matrix-crypto` installs, which is exactly what a
+          # prerelease exists to prevent. preflight (assert-release-ready.sh)
+          # has already refused to reach this step if $NPM_TAG disagreed with
+          # what $VERSION implies, so this is a decision made before any
+          # build ran, not a value trusted for the first time here.
+          npm publish --provenance --access public --tag "$NPM_TAG" "$TGZ"
+
+          {
+            echo "### Published \`react-native-matrix-crypto@$VERSION\`"
+            echo
+            echo "Published under npm tag \`$NPM_TAG\`."
+            echo
+            echo "https://www.npmjs.com/package/react-native-matrix-crypto/v/$VERSION"
+          } >> "$GITHUB_STEP_SUMMARY"

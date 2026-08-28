@@ -7,20 +7,76 @@ import type { CryptoScopeId } from './types'
 export type CryptoErrorKind =
   | 'missing_key'
   | 'unshared_session'
+  // The policy half of the withheld-code split (G26 in the milestone's own
+  // ledger): `m.blacklisted` and `m.unauthorised` are the sender's own
+  // deliberate refusal, which no retry can ever change, so this kind is
+  // deliberately absent from RETRIABLE below -- unlike its sibling
+  // 'unshared_session', which keeps every other withheld code and stays
+  // retriable.
+  | 'session_refused'
   | 'unknown_device'
+  // Forward scaffolding, not dead: nothing produces this yet (device
+  // revocation is trust/M3 work), but it stays in the union, commented,
+  // rather than being silently dropped or silently absent -- the same
+  // treatment 'not_implemented' gets in KIND_BY_NAME. Give it the same
+  // treatment if it turns out never to be needed: keep it commented, or
+  // remove it; either is fine, silence about which is not.
   | 'revoked_device'
   | 'undecryptable'
+  // A payload this library was handed did not parse: `rawEvent`, a
+  // `markRequestSent` response body, a sync delta. NOT a bad scope --
+  // that is 'malformed_identifier' below, and telling the two apart is
+  // the whole reason both exist. A malformed scope reported
+  // 'malformed_payload' until the M2 final review, which sent a caller
+  // whose payload was fine to go and inspect it.
+  | 'malformed_payload'
+  | 'unknown_request'
+  | 'failed'
+  // Reserved for genuine store corruption, which decryption work does not
+  // currently detect; nothing maps to it yet. Kept distinct from
+  // 'store_unavailable', which KIND_BY_NAME's own comment on ['Store', ...]
+  // explains further.
   | 'store_corrupt'
+  | 'store_unavailable'
+  | 'mismatched_account'
   | 'rejected'
+  // An identifier this library was handed did not parse: a `CryptoScopeId`
+  // (which `asCryptoScopeId` never validates), a user id, a device id.
   | 'malformed_identifier'
   | 'not_implemented'
+  | 'not_initialised'
+  | 'already_initialised'
   | 'unknown'
   | (string & {})
 
 export interface CryptoError extends Error {
   kind: CryptoErrorKind
+  /**
+   * **Always `undefined` in M2.** Declared, and never populated: every
+   * `SessionFfiError` variant is fieldless by construction, so nothing on
+   * the decryption path can carry a scope across the FFI boundary for
+   * `toCryptoError` to find. See `sender` below for why the fields stay.
+   *
+   * A product handling a failed `decryptEvent` must therefore take the
+   * scope from the call it made, not from the error it caught.
+   */
   scope?: CryptoScopeId
-  /** Fully qualified `@user:server`, verbatim. Spec section 10. */
+  /**
+   * Fully qualified `@user:server`, verbatim. Spec section 10.
+   *
+   * **Always `undefined` in M2**, for the same reason as `scope` above:
+   * `SessionFfiError` is fieldless throughout, `MachineFfiError` carries
+   * only `detail` and `ProbeFfiError` only `reason`, so no FFI error
+   * variant can carry a sender. Both fields are optional and both are read
+   * defensively by `toCryptoError`, so a later milestone that starts
+   * populating them is additive rather than breaking. That is why they are
+   * declared now and said to be empty, rather than removed and re-added.
+   *
+   * Note that a sender would not become authoritative merely by appearing
+   * here. Spec section 7.1 applies to it exactly as it applies to
+   * `EventEnvelope.sender`: until device verification lands, a sender is
+   * unauthenticated transport metadata.
+   */
   sender?: string
   /** The bridge reports transience. The product layer decides what to do. */
   retriable: boolean
@@ -30,16 +86,59 @@ const BRAND = Symbol.for('react-native-matrix-crypto.CryptoError')
 
 const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   ['Rejected', 'rejected'],
+  // The one entry with no Rust variant, and never will have one: synthesised
+  // in TypeScript by facade.ts:17's `notImplemented` helper for every
+  // still-stubbed function, so it never crosses the FFI boundary at all.
+  // Not dead scaffolding like the `RevokedDevice`/`StoreCorrupt` entries two
+  // reviews found and removed -- this one is reachable today, from every
+  // M3-deferred function.
   ['NotImplemented', 'not_implemented'],
   ['MissingKey', 'missing_key'],
   ['UnsharedSession', 'unshared_session'],
+  ['SessionRefused', 'session_refused'],
   ['UnknownDevice', 'unknown_device'],
-  ['RevokedDevice', 'revoked_device'],
   ['Undecryptable', 'undecryptable'],
-  ['StoreCorrupt', 'store_corrupt'],
+  // The remaining three `SessionFfiError` variants (Task 7): `raw_json`
+  // that did not parse, an upstream crypto operation that failed for a
+  // reason spec section 7 forbids echoing, and a `mark_request_sent` id
+  // that does not match anything `take_outgoing_requests` handed out.
+  ['MalformedPayload', 'malformed_payload'],
+  ['Failed', 'failed'],
+  ['UnknownRequest', 'unknown_request'],
+  // `MachineError::Store` means the store could not be opened -- often a
+  // wrong passphrase or a permissions problem, not damaged data. Mapping it
+  // to 'store_corrupt' would send a product down a destructive recovery path
+  // over what might just be a typo'd passphrase. 'store_corrupt' stays in
+  // the CryptoErrorKind union for genuine corruption, which decryption work
+  // later in M2 can detect; nothing maps to it yet.
+  ['Store', 'store_unavailable'],
+  // A parked finding from Task 2's review: opening a store that belongs to
+  // a different account (a different user id, device id, or both) is a
+  // recoverable configuration mistake -- point this config at the right
+  // store, or the right account -- not a storage failure like a full disk,
+  // which reconfiguring cannot fix. Kept out of 'store_unavailable' so a
+  // product can tell the two apart, matching Task 6's own decryption kinds:
+  // being able to run this classification once is not a reason to leave a
+  // distinguishable condition unclassified. Not in RETRIABLE: retrying with
+  // the same mismatched config fails the same way every time.
+  ['MismatchedAccount', 'mismatched_account'],
+  // Reached from two enums, not one. `MachineFfiError::MalformedIdentifier`
+  // carries a `detail` and covers a bad user or device id at machine
+  // creation; `SessionFfiError::MalformedIdentifier` is fieldless and
+  // covers a `scope` (or a user id given to `shareScopeKey`) that does not
+  // parse. This map is keyed on the variant name alone, so one entry
+  // already served both the moment the second existed -- which is
+  // convenient and easy to miss, since nothing in this file names either
+  // enum. errors.test.ts asserts both, and asserts they agree.
   ['MalformedIdentifier', 'malformed_identifier'],
+  ['NotInitialised', 'not_initialised'],
+  ['AlreadyInitialised', 'already_initialised'],
 ])
 
+// 'session_refused' is deliberately not here: see its own doc comment on
+// CryptoErrorKind above. It is the one kind this set must never gain by a
+// well-meaning edit that assumes every withheld-session kind belongs next
+// to 'unshared_session'.
 const RETRIABLE: ReadonlySet<CryptoErrorKind> = new Set(['missing_key', 'unshared_session'])
 
 export function isCryptoError(e: unknown): e is CryptoError {

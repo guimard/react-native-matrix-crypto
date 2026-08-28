@@ -9,3 +9,16 @@ Pods/
 .cxx/
 jniLibs/
 .DS_Store
+# Not produced by the documented invocations, checked 2026-08-28: both Python
+# programs here (packages/example-app/level-two/run_level_two.py and
+# rust/matrix-crypto-core/tests/interop/nio_party.py) are run as scripts and
+# import nothing local, and CPython does not cache __main__. Ignored anyway,
+# because the day one of them grows a helper module, or someone runs pytest,
+# is not the day to notice.
+__pycache__/
+# `npm pack` writes the tarball next to package.json unless told otherwise,
+# and this one is 70 MB of prebuilt binaries. scripts/rehearse-publish.sh and
+# the release workflow both pack into a temporary directory precisely so they
+# never leave one here, but a hand-run `npm pack` while debugging a release
+# does, and a 70 MB accidental commit is not undone by a revert.
+*.tgz

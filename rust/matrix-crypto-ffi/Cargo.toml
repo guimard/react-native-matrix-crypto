@@ -36,3 +36,10 @@ thiserror = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
+# `tests/delegate_order.rs` drives the exported functions the way the real
+# FFI calling context does: no ambient runtime, so `futures::executor::block_on`
+# rather than `#[tokio::test]` (see that file's own comment for why the
+# distinction is load-bearing), and a real crypto store in a `TempDir` that is
+# dropped with the test rather than left on disk.
+futures = { version = "0.3", default-features = false, features = ["executor"] }
+tempfile = "3"

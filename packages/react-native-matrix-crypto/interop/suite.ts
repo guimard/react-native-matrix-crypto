@@ -30,6 +30,52 @@ export interface InteropCheck {
   detail: string
 }
 
+export interface InteropSuiteOptions {
+  /**
+   * How long the `signal` check waits for a callback that has not arrived
+   * yet, in milliseconds. Defaults to {@link SIGNAL_WAIT_MS}.
+   *
+   * Only worth setting to exercise the "this binding never signals" branch
+   * without paying the full budget for it. A real run should take the
+   * default: the point of the wait is to be longer than any delivery this
+   * chain has been seen to take.
+   */
+  signalWaitMs?: number
+}
+
+/**
+ * How long the `signal` check waits for the observer callback, and how often
+ * it looks while waiting.
+ *
+ * Not a performance claim, and deliberately far larger than a healthy
+ * delivery: a run that gets its signal promptly stops waiting immediately, so
+ * the budget costs nothing except when something is actually wrong.
+ *
+ * The number is measured. On a RELEASE build of the example app on
+ * emulator-5554 (API 35, 2026-08-28), with a 2000 ms budget the check still
+ * reported `signal FAIL (none)` on 1 launch in 8; with 15000 ms it passed 8
+ * launches out of 8. So delivery can take seconds on a loaded emulator --
+ * worth knowing about the callback path, and not something a check that only
+ * asks "did it arrive at all" should be failing over.
+ */
+const SIGNAL_WAIT_MS = 15000
+const SIGNAL_POLL_MS = 20
+
+async function waitUntil(predicate: () => boolean, budgetMs: number): Promise<void> {
+  const deadline = Date.now() + budgetMs
+  while (!predicate() && Date.now() < deadline) {
+    // `setTimeout(resolve, ms)` is the idiomatic form and does not compile
+    // here. React Native types `setTimeout`'s callback as `() => void`, while
+    // `Promise`'s resolve is `(value: unknown) => void`, so passing it
+    // directly is rejected under the example app's settings even though the
+    // library's own typecheck accepts it: the two use different `lib` and
+    // `types`. Wrapping keeps both happy.
+    await new Promise<void>((resolve) => {
+      setTimeout(() => resolve(), SIGNAL_POLL_MS)
+    })
+  }
+}
+
 /**
  * The five properties that must hold for any binding. Never throws: a
  * misbehaving binding produces a failing check, not an exception, so a
@@ -57,7 +103,10 @@ export interface InteropCheck {
  * no separate guard needed, unlike a persistent subscription that could
  * throw during registration before any check existed to record the fact.
  */
-export async function runInteropSuite(binding: BridgeBinding): Promise<InteropCheck[]> {
+export async function runInteropSuite(
+  binding: BridgeBinding,
+  options: InteropSuiteOptions = {},
+): Promise<InteropCheck[]> {
   const checks: InteropCheck[] = []
   const signals: string[] = []
 
@@ -113,6 +162,26 @@ export async function runInteropSuite(binding: BridgeBinding): Promise<InteropCh
         detail: `error crossed as typed kind "${kind}" (${ok ? 'expected' : 'unexpected'})`,
       })
     }
+
+    // The observer callback and the promise `runProbe` returns reach
+    // JavaScript independently. Rust invokes the observer while the call is
+    // still in flight, but which of the two lands on the JS thread first is a
+    // dispatch detail of the binding, not part of the contract this suite
+    // states -- and reading `signals` straight after the awaits above quietly
+    // assumed the callback always won.
+    //
+    // Measured, not theorised: a RELEASE build of the example app on
+    // emulator-5554 (API 35, 2026-08-28) reported `signal FAIL (none)` on 5 of
+    // 8 launches and `signal PASS probe_started` on the other 3, with nothing
+    // else different between them. The same code in a debug build passed every
+    // time -- Hermes bytecode resolves the promise sooner relative to the
+    // callback hop, so release loses the race that debug happened to win. The
+    // callback was never lost: with a long enough wait it always arrived
+    // (8 of 8). This line used to read the array before it got there.
+    //
+    // Bounded, so it cannot turn the check into a no-op: a binding that never
+    // calls the observer still fails, it just takes the budget to say so.
+    await waitUntil(() => signals.includes('probe_started'), options.signalWaitMs ?? SIGNAL_WAIT_MS)
 
     checks.push({
       name: 'signal',

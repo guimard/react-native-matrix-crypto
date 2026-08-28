@@ -8,3 +8,49 @@ edition = "2021"
 rust-version = "1.93"
 license = "Apache-2.0"
 repository = "https://github.com/linagora/react-native-matrix-crypto"
+
+# Every setting below was measured on this crate's real xcframework/aar
+# artifacts, not applied as a block -- see size-reduction-report.md
+# (.superpowers/sdd/2026-08-27-walking-skeleton/) for the full investigation,
+# including two rejections and the evidence behind each.
+[profile.release]
+# Cargo's own default. Measured "z" (optimise for size) against it with lto+
+# codegen-units already on: "z" made the shipped iOS .a ~36% LARGER, not
+# smaller (142324 KB vs 104460 KB xcframeworkKB), because it suppresses the
+# inlining that lto's own cross-crate dead-code elimination relies on across
+# this dependency tree's heavy generics (uniffi macros, ruma, matrix-sdk-crypto).
+# Android moved the other way but only marginally (-1.4%). Kept at 3.
+opt-level = 3
+# Measured alone: negligible (xcframeworkKB -68 KB / -0.04%; aarKB actually
+# +4 KB, noise). Android's own CMake link step already strips the shipped
+# .so regardless of this setting, and Cargo's `strip` does not meaningfully
+# touch a `staticlib` archive's member objects (rustc's strip pass targets a
+# final linked artifact, which a staticlib never gets from rustc itself).
+# Kept anyway: free, harmless, and it costs nothing to leave on.
+strip = "symbols"
+# Measured real effect, but only once rust/.cargo/config.toml's
+# embed-bitcode=no was added for the three Apple targets: without that fix,
+# lto = true makes rustc embed full uncompressed LLVM bitcode into every
+# Apple-target object (a rustc default that predates Apple dropping the App
+# Store bitcode requirement in Xcode 14/2022), and this project ships the
+# raw staticlib archive with no further link step to strip it back out --
+# xcframeworkKB rose 152856 -> 292720 (+91%) with the fix absent. With the
+# fix: xcframeworkKB 152856 -> 104460 (-31.7%), aarKB 31488 -> 30604 (-2.8%).
+lto = true
+# Recommended alongside lto = true (fewer partitions, better cross-crate DCE);
+# not measured in isolation without lto -- see the report for why the two
+# were treated as one lever here.
+codegen-units = 1
+# DELIBERATELY left at Cargo's own default, not blindly applied from the
+# suggested block. uniffi_core's own `rust_call_with_out_status`
+# (uniffi_core-0.31.2/src/ffi/rustcalls.rs, the function every generated FFI
+# call goes through) wraps each call in std::panic::catch_unwind and turns a
+# Rust panic into a normal, catchable TypeScript error -- the only panic
+# safety net this bridge has. panic = "abort" would silently defeat
+# catch_unwind for the *entire* dependency graph (Cargo's panic setting is
+# not local to one crate) and turn any panic -- including one triggered by
+# malformed, attacker-influenced Matrix event/ciphertext data reaching this
+# cryptographic library -- into a hard abort of the whole host app instead
+# of a catchable error. Rejected; not benchmarked, because the finding that
+# rejects it does not depend on a measurement.
+panic = "unwind"

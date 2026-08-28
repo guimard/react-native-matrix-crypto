@@ -120,7 +120,7 @@ Bridge spec §15 requires these be frozen early.
 | Binary distribution | Built in CI, packed into the npm tarball at publish |
 | First milestone | Walking skeleton, sequenced chain-first then dependency |
 | CI | GitHub Actions, macOS runners for the iOS leg |
-| Logging policy | The bridge has no logger. See §7. |
+| Logging policy | The bridge writes no diagnostics of its own. See §7.2, and §7.2.1 for the one generated-C++ write it does not author. |
 
 Apache-2.0 matches `matrix-sdk-crypto`'s own license, so no compatibility question
 arises on the dependency the bridge is built on, and it carries a patent grant,
@@ -220,7 +220,7 @@ the UI. Therefore:
 **M1b outcome.** M1b exercised exactly one function, `device_identity_keys`
 (`OlmMachine::new` plus an in-memory store, no spawning). No `async_runtime`
 attribute was needed for it — confirmed by reading the vendored source and by
-clean runs on both the iOS simulator and a physical Android device, no reactor
+clean runs on both the iOS simulator and an Android emulator, no reactor
 panic.
 
 That result is scoped to the one function tested, not a resolution for
@@ -320,16 +320,87 @@ the strict minimum. Both hold once separated:
 The caller is the product layer, which already holds that data and is the only
 layer §8 permits to own telemetry.
 
-### 7.2 The bridge has no logger
+### 7.2 The bridge writes no diagnostics of its own
 
 No `println!`, no `eprintln!`, no `log::`, no `console.*`, no file writes, and no
 `tracing` subscriber of its own. Diagnostics, if ever required, pass through a sink
 the product injects and owns. CI greps the shipped surface for these tokens and
-fails on a hit.
+fails on a hit, in every language that surface contains: Rust, TypeScript,
+C/C++/Objective-C, Kotlin, Swift and the CocoaPods podspec.
+
+That list is enumerated rather than counted on purpose. It read "Rust, TypeScript,
+and C/C++/Objective-C" through two amendments that each widened the gate without
+widening this sentence, and a count in prose has no way to be wrong out loud.
+Kotlin was added 2026-08-28; Swift and the podspec on the same day, ahead of the
+first Swift file, because the podspec compiles `ios/**/*.swift` into a consumer's
+app and can itself run shell in their build through a `script_phase`.
 
 A crypto library that logs by default is how cleartext reaches a crash report.
 This also satisfies crypto spec §6's rule that audit "must never silently become a
 second cleartext content store".
+
+#### 7.2.1 The one write we do not author, and do not claim away
+
+Until 2026-08-28 this section read "the bridge has no logger" and the gate that was
+said to enforce it had never opened a C++ file. `cpp/generated/matrix_crypto.cpp`
+contains five `std::cout` writes, one per UniFFI callback trampoline, each on a
+`catch (const jsi::JSError &error)` path:
+
+```cpp
+} catch (const jsi::JSError &error) {
+    std::cout << "Error in callback UniffiCallbackInterfaceProbeObserverMethod0: "
+            << error.what() << std::endl;
+    throw error;
+}
+```
+
+They are in the shipped binary, not only in the shipped source: `strings` on the
+release AAR's `libreact-native-matrix-crypto.so` finds four of the five literals and
+an undefined `_ZNSt6__ndk14coutE`. The fifth, `UniffiForeignFutureDroppedCallback`,
+is dropped by the linker only because nothing references it today. On iOS the file
+ships as source through the podspec and compiles into the consumer's app.
+
+**What they can write.** `jsi::JSError::what()` is `message + "\n\n" + stack` of the
+JavaScript exception (`jsi.cpp`, `JSError::setValue`). It is not a fixed literal, so
+the honest statement is structural rather than lexical:
+
+| Site | JavaScript function reached | What can escape to the stream |
+|---|---|---|
+| `UniffiRustFutureContinuationCallback` | the runtime's promise-resolver continuation | engine-level errors only; it removes a handle and calls `resolve` |
+| `UniffiForeignFutureDroppedCallback` | none today | unreachable; no async callback interface exists |
+| `UniffiCallbackInterfaceFree` | `handleMap.remove` | nothing; `remove` does not throw |
+| `UniffiCallbackInterfaceClone` | `handleMap.clone` | `UnexpectedStaleHandle`, a fixed literal, after a hot reload |
+| `UniffiCallbackInterface<Trait>Method<N>` | the generated vtable closure | the closure's own failures, not the observer's |
+
+The last row is the one that matters and the one that holds. A foreign trait method
+is called through `uniffiTraitInterfaceCall`, which wraps the product's implementation
+in a TypeScript `try`/`catch` and lowers a throw into a `RustCallStatus` — so the
+product's exception, message and all, returns to Rust rather than reaching the C++
+frame. No argument, no `ProbeSignal`, no ciphertext and no identifier is interpolated
+into any of the five literals.
+
+The residual is narrow and should be named rather than hidden: a throw raised from
+inside that TypeScript `catch` handler — an error object with a throwing `toString`,
+or an allocation failure while lowering the message — escapes to C++, and what prints
+is that second exception's message, not the payload the first one carried. A JS stack
+trace also discloses function names and source locations. On Android a release
+process's stdout is discarded; on iOS it reaches the device console.
+
+**Why it is not simply removed.** ubrn's C++ generator takes no configuration:
+`gen_cpp/config.rs` is `pub(crate) struct CppConfig {}`, empty. The write is
+unconditional in `gen_cpp/templates/CallbackFunction.cpp`, an askama template compiled
+into the tool, and no CLI flag overrides templates. The `logLevel` knob in
+`uniffi.toml` governs generated TypeScript only. §4bis.3 forbids hand-editing
+generated code and `gate:drift` enforces it. The remaining fix is upstream.
+
+**What the gate does instead.** `scripts/assert-no-logger.sh` scans every shipped
+C, C++ and Objective-C source and tolerates exactly the three-line shape above, and
+only inside a path `scripts/assert-no-drift.sh` regenerates. That pairing is the whole
+argument: the shape check bounds what may be written, and the drift gate's empty-diff
+requirement is what proves the file really is the tool's output and not a hand-planted
+imitation of it. Both halves were observed failing on planted violations. The gate
+prints the number of tolerated sites on success, so a new callback interface moves a
+number a reviewer can see.
 
 ### 7.3 Two channels
 
@@ -458,7 +529,7 @@ Every job is a gate. None are advisory.
 |---|---|
 | `core` | `cargo test -p matrix-crypto-core`; no direct `uniffi` dependency |
 | `drift` | `ubrn generate jsi turbo-module` then `git diff --exit-code` |
-| `no-logger` | Grep the shipped surface for logging tokens |
+| `no-logger` | Grep the shipped surface for logging tokens, in every language it contains: Rust, TypeScript, C/C++/Objective-C, Kotlin, Swift, the podspec; see §7.2.1 for the one tolerated shape |
 | `lint` | `cargo fmt --check`, `clippy -D warnings`, `tsc --noEmit`, eslint |
 | `agility` | §8.1 |
 | `build-ios` | `ubrn build ios`, produce xcframework, record artifact size |
