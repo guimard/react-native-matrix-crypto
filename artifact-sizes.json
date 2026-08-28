@@ -147,5 +147,28 @@
     ],
     "tarballIncludesXcframework": true,
     "tarballIncludesAar": true
+  },
+  {
+    "label": "release-pack-rehearsal-ios-sim-slice-only",
+    "xcframeworkKB": 50552,
+    "aarKB": 23236,
+    "tarballKB": 43460,
+    "tarballUnpackedKB": 83420,
+    "tarballLargestContributors": [
+      {
+        "component": "MatrixCryptoFramework.xcframework",
+        "unpackedKB": 50547
+      },
+      {
+        "component": "react-native-matrix-crypto-release.aar",
+        "unpackedKB": 23232
+      },
+      {
+        "component": "android",
+        "unpackedKB": 9261
+      }
+    ],
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": true
   }
 ]
