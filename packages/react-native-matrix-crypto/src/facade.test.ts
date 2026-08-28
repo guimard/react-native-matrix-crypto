@@ -107,6 +107,28 @@ describe('facade before implementation', () => {
  * ArrayBuffer->Uint8Array conversion (see task-7-report.md).
  */
 describe('receiveSyncChanges wiring to the native layer', () => {
+  /**
+   * The top-level shape of a real homeserver's `/sync` response. Trimmed of
+   * payload, complete in its *keys*, because it is the key names that decide
+   * whether the guard fires. A given homeserver may omit some of these --
+   * the Continuwuity instance the level 2 interoperability test runs against
+   * omits `device_one_time_keys_count` entirely -- but every one of them is
+   * included here so the rename table the doc comment publishes is exercised
+   * in full.
+   */
+  const SYNC_RESPONSE = {
+    next_batch: 's72595_4483_1934',
+    rooms: { join: {}, invite: {}, leave: {} },
+    presence: { events: [] },
+    account_data: { events: [] },
+    to_device: {
+      events: [{ sender: '@bob:example.org', type: 'm.room.encrypted', content: {} }],
+    },
+    device_lists: { changed: ['@bob:example.org'], left: [] },
+    device_one_time_keys_count: { signed_curve25519: 50 },
+    device_unused_fallback_key_types: ['signed_curve25519'],
+  }
+
   it('forwards the sync delta as JSON and resolves void, discarding the native counts', async () => {
     // snake_case, matching the core's own `SyncChangesPayload` field names
     // exactly -- see the regression test below for why this is load-bearing,
@@ -157,6 +179,61 @@ describe('receiveSyncChanges wiring to the native layer', () => {
     )
 
     expect(nativeReceiveSyncChanges).not.toHaveBeenCalled()
+  })
+
+  /**
+   * Regression for F1 (Task 12 review). This function's own documentation
+   * used to say a `/sync` response could be handed over "verbatim". It
+   * cannot: the eight top-level keys above have no member in common with
+   * the five this function reads, so the guard rejects the whole response.
+   * The documentation said one thing and the code eleven lines above it
+   * said another, for four tasks, because nothing fed this function a real
+   * homeserver's body until level 2 did.
+   */
+  it('rejects a raw /sync response, which names none of the recognised fields', async () => {
+    vi.mocked(nativeReceiveSyncChanges).mockClear()
+
+    await expect(receiveSyncChanges(SYNC_RESPONSE)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
+    )
+
+    expect(nativeReceiveSyncChanges).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The other half of the same regression, and the half that makes it
+   * actionable. A test proving only that the raw body is rejected leaves a
+   * reader knowing what not to do and not what to do; this applies the
+   * five-way rename the doc comment publishes, to the same fixture, and
+   * requires it through. If the doc comment's table and this test ever
+   * disagree, one of them fails.
+   */
+  it('accepts the same /sync response once the five documented fields are renamed', async () => {
+    const syncDelta = {
+      to_device_events: SYNC_RESPONSE.to_device.events,
+      changed_devices: SYNC_RESPONSE.device_lists,
+      one_time_keys_counts: SYNC_RESPONSE.device_one_time_keys_count,
+      unused_fallback_keys: SYNC_RESPONSE.device_unused_fallback_key_types,
+      next_batch_token: SYNC_RESPONSE.next_batch,
+    }
+
+    await expect(receiveSyncChanges(syncDelta)).resolves.toBeUndefined()
+
+    expect(vi.mocked(nativeReceiveSyncChanges).mock.calls.at(-1)?.[0]).toBe(
+      JSON.stringify(syncDelta),
+    )
+
+    // Each renamed field on its own, so a typo in any single row of the
+    // published table fails here. Asserting only the five together would
+    // pass with four correct names and one wrong one, since the guard asks
+    // for *some* recognised field rather than all of them.
+    for (const [field, value] of Object.entries(syncDelta)) {
+      vi.mocked(nativeReceiveSyncChanges).mockClear()
+
+      await expect(receiveSyncChanges({ [field]: value })).resolves.toBeUndefined()
+
+      expect(nativeReceiveSyncChanges).toHaveBeenCalledOnce()
+    }
   })
 
   /**

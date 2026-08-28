@@ -185,21 +185,64 @@ function syncDeltaNamesNoRecognisedField(syncDelta: unknown): boolean {
  * }
  * ```
  *
- * **This is a subset of a `/sync` response, not the whole response.** Hand
- * over only these fields, or the whole response verbatim -- every other
- * field a real `/sync` response carries is ignored either way, so there is
- * no need to trim it by hand.
+ * **This is not a `/sync` response, and a `/sync` response is rejected.**
+ * It is the encryption-relevant slice of one, under `matrix-sdk-crypto`'s
+ * field names, and the two sets of names have no member in common: a real
+ * `/sync` body's top-level keys are `next_batch`, `rooms`, `presence`,
+ * `account_data`, `to_device`, `device_lists`,
+ * `device_one_time_keys_count` and `device_unused_fallback_key_types`,
+ * none of which is one of the five above. So passing the response verbatim
+ * throws `malformed_payload` before native is called -- deliberately and
+ * loudly, because the alternative was a call that resolves and teaches the
+ * machine nothing.
  *
- * Worked example, a sync reporting one to-device event and one changed
- * device:
+ * An earlier version of this paragraph said the whole response could be
+ * handed over verbatim. That was false, and the guard eleven lines above
+ * proved it false; it was corrected by the level 2 interoperability test,
+ * which is the first thing that ever fed this function a payload a real
+ * homeserver produced.
+ *
+ * Five fields must be renamed, and nothing else forwarded:
+ *
+ * | in a `/sync` response | in `syncDelta` |
+ * | --- | --- |
+ * | `to_device.events` | `to_device_events` |
+ * | `device_lists` | `changed_devices` |
+ * | `device_one_time_keys_count` | `one_time_keys_counts` |
+ * | `device_unused_fallback_key_types` | `unused_fallback_keys` |
+ * | `next_batch` | `next_batch_token` |
+ *
+ * Omit a field the response does not carry rather than passing
+ * `undefined`; each defaults independently. Everything else the response
+ * holds -- `rooms`, `presence`, `account_data` -- is no part of this
+ * payload.
+ *
+ * Worked example, the whole mapping, which is what a product's sync loop
+ * actually needs:
  *
  * ```ts
- * await receiveSyncChanges({
- *   to_device_events: [{ sender: '@bob:example.org', type: 'm.room.encrypted', content: { ... } }],
- *   changed_devices: { changed: ['@bob:example.org'], left: [] },
- *   one_time_keys_counts: { signed_curve25519: 50 },
- * })
+ * type SyncResponse = Record<string, any>
+ *
+ * function encryptionSlice(sync: SyncResponse): Record<string, unknown> {
+ *   const syncDelta: Record<string, unknown> = {}
+ *   if (sync.to_device?.events) syncDelta.to_device_events = sync.to_device.events
+ *   if (sync.device_lists) syncDelta.changed_devices = sync.device_lists
+ *   if (sync.device_one_time_keys_count) {
+ *     syncDelta.one_time_keys_counts = sync.device_one_time_keys_count
+ *   }
+ *   if (sync.device_unused_fallback_key_types) {
+ *     syncDelta.unused_fallback_keys = sync.device_unused_fallback_key_types
+ *   }
+ *   if (sync.next_batch) syncDelta.next_batch_token = sync.next_batch
+ *   return syncDelta
+ * }
+ *
+ * await receiveSyncChanges(encryptionSlice(await fetchSync()))
  * ```
+ *
+ * `encryptionSlice` above is a transcription of `encryption_slice` in
+ * `rust/matrix-crypto-core/tests/level_two_interop.rs`, which is the same
+ * mapping exercised against a real homeserver and a third-party client.
  *
  * `{}` is the shape an ordinary, uneventful sync sends, and is accepted:
  * it reports nothing, correctly. **camelCase silently does nothing**, and
