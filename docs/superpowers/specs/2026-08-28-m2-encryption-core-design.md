@@ -298,6 +298,33 @@ carrying any ciphertext or plaintext.
 flagged this as the one field that edges toward a product decision, retained because
 transience is knowable only at the crypto layer.
 
+### 7.1 M2 decrypts events. It does not authenticate their senders.
+
+This has to be said in the specification rather than only in a code comment, because it
+is a property of what the milestone ships and a product will assume the opposite.
+
+`Envelope.sender` is the sender field the homeserver delivered. Decryption does not
+verify it. Upstream is explicit about this: `EncryptionInfo::sender` in
+`matrix-sdk-common-0.18.0/src/deserialized_responses.rs:331` is documented as "untrusted
+data unless the `verification_state` is `Verified` as well", and `sender_device` carries
+the same caveat. There is no stronger sender value sitting in `encryption_info` waiting
+to be surfaced; the authentication comes from device verification, which is M3.
+
+`algorithm` is likewise read from the incoming event rather than asserted by us.
+
+So for all of M2, both fields are **unauthenticated transport metadata**, and the
+public documentation must say so in those terms. A product that reads the sender of a
+successfully decrypted event as the cryptographic sender has assumed something this
+milestone does not provide, and that assumption is the shape impersonation takes.
+
+The real fix is `verification_state` reaching the product, which needs a deliberate
+decision about what it adds to the public surface rather than a patch. It belongs to
+M3 alongside the verification work that makes it meaningful, and it is listed there.
+
+An earlier instruction of mine during implementation asked for the authenticated sender
+to be surfaced from `encryption_info`. That was wrong, and it was refused with the
+upstream source as evidence, correctly.
+
 ## 8. Testing: two levels, in this order
 
 M1 §8.0 already fixed the ordering. M2 executes it.
@@ -424,6 +451,11 @@ M2 closes when all of the following hold:
 Device verification (SAS and QR), secret export and import, `getDeviceStatuses`,
 `restoreCryptoMachine`, multi-participant scenarios, and cross-implementation testing
 against both Synapse and Continuwuity.
+
+**`verification_state` on the public surface**, per §7.1. It is the only thing that
+turns `sender` from transport metadata into an authenticated claim, and it is
+meaningless before the verification work that shares this milestone. Deciding its shape
+is part of M3's design, not a patch to M2.
 
 Also deferred, carried over from M1's final review and to be scheduled explicitly
 rather than absorbed silently into M2: `index.tsx` being invisible to TypeScript,
