@@ -188,6 +188,8 @@ const recovered = await decryptEvent(scope, incomingEvent)
 
 **The library writes no diagnostics of its own.** No `println!`, no `console.*`, no file writes, no `tracing` subscriber. Errors return identifiers to their caller. Diagnostics, if you need them, belong in a sink your application owns. A cryptographic library that logs by default is how cleartext reaches a crash report.
 
+`gate:logger` enforces that across all four shipped languages, and it is worth saying what "enforces" means, because for a while it meant less than this sentence did. In Rust it rejects the print macros, `dbg!`, an import of `log` or `tracing` and a fully qualified `log::`/`tracing::` call, and — in the library sources, not the tests — `fs::write`, `File::create`, `io::stdout()` and `write_all`. In TypeScript it rejects reaching for `console` by property, by bracket index or by handing the object to something, and any `fs` import or file-writing call. In C, C++ and Objective-C it rejects every stream and every `printf` family member, plus `fwrite`, `write`, `putchar`, `ofstream`, `fopen` and the platform loggers. In Kotlin it rejects `android.util.Log`, `println`, `System.out`, `System.err` and the file writers. What it does not claim to stop is a reference laundered past a regex — `globalThis["con" + "sole"]` and its equivalents. The rule is that this bridge's own source does not reach for a log, not that a determined author could not.
+
 There is one exception, and it is worth stating precisely rather than claiming an absolute that is not true. The UniFFI to JSI boundary code that `uniffi-bindgen-react-native` generates writes to `std::cout` when a JavaScript callback throws back across the boundary. There are five such sites in `cpp/generated/matrix_crypto.cpp`, one per callback trampoline; four survive into the shipped `libreact-native-matrix-crypto.so`, and on iOS the file compiles into your app. Each writes a fixed string naming the callback, then `jsi::JSError::what()`, which is the JavaScript exception's message and its stack.
 
 No call argument, ciphertext, key or identifier is interpolated into that stream. The JavaScript functions reached at those five sites are the generator's own, not yours. A callback you pass in runs inside the generated trampoline's TypeScript `try`/`catch`, which lowers a throw into a Rust call status before it can reach the C++ frame; `onCryptoSignal` listeners sit behind a second `try`/`catch` in `emitCryptoSignal` on top of that. What is left to reach the stream is the generator's own fixed-message internal errors, such as a stale handle after a hot reload.
@@ -319,7 +321,7 @@ If you add a gate, add the step that proves it fails on a real violation. A gate
 * Conventional Commits, imperative mood, one subject per commit.
 * A manifest change and its lockfile update belong in the same commit.
 * Every core to FFI type conversion destructures its source, so a field added later fails the build instead of being silently dropped.
-* Tests assert, they do not print. The no logger rule has no test exemption.
+* Tests assert, they do not print, and `gate:logger` reads `rust/*/tests` to make sure of it. The one thing a test may do that the library may not is write a file: the level 2 proof passes a marker through the filesystem to a spawned child process, which is how the cross-process restore is proved at all.
 
 ## Security
 

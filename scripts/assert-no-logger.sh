@@ -102,6 +102,26 @@ RUST_SRC_DIRS=$(cargo metadata --format-version 1 --no-deps \
       });
     ' 2>/dev/null || printf "rust/matrix-crypto-core/src\nrust/matrix-crypto-ffi/src")
 
+# The integration tests, which this gate never opened.
+#
+# The README says "Tests assert, they do not print. The no logger rule has no
+# test exemption." There was an exemption, and it was the whole of
+# rust/*/tests/: the scan roots above are each crate's `src`, so a `println!`
+# in an integration test passed. Reproduced 2026-08-28. It was unused -- no
+# print existed in those directories -- which is the only reason the sentence
+# was not already false in fact as well as in enforcement.
+#
+# Tests get the PRINT rule and not the file-write rule, deliberately. A test
+# fixture may legitimately need a file: level_two_interop.rs writes a marker
+# that a spawned child process reads back, which is how the cross-process
+# openCryptoStore restore is proved at all. The library may not. That
+# distinction is the reason the two rules are separate variables below rather
+# than one regex.
+RUST_TEST_DIRS=$(for d in $RUST_SRC_DIRS; do
+  t="${d%/src}/tests"
+  [ -d "$t" ] && echo "$t"
+done)
+
 # Verify that we actually got some Rust crate directories. If cargo metadata
 # succeeds but produces no output (e.g. due to JSON shape change), RUST_SRC_DIRS
 # would be empty, the existence loop below would iterate zero times, and we would
@@ -125,12 +145,30 @@ for root in $RUST_SRC_DIRS; do
   fi
 done
 
-# Check Rust crates for logging patterns.
+# Check Rust for logging patterns.
+#
 # - print! and eprint! are included, not just println!/eprintln!
-# - Forbid imports outright (use log::*, use tracing::*) because that
+# - Imports are forbidden outright (use log::*, use tracing::*) because that
 #   prevents bare calls like info!("...") after "use log::info;"
+# - AND the qualified call is forbidden too. Forbidding only the import was a
+#   hole with a one-character workaround: `tracing::info!("{}", plaintext)`
+#   needs no `use` at all and passed this gate until 2026-08-28. Reproduced.
+FORBIDDEN_RUST_PRINT='(println!|eprintln!|print!|eprint!|dbg!|use[[:space:]]+(log|tracing)::|(^|[^_[:alnum:]])(log|tracing)::[a-z_]+!)'
+
+# The file-write rule, which the README has promised since M1 and which was
+# enforced in no language at all. `std::fs::write`, `File::create` and
+# `std::io::stdout().write_all` all passed. None of these patterns appears in
+# either crate's `src` today, so this is a tripwire rather than a cleanup.
+#
+# Library sources only. See RUST_TEST_DIRS above for why tests are exempt from
+# this one rule and from no other.
+FORBIDDEN_RUST_WRITE='(std::)?fs::(write|create_dir|OpenOptions|File)|File::create|OpenOptions::new|(std::)?io::(stdout|stderr)[[:space:]]*\(|\.write_all[[:space:]]*\(|\.write_fmt[[:space:]]*\('
+
 RUST_HITS=$(for root in $RUST_SRC_DIRS; do
-  grep -rnE '(println!|eprintln!|print!|eprint!|dbg!|use\s+(log|tracing)::)' "$root" 2>/dev/null || true
+  grep -rnE "$FORBIDDEN_RUST_PRINT|$FORBIDDEN_RUST_WRITE" "$root" 2>/dev/null || true
+done
+for root in $RUST_TEST_DIRS; do
+  grep -rnE "$FORBIDDEN_RUST_PRINT" "$root" 2>/dev/null || true
 done)
 
 PKG_DIR="packages/react-native-matrix-crypto"
@@ -221,7 +259,34 @@ if [ -z "${TS_FILES//[[:space:]]/}" ]; then
   exit 1
 fi
 
-TS_HITS=$(grep -nE '\bconsole\.[a-z]+' $TS_FILES 2>/dev/null || true)
+# `console.log` was the whole rule until 2026-08-28, so every other way of
+# reaching the same object passed: `const sink = console; sink.log(x)` and
+# `console["error"](x)` were both constructed and both accepted.
+#
+# What is matched now: a property access with a real identifier after the dot,
+# a bracket index, and the object being handed to something -- assigned,
+# passed as an argument, or used as an object value. The identifier
+# requirement after the dot is what keeps English prose out of it:
+# interop/crypto-suite.ts's JSDoc ends a sentence with "the simulator
+# console.", and a bare `console\.` would fail this gate on a comment. This
+# gate scans raw lines, so prose is inside its scan; gate:agility solves the
+# same problem by emitting declarations with --removeComments.
+#
+# WHAT IS STILL OPEN, and deliberately, because closing it costs a TypeScript
+# parser and buys little: a reference laundered through something this regex
+# cannot see -- `globalThis["con" + "sole"]`, a property read off an object
+# built at runtime, or a native module a consumer injects. The rule this gate
+# enforces is that the bridge's own source does not reach for the console,
+# not that a determined author cannot.
+FORBIDDEN_TS='console[[:space:]]*\.[A-Za-z_$]|console[[:space:]]*\[|[=(,:][[:space:]]*console([^A-Za-z0-9_$]|$)'
+
+# The file-write half of the README's promise, in the language where it is
+# cheapest to state and hardest to do by accident. React Native has no `fs`,
+# so any of these in the bridge means someone reached for a filesystem module
+# on purpose.
+FORBIDDEN_TS_WRITE='require\([[:space:]]*['"'"'"](node:)?fs['"'"'"]|from[[:space:]]*['"'"'"](node:)?fs['"'"'"]|react-native-fs|(writeFile|appendFile|createWriteStream)[[:space:]]*\('
+
+TS_HITS=$(grep -nE "$FORBIDDEN_TS|$FORBIDDEN_TS_WRITE" $TS_FILES 2>/dev/null || true)
 
 # ---------------------------------------------------------------------------
 # C++ and Objective-C++: the shipped native surface
@@ -299,7 +364,18 @@ TS_HITS=$(grep -nE '\bconsole\.[a-z]+' $TS_FILES 2>/dev/null || true)
 # deliberate. A CHANGED shape does not, which is the point: if a ubrn upgrade
 # starts printing an argument rather than a fixed literal, this gate fails and
 # someone re-reads the template.
-FORBIDDEN_NATIVE='std::(cout|cerr|clog|wcout|wcerr)|(^|[^_[:alnum:]])(printf|fprintf|vprintf|vfprintf|puts|fputs|perror|syslog|NSLog|RCTLog)[[:space:]]*[(]|__android_log|os_log|(^|[^_[:alnum:]])ALOG[A-Z]*[[:space:]]*[(]'
+# Five more write forms were constructed against the previous list and all
+# five passed: `fwrite(k, 1, 4, stdout)`, `write(1, k, 4)`, `std::ofstream`,
+# `std::wclog` (the list had wcout and wcerr but not wclog) and `putchar`.
+# Added, along with the file-opening forms, since the README promises no file
+# writes and that was enforced nowhere. None of these appears in any shipped
+# native source today, so every one of them is a tripwire rather than a
+# cleanup.
+# Bare `open(` is deliberately NOT in the list. A descriptor is useless
+# without the `write(` that is, and `open(` is a common enough word in
+# generated C++ (`store.open(...)`) to make this gate cry wolf, which is how
+# a gate ends up disabled.
+FORBIDDEN_NATIVE='std::(cout|cerr|clog|wcout|wcerr|wclog)|(^|[^_[:alnum:]])(printf|fprintf|vprintf|vfprintf|dprintf|puts|fputs|fputc|putchar|putc|fwrite|perror|syslog|NSLog|RCTLog|fopen|freopen|write)[[:space:]]*[(]|__android_log|os_log|(^|[^_[:alnum:]])ALOG[A-Z]*[[:space:]]*[(]|(std::)?(w?ofstream|w?fstream)|<fstream>'
 
 # The number of tolerated sites, pinned rather than printed.
 #
@@ -393,11 +469,48 @@ done
 
 NATIVE_ALLOWED=$(printf '%s' "$NATIVE_TOLERATED" | grep -c . || true)
 
-if [ -n "${RUST_HITS}${TS_HITS}${NATIVE_HITS}" ]; then
+# ---------------------------------------------------------------------------
+# Kotlin: the fourth shipped language, which this gate had never opened
+# ---------------------------------------------------------------------------
+#
+# `android/src/main` is in package.json's "files" and ships two Kotlin
+# sources: the turbo module and the ReactPackage that registers it. Both are
+# generated, both are compiled into every Android consumer's app, and until
+# 2026-08-28 this gate read neither. A planted `android.util.Log.d("tag",
+# plaintext)` and a planted `println(plaintext)` in MatrixCryptoModule.kt both
+# passed. Reproduced.
+#
+# Being generated does NOT exempt them: there is no tolerated shape here, and
+# ubrn's Kotlin templates write nothing to any log today, which is why this
+# section adds no allowlist. If a ubrn upgrade starts logging from Kotlin,
+# this gate fails and someone reads the template -- which is exactly what the
+# C++ section had to do.
+#
+# `System.` is matched only as System.out/System.err, because
+# MatrixCryptoModule.kt legitimately calls System.loadLibrary.
+FORBIDDEN_KOTLIN='android\.util\.Log|(^|[^_[:alnum:]])Log[[:space:]]*\.[a-z]+[[:space:]]*\(|(^|[^_[:alnum:]])(println|print)[[:space:]]*\(|System\.(out|err)|(^|[^_[:alnum:]])Timber[[:space:]]*\.|printStackTrace[[:space:]]*\(|(FileOutputStream|FileWriter|BufferedWriter|java\.io\.File)'
+
+KOTLIN_FILES=$(find $SHIPPED_ROOTS -type f \( -name '*.kt' -o -name '*.java' \) | sort)
+
+# Same discipline as the other three. This package ships an Android turbo
+# module; zero Kotlin means the derivation broke, not that the Kotlin is
+# clean.
+if [ -z "${KOTLIN_FILES//[[:space:]]/}" ]; then
+  echo "FAIL: no Kotlin or Java source was found under: $(echo $SHIPPED_ROOTS | tr '\n' ' ')"
+  echo "      This package ships an Android turbo module and its ReactPackage;"
+  echo "      zero JVM sources means the scan broke. Refusing to pass having"
+  echo "      scanned nothing."
+  exit 1
+fi
+
+KOTLIN_HITS=$(grep -nE "$FORBIDDEN_KOTLIN" $KOTLIN_FILES 2>/dev/null || true)
+
+if [ -n "${RUST_HITS}${TS_HITS}${NATIVE_HITS}${KOTLIN_HITS}" ]; then
   echo "FAIL: the bridge must not log. Spec section 7.2."
   [ -n "$RUST_HITS" ] && echo "$RUST_HITS"
   [ -n "$TS_HITS" ] && echo "$TS_HITS"
   [ -n "$NATIVE_HITS" ] && printf '%s' "$NATIVE_HITS"
+  [ -n "$KOTLIN_HITS" ] && echo "$KOTLIN_HITS"
   echo "      Diagnostics belong in a sink the product injects and owns."
   echo "      In generated C++ the ONLY tolerated write is ubrn's"
   echo "      'std::cout << \"Error in callback UniffiX: \" << error.what()' on a"
@@ -426,6 +539,9 @@ if [ "$NATIVE_ALLOWED" -ne "$EXPECTED_NATIVE_ALLOWED" ]; then
 fi
 
 echo "PASS: no logger"
-echo "      Scanned: Rust crates, shipped TypeScript, shipped C/C++/Objective-C."
+echo "      Scanned for writes to a stream: Rust crate sources and integration"
+echo "      tests, shipped TypeScript, shipped C/C++/Objective-C, shipped Kotlin."
+echo "      Scanned for file writes: the same, minus the Rust integration tests,"
+echo "      which may write a fixture but may not print."
 echo "      Tolerated: $NATIVE_ALLOWED ubrn callback-error std::cout sites in generated C++,"
 echo "      documented in README.md and design spec section 7.2."
