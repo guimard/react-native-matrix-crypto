@@ -40,6 +40,12 @@ use matrix_sdk_common::ruma::{
 };
 use matrix_sdk_crypto::types::events::room::encrypted::EncryptedEvent;
 use matrix_sdk_crypto::types::requests::{AnyOutgoingRequest, ToDeviceRequest};
+// Reached through `matrix_sdk_crypto`'s own `pub use vodozemac;` re-export
+// rather than a direct `vodozemac` dependency this crate would then have to
+// keep version-matched by hand -- the same reasoning `machine.rs` documents
+// for reaching `ruma` through `matrix-sdk-common` rather than depending on
+// it directly.
+use matrix_sdk_crypto::vodozemac::megolm::DecryptionError;
 use matrix_sdk_crypto::{
     DecryptionSettings, EncryptionSettings, EncryptionSyncChanges, MegolmError, OlmMachine,
     TrustRequirement,
@@ -107,24 +113,43 @@ pub enum SessionError {
     /// nonsense".
     #[error("the request id does not match a pending request")]
     UnknownRequest,
-    /// [`decrypt_event`] found no record of the group session that
-    /// encrypted this event. Worth a retry: the key may simply not have
-    /// arrived yet, e.g. a later sync or a key request may still bring it
-    /// in.
+    /// [`decrypt_event`] either found no record at all of the group
+    /// session that encrypted this event, or found the session but could
+    /// not use it because its ratchet has already advanced past this
+    /// message's index (the ordinary "you joined the room after this was
+    /// sent" case). Worth a retry either way: the key may simply not have
+    /// arrived yet, or an earlier ratchet state may still arrive, e.g. a
+    /// later sync or a key request may bring in what is missing.
     #[error("no key is available to decrypt this event")]
     MissingKey,
     /// [`decrypt_event`] found a record that the group session was
     /// explicitly withheld, or never shared with this device. Distinct
     /// from `MissingKey`: this is a known fact about the session rather
-    /// than the mere absence of one, but it is still worth requesting
-    /// again.
+    /// than the mere absence of one. Not uniformly worth requesting
+    /// again: upstream's withheld reasons include both circumstantial
+    /// ones a retry can resolve (`m.unavailable`, `m.no_olm` -- the
+    /// sender did not have the key yet, or could not reach this device)
+    /// and deliberate policy refusals a retry cannot (`m.blacklisted`,
+    /// `m.unauthorised`). This kind does not distinguish which reason
+    /// applies -- the reason itself is sender-supplied wire content this
+    /// crate deliberately does not carry into any error, per the
+    /// no-payload-content rule -- so a product must not assume every
+    /// occurrence is productive to retry forever.
     #[error("the session that encrypted this event was not shared with this device")]
     UnsharedSession,
     /// [`decrypt_event`] could not trust the device that supposedly
-    /// encrypted this event -- either its identity does not match what
-    /// this machine has on record, or it does not meet the trust level
-    /// this call requires. Not worth retrying: the same input fails the
-    /// same way until the device is verified out of band.
+    /// encrypted this event, for either of two different reasons this
+    /// kind does not currently distinguish: its identity does not match
+    /// what this machine has on record (unfixable -- nothing the user
+    /// does changes a room key whose own embedded identity disagrees with
+    /// itself), or it does not meet the trust level this call requires
+    /// (fixable by the user verifying the device). The second reason is
+    /// unreachable in M2, which always decrypts with the most permissive
+    /// trust requirement -- see `decryption_settings()` -- so only the
+    /// unfixable case is reachable today. M3, which makes the trust
+    /// requirement configurable, is expected to give these two reasons
+    /// separate kinds; until then, do not assume this kind is always
+    /// fixable by verification.
     #[error("the device that encrypted this event is not trusted")]
     UnknownDevice,
     /// [`decrypt_event`] ran the cryptographic operation and it did not
@@ -295,16 +320,54 @@ fn parse_user(user_id: &str) -> Result<OwnedUserId, SessionError> {
 pub struct Envelope {
     pub scope: String,
     /// Open tag, e.g. the wire algorithm id upstream attached to the
-    /// encrypted content -- read back from that content itself (inside
-    /// `encrypt_event`) rather than hard-coded, so a future algorithm
+    /// encrypted content. From [`encrypt_event`], read back from the
+    /// content that call itself just produced, so a future algorithm
     /// upstream adds needs no change here.
+    ///
+    /// From [`decrypt_event`], read from the *input* event's own content
+    /// before decryption runs -- unauthenticated, the same caveat as
+    /// `sender` below: this is what the event claims about itself on the
+    /// wire, not a value independently confirmed by upstream's own
+    /// `EncryptionInfo::algorithm_info`. A mismatch between the two is
+    /// exactly what makes `decrypt_room_event` fail in the first place,
+    /// so they necessarily agree whenever this field is populated by a
+    /// successful decrypt -- but the *source* of this value is still the
+    /// untrusted side of that check, not the authenticated one.
     pub algorithm: String,
     pub event_type: String,
+    /// The wire ciphertext from [`encrypt_event`], or the plaintext
+    /// [`decrypt_event`] recovered -- see this struct's own doc comment
+    /// above for why `Debug` is hand-written to redact this regardless of
+    /// which one it is. Do not assume the field name on the decrypt path:
+    /// code that logs, persists, or otherwise handles this value needs
+    /// the same care any other plaintext gets.
     pub ciphertext: Vec<u8>,
     /// `@user:server`, verbatim. From [`encrypt_event`], the current
     /// machine's own user id, since that call is always this device's own
-    /// outbound encryption. From [`decrypt_event`], the sender recorded on
-    /// the event actually decrypted.
+    /// outbound encryption -- authenticated by definition, it is this
+    /// process's own identity.
+    ///
+    /// From [`decrypt_event`], this is the *outer, server-supplied*
+    /// sender of the `m.room.encrypted` event, copied verbatim into the
+    /// reconstructed decrypted event by upstream itself
+    /// (`matrix-sdk-crypto-0.18.0/src/olm/group_sessions/inbound.rs`) --
+    /// the Megolm plaintext carries no independent sender claim of its
+    /// own to cross-check it against. This is not a corner this function
+    /// cut: upstream's own `DecryptedRoomEvent::encryption_info` carries
+    /// the identical value in its own `sender` field (confirmed by
+    /// reading `OlmMachine::get_encryption_info`, which literally echoes
+    /// back the `&UserId` it was called with -- `sender:
+    /// sender.to_owned()`), so there is no more-authenticated alternative
+    /// available to substitute here. What *does* say how much to trust
+    /// this value is `EncryptionInfo::verification_state`, which this
+    /// function does not read or expose -- deliberately deferred, not
+    /// overlooked: it needs a real design decision about what shape to
+    /// surface on a public struct, not a field bolted on in a fix round,
+    /// and M2's `TrustRequirement::Untrusted` decrypts regardless of it
+    /// either way (see `decryption_settings()`). Treat this field as
+    /// unauthenticated transport metadata on the decrypt path, not as a
+    /// cryptographically established sender, until a later milestone
+    /// surfaces verification state.
     pub sender: String,
 }
 
@@ -439,10 +502,36 @@ fn classify_megolm_error(error: MegolmError) -> SessionError {
         MegolmError::MissingRoomKey(None) => SessionError::MissingKey,
         MegolmError::MissingRoomKey(Some(_)) => SessionError::UnsharedSession,
 
+        // The session is present -- this is not `MissingRoomKey` -- but its
+        // ratchet has already advanced past this message's index. The
+        // ordinary shape of that is joining a room after this message was
+        // sent, or a key shared from a later index than this message needs:
+        // the same input succeeds the moment an earlier ratchet state
+        // arrives (e.g. from a device that still holds it, via a key
+        // request), so this is exactly the "not yet, ask again" case
+        // `MissingKey` exists for, not a permanent failure. Fix for a
+        // review finding: this used to fall through to the general
+        // `Decryption(_)` arm below and land on `Undecryptable`, which
+        // upstream's own behaviour contradicts -- the only place upstream
+        // acts on this classification, it pairs this exact case with
+        // `MissingRoomKey` and issues a key re-request for both
+        // (`matrix-sdk-crypto-0.18.0/src/machine/mod.rs`'s
+        // `MegolmError::MissingRoomKey(_) | MegolmError::Decryption(DecryptionError::UnknownMessageIndex(_, _))`
+        // arm). Carved out here, ahead of the general `Decryption(_)` arm,
+        // so the remaining match keeps working: a `match` picks the first
+        // pattern that fits, so this specific pattern intercepts exactly
+        // this one case and leaves every other `Decryption` variant to
+        // fall through unchanged.
+        MegolmError::Decryption(DecryptionError::UnknownMessageIndex(_, _)) => {
+            SessionError::MissingKey
+        }
+
         // The device that sent this session's room key does not match the
         // identity keys recorded in the room key's own to-device message --
         // a spoofing-shaped condition about *who* encrypted this, not
-        // about the ciphertext itself.
+        // about the ciphertext itself. Unfixable: nothing the user does,
+        // including verifying the device, changes the fact that the room
+        // key's own embedded identity disagrees with itself.
         MegolmError::MismatchedIdentityKeys(_) => SessionError::UnknownDevice,
 
         // `decryption_settings()` always passes `TrustRequirement::Untrusted`
@@ -450,17 +539,32 @@ fn classify_megolm_error(error: MegolmError) -> SessionError {
         // `check_sender_trust_requirement` unconditionally returns `Ok`
         // (`matrix-sdk-crypto-0.18.0/src/machine/mod.rs`'s own match arm
         // `TrustRequirement::Untrusted => true`) -- so this arm is
-        // unreachable today. Matched anyway, with no wildcard, for when M3
-        // tightens that requirement; grouped with the identity-mismatch
-        // case above because both describe the sending device's identity
-        // failing to clear a trust bar, not a broken ciphertext.
+        // unreachable today, unlike the arm above it. Matched anyway, with
+        // no wildcard, for when M3 tightens that requirement and makes it
+        // reachable.
+        //
+        // Grouped with `MismatchedIdentityKeys` above under the same kind
+        // for now, but the two are not the same shape of failure: this one
+        // is a *policy* gap ("this device is fine, but does not clear the
+        // trust bar this call requires"), fixed by the user verifying the
+        // device -- exactly the opposite of the arm above, which no
+        // verification can fix. `UnknownDevice`'s own doc comment is
+        // written to be true of both rather than implying either fixes the
+        // other. Revisit this merge in M3: once this arm is reachable, a
+        // product needs to tell "verify this person to read this" apart
+        // from "this event's provenance is broken, never trust it", and
+        // one shared kind cannot say which.
         MegolmError::SenderIdentityNotTrusted(_) => SessionError::UnknownDevice,
 
         // The event or its decrypted content was malformed, or the
         // ciphertext itself could not be decoded or decrypted -- every
-        // case where this crate ran the operation and it did not produce a
-        // usable plaintext, as opposed to knowing exactly which key is
-        // absent.
+        // remaining case where this crate ran the operation and did not
+        // produce a usable plaintext, as opposed to knowing exactly which
+        // key is absent. `Decryption`'s own `UnknownMessageIndex` case is
+        // carved out above, ahead of this arm; what is left of it here --
+        // `Signature`, `InvalidMAC`, `InvalidMACLength`, `InvalidPadding`
+        // -- is a genuine tampering or corruption failure with no "just
+        // wait" exception.
         MegolmError::EventError(_)
         | MegolmError::JsonError(_)
         | MegolmError::Decode(_)
@@ -2048,11 +2152,27 @@ mod tests {
     /// The discriminating half of the round-trip test above: a decryptor
     /// that always returned success (or always the same bytes) regardless
     /// of the ciphertext would still pass a test that only checks the
-    /// happy path. Flipping one character of the ciphertext -- same
-    /// length, same base64 alphabet -- exercises the MAC/authentication
-    /// check itself, not a shape or length rejection earlier in the path,
-    /// and must make decryption fail rather than silently succeed or
-    /// return the wrong bytes.
+    /// happy path. Flipping one character of the base64 `ciphertext`
+    /// string -- same length, same alphabet -- must make decryption fail
+    /// rather than silently succeed or return the wrong bytes.
+    ///
+    /// The flipped character is chosen a quarter of the way into the
+    /// string, not the first: a vodozemac Megolm message is
+    /// `version(1) || message_index || ciphertext || mac || signature`
+    /// (`vodozemac-0.10.0/src/megolm/message.rs`), all base64-encoded
+    /// together, so the leading few characters encode the version and
+    /// ratchet-index header, not the ciphertext body. A review finding
+    /// caught this by mutation: this test used to flip the *first*
+    /// character, which corrupts that header and makes the whole message
+    /// fail to decode as a well-formed `MegolmMessage` before any
+    /// session lookup or cryptography runs at all
+    /// (`event.deserialize()?`, the first line of upstream's
+    /// `decrypt_room_event_inner`) -- proving only that malformed input is
+    /// rejected, not that the MAC check catches tampering. A quarter of
+    /// the way in falls inside the ciphertext body for any payload this
+    /// test's size or larger, well clear of both the leading header and
+    /// the fixed-size MAC-and-signature suffix at the end, so corrupting
+    /// it can only be caught by the actual decrypt step.
     #[test]
     fn corrupting_the_ciphertext_makes_decryption_fail_rather_than_succeed_silently() {
         let _guard = futures::executor::block_on(crate::machine::lock_for_test());
@@ -2077,11 +2197,13 @@ mod tests {
                 .as_str()
                 .expect("a Megolm content always carries a ciphertext string")
                 .to_string();
-            let flipped = if let Some(rest) = original.strip_prefix('A') {
-                format!("B{rest}")
-            } else {
-                format!("A{}", &original[1..])
-            };
+            // A quarter of the way into the string, not the first
+            // character -- see this test's own doc comment for why.
+            let mut bytes = original.into_bytes();
+            let target = bytes.len() / 4;
+            bytes[target] = if bytes[target] == b'A' { b'B' } else { b'A' };
+            let flipped =
+                String::from_utf8(bytes).expect("flipping one base64 byte stays valid UTF-8");
             content["ciphertext"] = serde_json::Value::String(flipped);
 
             let raw_event = serde_json::json!({
@@ -2143,6 +2265,86 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(err, SessionError::MissingKey);
+    }
+
+    /// The other half of the split `MissingRoomKey` provides, and a
+    /// review finding: reachable today, unlike `UnknownDevice`, through
+    /// the same public surface a real sync loop uses -- feed a real
+    /// `m.room_key.withheld` to-device event through `receive_sync_changes`
+    /// (the machine's own `AnyToDeviceEvent` dispatch routes it to
+    /// `add_withheld_info`, which records it against its `(room_id,
+    /// session_id)`, per `matrix-sdk-crypto-0.18.0/src/machine/mod.rs`),
+    /// then decrypt an event for that same room and session id, for which
+    /// this machine has no actual inbound session. Distinct from
+    /// `decrypting_an_event_for_a_session_never_shared_reports_missing_key`
+    /// above only in that a withheld record now exists for the same kind
+    /// of absent session, which is exactly the fact `UnsharedSession` is
+    /// for.
+    #[test]
+    fn decrypting_an_event_for_a_withheld_session_reports_unshared_session() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+
+            // A real curve25519 key, not a fabricated string: the withheld
+            // content's `sender_key` must deserialize as one, and this
+            // machine's own identity key is guaranteed to.
+            let keys = crate::device_identity_keys("@alice:example.org", "DEVICE1")
+                .await
+                .unwrap();
+
+            let withheld_session_id = "WITHHELD_SESSION_NOBODY_GOT";
+            let withheld_event = serde_json::json!({
+                "sender": "@bob:example.org",
+                "type": "m.room_key.withheld",
+                "content": {
+                    "algorithm": "m.megolm.v1.aes-sha2",
+                    "code": "m.unavailable",
+                    "reason": "the requested key was not found",
+                    "room_id": "!s:example.org",
+                    "session_id": withheld_session_id,
+                    "sender_key": keys.curve25519,
+                },
+            });
+            receive_sync_changes(
+                &serde_json::json!({ "to_device_events": [withheld_event] }).to_string(),
+            )
+            .await
+            .unwrap();
+
+            // A real content shape (borrowed from a real encrypt, then
+            // repointed at the withheld session id), the same technique
+            // the `MissingKey` test above uses -- so this exercises the
+            // withheld-record branch specifically, not a shape rejection.
+            share_scope_key("!s:example.org", &["@alice:example.org".to_string()])
+                .await
+                .unwrap();
+            let encrypted = encrypt_event("!s:example.org", "m.room.message", r#"{"body":"hi"}"#)
+                .await
+                .unwrap();
+            let mut content: serde_json::Value = serde_json::from_slice(&encrypted.ciphertext)
+                .expect("encrypt_event's own ciphertext is well-formed JSON");
+            content["session_id"] = serde_json::Value::String(withheld_session_id.to_string());
+
+            let raw_event = serde_json::json!({
+                "sender": encrypted.sender,
+                "event_id": "$event5:example.org",
+                "origin_server_ts": 1_700_000_000_000u64,
+                "content": content,
+            })
+            .to_string();
+
+            decrypt_event("!s:example.org", &raw_event).await
+        })
+        .unwrap_err();
+
+        assert_eq!(err, SessionError::UnsharedSession);
     }
 
     /// This crate's own "no secret in any error" rule (spec section 7),
