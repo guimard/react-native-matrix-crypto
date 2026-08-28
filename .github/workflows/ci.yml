@@ -209,3 +209,107 @@ jobs:
       - run: ./scripts/measure-artifacts.sh ci-android
       - uses: actions/upload-artifact@v4
         with: { name: artifact-sizes-android, path: artifact-sizes.json }
+
+  probe-android:
+    # The only job that runs this library's code on a device.
+    #
+    # Every fast check in this repo stayed green for the whole of M2 while the
+    # example app's probe was failing on real native code:
+    # `getDeviceIdentityKeys` began refusing a caller that names a different
+    # identity than the live machine holds, and the probe called it with no
+    # machine created at all. cargo test, vitest, tsc and all five gates
+    # passed throughout, and the breakage was found by a person launching the
+    # app by hand (task-10-report.md, finding 1). Nothing cheaper than running
+    # it would have caught that, so this job runs it.
+    #
+    # It is slow on purpose. A release Rust build for Android plus a Gradle
+    # release build plus an emulator boot is most of an hour, against seconds
+    # for `gates`. That is the price of the only check here that executes the
+    # shipped chain end to end.
+    needs: gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: '.nvmrc', cache: yarn }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - run: yarn install --frozen-lockfile
+      - run: rustup target add x86_64-linux-android
+      # Same pin and cache as build-android; see that job for why cargo-ndk is
+      # a required, explicit prerequisite.
+      - id: cargo-ndk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-ndk
+          key: cargo-ndk-${{ runner.os }}-4.1.2
+      - if: steps.cargo-ndk-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Build the x86_64 Android slice
+        run: |
+          # NOT `--and-generate`, and this job is where it matters most: on
+          # Android that flag rewrites the turbo module into a stub that
+          # exports nothing and registers nothing with JSI (see build-android
+          # above). An app built on that output installs, launches, and then
+          # fails every native call -- which reads exactly like a
+          # cryptography failure in the probe output.
+          #
+          # For the same reason this job does not reuse anything
+          # build-android produces: that job's tree is not something an app
+          # can be built from, and depending on it would make this leg's
+          # correctness depend on that leg's flags.
+          cd packages/react-native-matrix-crypto
+          yarn exec ubrn -- build android \
+            --config ../../ubrn.config.yaml \
+            --targets x86_64-linux-android \
+            --release
+      # Assert the tree this APK is about to be built from is a real turbo
+      # module, so a stub fails here with a message rather than three steps
+      # later as an unexplained probe failure on the emulator.
+      - run: yarn gate:stubs
+      - name: Assemble a release APK with the JS bundled in
+        run: |
+          # Release, not debug: a debug APK loads its JavaScript from a Metro
+          # server, so a debug run would be testing Metro's availability as
+          # much as the bridge. A release APK carries the Hermes bytecode
+          # inside it and needs nothing else running.
+          #
+          # Confirmed on a local emulator before this job was written: a
+          # release build still forwards `console.log` to logcat under the
+          # ReactNativeJS tag, so the PROBE_ lines the script below reads are
+          # there.
+          cd packages/example-app/android
+          ./gradlew :app:assembleRelease -PreactNativeArchitectures=x86_64 --no-daemon
+      - name: Enable KVM and refuse to continue without it
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          # Without /dev/kvm the x86_64 emulator either refuses to start or
+          # crawls, and this job would fail several minutes later with "no
+          # PROBE_SUMMARY was printed" -- true, but pointing at the app rather
+          # than at the runner. GitHub's x86_64 ubuntu runners provide KVM;
+          # the arm64 ones do not, so a future `runs-on` change lands here.
+          if [ ! -e /dev/kvm ]; then
+            echo "FAIL: /dev/kvm is not present on this runner."
+            echo "      An x86_64 Android emulator needs hardware acceleration."
+            echo "      If this runner cannot provide it, this job needs a"
+            echo "      self-hosted runner rather than a longer timeout."
+            exit 1
+          fi
+          ls -l /dev/kvm
+      - name: Run the probe on an emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          disable-animations: true
+          # The assertion lives in the script, not here, so it can be run by
+          # hand against a local emulator exactly as CI runs it. It asserts on
+          # the verbatim `PROBE_SUMMARY n/n` line -- not on an exit code, and
+          # never on the absence of a FAIL line.
+          script: ./scripts/run-probe-on-emulator.sh
