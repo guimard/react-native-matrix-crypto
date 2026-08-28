@@ -37,10 +37,17 @@ jobs:
       - run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
       - run: cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
       # gate:boundary already runs matrix-crypto-core's own tests as part of
-      # the boundary check, but `cargo clippy --all-targets` above only
-      # compiles matrix-crypto-ffi/tests/exports.rs, it never executes it.
-      # Run the whole workspace explicitly so both crates' tests (8 total)
-      # actually run on every PR, not just the core crate's 6.
+      # the boundary check, but it passes `-p matrix-crypto-core`, and
+      # `cargo clippy --all-targets` above only COMPILES
+      # matrix-crypto-ffi/tests/*, it never executes them. Without this step
+      # the FFI crate's tests never run on a pull request at all.
+      #
+      # This comment used to say the workspace had 8 tests, 6 of them the
+      # core crate's. It said that while `--list` reported 59, and 61 the
+      # next day. A count nobody maintains is worse than no count: it reads
+      # as a fact and decays into a lie, which is the defect this milestone
+      # spent a day paying for. The structural reason above is the reason,
+      # and it does not rot.
       - run: cargo test --manifest-path rust/Cargo.toml
       - run: yarn --cwd packages/react-native-matrix-crypto typecheck
       # The example app compiles the library's shipped `interop/` sources
@@ -263,11 +270,21 @@ jobs:
         with: { name: artifact-sizes-ios, path: artifact-sizes.json }
 
   build-android:
-    # `needs: gates` is not about runner minutes: `gates` runs gate:drift,
-    # the only check proving the committed bindings match the Rust source.
-    # This job builds whatever is in the checkout without ever diffing it
-    # against the Rust surface, so on a PR with drifted bindings this leg
-    # would otherwise go green against code that is not what is committed.
+    # `needs: gates` is worth having, and NOT for the reason that used to be
+    # written here. This paragraph was copied from build-ios, where it is
+    # correct, and it is inverted here: it claimed this leg "builds whatever
+    # is in the checkout without ever diffing it against the Rust surface, so
+    # on a PR with drifted bindings this leg would otherwise go green against
+    # code that is not what is committed." This job deliberately omits
+    # `--and-generate` -- the paragraph on the build step below says so at
+    # length -- so it builds exactly what IS committed. Drifted bindings are
+    # not a way for this leg to build something else.
+    #
+    # The real reason is cheaper and duller: this leg costs a release Rust
+    # build for Android plus a Gradle build, and there is no sense spending
+    # that on a pull request whose bindings, formatting, clippy, tests or
+    # typechecks have already gone red in `gates`. It also keeps the failure
+    # a reader sees first the one that names the cause.
     needs: gates
     runs-on: ubuntu-latest
     steps:
@@ -469,8 +486,16 @@ jobs:
     # `needs: gates` is not about drift here -- this test drives
     # matrix-crypto-core directly and no generated binding is involved. It is
     # so a leg that boots a homeserver and builds the Rust workspace does not
-    # run when a thirty-second gate has already gone red. `gates` also runs
+    # run when the cheaper job has already gone red. `gates` also runs
     # `cargo clippy --all-targets`, which is what compiles this test at all.
+    #
+    # "Cheaper", not "a thirty-second gate", which is what this said until
+    # 2026-08-28 and was never true: `gates` runs yarn install, gate:drift (a
+    # full codegen including a cargo build of the FFI crate), gate:boundary
+    # (which itself runs cargo test -p matrix-crypto-core), cargo fmt, clippy
+    # --all-targets, the whole workspace's tests, two typechecks and vitest.
+    # Measured warm on a developer machine, gate:boundary alone is 87 s. It is
+    # a multi-minute job, and cheap only next to this one.
     needs: gates
     runs-on: ubuntu-latest
     # Docker and a Rust toolchain both come with the hosted runner; nothing

@@ -184,7 +184,7 @@ const recovered = await decryptEvent(scope, incomingEvent)
 
 ### Design notes worth knowing
 
-**Scopes are opaque.** `CryptoScopeId` is a branded type, not a room id. Nothing in the public API says "room". The encryption algorithm travels as an open tag rather than an assumption, so a later move to MLS, or a hybrid post-quantum layer, can land without breaking this surface. A build gate rejects any Megolm, Olm or room specific identifier reaching the public declarations.
+**Scopes are opaque.** `CryptoScopeId` is a branded type, not a room id. Nothing in the public API says "room". The encryption algorithm travels as an open tag rather than an assumption, so a later move to MLS, or a hybrid post-quantum layer, can land without breaking this surface. A build gate rejects any Megolm, Olm or room specific identifier reaching the public declarations. Those three words are the whole denylist, and the boundary is worth stating rather than implying: `curve25519` and `ed25519` are in the public surface today, on `IdentityKeys`, because that is what the Matrix protocol calls those keys and hiding the name would buy nothing. The gate defends the design decision that a scope is not a room and an algorithm is a tag, not the broader claim that no primitive is ever named.
 
 **The library writes no diagnostics of its own.** No `println!`, no `console.*`, no file writes, no `tracing` subscriber. Errors return identifiers to their caller. Diagnostics, if you need them, belong in a sink your application owns. A cryptographic library that logs by default is how cleartext reaches a crash report.
 
@@ -308,7 +308,7 @@ Every one of these runs in CI. Each has been observed rejecting a real violation
 | `gate:boundary` | the core takes no direct `uniffi` dependency |
 | `gate:drift` | committed bindings match the Rust source |
 | `gate:logger` | the bridge contains no logger, in Rust, TypeScript and C++ alike |
-| `gate:agility` | no algorithm specific identifier reaches the public API |
+| `gate:agility` | no Megolm, Olm or room specific identifier reaches the public API |
 | `gate:stubs` | the committed turbo module is really wired up, not an empty shell |
 | `gate:readme` | the README npm shows is the README GitHub shows |
 

@@ -31,8 +31,11 @@ set -euo pipefail
 # now found seven times: a green report that never examined its target. So
 # this script requires, from cargo's own output:
 #
-#   * the line `test level_two_interoperability_over_a_real_homeserver ... ok`
-#   * a `test result: ok. 1 passed; 0 failed; 0 ignored` summary
+#   * TWO `test level_two_interoperability_over_a_real_homeserver ... ok`
+#     lines, and TWO `test result: ok. 1 passed; 0 failed; 0 ignored`
+#     summaries -- the parent process and the phase-two child it spawns of
+#     itself to reopen the store. Exactly two, asserted; see the block that
+#     checks them for what one and what three each mean.
 #
 # and it requires the homeserver to have answered a real login before cargo
 # is invoked at all. A container that never started, a test that never ran,
@@ -430,13 +433,42 @@ $(grep '^test result:' "$OUTPUT" || echo '      (no test result line at all)')"
 fi
 
 # The test spawns a second copy of itself to prove `openCryptoStore` restores
-# a session across processes, and that child's libtest output lands in this
-# same stream. Two summaries are therefore expected and three would mean
-# something re-ran; what matters is that neither of them is a nought, which
-# the two checks above have already established for both.
+# a session across processes: `std::env::current_exe()` re-invoked with
+# `--exact <this test> --ignored --test-threads=1`, inheriting stdout. So the
+# child runs libtest too, and its `... ok` line and its own summary land in
+# this same stream. TWO of each are expected, exactly.
+#
+# That number was in this comment and in no check. The comment claimed "what
+# matters is that neither of them is a nought, which the two checks above have
+# already established for both", and the checks above are `-lt 1` on a
+# `grep -c`, which establishes it for one. Fed a stream where the parent
+# passed and the child matched no test, this script printed
+# "1 libtest summaries" and exited 0 -- and the child is the cross-process
+# restore proof, the whole reason the second process exists. Reproduced
+# 2026-08-28 by the verification-infrastructure review, and again here against
+# this script after the fix.
+#
+# Pinned rather than printed, the same way scripts/run-probe-on-emulator.sh
+# pins PROBE_SUMMARY 12/12: if the test stops spawning a child, or starts
+# spawning two, this fails until someone changes the number on purpose.
+EXPECTED_LIBTEST_RUNS=2
+
+if [ "$OK_LINES" -ne "$EXPECTED_LIBTEST_RUNS" ] || [ "$SUMMARIES" -ne "$EXPECTED_LIBTEST_RUNS" ]; then
+  RUN_FAILED=1
+  fail "this run reported $OK_LINES '$TEST_NAME ... ok' lines and $SUMMARIES
+      libtest summaries; exactly $EXPECTED_LIBTEST_RUNS of each are expected -- the parent
+      process and the phase-two child it spawns of itself to reopen the store.
+      One of each means the child matched no test, which is the cross-process
+      openCryptoStore restore silently not happening. More than that means
+      something re-ran and the result is ambiguous.
+libtest reported:
+$(grep '^test result:' "$OUTPUT" || echo '      (no test result line at all)')"
+fi
+
 echo
 echo "PASS: $TEST_NAME"
-echo "      $SUMMARIES libtest summaries, all 'ok. 1 passed; 0 failed; 0 ignored'."
+echo "      $SUMMARIES libtest summaries, asserted, all 'ok. 1 passed; 0 failed;"
+echo "      0 ignored' -- the parent and the phase-two child."
 if [ -n "$CONTAINER" ]; then
   echo "      Proven against a throwaway $SERVER_NAME homeserver this script started"
   echo "      and is about to destroy. No credential was read from anywhere."
