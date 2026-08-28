@@ -82,7 +82,7 @@ The unimplemented functions exist today as final types that compile, and reject 
 
 Decryption does not authenticate the sender. `EventEnvelope.sender` is the value the homeserver delivered, and a successfully decrypted event does not prove who sent it. That authentication comes from device verification, which is not implemented yet. Treat `sender` and `algorithm` as unauthenticated transport metadata until it is.
 
-The interoperability proof covers the Rust core, not yet the TypeScript surface. `matrix-nio`, a Matrix client written in Python by people who have never seen this code, decrypts what this library encrypts and this library decrypts what it sends, over a real homeserver, in a test anyone can run. That test drives the Rust core directly. The facade, the generated bindings and the JSI layer above it are proven on an emulator and a simulator, against themselves rather than against another implementation. One documentation defect has already been found in exactly that gap, so it is named here rather than left implied.
+The interoperability proof has a floor, and it is the ratchet. `matrix-nio`, a Matrix client written in Python by people who have never seen this code, decrypts what this library encrypts and this library decrypts what it sends, over a real homeserver, in two tests anyone can run: one driving the Rust core, one driving the published TypeScript API on an emulator. What neither proves is the ratchet itself. `matrix-nio` 0.26 and this library both call `vodozemac 0.10.0`, so a defect inside that crate, or a misreading shared below the protocol line, would pass both sides. What is genuinely tested by two independent implementations is everything above it: event shapes, the `/keys/*` payloads a real homeserver accepts and answers, to-device routing, and the order a session key has to travel in. That is where this library's own code lives.
 
 Verified end to end on an iOS simulator and on a physical Android device: a record round trip, a byte array returned reversed to prove Rust genuinely read it, an async call resolving as a Promise, a typed error reaching a JavaScript `catch`, one callback signal travelling back from Rust, and a real Curve25519 and Ed25519 key pair.
 
@@ -261,6 +261,18 @@ MATRIX_INTEROP_USER=@you:your.homeserver \
 MATRIX_INTEROP_PASSWORD=... \
 ./scripts/run-level-two-interop.sh
 ```
+
+### Running the same proof through the TypeScript API
+
+The script above drives the Rust core. Between that core and your code sit the UniFFI scaffolding, the JSI binding, the generated TypeScript and the facade, and the same exchange runs through all of them on an Android emulator:
+
+```sh
+python3 packages/example-app/level-two/run_level_two.py
+```
+
+It needs Docker, an emulator `adb` can see, a release APK already built, and a Python with `matrix-nio[e2e]` — no Rust toolchain. It stands up its own throwaway homeserver, creates two accounts and an encrypted room inside it, drives `matrix-nio` as the counterparty, installs and launches the example app, and reads the app's own `LEVEL2_SUMMARY 13/13` back out of the system log. Every call the app makes is the published API and nothing else. Everything the run creates lives inside the container, and the container is destroyed from a `finally`, an `atexit` hook and a signal handler, so a failed run leaves no more behind than a passing one.
+
+`--mutation <name>` sabotages exactly one assertion, to check that assertion can fail — corrupting the event the counterparty is meant to read, or handing `receiveSyncChanges` a raw `/sync` response, among others. A mutated run prints a different summary line, so it can never be read as a clean one.
 
 ### Never hand edit a generated file
 
