@@ -73,6 +73,16 @@ pub trait ProbeObserver: Send + Sync {
 }
 
 /// Translation only: adapts the foreign observer to the core's trait.
+///
+/// No thread-safety work happens here, and none is needed. By the time
+/// `on_signal` below runs, the core's emission path has already detached
+/// the call onto its own freshly spawned thread, off whatever stack -- and
+/// whatever lock -- produced the signal (see `observer.rs`'s `emit` in
+/// `matrix-crypto-core`, and design doc section 5). Calling the foreign
+/// callback from that thread, whichever one it happens to be, is safe
+/// because ubrn's generated glue is what marshals the call onto the JS
+/// thread; that marshalling, not this crate, is the boundary a callback
+/// crossing into JavaScript from an arbitrary native thread has to cross.
 struct ObserverAdapter(Arc<dyn ProbeObserver>);
 
 impl matrix_crypto_core::ProbeObserver for ObserverAdapter {
