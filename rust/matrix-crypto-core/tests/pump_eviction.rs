@@ -28,26 +28,41 @@
 //! access to the `#[cfg(test)]` reset helpers the unit tests use.
 
 use matrix_crypto_core::{
-    create_machine, in_runtime, mark_request_sent, take_outgoing_requests, with_machine,
-    MachineConfig,
+    create_machine, mark_request_sent, share_scope_key, take_outgoing_requests, MachineConfig,
 };
-use matrix_sdk_common::ruma::OwnedUserId;
 
-/// Comfortably over upstream's own 250-users-per-request cap, so the split
-/// is not sitting on the boundary, and small enough to stay fast.
-const TRACKED_USERS: usize = 300;
+/// Upstream's own per-request cap, `IdentityManager::MAX_KEY_QUERY_USERS`
+/// (`matrix-sdk-crypto-0.18.0/src/identities/manager.rs:102`), applied by
+/// `users_for_key_query`'s `.chunks(...)` at `:871`. Restated here rather
+/// than imported because it is a private associated constant; if upstream
+/// changes it, the guard below says so by name and by value instead of
+/// leaving a maintainer to find out.
+const UPSTREAM_CHUNK_CAP: usize = 250;
+
+/// Comfortably over the cap, so the split is not sitting on the boundary,
+/// and small enough to stay fast. Derived from the cap rather than written
+/// as a literal, so raising one raises the other.
+const TRACKED_USERS: usize = UPSTREAM_CHUNK_CAP + 50;
 
 #[test]
 fn every_keys_query_sibling_handed_out_in_one_batch_stays_resolvable() {
     let dir = tempfile::tempdir().expect("temp dir");
     let store_path = dir.path().join("store").to_string_lossy().into_owned();
 
-    // `futures::executor::block_on`, not `#[tokio::test]`: an ambient
-    // runtime would make the library look like it supplies its own even
-    // where it supplies none -- the mistake `machine.rs`'s
+    // A bare `futures::executor::block_on`: no `#[tokio::test]`, and no
+    // `in_runtime` wrapper of its own either. Every call below is a library
+    // call, and each is responsible for reaching for the runtime it needs --
+    // so this test enters with genuinely no runtime context anywhere, and a
+    // library function that forgot its own `in_runtime` would panic here
+    // rather than be carried by a context this test supplied. That is the
+    // mistake `machine.rs`'s
     // `with_machine_supplies_a_runtime_for_store_touching_calls` exists to
-    // catch, and one this milestone has already made twice.
-    futures::executor::block_on(in_runtime(async move {
+    // catch, made twice already in this milestone with a green suite both
+    // times. `tests/two_parties.rs` cannot hold this property -- it drives a
+    // bare upstream `OlmMachine`, whose own `share_room_key` reaches
+    // `tokio::task::spawn` and needs a context this crate does not supply
+    // for it -- so it lives here instead.
+    futures::executor::block_on(async move {
         create_machine(MachineConfig {
             user_id: "@alice:example.org".to_string(),
             device_id: "DEVICE1".to_string(),
@@ -57,34 +72,20 @@ fn every_keys_query_sibling_handed_out_in_one_batch_stays_resolvable() {
         .await
         .expect("the library's machine must be creatable");
 
-        // Enough tracked users to force upstream to split its key query.
-        // Reached through `with_machine`, this crate's own public accessor
-        // for the live machine: M2's public surface has no "track these
-        // users" call of its own (that is the product's `/sync` room-member
-        // handling, which this bridge deliberately does not do), and
-        // `receive_sync_changes`'s changed-device list only re-flags users
-        // that are *already* tracked -- upstream's own
-        // `mark_tracked_users_as_changed` skips every user it has never
-        // seen. So there is no way to set this precondition up through the
-        // narrower surface, and faking it by hand would not produce the
-        // sibling requests this test is about.
-        let users: Vec<OwnedUserId> = (0..TRACKED_USERS)
-            .map(|i| {
-                format!("@u{i}:example.org")
-                    .parse()
-                    .expect("a generated user id parses")
-            })
+        // Enough tracked users to force upstream to split its key query,
+        // set up through the shipped surface: `share_scope_key` tracks the
+        // users it is given, so naming this many is what makes the pump
+        // owe a query for each of them. (An earlier version of this test
+        // reached `update_tracked_users` through `with_machine`, because
+        // nothing on the surface could do it -- that gap is closed, and
+        // this test no longer needs the back door.) This first share
+        // delivers nothing: not one of these users has a known device.
+        let users: Vec<String> = (0..TRACKED_USERS)
+            .map(|i| format!("@u{i}:example.org"))
             .collect();
-        with_machine(move |machine| {
-            Box::pin(async move {
-                machine
-                    .update_tracked_users(users.iter().map(AsRef::as_ref))
-                    .await
-            })
-        })
-        .await
-        .expect("the machine must be live")
-        .expect("tracking users must not fail");
+        share_scope_key("!s:example.org", &users)
+            .await
+            .expect("sharing a scope key must not fail");
 
         let batch = take_outgoing_requests()
             .await
@@ -97,9 +98,15 @@ fn every_keys_query_sibling_handed_out_in_one_batch_stays_resolvable() {
         assert!(
             query_ids.len() >= 2,
             "this test needs upstream to split its key query across several \
-             requests in one batch; it handed out {} instead, so the property \
-             below is not actually being exercised",
-            query_ids.len()
+             requests in one batch, and it handed out {} instead, so the \
+             property below is not being exercised. It tracked {} users \
+             against upstream's MAX_KEY_QUERY_USERS, which was {} when this \
+             was written (matrix-sdk-crypto identities/manager.rs). If that \
+             cap has risen, raise UPSTREAM_CHUNK_CAP in this file to match \
+             it; TRACKED_USERS follows from it.",
+            query_ids.len(),
+            TRACKED_USERS,
+            UPSTREAM_CHUNK_CAP
         );
 
         // The decisive loop. Every sibling was handed to the caller in the
@@ -114,5 +121,5 @@ fn every_keys_query_sibling_handed_out_in_one_batch_stays_resolvable() {
                      resolvable -- a sibling handed out alongside it must not evict it",
             );
         }
-    }));
+    });
 }
