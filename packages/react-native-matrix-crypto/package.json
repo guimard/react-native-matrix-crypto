@@ -21,7 +21,7 @@
     "android/src/main",
     "ios",
     "*.podspec",
-    "*.xcframework",
+    "MatrixCryptoFramework.xcframework",
     "LICENSE",
     "README.md",
     "!src/**/*.test.ts",

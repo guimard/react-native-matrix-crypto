@@ -192,13 +192,25 @@ PKG_DIR="packages/react-native-matrix-crypto"
 # CocoaPods executes on a consumer's machine, it is the file that decides
 # which iOS sources compile into their app, and skipping it left it shipped
 # and unscanned -- the same shape as the `interop/` gap above, found the same
-# way, by the M2 final review. So globs are expanded now, with exactly two
-# named exclusions:
+# way, by the M2 final review. So globs are expanded now, with exactly one
+# kind of entry excluded:
 #
-#   *.aar, *.xcframework -- build outputs whose contents are compiled code.
-#     They are gitignored, so they are present or absent depending on whether
-#     a platform build has run, and a gate whose reach depends on that reports
-#     a different answer to two people looking at the same commit.
+#   anything ending in .aar or .xcframework -- build outputs whose contents
+#     are compiled code. They are gitignored, so they are present or absent
+#     depending on whether a platform build has run, and a gate whose reach
+#     depends on that reports a different answer to two people looking at the
+#     same commit.
+#
+#     Matched on the suffix rather than on the exact strings `*.aar` and
+#     `*.xcframework`, because on 2026-08-29 the xcframework entry stopped
+#     being a glob: npm 10's packlist does not pack the contents of a
+#     directory a bare glob in "files" matches, so `*.xcframework` shipped a
+#     tarball with no xcframework in it and "files" now names
+#     `MatrixCryptoFramework.xcframework` literally
+#     (scripts/assert-tree-ships-binaries.sh carries the whole account). An
+#     exclusion keyed to the glob spelling would have silently stopped
+#     matching, and this gate would have started grepping 150 MB of compiled
+#     objects on whichever machine happened to have built them.
 #
 # An unrecognised glob shape throws rather than being silently dropped: a
 # `files` entry this cannot expand must fail loudly, since silently skipping
@@ -212,17 +224,17 @@ SHIPPED_ROOTS=$(node -e '
   const fs = require("fs");
   const dir = process.argv[1];
   const pkg = JSON.parse(fs.readFileSync(dir + "/package.json", "utf8"));
-  const BINARY_GLOBS = new Set(["*.aar", "*.xcframework"]);
+  const IS_BINARY_ENTRY = /\.(aar|xcframework)$/;
   for (const entry of pkg.files || []) {
     if (entry.startsWith("!")) continue;
+    if (IS_BINARY_ENTRY.test(entry)) continue;
     if (entry.includes("*")) {
-      if (BINARY_GLOBS.has(entry)) continue;
       const m = /^\*(\.[A-Za-z0-9]+)$/.exec(entry);
       if (!m) {
         console.error("FAIL: this gate cannot expand the \"files\" entry " + entry + ".");
         console.error("      It would then scan nothing under it while reporting a pass.");
         console.error("      Teach the expansion this shape, or exclude it deliberately");
-        console.error("      the way *.aar and *.xcframework are excluded above.");
+        console.error("      the way .aar and .xcframework entries are excluded above.");
         process.exit(1);
       }
       for (const f of fs.readdirSync(dir)) {
