@@ -496,8 +496,30 @@ steps 2 and 3 are therefore not needed and were not attempted.**
    M2. The store dependency added 79 MB. So `cdylib` did not merely close a gap that
    already existed; it absorbed M2's own growth as well.
 
-2. **Drop the root `react-native-matrix-crypto-release.aar`,** 23236 KB. Not needed.
-   Retained.
+2. **Drop the root `react-native-matrix-crypto-release.aar`.** Not needed for the size
+   gate, which step 1 already closed, so it was retained. **Open, and it should not
+   stay open long.** The M2 final review established that the file has no consumer at
+   all: React Native autolinking includes `android/build.gradle` as a Gradle
+   subproject and builds the module from source, and no gradle file, podspec or
+   `CMakeLists.txt` in this repository names the archive. The README had meanwhile
+   grown a rationale for it, "for a consumer who would rather not build from source at
+   all", describing a mechanism that does not exist, and two release assertions had
+   been built on that sentence: both required the file, one citing the README as its
+   reason. The sentence and both requirements are withdrawn.
+
+   What that leaves is a packaging decision rather than a documentation one, so it is
+   recorded here rather than taken in a fix round. On the first complete
+   cross-platform pack the archive is 29068 KB of 219772 KB unpacked, 13 percent of
+   the artifact, duplicating the four per-ABI `.so` files that `android/` already
+   ships; and producing it costs the release a JDK setup and a full Gradle
+   `assembleRelease`, since `ubrn build android` does not emit one. Dropping `*.aar`
+   from `package.json`'s `files` and removing that build step is the whole change. The
+   argument for keeping it is that an `.aar` is the conventional Android library
+   format and a brownfield consumer outside autolinking could in principle use one --
+   but no document says how, nothing tests that path, and by this repository's own
+   standard for gates ("a gate nobody has watched fail is not known to work") a
+   distribution path nobody has ever consumed is not known to work either. Shipping an
+   untested one for a cryptographic library is worse than shipping none.
 3. **Split per-platform packages, installed explicitly rather than resolved
    automatically.** Not needed. Retained as the fallback if a later milestone's
    dependencies push the tarball back over the gate.

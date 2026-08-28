@@ -95,7 +95,7 @@ Verified end to end on an iOS simulator and on a physical Android device: a reco
 yarn add react-native-matrix-crypto
 ```
 
-**No Rust toolchain is required.** The published package ships prebuilt binaries: an `.xcframework` for iOS, and for Android a prebuilt Rust library per ABI under `android/src/main/jniLibs/`, which this module's `CMakeLists.txt` links when your app autolinks it and builds its C++ from source. A fully prebuilt, already linked `.aar` ships alongside those, for a consumer who would rather not build from source at all. `yarn add` is all you need.
+**No Rust toolchain is required.** The published package ships prebuilt binaries: an `.xcframework` for iOS, and for Android a prebuilt Rust library per ABI under `android/src/main/jniLibs/`, which this module's `CMakeLists.txt` links when your app autolinks it and builds its C++ from source. `yarn add` is all you need.
 
 Two different checks stand behind that sentence, and they establish different things.
 
@@ -104,6 +104,8 @@ Two different checks stand behind that sentence, and they establish different th
 **At publication,** the release workflow does. It builds both platforms in full, packs one tarball, and then opens that tarball and reads what is inside: every slice the `.xcframework` advertises, a prebuilt Rust library for every ABI `android/build.gradle` declares, an `.aar` carrying all of them — each large enough and with the right magic number to be real compiled code rather than a placeholder. Only then does it install those exact bytes on a machine with `cargo` and `rustc` unreachable, bundle and run the entry point out of the installed package the way your app's bundler would, and publish the tarball it checked, with [npm provenance](https://docs.npmjs.com/generating-provenance-statements) so the registry can show which workflow run produced what you downloaded.
 
 Neither of those runs the cryptography. Loading the module in a plain Node process stops where it calls into the native library, because a JSI turbo module needs a React Native runtime. Running the shipped chain end to end is the Android emulator job's business, and the interoperability proof below is where a third party client checks the result.
+
+One thing in the tarball is not for you. A prebuilt `react-native-matrix-crypto-release.aar` sits at the package root, and nothing consumes it: autolinking builds `android/build.gradle` as a Gradle subproject from source, and no gradle file, podspec or `CMakeLists.txt` in this repository names that archive. This README used to offer it "for a consumer who would rather not build from source at all", which described no mechanism that exists. It is a build output that the `files` allowlist happens to carry, it duplicates the per-ABI libraries above, and whether it keeps shipping is an open packaging question rather than a feature.
 
 ### Requirements
 

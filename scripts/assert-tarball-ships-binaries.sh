@@ -38,7 +38,8 @@ set -euo pipefail
 #     a zero-byte or text placeholder is caught by a size floor and a magic
 #     number check, so "the path exists" is never mistaken for "the code is
 #     there";
-#   * a `.aar` that is not a real zip, or does not carry every ABI;
+#   * a `.aar` that is present but is not a real zip, or does not carry
+#     every ABI -- its absence is not refused, see that section's comment;
 #   * a package.json in the tarball that declares an install-time script or
 #     ships a binding.gyp, either of which can reach for a compiler on a
 #     consumer's machine;
@@ -263,15 +264,33 @@ fi
 echo
 echo "--- Android: the prebuilt .aar ---"
 
+# NOT required, and this used to require it.
+#
+# The reason given for requiring it was a README sentence: "A fully prebuilt,
+# already linked `.aar` ships alongside those, for a consumer who would rather
+# not build from source at all." No such consumer exists, and no mechanism
+# serves one. React Native autolinking includes `android/build.gradle` as a
+# Gradle subproject and builds the module from source; nothing in that file,
+# in `android/CMakeLists.txt`, in `MatrixCrypto.podspec` or in the example
+# app's Gradle setup names the `.aar`, and no document tells a consumer how to
+# use it. M2 spec section 9 step 2 records it as "Not needed. Retained."
+#
+# So a sentence with no mechanism behind it had become a hard release
+# requirement, over a file that is 29068 KB of the 219772 KB unpacked tarball
+# and duplicates the per-ABI `.so` files checked directly above.
+#
+# What survives is the narrower true claim: `package.json`'s "files" names
+# `*.aar`, so while one ships it must be a real archive carrying every ABI,
+# because a broken 29 MB zip in the artifact is worse than no zip. Whether it
+# should ship at all is a packaging decision, deliberately left open here
+# rather than settled by a gate: see the M2 spec section 9 step 2.
 AAR=$(printf '%s\n' "$FILE_LIST" | grep -E '\.aar$' | head -1 || true)
 if [ -z "$AAR" ]; then
-  fail "the tarball contains no .aar." \
-       "package.json's \"files\" allowlist names *.aar and the README says one" \
-       "ships; a tarball without it means the Android build did not run or its" \
-       "output never reached the pack."
+  echo "  --  no .aar in the tarball. Not a failure: nothing autolinks against"
+  echo "      it and no consumer path uses it. See this section's comment."
 else
   require_binary "$AAR" zip \
-    "It is the fully prebuilt, already-linked Android module."
+    "package.json's \"files\" ships it, so while it ships it must be real code rather than an empty archive."
   # A zip with the right name and no native code in it would pass every check
   # above. Look inside.
   if [ -n "${ABIS//[[:space:]]/}" ] && command -v unzip >/dev/null 2>&1; then
@@ -390,4 +409,5 @@ fi
 echo "PASS: $TARBALL ships the prebuilt binaries it promises."
 echo "      iOS xcframework with every advertised slice present, device and"
 echo "      simulator, arm64 and x86_64; the per-ABI Rust libraries Android's"
-echo "      CMake links; a .aar carrying every ABI; no install-time script."
+echo "      CMake links; any .aar present carrying every ABI; no install-time"
+echo "      script."

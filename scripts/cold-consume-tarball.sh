@@ -176,10 +176,16 @@ node -e '
     problems.push("the installed package carries no non-trivial binary in MatrixCryptoFramework.xcframework.");
   }
 
+  // Reported, not required. This used to be a problem entry, on the strength
+  // of a README sentence offering the .aar "for a consumer who would rather
+  // not build from source at all" -- a consumer with no mechanism behind
+  // them. Autolinking builds android/build.gradle from source; no gradle,
+  // podspec or CMake file in this repository names the .aar. The three checks
+  // above are the ones a real consumer build fails without.
+  //
+  // No apostrophes in this block on purpose: it lives inside a single-quoted
+  // node -e program, where one ends the shell string.
   const aar = fs.readdirSync(dir).filter((f) => f.endsWith(".aar") && big(path.join(dir, f)));
-  if (aar.length === 0) {
-    problems.push("the installed package carries no non-trivial .aar.");
-  }
 
   if (problems.length) {
     for (const p of problems) console.error("FAIL: " + p);
@@ -188,7 +194,7 @@ node -e '
   console.log("   no install-time script, no binding.gyp");
   console.log("   android jniLibs ABIs with a real .so: " + goodAbis.join(", "));
   console.log("   xcframework slices with a real binary: " + goodSlices.join(", "));
-  console.log("   prebuilt aar: " + aar.join(", "));
+  console.log("   prebuilt aar (shipped, unused by any consumer path): " + (aar.join(", ") || "none"));
 ' "$INSTALLED"
 
 echo
