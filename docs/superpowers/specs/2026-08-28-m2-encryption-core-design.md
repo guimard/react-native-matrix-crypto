@@ -22,7 +22,7 @@ M2 turns five typed-but-throwing functions into working cryptography:
 | `openCryptoStore(config)` | throws `not_implemented` | opens a persistent, passphrase-encrypted store |
 | `receiveSyncChanges(syncDelta)` | throws `not_implemented` | feeds `/sync` output into the machine |
 | `encryptEvent(scope, type, payload)` | throws `not_implemented` | returns a real `EventEnvelope` |
-| `decryptEvent(rawEvent)` | throws `not_implemented` | returns the decrypted envelope |
+| `decryptEvent(scope, rawEvent)` | throws `not_implemented` | returns the decrypted envelope |
 | `takeOutgoingRequests()` | **new in M2** | returns what the product must send to its homeserver |
 | `markRequestSent(id, response)` | **new in M2** | tells the machine a request was delivered |
 
@@ -287,8 +287,19 @@ is how the machine learns which devices exist, so a product that never calls it 
 encrypt to nobody. That ordering constraint belongs in the facade's documentation,
 not in a runtime check the library cannot correctly make.
 
-`decryptEvent(rawEvent)` returns the decrypted envelope, or rejects with a typed
-error. The existing kinds already cover the real cases: `missing_key`,
+`decryptEvent(scope, rawEvent)` returns the decrypted envelope, or rejects with a typed
+error.
+
+**Its signature gained the scope during implementation**, and the change is deliberate.
+The M1a surface froze it as `decryptEvent(rawEvent)`, which cannot work: decryption
+needs the scope for the same reason encryption does, and `encryptEvent` has taken it as
+its first parameter all along. The alternative considered was smuggling the scope into
+the `unknown` as `{ scope, event }`, which compiles but hides a required argument where
+the type system cannot see it, and bypasses the branded `CryptoScopeId` that exists
+precisely so a caller cannot pass a bare string. A frozen signature is not broken
+lightly, but it is broken when the frozen shape cannot express something required. The
+same test rejected a change to `getDeviceIdentityKeys`, where keeping the parameters
+cost nothing. The existing kinds already cover the real cases: `missing_key`,
 `unshared_session`, `unknown_device`, `undecryptable`. Decryption failure is normal
 operation in Matrix, not an exceptional condition, and the error must carry enough for
 the product to decide whether to retry, request keys, or show a placeholder, without
