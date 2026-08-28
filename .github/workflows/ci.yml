@@ -4,6 +4,13 @@ on:
   pull_request:
   push:
     branches: [main]
+  # .github/workflows/release.yml calls this file rather than repeating its
+  # jobs. A release path with its own copy of the checks is how a broken
+  # artifact ships: the copy drifts weaker, quietly, and the first sign is a
+  # published package. Nothing else about this workflow changes -- when it is
+  # called, the caller's ref is what every `actions/checkout` here checks out,
+  # so a tag run gates exactly the commit being released.
+  workflow_call:
 
 jobs:
   gates:
