@@ -8,11 +8,21 @@ export type CryptoErrorKind =
   | 'missing_key'
   | 'unshared_session'
   | 'unknown_device'
+  // Forward scaffolding, not dead: nothing produces this yet (device
+  // revocation is trust/M3 work), but it stays in the union, commented,
+  // rather than being silently dropped or silently absent -- the same
+  // treatment 'not_implemented' gets in KIND_BY_NAME. Give it the same
+  // treatment if it turns out never to be needed: keep it commented, or
+  // remove it; either is fine, silence about which is not.
   | 'revoked_device'
   | 'undecryptable'
   | 'malformed_payload'
   | 'unknown_request'
   | 'failed'
+  // Reserved for genuine store corruption, which decryption work does not
+  // currently detect; nothing maps to it yet. Kept distinct from
+  // 'store_unavailable', which KIND_BY_NAME's own comment on ['Store', ...]
+  // explains further.
   | 'store_corrupt'
   | 'store_unavailable'
   | 'mismatched_account'
