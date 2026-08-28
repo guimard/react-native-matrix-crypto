@@ -155,6 +155,7 @@ await createCryptoMachine({
 const scope = asCryptoScopeId('!s:example.org')
 
 // Drain and send. Do this after every call that changes crypto state.
+// One drain at a time: see the note below before you make this concurrent.
 async function pump() {
   for (const request of await takeOutgoingRequests()) {
     const response = await yourHomeserverClient.send(request)  // your transport
@@ -174,6 +175,18 @@ and that is correct.** It starts tracking them and queues a query about their de
 That query only reaches your homeserver when you drain the queue, so nobody is known to
 share with yet. Call it again after pumping. The library cannot collapse these steps,
 because it sends nothing itself and therefore cannot wait for a reply.
+
+**Do not let a second drain overlap an unfinished one.** `takeOutgoingRequests` hands
+out three kinds that describe a standing need rather than one message, `keys_upload`,
+`keys_query` and `keys_claim`, and a later call that hands out a fresh request of one
+of those kinds retires the older id: `markRequestSent` then rejects it with
+`unknown_request`. That is deliberate, because the machine mints a new id for the same
+need each time and forgets the old one, but it means two pumps racing, or a pump on a
+timer alongside a pump after a write, will fail on ids you are legitimately holding.
+Sending and marking the requests *within* one batch concurrently is safe. If you do see
+`unknown_request` for an id from an earlier batch, discard that response and pump again
+rather than retrying it; nothing is lost, because the need was re-derived rather than
+dropped. `takeOutgoingRequests`' own doc comment carries the full rule.
 
 Once a key has travelled, encryption and decryption are ordinary:
 
