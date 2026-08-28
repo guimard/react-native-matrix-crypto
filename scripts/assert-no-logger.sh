@@ -249,21 +249,72 @@ TS_HITS=$(grep -nE '\bconsole\.[a-z]+' $TS_FILES 2>/dev/null || true)
 #
 # WHAT IS TOLERATED, and only inside a path gate:drift regenerates:
 #
+#     try {
+#         ... no jsi::JSError constructed here ...
 #     } catch (const jsi::JSError &error) {
-#         std::cout << "Error in callback <Name>: "
+#         std::cout << "Error in callback Uniffi<Name>: "
 #                 << error.what() << std::endl;
 #
-# All three lines must match. That pins the write to a fixed literal plus
-# `jsi::JSError::what()`, which is the JS exception's `.message` and `.stack`
-# (jsi.cpp: `what_ = message_ + "\n\n" + stack_`). It is not a general amnesty
-# for generated C++: any other `std::cout`, any other stream, any platform
-# logger, or this same site with one more `<<` on it, fails.
+# All three of the last lines must match. That pins the write to a fixed
+# literal plus `jsi::JSError::what()`, which is the JS exception's `.message`
+# and `.stack` (jsi.cpp: `what_ = message_ + "\n\n" + stack_`). It is not a
+# general amnesty for generated C++: any other `std::cout`, any other stream,
+# any platform logger, or this same site with one more `<<` on it, fails.
+#
+# ARRANGEMENT IS NOT ENOUGH, and until 2026-08-28 arrangement was all that was
+# checked. The 2026-08-28 verification-infrastructure review constructed this,
+# under cpp/generated/ so `is_generated()` is true, and the gate PASSED --
+# printing "Tolerated: 6" where it had printed 5:
+#
+#     try {
+#       throw jsi::JSError(rt, sessionKey);
+#     } catch (const jsi::JSError &error) {
+#       std::cout << "Error in callback Exfil: "
+#               << error.what() << std::endl;
+#     }
+#
+# `error.what()` is whatever the code put into the JSError. The README's
+# justification for tolerating this site -- "No call argument, ciphertext, key
+# or identifier is interpolated into that stream" -- is a property of ubrn's
+# template, and the gate now checks the two parts of it that are checkable:
+#
+#   * THE NAME. The only free text in the shape is the callback name in the
+#     literal, which ubrn fills with the name of the trampoline it just
+#     generated. Every one of them begins with "Uniffi"
+#     (UniffiRustFutureContinuationCallback, UniffiCallbackInterfaceFree,
+#     UniffiCallbackInterfaceProbeObserverMethod0, ...). "Exfil" does not.
+#
+#   * THE PROVENANCE OF `error`. The tolerated write prints an error the
+#     JAVASCRIPT side threw out of `cb.call(...)`, never one this translation
+#     unit manufactured. So the try block the catch closes may not mention
+#     jsi::JSError at all. Verified against the committed file: none of the
+#     five try blocks does, while ubrn's 23 other JSError constructions all
+#     sit outside them.
+#
+# If the try block cannot be found at all, the site is NOT tolerated. A write
+# whose provenance this gate cannot read is a write it cannot justify.
 #
 # A callback interface added in M2 generates this same shape and passes
-# without anyone editing this file. A CHANGED shape does not, which is the
-# point: if a ubrn upgrade starts printing an argument rather than a fixed
-# literal, this gate fails and someone re-reads the template.
+# without anyone editing this file, EXCEPT for the count below, which is
+# deliberate. A CHANGED shape does not, which is the point: if a ubrn upgrade
+# starts printing an argument rather than a fixed literal, this gate fails and
+# someone re-reads the template.
 FORBIDDEN_NATIVE='std::(cout|cerr|clog|wcout|wcerr)|(^|[^_[:alnum:]])(printf|fprintf|vprintf|vfprintf|puts|fputs|perror|syslog|NSLog|RCTLog)[[:space:]]*[(]|__android_log|os_log|(^|[^_[:alnum:]])ALOG[A-Z]*[[:space:]]*[(]'
+
+# The number of tolerated sites, pinned rather than printed.
+#
+# It was printed and not asserted until 2026-08-28, with a comment saying the
+# count exists so it "moves in the CI log" -- i.e. it depended on a human
+# reading a PASSING job's log and noticing a digit. The forgery above moved it
+# from 5 to 6 and the gate still exited 0. Twelve lines of
+# scripts/run-probe-on-emulator.sh hardcode `PROBE_SUMMARY 12/12` and say why:
+# "CI failing until you do is the point". Same rule here.
+#
+# Five sites, all in cpp/generated/matrix_crypto.cpp, one per UniFFI callback
+# trampoline. If you add a callback interface to the Rust surface this number
+# goes up, and CI fails until you come here, read the new site, and change it
+# on purpose. That is the whole mechanism.
+EXPECTED_NATIVE_ALLOWED=5
 
 NATIVE_FILES=$(find $SHIPPED_ROOTS -type f \( \
   -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \
@@ -281,35 +332,66 @@ if [ -z "${NATIVE_FILES//[[:space:]]/}" ]; then
 fi
 
 NATIVE_HITS=""
+NATIVE_TOLERATED=""
 for f in $NATIVE_FILES; do
   gen=0
   if is_generated "$f"; then gen=1; fi
+  # One pass emits both records, so the count below is the number of sites
+  # this gate actually TOLERATED rather than the number of lines that look
+  # like the first line of the shape. The old count was the latter, computed
+  # by a separate grep -- a second oracle for the same question, which is the
+  # mistake this repository has already paid for twice.
   out=$(awk -v FORBIDDEN="$FORBIDDEN_NATIVE" -v GEN="$gen" -v FNAME="$f" '
-    function is_ubrn_callback_site(i) {
-      return (line[i]   ~ /^[[:space:]]*std::cout << "Error in callback [A-Za-z0-9_]+: "$/ &&
-              line[i+1] ~ /^[[:space:]]*<< error[.]what[(][)] << std::endl;$/ &&
-              line[i-1] ~ /^[[:space:]]*[}] catch [(]const jsi::JSError &error[)] [{]$/)
+    function is_ubrn_callback_site(i,   name, j, try_at) {
+      # Arrangement.
+      if (line[i]   !~ /^[[:space:]]*std::cout << "Error in callback [A-Za-z0-9_]+: "$/) return 0
+      if (line[i+1] !~ /^[[:space:]]*<< error[.]what[(][)] << std::endl;$/) return 0
+      if (line[i-1] !~ /^[[:space:]]*[}] catch [(]const jsi::JSError &error[)] [{]$/) return 0
+
+      # Content, part 1: the callback name ubrn writes into the literal.
+      name = line[i]
+      sub(/^.*Error in callback /, "", name)
+      sub(/: ".*$/, "", name)
+      if (name !~ /^Uniffi[A-Za-z0-9_]*$/) return 0
+
+      # Content, part 2: the try block this catch closes, found by walking up
+      # to the nearest `try {`. Bounded, and stopping at another catch, so a
+      # site with no try block of its own cannot borrow the one above it.
+      try_at = 0
+      for (j = i - 2; j >= 1 && j >= i - 200; j--) {
+        if (line[j] ~ /^[[:space:]]*[}] catch [(]/) break
+        if (line[j] ~ /^[[:space:]]*try[[:space:]]*[{][[:space:]]*$/) { try_at = j; break }
+      }
+      if (try_at == 0) return 0
+
+      for (j = try_at + 1; j <= i - 2; j++) {
+        if (line[j] ~ /jsi::JSError/) return 0
+      }
+      return 1
     }
     { line[NR] = $0 }
     END {
       for (i = 1; i <= NR; i++) {
+        if (GEN == 1 && is_ubrn_callback_site(i)) {
+          printf "OK %s:%d\n", FNAME, i
+          continue
+        }
         if (line[i] !~ FORBIDDEN) continue
-        if (GEN == 1 && is_ubrn_callback_site(i)) continue
-        printf "%s:%d:%s\n", FNAME, i, line[i]
+        printf "HIT %s:%d:%s\n", FNAME, i, line[i]
       }
     }
   ' "$f")
-  if [ -n "$out" ]; then
-    NATIVE_HITS="$NATIVE_HITS$out
-"
-  fi
+  while IFS= read -r rec; do
+    case "$rec" in
+      "HIT "*) NATIVE_HITS="$NATIVE_HITS${rec#HIT }
+" ;;
+      "OK "*)  NATIVE_TOLERATED="$NATIVE_TOLERATED${rec#OK }
+" ;;
+    esac
+  done <<< "$out"
 done
 
-# Count the tolerated sites and print the number on success. An allowlist
-# whose size nobody sees is an allowlist that rots: this makes the count move
-# in the CI log the day the Rust surface grows a callback interface.
-NATIVE_ALLOWED=$(grep -hcE '^[[:space:]]*std::cout << "Error in callback [A-Za-z0-9_]+: "$' \
-  $NATIVE_FILES 2>/dev/null | awk '{ s += $1 } END { print s + 0 }')
+NATIVE_ALLOWED=$(printf '%s' "$NATIVE_TOLERATED" | grep -c . || true)
 
 if [ -n "${RUST_HITS}${TS_HITS}${NATIVE_HITS}" ]; then
   echo "FAIL: the bridge must not log. Spec section 7.2."
@@ -318,8 +400,28 @@ if [ -n "${RUST_HITS}${TS_HITS}${NATIVE_HITS}" ]; then
   [ -n "$NATIVE_HITS" ] && printf '%s' "$NATIVE_HITS"
   echo "      Diagnostics belong in a sink the product injects and owns."
   echo "      In generated C++ the ONLY tolerated write is ubrn's"
-  echo "      'std::cout << \"Error in callback X: \" << error.what()' on a"
-  echo "      catch(jsi::JSError) path, and all three of its lines must match."
+  echo "      'std::cout << \"Error in callback UniffiX: \" << error.what()' on a"
+  echo "      catch(jsi::JSError) path: all three of its lines must match, the"
+  echo "      name must be one ubrn generates, and the try block it closes must"
+  echo "      not construct a jsi::JSError of its own."
+  exit 1
+fi
+
+if [ "$NATIVE_ALLOWED" -ne "$EXPECTED_NATIVE_ALLOWED" ]; then
+  echo "FAIL: this gate tolerated $NATIVE_ALLOWED ubrn callback-error std::cout"
+  echo "      sites in generated C++, but expects exactly"
+  echo "      $EXPECTED_NATIVE_ALLOWED."
+  printf '%s' "$NATIVE_TOLERATED" | sed 's/^/      /'
+  if [ "$NATIVE_ALLOWED" -gt "$EXPECTED_NATIVE_ALLOWED" ]; then
+    echo "      A site appeared. If the Rust surface grew a callback interface,"
+    echo "      read the new site, satisfy yourself that it prints a fixed"
+    echo "      literal and jsi::JSError::what() and nothing else, and raise"
+    echo "      EXPECTED_NATIVE_ALLOWED in this script deliberately."
+  else
+    echo "      A site disappeared. Either ubrn stopped emitting it -- good"
+    echo "      news, lower the number -- or this gate stopped recognising it,"
+    echo "      which means the shape moved and the scan is now blind."
+  fi
   exit 1
 fi
 
