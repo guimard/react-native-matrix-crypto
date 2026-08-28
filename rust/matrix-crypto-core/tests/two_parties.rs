@@ -11,13 +11,18 @@
 //!   through this crate's public surface and nothing else --
 //!   `create_machine`, `receive_sync_changes`, `share_scope_key`,
 //!   `take_outgoing_requests`, `mark_request_sent`, `encrypt_event`,
-//!   `decrypt_event`, and `with_machine` for the one precondition M2's
-//!   narrower surface does not express (see the keys-query step) --
-//!   against the one registered machine, with a real SQLite store on disk.
+//!   `decrypt_event` -- against the one registered machine, with a real
+//!   SQLite store on disk.
 //! * **Bob is a bare `matrix_sdk_crypto::OlmMachine`**, constructed and
 //!   driven directly, exactly the way `matrix-sdk-crypto`'s own tests
-//!   construct a second party. Not one line of this crate runs on his side.
-//!   He stands in for the third-party client that level 2 will use for real.
+//!   construct a second party. No crypto state, no store and no function of
+//!   this crate is involved on his side; the single exception is that his
+//!   calls, like everything else in this test, run inside
+//!   `matrix_crypto_core::in_runtime`, which is a tokio runtime context and
+//!   nothing more -- it is there because upstream's `share_room_key`
+//!   reaches `tokio::task::spawn` on his side too, and this crate happens to
+//!   own the only runtime in the process. He stands in for the third-party
+//!   client that level 2 will use for real.
 //!
 //! Read every assertion with that asymmetry in mind: what this test proves
 //! is that *the library* can deliver a key to, and read an event from, a
@@ -51,8 +56,7 @@ use std::collections::BTreeMap;
 
 use matrix_crypto_core::{
     create_machine, decrypt_event, encrypt_event, in_runtime, mark_request_sent,
-    receive_sync_changes, share_scope_key, take_outgoing_requests, with_machine, MachineConfig,
-    OutgoingRequest,
+    receive_sync_changes, share_scope_key, take_outgoing_requests, MachineConfig, OutgoingRequest,
 };
 use matrix_sdk_common::ruma::api::client::keys::claim_keys::v3::Response as KeysClaimResponse;
 use matrix_sdk_common::ruma::api::client::keys::get_keys::v3::Response as KeysQueryResponse;
@@ -264,13 +268,20 @@ async fn deliver_to_bare(bob: &OlmMachine, events: Vec<String>) -> usize {
 /// own process, so this file owns one machine for its whole lifetime and
 /// cannot race a sibling test for it.
 ///
-/// Driven by `futures::executor::block_on`, not `#[tokio::test]`: an ambient
-/// runtime would make the library look like it supplies its own even if it
-/// supplied none, which is the mistake `machine.rs`'s own
-/// `with_machine_supplies_a_runtime_for_store_touching_calls` exists to
-/// catch. The bare machine is driven inside `in_runtime` for the same
-/// reason it is in `session.rs`'s tests: it reaches `tokio::task::spawn`
-/// through `matrix-sdk-common` during group key sharing.
+/// Driven by `futures::executor::block_on`, not `#[tokio::test]`: no test
+/// harness supplies a runtime here, so what runtime there is comes from this
+/// crate.
+///
+/// That is a weaker property than "no ambient runtime", and the difference
+/// is worth being exact about. The whole body is wrapped in `in_runtime`,
+/// because the *bare* machine needs a tokio context that this crate does not
+/// supply for it -- upstream's `share_room_key` reaches
+/// `tokio::task::spawn`. So every library call inside this test does see a
+/// runtime context, and this test would therefore **not** catch a library
+/// function that forgot its own `in_runtime`. Two other tests do:
+/// `machine.rs`'s `with_machine_supplies_a_runtime_for_store_touching_calls`
+/// and `tests/pump_eviction.rs`, which drives only library calls and so can
+/// enter with genuinely nothing.
 #[test]
 fn two_parties_exchange_a_group_key_and_each_decrypts_what_the_other_encrypted() {
     // Bound here, dropped when this function returns: the store must not
@@ -350,52 +361,61 @@ fn two_parties_exchange_a_group_key_and_each_decrypts_what_the_other_encrypted()
         // ---- Step 1 of 3ter: /keys/query -------------------------------
         // Alice learns Bob's device exists.
         //
-        // Bob is tracked first, through `with_machine`. This is not a
-        // shortcut past the pump, and it is not optional: upstream's own
-        // `mark_tracked_users_as_changed` **skips every user it has never
-        // seen**, so a `changed_devices` list naming an untracked Bob
-        // queues nothing for him at all -- the request the pump would then
-        // hand out is upstream's own-user fallback query, and answering
-        // *that* with Bob's keys would teach the machine about Bob while
-        // proving nothing about which user the request asked for. Tracking
-        // membership is the product's job (it owns `/sync`'s room member
-        // lists, which this bridge deliberately does not read), so M2's
-        // narrower surface has no call for it; `with_machine` is this
-        // crate's own public accessor for the live machine and is the
-        // honest way to set the precondition.
-        let tracked: Vec<OwnedUserId> = vec![bob_user.clone()];
-        with_machine(move |machine| {
-            Box::pin(async move {
-                machine
-                    .update_tracked_users(tracked.iter().map(AsRef::as_ref))
-                    .await
-            })
-        })
-        .await
-        .expect("the machine must be live")
-        .expect("tracking a user must not fail");
+        // This first `share_scope_key` cannot deliver anything -- no device
+        // of Bob's is known yet -- and that is the point: it is what makes
+        // the machine ask about him at all. `share_scope_key` tracks the
+        // users it is given, because upstream's own
+        // `mark_tracked_users_as_changed` (store/mod.rs:291) **skips every
+        // user it has never seen**, and a sync's `changed_devices` list
+        // routes nowhere else. Without the tracking, no call on the shipped
+        // surface could ever get a `/keys/query` issued for a user this
+        // device has not already encrypted to.
+        share_scope_key(SCOPE, &[BOB_USER.to_string()])
+            .await
+            .expect("sharing a scope key must not fail");
 
+        // Kept, and now honest about what it does: Bob is already tracked
+        // by the call above, so this only re-flags him -- which is the only
+        // thing a `changed_devices` list can ever do. It is here because a
+        // real product receives these constantly and the library must
+        // accept them, not because this step depends on it.
         receive_sync_changes(&format!(
             r#"{{"changed_devices":{{"changed":["{BOB_USER}"],"left":[]}}}}"#
         ))
         .await
         .expect("a device-list change must be accepted");
+
         let query = take_outgoing_requests()
             .await
             .expect("the pump must be drainable")
             .into_iter()
             .find(|r| r.kind == "keys_query")
             .expect("the machine must ask who exists before it can encrypt to anyone");
-        // `contains`, not a positional match: this batch's query
+        // Parsed, not substring-matched: the users a `/keys/query` asks
+        // about are the keys of its `device_keys` object, and asserting on
+        // that structure survives a body-shape change upstream that a
+        // `contains` would silently keep passing. This batch's query
         // legitimately names this machine's own user as well (upstream
         // flagged it on the first pump call above, and that request was
-        // never marked sent), and the two are ordered by user id rather
-        // than by which one this test cares about. What matters is that
-        // the other party is in the request at all: without it, the
-        // response below would be teaching the machine about a device it
-        // never asked for, and this step would prove nothing.
+        // never marked sent), so membership is what is checked, not
+        // equality: what matters is that the other party is in there at
+        // all. Without it, the response below would be teaching the machine
+        // about a device it never asked for, and this step would prove
+        // nothing.
+        let queried: Vec<String> = serde_json::from_str::<serde_json::Value>(&query.body)
+            .ok()
+            .and_then(|body| {
+                Some(
+                    body.get("device_keys")?
+                        .as_object()?
+                        .keys()
+                        .cloned()
+                        .collect(),
+                )
+            })
+            .expect("a keys-query body always carries a device_keys object");
         assert!(
-            query.body.contains(BOB_USER),
+            queried.iter().any(|user| user == BOB_USER),
             "the query the pump hands out must ask about the other party"
         );
         mark_request_sent(
