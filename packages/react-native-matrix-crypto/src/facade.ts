@@ -17,6 +17,24 @@ function notImplemented(name: string): Promise<never> {
   return Promise.reject(toCryptoError({ name: 'NotImplemented', reason: `${name} is not implemented yet` }))
 }
 
+/**
+ * `JSON.stringify` returns the *value* `undefined`, not a string, for
+ * `undefined` itself and for a few other top-level inputs that type-check
+ * fine against `unknown` (a function, a symbol). Passed straight through,
+ * that `undefined` would reach a native `string` parameter as `undefined`,
+ * surfacing later as an untyped `kind: 'unknown'` error rather than
+ * `malformed_payload` at the boundary that actually rejected it. Rejected
+ * here instead, before any native call -- shared by every function below
+ * that stringifies an `unknown` payload.
+ */
+function stringifyOrMalformed(value: unknown): string {
+  const json = JSON.stringify(value)
+  if (json === undefined) {
+    throw toCryptoError({ name: 'MalformedPayload' })
+  }
+  return json
+}
+
 // Spec section 5's surface, re-typed onto the branded scope and the open
 // algorithm tag. Types are real so consumers can compile today; runtime
 // arrives in M2.
@@ -46,9 +64,32 @@ export interface DeviceStatus {
  * interprets, sent as-is; `kind` is an open tag mirroring upstream's own
  * request kinds, deliberately typed `string` rather than a union for the
  * same reason `CryptoAlgorithm` is open (the set grows upstream, and a
- * consumer must already handle a value it does not recognise). Today's
- * values are `'keys_upload'`, `'keys_query'`, `'keys_claim'`,
- * `'to_device'`, `'signature_upload'` and `'room_message'`.
+ * consumer must already handle a value it does not recognise).
+ *
+ * Today's six values, the endpoint each addresses, and what
+ * {@link markRequestSent}'s own `responseJson` must contain to report one
+ * sent -- that endpoint's response body, unwrapped, exactly as the
+ * homeserver returned it; nothing this library adds or removes, and a
+ * differently-shaped `responseJson` is rejected with `malformed_payload`
+ * rather than silently accepted:
+ *
+ * | `kind` | Method & path | `responseJson` must contain |
+ * |---|---|---|
+ * | `'keys_upload'` | `POST /_matrix/client/v3/keys/upload` | `{ one_time_key_counts: { [algorithm: string]: number } }` |
+ * | `'keys_query'` | `POST /_matrix/client/v3/keys/query` | `{ device_keys?, master_keys?, self_signing_keys?, user_signing_keys?, failures? }` (all optional; `{}` is valid) |
+ * | `'keys_claim'` | `POST /_matrix/client/v3/keys/claim` | `{ one_time_keys: {...}, failures? }` |
+ * | `'to_device'` | `PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}` | `{}` -- the machine ignores the body, but it must still be valid JSON |
+ * | `'signature_upload'` | `POST /_matrix/client/v3/keys/signatures/upload` | `{ failures? }` (optional; `{}` is valid) |
+ * | `'room_message'` | `PUT /_matrix/client/v3/rooms/{roomId}/send/{eventType}/{txnId}` | `{ event_id: string }` |
+ *
+ * `'to_device'` and `'room_message'` carry their own path segments
+ * (`eventType`/`txnId`, and for the latter `roomId` too) inside `body`
+ * itself, alongside the wire content, since this library has no other way
+ * to hand them to the product -- see the two disclosed exceptions the
+ * core's own `describe_outgoing` documents for itself.
+ *
+ * See {@link shareScopeKey}'s own doc comment for the order these must be
+ * sent and marked in, which is not optional: design doc section 3ter.
  */
 export interface OutgoingRequest {
   /** Opaque; hand it back verbatim to {@link markRequestSent}. */
@@ -93,20 +134,100 @@ export function restoreCryptoMachine(_bundle: Uint8Array): Promise<void> {
 }
 
 /**
+ * The five field names `receiveSyncChanges` actually reads -- matching
+ * `matrix-sdk-crypto`'s own `EncryptionSyncChanges`, snake_case, not the
+ * camelCase a product's own HTTP client may re-case a `/sync` response
+ * into. Used only to decide whether an object payload names *any*
+ * recognised field at all; see `receiveSyncChanges`'s own doc comment.
+ */
+const RECOGNISED_SYNC_FIELDS = [
+  'to_device_events',
+  'changed_devices',
+  'one_time_keys_counts',
+  'unused_fallback_keys',
+  'next_batch_token',
+]
+
+/**
+ * True for a non-empty object naming none of `RECOGNISED_SYNC_FIELDS`. The
+ * core's own `SyncChangesPayload` defaults every field independently
+ * (`#[serde(default)]`) and silently ignores unknown keys (no
+ * `deny_unknown_fields` -- a homeserver adding a field this library does
+ * not consume must keep working), so a differently-cased or entirely
+ * unrecognised payload parses into an all-default value and reports
+ * success while teaching the machine nothing. An empty object is *not*
+ * flagged: `{}` is the shape an ordinary, uneventful sync sends, and doing
+ * nothing with it is correct.
+ */
+function syncDeltaNamesNoRecognisedField(syncDelta: unknown): boolean {
+  if (typeof syncDelta !== 'object' || syncDelta === null) return false
+  const keys = Object.keys(syncDelta)
+  return keys.length > 0 && !keys.some((key) => RECOGNISED_SYNC_FIELDS.includes(key))
+}
+
+/**
  * Feeds the encryption-relevant slice of a `/sync` response into the
- * crypto machine -- design doc section 7. `syncDelta` is whatever
- * JSON-serialisable value the product already fetched; this library never
- * performs the request itself. The prerequisite every later crypto
- * operation depends on: a product that never calls this encrypts to
- * nobody, because this is how the machine learns which devices exist.
+ * crypto machine -- design doc section 7. This is how the machine learns
+ * which devices exist: a product that never calls this encrypts to
+ * nobody.
+ *
+ * **Accepted shape.** `syncDelta` must be a plain object using exactly
+ * `matrix-sdk-crypto`'s own snake_case field names below, every one
+ * optional and defaulting independently when absent:
+ *
+ * ```ts
+ * {
+ *   to_device_events?: object[]                         // raw to-device events, as received
+ *   changed_devices?: { changed: string[]; left: string[] }
+ *   one_time_keys_counts?: Record<string, number>
+ *   unused_fallback_keys?: string[]
+ *   next_batch_token?: string
+ * }
+ * ```
+ *
+ * **This is a subset of a `/sync` response, not the whole response.** Hand
+ * over only these fields, or the whole response verbatim -- every other
+ * field a real `/sync` response carries is ignored either way, so there is
+ * no need to trim it by hand.
+ *
+ * Worked example, a sync reporting one to-device event and one changed
+ * device:
+ *
+ * ```ts
+ * await receiveSyncChanges({
+ *   to_device_events: [{ sender: '@bob:example.org', type: 'm.room.encrypted', content: { ... } }],
+ *   changed_devices: { changed: ['@bob:example.org'], left: [] },
+ *   one_time_keys_counts: { signed_curve25519: 50 },
+ * })
+ * ```
+ *
+ * `{}` is the shape an ordinary, uneventful sync sends, and is accepted:
+ * it reports nothing, correctly. **camelCase silently does nothing**, and
+ * this is the one call where that matters most -- every field above
+ * defaults independently and unknown keys are ignored, so
+ * `{ toDeviceEvents: [...] }` parses into an entirely-default payload,
+ * resolves successfully, and teaches the machine nothing, indistinguishable
+ * from `{}` on the caller's side (the return type is frozen `void`). A
+ * non-empty payload naming *none* of the five fields above -- the shape a
+ * camelCase mistake, or any other wrong shape, produces -- is rejected
+ * with `malformed_payload` before native is ever called. A payload naming
+ * at least one recognised field alongside others this library does not
+ * consume (a homeserver-added `/sync` field, for instance) is accepted,
+ * and the extra field is ignored -- tolerance for exactly that case is why
+ * this guard checks for *some* recognised field rather than rejecting any
+ * unrecognised one.
  *
  * Returns `void`, not the native call's own to-device/session counts: that
  * return type is frozen from M1a. A product that needs those counts reads
  * them off the sync response it already holds.
  */
 export async function receiveSyncChanges(syncDelta: unknown): Promise<void> {
+  if (syncDeltaNamesNoRecognisedField(syncDelta)) {
+    throw toCryptoError({ name: 'MalformedPayload' })
+  }
+  const syncDeltaJson = stringifyOrMalformed(syncDelta)
   try {
-    await nativeReceiveSyncChanges(JSON.stringify(syncDelta))
+    await nativeReceiveSyncChanges(syncDeltaJson)
   } catch (e) {
     throw toCryptoError(e)
   }
@@ -117,8 +238,9 @@ export async function encryptEvent(
   eventType: string,
   payload: unknown,
 ): Promise<EventEnvelope> {
+  const payloadJson = stringifyOrMalformed(payload)
   try {
-    const encrypted = await nativeEncryptEvent(scope, eventType, JSON.stringify(payload))
+    const encrypted = await nativeEncryptEvent(scope, eventType, payloadJson)
     // Destructured, not returned/field-accessed directly: a field added to
     // the generated record later must be a deliberate choice to expose,
     // not something that leaks through this boundary unreviewed. See
@@ -160,6 +282,16 @@ export async function encryptEvent(
  *
  * `rawEvent` is the `m.room.encrypted` event as received, verbatim --
  * JSON-stringified as-is before crossing to native.
+ *
+ * **This milestone decrypts events. It does not authenticate their
+ * senders** -- spec section 7.1. The returned envelope's `sender` and
+ * `algorithm` are read from the fields the homeserver delivered, not
+ * independently verified, and are **unauthenticated transport metadata**
+ * for all of M2: see {@link EventEnvelope.sender} and
+ * {@link EventEnvelope.algorithm} for what that means and why. A product
+ * that reads the sender of a successfully decrypted event as the
+ * cryptographic sender has assumed something this milestone does not
+ * provide, and that assumption is the shape impersonation takes.
  */
 export async function decryptEvent(scope: CryptoScopeId, rawEvent: unknown): Promise<EventEnvelope> {
   // `CryptoScopeId` performs no runtime validation (see types.ts) --
@@ -170,8 +302,9 @@ export async function decryptEvent(scope: CryptoScopeId, rawEvent: unknown): Pro
   if (typeof scope !== 'string') {
     throw toCryptoError({ name: 'MalformedPayload' })
   }
+  const rawEventJson = stringifyOrMalformed(rawEvent)
   try {
-    const decrypted = await nativeDecryptEvent(scope, JSON.stringify(rawEvent))
+    const decrypted = await nativeDecryptEvent(scope, rawEventJson)
     // Destructured, not returned directly. See encryptEvent above.
     const { scope: decryptedScope, algorithm, eventType, ciphertext, sender } = decrypted
     return {
@@ -194,6 +327,33 @@ export async function decryptEvent(scope: CryptoScopeId, rawEvent: unknown): Pro
  * the frozen surface; a new public name for what the core calls
  * `share_scope_key`, chosen to say what it does without naming an
  * algorithm (design doc section 3bis / spec section 6).
+ *
+ * **Delivering a key to a device with no prior session takes two calls to
+ * this function, not one** -- design doc section 3ter, and the ordering is
+ * not optional. A device this machine has never shared with has no Olm
+ * session yet, and a session key can only reach a device over one; that
+ * needs a `/keys/claim` round trip first. So the *first* call to
+ * `shareScopeKey` for a new device queues a `'keys_claim'` request (among
+ * {@link takeOutgoingRequests}' output) alongside a to-device request that
+ * cannot yet carry the key -- it is an `m.room_key.withheld` notice, not
+ * the key itself. Only once the product has sent that claim and reported
+ * it with {@link markRequestSent} does calling `shareScopeKey` **again**,
+ * for the same scope and users, produce the to-device request that
+ * actually carries the session key. The full sequence, per device:
+ *
+ * 1. `shareScopeKey` (queues `'keys_claim'`, if no session yet)
+ * 2. send the `'keys_claim'` request, `markRequestSent` it
+ * 3. `shareScopeKey` again, same scope and users (now produces the
+ *    key-carrying `'to_device'` request)
+ * 4. send that request, `markRequestSent` it
+ *
+ * A product that calls this once, sends what {@link takeOutgoingRequests}
+ * returns, and moves on silently under-delivers to every device it has not
+ * already shared with -- the same silent-failure shape design doc section
+ * 3bis is named for, one step further in. `receiveSyncChanges` (which
+ * queues the `'keys_query'` step that must come before either of the above,
+ * so this machine knows the device exists at all) and this function
+ * together are what section 3ter's ordering describes.
  */
 export async function shareScopeKey(scope: CryptoScopeId, userIds: string[]): Promise<void> {
   try {
@@ -252,6 +412,14 @@ export async function takeOutgoingRequests(): Promise<OutgoingRequest[]> {
  * was sent, handing back the server's raw JSON response so the machine can
  * update its own state. An addition to the frozen surface, not a change to
  * it -- see {@link takeOutgoingRequests}.
+ *
+ * **`responseJson` must be that request's own endpoint's response body,
+ * unwrapped** -- see {@link OutgoingRequest}'s own doc comment for the
+ * table mapping each `kind` to what it must contain. It is parsed per
+ * `kind`, and a `responseJson` that does not match rejects with
+ * `malformed_payload` rather than being accepted or silently ignored; the
+ * request named by `id` stays outstanding when that happens, so the same
+ * `id` can be retried with corrected input.
  *
  * **This call is what stops `id` being handed out again**, not a courtesy
  * notification after the fact -- see {@link takeOutgoingRequests}'s own doc

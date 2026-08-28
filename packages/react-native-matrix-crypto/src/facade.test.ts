@@ -108,11 +108,72 @@ describe('facade before implementation', () => {
  */
 describe('receiveSyncChanges wiring to the native layer', () => {
   it('forwards the sync delta as JSON and resolves void, discarding the native counts', async () => {
-    const delta = { toDeviceEvents: [], changedDevices: { changed: [], left: [] }, oneTimeKeysCounts: {} }
+    // snake_case, matching the core's own `SyncChangesPayload` field names
+    // exactly -- see the regression test below for why this is load-bearing,
+    // not a style choice.
+    const delta = {
+      to_device_events: [],
+      changed_devices: { changed: [], left: [] },
+      one_time_keys_counts: {},
+    }
 
     await expect(receiveSyncChanges(delta)).resolves.toBeUndefined()
 
     expect(vi.mocked(nativeReceiveSyncChanges).mock.calls.at(-1)?.[0]).toBe(JSON.stringify(delta))
+  })
+
+  it('accepts an empty object -- the shape an ordinary, uneventful sync sends', async () => {
+    await expect(receiveSyncChanges({})).resolves.toBeUndefined()
+
+    expect(vi.mocked(nativeReceiveSyncChanges).mock.calls.at(-1)?.[0]).toBe('{}')
+  })
+
+  it('accepts a payload naming at least one recognised field alongside an unrecognised one, tolerating a homeserver-added field', async () => {
+    const delta = { changed_devices: { changed: [], left: [] }, some_future_sync_field: 'value' }
+
+    await expect(receiveSyncChanges(delta)).resolves.toBeUndefined()
+
+    expect(vi.mocked(nativeReceiveSyncChanges).mock.calls.at(-1)?.[0]).toBe(JSON.stringify(delta))
+  })
+
+  /**
+   * Regression for F2 (Task 7 fix round 1): this file's own fixture above
+   * used to be camelCase (`{ toDeviceEvents: [...] }`), which the core
+   * silently accepts as an all-default, no-op payload -- every field
+   * defaults independently and unknown keys are ignored -- so the one
+   * worked example a reader would copy out of this repo was the silent
+   * no-op the whole surface exists to catch. This proves a payload naming
+   * none of the recognised fields is now rejected before it ever gets the
+   * chance to silently do nothing.
+   */
+  it('rejects with malformed_payload before ever calling native, when the payload names none of the recognised fields', async () => {
+    vi.mocked(nativeReceiveSyncChanges).mockClear()
+
+    await expect(receiveSyncChanges({ toDeviceEvents: [] })).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
+    )
+    await expect(receiveSyncChanges({ nonsense: true })).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
+    )
+
+    expect(nativeReceiveSyncChanges).not.toHaveBeenCalled()
+  })
+
+  /**
+   * Regression for F6 (Task 7 fix round 1): `JSON.stringify(undefined)` is
+   * the *value* `undefined`, not a string, and `syncDelta: unknown` lets
+   * it through the type system. This proves it is rejected before native
+   * is ever called, rather than forwarded as the four-character string
+   * `"undefined"` or the bare value `undefined`.
+   */
+  it('rejects with malformed_payload before ever calling native, when syncDelta stringifies to undefined', async () => {
+    vi.mocked(nativeReceiveSyncChanges).mockClear()
+
+    await expect(receiveSyncChanges(undefined)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
+    )
+
+    expect(nativeReceiveSyncChanges).not.toHaveBeenCalled()
   })
 })
 
@@ -134,6 +195,52 @@ describe('encryptEvent wiring to the native layer', () => {
     // ArrayBuffer -> Uint8Array, the shape EventEnvelope promises.
     expect(envelope.ciphertext).toBeInstanceOf(Uint8Array)
     expect(new TextDecoder().decode(envelope.ciphertext)).toBe('native-ciphertext')
+  })
+
+  /**
+   * Regression for F4 (Task 7 fix round 1): the per-field `toBe`
+   * assertions above cannot see an extra key -- a review proved that
+   * adding one to the mocked native `Envelope` and replacing the
+   * destructuring with a pass-through spread left every test in this file
+   * green. `toEqual` against the whole returned object does fail on an
+   * extra key, the same shape `getDeviceIdentityKeys`'s own
+   * leak-prevention test above uses.
+   */
+  it('does not leak a field the generated Envelope carries that this function does not name', async () => {
+    vi.mocked(nativeEncryptEvent).mockResolvedValueOnce({
+      scope: '!native-scope:example.org',
+      algorithm: 'm.native.algorithm',
+      eventType: 'm.native.event',
+      ciphertext: toArrayBuffer('native-ciphertext'),
+      sender: '@native-sender:example.org',
+      ...({ internalDebugFlag: true } as Record<string, unknown>),
+    })
+
+    const envelope = await encryptEvent(scope, 'm.room.message', { body: 'hi' })
+
+    expect(envelope).toEqual({
+      scope: asCryptoScopeId('!native-scope:example.org'),
+      algorithm: 'm.native.algorithm',
+      eventType: 'm.native.event',
+      ciphertext: new TextEncoder().encode('native-ciphertext'),
+      sender: '@native-sender:example.org',
+    })
+  })
+
+  /**
+   * Regression for F6 (Task 7 fix round 1): `JSON.stringify(undefined)` is
+   * the *value* `undefined`, not a string, and `payload: unknown` lets it
+   * through the type system. This proves it is rejected before native is
+   * ever called, rather than forwarded as `undefined`.
+   */
+  it('rejects with malformed_payload before ever calling native, when payload stringifies to undefined', async () => {
+    vi.mocked(nativeEncryptEvent).mockClear()
+
+    await expect(encryptEvent(scope, 'm.room.message', undefined)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
+    )
+
+    expect(nativeEncryptEvent).not.toHaveBeenCalled()
   })
 })
 
@@ -163,6 +270,46 @@ describe('decryptEvent wiring to the native layer', () => {
     vi.mocked(nativeDecryptEvent).mockClear()
 
     await expect(decryptEvent(undefined as unknown as CryptoScopeId, {})).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
+    )
+
+    expect(nativeDecryptEvent).not.toHaveBeenCalled()
+  })
+
+  /**
+   * Regression for F4 (Task 7 fix round 1): see the identical test on
+   * `encryptEvent` above for why the per-field assertions alone do not
+   * catch this.
+   */
+  it('does not leak a field the generated Envelope carries that this function does not name', async () => {
+    vi.mocked(nativeDecryptEvent).mockResolvedValueOnce({
+      scope: '!native-scope:example.org',
+      algorithm: 'm.native.algorithm',
+      eventType: 'm.native.event',
+      ciphertext: toArrayBuffer('native-plaintext'),
+      sender: '@native-sender:example.org',
+      ...({ internalDebugFlag: true } as Record<string, unknown>),
+    })
+
+    const envelope = await decryptEvent(scope, { type: 'm.room.encrypted' })
+
+    expect(envelope).toEqual({
+      scope: asCryptoScopeId('!native-scope:example.org'),
+      algorithm: 'm.native.algorithm',
+      eventType: 'm.native.event',
+      ciphertext: new TextEncoder().encode('native-plaintext'),
+      sender: '@native-sender:example.org',
+    })
+  })
+
+  /**
+   * Regression for F6 (Task 7 fix round 1): see the identical test on
+   * `encryptEvent` above.
+   */
+  it('rejects with malformed_payload before ever calling native, when rawEvent stringifies to undefined', async () => {
+    vi.mocked(nativeDecryptEvent).mockClear()
+
+    await expect(decryptEvent(scope, undefined)).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
     )
 
