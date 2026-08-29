@@ -96,20 +96,25 @@ export interface InteropSuiteOptions {
  *
  * WHICH WAY THE DIFFERENCE RUNS
  *
- * The blocking pool is the slower of the two on this measurement, and
- * by a margin this design can see: median 9.5 ms against 2 ms, and
- * higher in every host condition separately. The tails overlap -- p90
- * 32.6 ms against 23.1 ms, worst 59 ms against 37 ms -- so the
- * separation is in the body rather than the tail. There is a mechanism
- * and it is documented at `observer::emit`: what is timed here is the
- * first signal of a cold process, and on that path the first `emit`
- * builds this library's whole tokio runtime and then a blocking-pool
- * thread, where a thread per signal built one bare thread and nothing
- * else. It is a one-off per process, it is milliseconds, and it does
- * not bear on this budget -- but "the measurement did not move" would
- * be the wrong summary of it. The gap is widest under CPU saturation,
- * where building a runtime competes for the cores it is asking for: 20
- * ms against 5 ms at the median, 56 ms against 33 ms at worst.
+ * The blocking pool is the slower of the two on this measurement: median
+ * 9.5 ms against 2 ms, and higher in every host condition separately. The
+ * tails overlap -- p90 32.6 ms against 23.1 ms, worst 59 ms against 37 ms --
+ * so the separation is in the body rather than the tail. It is real but it is
+ * one-star: 12 of 20 interleaved pairs favour the new path being slower, 6 run
+ * the other way and 2 tie, which a Wilcoxon signed-rank test puts at p ~ 0.04
+ * and a paired sign-flip permutation on the median at p ~ 0.03. Do not read it
+ * as more than that.
+ *
+ * **Slower, and the cause is not established.** What is measured about the
+ * cause, rather than argued: the excess is confined to the *first* signal of a
+ * process -- a second signal in the same process makes the two paths
+ * indistinguishable -- and it is not fixed work, because the two arms share a
+ * floor while the gap grows with contention. A first draft of this note
+ * attributed it confidently to building the tokio runtime; that is one
+ * candidate among several first-use costs and this branch has not separated
+ * them. `observer::emit` carries the detail. None of it bears on this budget,
+ * which is milliseconds against ten seconds; what it does mean is that "the
+ * measurement did not move" would be the wrong summary.
  *
  * The two arms were provably different binaries, which the first attempt at
  * this measurement could not establish: `coreVersion` now carries a
@@ -128,10 +133,12 @@ export interface InteropSuiteOptions {
  *
  * The only hard facts available are that 2000 ms was observed to be
  * insufficient on this hardware, and that 15000 ms was observed sufficient
- * eight times out of eight, which as noted above is weak. 10000 sits five
- * times above the value known to fail and below the value never observed
- * failing. It is not derived from the clean distribution at all, and it
- * should not be: a budget sized at 1.5x a number that was watched failing is
+ * eight times out of eight, which as noted above is weak. 10000 interpolates
+ * between them: five times above the one hard negative, below the one weak
+ * positive. Nothing has ever been observed at 10000 itself, so being "below
+ * the value never observed failing" is not evidence for it -- it is only the
+ * absence of evidence against it, and this sentence used to blur the two. It
+ * is not derived from the clean distribution at all, and it should not be: a budget sized at 1.5x a number that was watched failing is
  * sized against the wrong evidence, and `probe-android` is the wrong job to
  * be wrong in -- a slower machine than the one measured (x86_64 emulator,
  * software GPU, four-vCPU hosted runner), taking most of an hour, gated on
@@ -157,15 +164,18 @@ export interface InteropSuiteOptions {
  *
  * Read the `PROBE_SIGNAL_MS` line from the same launch before touching this
  * number. The callback keeps arriving after this check has given up, and the
- * app keeps running, so a late delivery still prints its own latency -- the
- * line's absence means the callback was lost, its presence means it was late,
- * and the check alone cannot tell those apart. That guidance is only true if
- * the log is read after the window in which a late callback can still arrive:
- * `scripts/run-probe-on-emulator.sh` waits `PROBE_LATE_GRACE_SECONDS` (15 by
- * default) after the summary before dumping the `PROBE_` lines, for exactly
- * this reason. It used to read the log once, immediately, so the absence of
- * the line was unreliable evidence in exactly the case this paragraph is
- * about.
+ * app keeps running, so a late delivery still prints its own latency, and the
+ * check alone cannot tell "late" from "lost".
+ *
+ * Read the absence of the line for exactly what it bounds, which is less than
+ * it looks. `scripts/run-probe-on-emulator.sh` waits
+ * `PROBE_LATE_GRACE_SECONDS` (15 by default) after the summary before dumping
+ * the `PROBE_` lines, so a missing line means the callback did not arrive
+ * within roughly this budget plus that grace -- not that it never arrived.
+ * Nothing bounds how late a lost-looking callback could be; that it is
+ * unbounded is the open finding above. The grace window is still worth having:
+ * the script used to read the log once, immediately, so a delivery landing one
+ * second after the summary was absent from the artifact and read as lost.
  */
 const SIGNAL_WAIT_MS = 10000
 const SIGNAL_POLL_MS = 20
