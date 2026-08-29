@@ -39,6 +39,25 @@ jobs:
       # of every row the accepted run writes. On fixtures it builds itself: no
       # device, no emulator, no SDK, a few hundred milliseconds.
       - run: yarn gate:measure-guards
+      # The sibling of the gate above, for the other measurement this
+      # repository records. scripts/measure-artifacts.sh refuses to record an
+      # artifact size measured from a binary that was not built from the Rust
+      # in the tree -- a real measurement of the wrong artifact reads exactly
+      # like a real measurement of the right one, and it had caught that once.
+      # It established provenance by comparing modification times, which did
+      # not survive CI: release run 33261962635 refused a framework built in
+      # that same run, from that same commit, because the tar carrying it
+      # between jobs preserved build times older than the checkout.
+      #
+      # Replacing a proxy with an identity is the kind of fix whose wrong
+      # version -- weaken the gate until the release passes -- is green and
+      # reads the same. So this runs both directions on both paths: a binary
+      # from another commit is refused with and without the CI stamp, an
+      # unstamped binary is refused rather than downgraded on the CI path, a
+      # genuinely stale binary is still refused locally, and the correctly
+      # built binary whose modification times are older than the checkout is
+      # accepted. On a git fixture it builds itself: no Rust, no cross-compile.
+      - run: yarn gate:artifact-provenance
       # gate:readme was written on 2026-08-28, added to package.json, and
       # wired into no workflow at all. It worked, it was never invoked, and
       # the README's gate table sat under the sentence "Every one of these
