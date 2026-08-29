@@ -73,17 +73,22 @@ Being precise about that, because a cryptographic library that oversells itself 
 | Encryption and decryption | working, proven between two crypto machines |
 | Interoperability with a third-party Matrix client | proven both directions against `matrix-nio`, over a real homeserver |
 | Crypto signal channel (`onCryptoSignal`) | present and typed, but **nothing emits a signal yet**, see below |
-| Sender authenticity | **not provided**, see below |
-| Device verification (SAS, QR) | **not implemented**, see the roadmap |
+| Sender authenticity, per event | **not provided, and not coming in M3**, see below |
+| Device verification by short authentication string | landed in the Rust core; **not yet reachable from TypeScript** |
+| Device verification by QR code | **deferred**, see the roadmap |
 | Secret export and import | **not implemented**, see the roadmap |
 
 The unimplemented functions exist today as final types that compile, and reject at runtime with a typed `not_implemented` error. That is intentional: a consuming team can build against the real shape while the cryptography underneath is written.
 
-`onCryptoSignal` is the quieter case, and worth stating plainly because it does not throw. The channel is real, subscribing and unsubscribing work, and a listener that throws cannot starve the others. What is missing is a producer: nothing in this milestone emits a `CryptoSignal`, so a listener registered today never fires. The conditions the three variants name do occur now, and reach you elsewhere: a missing key arrives as a rejected `decryptEvent` with kind `missing_key`, not as a `key_missing` signal. The earliest producer would be M3's device verification work, and whether trust changes ride this channel or get a call-shaped surface instead is still an open question in the M3 design. Subscribe if being ready costs you nothing; do not build a flow that waits to be told.
+`onCryptoSignal` is the quieter case, and worth stating plainly because it does not throw. The channel is real, subscribing and unsubscribing work, and a listener that throws cannot starve the others. What is missing is a producer: nothing in this milestone emits a `CryptoSignal`, so a listener registered today never fires. The conditions the three variants name do occur now, and reach you elsewhere: a missing key arrives as a rejected `decryptEvent` with kind `missing_key`, not as a `key_missing` signal. The producer is M3's device verification work, and it is now settled that trust changes ride this channel rather than a call-shaped surface. That producer is not written yet, so the paragraph above still describes what a listener sees today. Subscribe if being ready costs you nothing; do not build a flow that waits to be told until this row changes.
 
 **Two limits worth knowing before you build on this.**
 
-Decryption does not authenticate the sender. `EventEnvelope.sender` is the value the homeserver delivered, and a successfully decrypted event does not prove who sent it. That authentication comes from device verification, which is not implemented yet. Treat `sender` and `algorithm` as unauthenticated transport metadata until it is.
+Decryption does not authenticate the sender. `EventEnvelope.sender` is the value the homeserver delivered, and a successfully decrypted event does not prove who sent it. Treat `sender` and `algorithm` as unauthenticated transport metadata.
+
+**This paragraph used to say that authentication "comes from device verification", and that was wrong.** Verifying a device by comparing a short authentication string establishes *local* trust, and upstream's decryption path never consults local trust: it reads cross-signing, through `SenderData::from_device`, which branches on whether the device is cross-signed and then on whether that signature is trusted. So a decrypted event carries the same authenticity value before and after a successful verification, and `Verified` is unreachable for an event until cross-signing exists. Established against `matrix-sdk-crypto` 0.18.0 rather than assumed; the reasoning is in the M3 design, section 7, question 6.
+
+What verification does give you, and it is worth having, is a verified **device** — readable through `getDeviceStatuses`. What it does not give you is a verified **sender** on a decrypted event. That is M4.
 
 The interoperability proof has a floor, and it is the ratchet. `matrix-nio`, a Matrix client written in Python by people who have never seen this code, decrypts what this library encrypts and this library decrypts what it sends, over a real homeserver, in two tests anyone can run: one driving the Rust core, one driving the published TypeScript API on an emulator. What neither proves is the ratchet itself. `matrix-nio` 0.26 and this library both call `vodozemac 0.10.0`, so a defect inside that crate, or a misreading shared below the protocol line, would pass both sides. What is genuinely tested by two independent implementations is everything above it: event shapes, the `/keys/*` payloads a real homeserver accepts and answers, to-device routing, and the order a session key has to travel in. That is where this library's own code lives.
 
@@ -240,9 +245,9 @@ It cannot be switched off. The generator's C++ backend takes no configuration at
 
 ## Roadmap
 
-The milestone below is what turns this from a proven chain into a usable encryption library. Each item names what does not work today and what has to happen for it to work.
+The milestones below turn this from a proven chain into a usable encryption library. Each item names what does not work today and what has to happen for it to work.
 
-### M2, the encryption core, mostly landed
+### M2, the encryption core, landed
 
 | Item | State |
 |---|---|
@@ -261,13 +266,28 @@ Both obstacles named when this milestone was planned turned out real, and both w
 
 **Why the last two rows exist.** Two of our own crypto machines agreeing proves the implementation is self consistent. It cannot prove the wire format is right, because a consistent misreading of the protocol passes it cleanly on both sides. Only a third party client decrypting a real message answers that, so both proofs run against `matrix-nio` over a real homeserver, and either can be run by anyone: `./scripts/run-level-two-interop.sh` for the core, and the level two harness in `packages/example-app` for the published surface.
 
-What those proofs still cannot reach is stated under Status: `matrix-nio` and this library both call `vodozemac`, so the ratchet is the floor, and sender authenticity waits on device verification in M3.
+What those proofs still cannot reach is stated under Status: `matrix-nio` and this library both call `vodozemac`, so the ratchet is the floor. Per-event sender authenticity waits on cross-signing, which is M4 and not M3 — see the correction under Status.
 
-### M3 and beyond
+### M3, device verification, in progress
 
-* device verification, SAS and QR
-* **sender authenticity**, which arrives with verification and not before. Until a device is verified, a decrypted event's sender is what the server said it was, so this is the item that turns `sender` from transport metadata into a claim you can rely on
-* secret export and import, for recovery
+Four items, scoped against one test: verification, plus whatever would obstruct a team building on `0.1.0`.
+
+| Item | State |
+|---|---|
+| A typed `SyncDelta`, and one shared mapping instead of four | done |
+| Device verification by short authentication string, in the Rust core | done, two machines completing a comparison and a genuine disagreement refusing |
+| The same, reachable from TypeScript, with `getDeviceStatuses` reporting a verified device | in progress |
+| `verification_state` on a decrypted event | in progress |
+| Trust changes emitted on the signal channel | not started |
+| A third-party client participating in a verification | not started |
+| Signal delivery no longer costing one operating system thread per signal | done |
+
+QR verification is **deferred, not rejected**. It would add a dependency absent from `rust/Cargo.lock`, an off-by-default Cargo feature, and pressure on a size budget that has already been tripped once.
+
+### M4 and beyond
+
+* **cross-signing**, which is what turns a verified device into a verified *sender*. Named here rather than in M3 because M3 established that verification alone cannot do it: this is the item that turns a decrypted event's `sender` from transport metadata into a claim you can rely on
+* secret storage and recovery, so a verification survives a reinstall
 * multi participant scenarios and federation neutral test coverage
 * cross implementation testing against both Synapse and Continuwuity
 * a stabilised API, published documentation and multi platform CI for 1.0
