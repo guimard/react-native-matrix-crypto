@@ -704,8 +704,9 @@ export async function getDeviceStatuses(userId: string): Promise<DeviceStatus[]>
  *    {@link getDeviceStatuses} report the device verified
  *
  * The side that was asked does the same from step 2, calling
- * {@link acceptVerification} first -- see that function for where its
- * `verificationId` comes from, since nothing hands it one. Either side may
+ * {@link acceptVerification} first. Its `verificationId` is handed to it by
+ * {@link onCryptoSignal}, which announces inbound invitations -- see that
+ * function, and `acceptVerification`'s own comment. Either side may
  * call {@link startVerificationComparison}; the other gets
  * `'comparison_already_started'` and carries on from step 4.
  */
@@ -726,70 +727,64 @@ export async function requestVerification(userId: string, deviceId: string): Pro
  *
  * # Where `verificationId` comes from on this side
  *
- * There is no call that lists or announces an inbound verification, and
- * nothing hands you the identifier. You read it off the invitation itself.
+ * **{@link onCryptoSignal} announces it.** Forward the sync to
+ * {@link receiveSyncChanges} as usual -- that is what makes the flow exist
+ * at all -- and a subscriber receives:
  *
- * The invitation arrives as an ordinary to-device event in your `/sync`
- * response -- one of the events you already forward to
- * {@link receiveSyncChanges} as `to_device_events`. It looks like this:
- *
- * ```json
- * {
- *   "sender": "@bob:example.org",
- *   "type": "m.key.verification.request",
- *   "content": {
- *     "from_device": "BOBDEVICE",
- *     "transaction_id": "the value you want",
- *     "methods": ["m.sas.v1"],
- *     "timestamp": 1700000000000
- *   }
- * }
+ * ```ts
+ * onCryptoSignal((signal) => {
+ *   if (signal.kind !== 'verification_requested') return
+ *   // signal.user and signal.device say who is asking.
+ *   // Ask the person, then:
+ *   acceptVerification(signal.verificationId) // or cancelVerification
+ * })
  * ```
- *
- * `content.transaction_id` **is** the `verificationId` every call in this
- * group takes. So a receiving product, per sync:
- *
- * 1. forwards the sync to {@link receiveSyncChanges} as usual -- this is
- *    what makes the flow exist at all, and it must happen before any call
- *    below;
- * 2. scans the same `to_device_events` for `type ===
- *    'm.key.verification.request'` and keeps `content.transaction_id` and
- *    `sender`;
- * 3. asks the person whether to go ahead, then calls this function with
- *    that transaction id, or {@link cancelVerification} to refuse.
  *
  * From there the flow is the one {@link requestVerification} documents,
  * from its step 2 onward.
  *
- * That this library asks a product to read one field out of protocol JSON
- * it otherwise keeps to itself is a real seam, and it is the shape of the
- * surface today rather than a convention worth liking. Announcing inbound
- * flows on the signal channel is a separate, later question.
+ * **Subscribe before your first sync.** A signal produced while nobody is
+ * listening is dropped rather than queued, and an invitation announced to
+ * nobody is one the person at the other device is waiting on -- it expires
+ * ten minutes after it was sent.
  *
- * # Keep the event: an unmet sender's invitation is dropped on arrival
+ * This used to be a listing of the `m.key.verification.request` to-device
+ * event's JSON, with an instruction to filter your own `to_device_events`
+ * for it and read `content.transaction_id` out of one. That was a real seam
+ * -- one field of protocol JSON this library otherwise keeps to itself --
+ * and the announcement is what closes it. The identifier still *is* that
+ * transaction id on the wire; you no longer have to know that.
+ *
+ * # An unmet sender's invitation is dropped on arrival, and not announced
  *
  * **If this library has never been told about the sender's device, the
- * invitation is discarded as it arrives and nothing reports it.** The layer
- * underneath needs the sender's device keys to build the flow at all;
- * without them it drops the event. `receiveSyncChanges` still resolves
- * successfully, no flow exists, and this function rejects that transaction
- * id with `'unknown_flow'`.
+ * invitation is discarded as it arrives.** The layer underneath needs the
+ * sender's device keys to build the flow at all; without them it drops the
+ * event. `receiveSyncChanges` still resolves successfully, no flow exists,
+ * nothing is announced, and this function rejects that transaction id with
+ * `'unknown_flow'`.
+ *
+ * The silence is deliberate rather than a gap. The channel announces flows,
+ * and there is no flow: announcing the wire event's own identifier instead
+ * would hand you a value every call in this group then rejects.
  *
  * **It is recoverable, and recovering it is your job because nothing here
  * kept the event.** What was discarded is that *arrival*, not the
  * invitation: the same event fed in again, once the device is known, does
- * create the flow. So on `'unknown_flow'` for an invitation you have just
- * seen:
+ * create the flow -- and announces it, exactly as a first-time arrival
+ * would. So:
  *
- * 1. keep the raw to-device event;
+ * 1. keep the to-device events you could not act on. You never have to open
+ *    one: what you keep is an opaque blob, and what you get back is the
+ *    announcement;
  * 2. learn the sender's devices -- a real `/sync` names them in
  *    `device_lists.changed`, which {@link encryptionSlice} maps to
  *    `changed_devices`; forward that, then drain the resulting
  *    `'keys_query'` and report it with {@link markRequestSent}.
  *    {@link getDeviceStatuses} for that user answering non-empty is how you
  *    know it worked;
- * 3. pass the kept event to {@link receiveSyncChanges} a second time, and
- *    call this function again.
+ * 3. pass the kept events to {@link receiveSyncChanges} a second time, and
+ *    wait to be told.
  *
  * Promptly, though: an invitation expires ten minutes after it was sent, so
  * a recovery that takes longer than that leaves the other side to ask
