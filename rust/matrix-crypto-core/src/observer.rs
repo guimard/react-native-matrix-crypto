@@ -224,8 +224,23 @@ mod tests {
     /// class of gap, where sixteen tests passed against a shipped path that
     /// would have panicked, because `#[tokio::test]` had been supplying the
     /// context the product does not have.
+    ///
+    /// Deliberately NOT `#[tokio::test]`, and it says so twice: here, as its
+    /// two neighbours do, and again as the first statement in the body. The
+    /// attribute alone used to carry this test's entire target. Edited to
+    /// `#[tokio::test]` -- by someone making the file look consistent, or by
+    /// a tool -- it would keep passing while examining nothing, which is the
+    /// failure it exists to catch. The assertion is what turns that edit
+    /// into a red test instead of a silent one.
     #[test]
     fn a_signal_emitted_with_no_ambient_runtime_reaches_the_observer() {
+        assert!(
+            tokio::runtime::Handle::try_current().is_err(),
+            "this test proves nothing with an ambient runtime in scope: it must reach \
+             `emit` from a thread that has never seen tokio, so it must not be a \
+             `#[tokio::test]` and must not be called from inside `in_runtime`"
+        );
+
         let (observer, rx) = channel_observer();
 
         emit(
