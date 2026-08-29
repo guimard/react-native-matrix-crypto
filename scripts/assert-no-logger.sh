@@ -5,7 +5,7 @@ set -euo pipefail
 # because it is not the bridge.
 #
 # Generated code is NOT excluded wholesale, and the C++ half of it used not to
-# be scanned at all. `cpp/generated/matrix_crypto.cpp` carries five
+# be scanned at all. `cpp/generated/matrix_crypto.cpp` carries eight
 # `std::cout` writes on UniFFI callback error paths, it is compiled into the
 # shipped `libreact-native-matrix-crypto.so` and into every consumer's iOS
 # binary, and until 2026-08-28 this gate had never read a line of C++. It
@@ -338,13 +338,34 @@ TS_HITS=$(grep -nE "$FORBIDDEN_TS|$FORBIDDEN_TS_WRITE" $TS_FILES 2>/dev/null || 
 #
 # This section did not exist until 2026-08-28. The gate had never read a line
 # of C++, and every write to a stream anywhere in the shipped bridge is in
-# C++: five `std::cout` calls in cpp/generated/matrix_crypto.cpp, one per
+# C++: eight `std::cout` calls in cpp/generated/matrix_crypto.cpp, one per
 # UniFFI callback trampoline, each on a `catch (const jsi::JSError &error)`
-# path. `strings` on the release AAR's libreact-native-matrix-crypto.so finds
-# four of the five literals plus an undefined `_ZNSt6__ndk14coutE`, so they
-# are in the shipped binary and not merely in the shipped source. The fifth
-# (UniffiForeignFutureDroppedCallback) is dropped by the linker only because
-# nothing references it today.
+# path.
+#
+# THE `strings` EVIDENCE BELOW WAS TAKEN AGAINST FIVE, AND HAS NOT BEEN
+# RETAKEN. When there were five, `strings` on the release AAR's
+# libreact-native-matrix-crypto.so found four of the literals plus an
+# undefined `_ZNSt6__ndk14coutE`, so they were in the shipped binary and not
+# merely in the shipped source; the fifth
+# (UniffiForeignFutureDroppedCallback) was dropped by the linker only because
+# nothing referenced it today. That measurement stands for those five and
+# says nothing about the three that M3's `CryptoObserver` added.
+#
+# It is not a re-run of anything. No committed script produces
+# libreact-native-matrix-crypto.so -- scripts/ builds and measures the AAR's
+# libmatrix_crypto_ffi.so, which is the Rust library, not this translation
+# unit's. Retaking it means a full Android *release* build through gradle
+# with the NDK toolchain and then `strings ... | grep "Error in callback"`,
+# which is tens of minutes and no gate's job. What the eight sites' presence
+# in the shipped source does not depend on is that measurement: it is read
+# out of the committed file by this gate, on every run.
+#
+# The count went from five to eight on 2026-08-29, when a second callback
+# interface was added. A second interface costs three trampolines rather
+# than one: its own method, plus the UniffiCallbackInterfaceFree and
+# UniffiCallbackInterfaceClone every vtable carries. All three were read
+# before the number was raised, and all three pass the structural check
+# below rather than merely resembling the original five.
 #
 # THESE CANNOT BE CONFIGURED AWAY. ubrn's C++ generator takes no configuration
 # at all (`pub(crate) struct CppConfig {}` is literally empty), the write is
@@ -397,8 +418,11 @@ TS_HITS=$(grep -nE "$FORBIDDEN_TS|$FORBIDDEN_TS_WRITE" $TS_FILES 2>/dev/null || 
 #     JAVASCRIPT side threw out of `cb.call(...)`, never one this translation
 #     unit manufactured. So the try block the catch closes may not mention
 #     jsi::JSError at all. Verified against the committed file: none of the
-#     five try blocks does, while ubrn's 23 other JSError constructions all
-#     sit outside them.
+#     eight try blocks does, while ubrn's other JSError constructions all sit
+#     outside them. Re-established across all eight on 2026-08-29, when the
+#     count rose from five -- and this gate re-establishes it structurally on
+#     every run rather than resting on that reading, which is the whole
+#     point of checking the shape rather than counting the sites.
 #
 # If the try block cannot be found at all, the site is NOT tolerated. A write
 # whose provenance this gate cannot read is a write it cannot justify.

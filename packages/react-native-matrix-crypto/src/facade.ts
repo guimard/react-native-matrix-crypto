@@ -705,8 +705,9 @@ export async function getDeviceStatuses(userId: string): Promise<DeviceStatus[]>
  *
  * The side that was asked does the same from step 2, calling
  * {@link acceptVerification} first. Its `verificationId` is handed to it by
- * {@link onCryptoSignal}, which announces inbound invitations -- see that
- * function, and `acceptVerification`'s own comment. Either side may
+ * `onCryptoSignal` -- exported from this package's root alongside these,
+ * and the thing that announces inbound invitations. See
+ * `acceptVerification`'s own comment. Either side may
  * call {@link startVerificationComparison}; the other gets
  * `'comparison_already_started'` and carries on from step 4.
  */
@@ -727,7 +728,8 @@ export async function requestVerification(userId: string, deviceId: string): Pro
  *
  * # Where `verificationId` comes from on this side
  *
- * **{@link onCryptoSignal} announces it.** Forward the sync to
+ * **`onCryptoSignal` announces it**, which this package's root exports
+ * alongside every function here. Forward the sync to
  * {@link receiveSyncChanges} as usual -- that is what makes the flow exist
  * at all -- and a subscriber receives:
  *
@@ -743,10 +745,15 @@ export async function requestVerification(userId: string, deviceId: string): Pro
  * From there the flow is the one {@link requestVerification} documents,
  * from its step 2 onward.
  *
- * **Subscribe before your first sync.** A signal produced while nobody is
- * listening is dropped rather than queued, and an invitation announced to
- * nobody is one the person at the other device is waiting on -- it expires
- * ten minutes after it was sent.
+ * **Subscribe before your first sync**, and prefer keeping the
+ * subscription for the process's life. Nothing is queued for a subscriber
+ * that is not there -- but nothing is consumed either, because the layer
+ * underneath does no work at all with nobody subscribed. So an invitation
+ * that arrives while you are unsubscribed is still `'requested'` when you
+ * come back, and the first {@link receiveSyncChanges} after you resubscribe
+ * announces it. `useEffect(() => onCryptoSignal(h), [])` does not lose
+ * invitations. What you cannot get back is an invitation that arrived
+ * before this process existed at all; see the restart note below.
  *
  * This used to be a listing of the `m.key.verification.request` to-device
  * event's JSON, with an instruction to filter your own `to_device_events`
@@ -776,7 +783,8 @@ export async function requestVerification(userId: string, deviceId: string): Pro
  *
  * 1. keep the to-device events you could not act on. You never have to open
  *    one: what you keep is an opaque blob, and what you get back is the
- *    announcement;
+ *    announcement. Keep the ones you *did* act on too, until their flow
+ *    finishes -- see the restart note below;
  * 2. learn the sender's devices -- a real `/sync` names them in
  *    `device_lists.changed`, which {@link encryptionSlice} maps to
  *    `changed_devices`; forward that, then drain the resulting
@@ -791,6 +799,20 @@ export async function requestVerification(userId: string, deviceId: string): Pro
  * again. A product that discards to-device events it could not act on has
  * no way back, which is the reason this is spelled out rather than left to
  * the error kind.
+ *
+ * # A restart loses the flow, and the recovery is the same one
+ *
+ * Flows live in memory, on both sides of this boundary. A process that
+ * restarts mid-verification holds a `verificationId` that now rejects with
+ * `'unknown_flow'`, and nothing is announced for it, because there is
+ * nothing left to announce. The only way back is the one above: feed the
+ * kept `m.key.verification.request` event in again, and be told the flow's
+ * name as though it had just arrived.
+ *
+ * That is why the retention advice covers events you *did* act on and not
+ * only ones you could not. An invitation you accepted a second before the
+ * process died is exactly the event you now need, and the ten-minute expiry
+ * is still running.
  *
  * **Skipping this call does not fail silently.** Nothing advances: the flow
  * stays at `'requested'`, and {@link startVerificationComparison} on it

@@ -80,7 +80,7 @@ Being precise about that, because a cryptographic library that oversells itself 
 
 The unimplemented functions exist today as final types that compile, and reject at runtime with a typed `not_implemented` error. That is intentional: a consuming team can build against the real shape while the cryptography underneath is written.
 
-`onCryptoSignal` had no producer for the whole of M1 and M2, and now has two, both belonging to device verification. `verification_requested` says another device has asked to verify itself against this one, and carries the `verificationId` that `acceptVerification` takes -- it is the only way a receiving side learns that identifier. `trust_changed` says a comparison finished and a device belonging to that user moved; `getDeviceStatuses` for that user says which. The other two variants, `unexpected_device` and `key_missing`, still have no producer, and the conditions they name reach you elsewhere: a missing key arrives as a rejected `decryptEvent` with kind `missing_key`, not as a `key_missing` signal. **Subscribe before your first sync.** Both producers run inside `receiveSyncChanges`, a signal produced while nobody is listening is dropped rather than queued, and an invitation announced to nobody is one the person at the other device is waiting on.
+`onCryptoSignal` had no producer for the whole of M1 and M2, and now has two, both belonging to device verification. `verification_requested` says another device has asked to verify itself against this one, and carries the `verificationId` that `acceptVerification` takes -- it is the only way *this library* hands a receiving side that identifier, since no call lists inbound flows. `trust_changed` says a comparison finished and a device belonging to that user moved; `getDeviceStatuses` for that user says which. The other two variants, `unexpected_device` and `key_missing`, still have no producer, and the conditions they name reach you elsewhere: a missing key arrives as a rejected `decryptEvent` with kind `missing_key`, not as a `key_missing` signal. **Subscribe before your first sync**, and keep the subscription. Both producers run inside `receiveSyncChanges`, and nothing is consumed while nobody is subscribed -- so an invitation that arrives while you are away is announced on the first sync after you come back, and the ordinary `useEffect(() => onCryptoSignal(h), [])` does not lose invitations.
 
 **Two limits worth knowing before you build on this.**
 
@@ -267,9 +267,15 @@ onCryptoSignal((signal) => {
 await receiveSyncChanges(encryptionSlice(sync))
 ```
 
-**Subscribe before your first sync.** A signal produced while nobody is listening is dropped
-rather than queued, and an invitation announced to nobody is one the other person is waiting
-on. This section used to tell you to filter your own `to_device_events` for
+**Subscribe before your first sync, and keep the subscription.** Nothing is queued for a
+subscriber that is not there -- and nothing is consumed either, because the layer underneath
+does no work at all with nobody subscribed. An invitation that arrives while you are
+unsubscribed is still `requested` when you come back, and the first `receiveSyncChanges`
+after you resubscribe announces it, so subscribing on mount and unsubscribing on unmount
+does not lose invitations. A completed comparison's `trust_changed` is not re-offered that
+way; `getDeviceStatuses` is the durable answer to that question and always was.
+
+This section used to tell you to filter your own `to_device_events` for
 `m.key.verification.request` and read `content.transaction_id` out of one. That was a seam --
 a field of protocol JSON this library otherwise keeps to itself -- and the announcement
 closes it. The identifier still *is* that transaction id on the wire; you no longer have to
@@ -290,6 +296,13 @@ blob and what you get back is the announcement. Promptly, though -- an invitatio
 minutes after it was sent. A product that throws away to-device events it could not act on
 has no way back, which is why the device-knowledge step is listed before the flow rather
 than inside it.
+
+**Keep the ones you did act on, too, until their flow finishes.** Flows live in memory on
+both sides of this boundary, so a process that restarts mid-verification holds a
+`verificationId` that now rejects with `unknown_flow`, and nothing is announced for it
+because there is nothing left to announce. The recovery is the same one: feed the kept
+invitation in again and be told the flow's name as though it had just arrived. The
+ten-minute expiry is still running while you do.
 
 **Every step goes through the queue.** Nothing reaches the other device until you send what
 `takeOutgoingRequests` hands you and report each one with `markRequestSent`. Skipping the
