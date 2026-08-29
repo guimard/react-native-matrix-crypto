@@ -31,11 +31,29 @@ set -euo pipefail
 # steps correctly.
 #
 # So this refuses to run until the two APKs are shown to differ where it
-# matters, and then refuses to accept a launch that does not say which arm it
-# is. Both halves are needed: the first compares the artifacts on disk, the
-# second reads what the running process reports about itself
+# matters, and then refuses to accept a round whose two launches do not say
+# which arm they are. Both halves are needed: the first compares the artifacts
+# on disk, the second reads what the running processes report about themselves
 # (`PROBE_EMIT_BUILD`, from `observer.rs`'s `EMIT_BUILD` by way of
-# `coreVersion`).
+# `coreVersion`). The on-disk half cannot see a wrong-ABI pick or a `.so`
+# assembled from a `jniLibs/` it did not digest; the run-time half can.
+#
+# BOTH HALVES HAVE BEEN WATCHED REFUSING, WHICH IS THE ONLY REASON TO BELIEVE
+# THE SENTENCE ABOVE
+#
+# The first draft of the run-time half could not fire. `launch_once` wrote its
+# TSV row to stdout with `tee` and *also* returned the build id on stdout, so
+# `$(launch_once ...)` captured the row followed by the id -- and the row
+# begins with the arm's label, which is forced to differ. The comparison was
+# therefore false by construction, in every run, forever, including in the one
+# case it exists to reject. Three tracked files asserted it worked. That is
+# spec section 3.2 -- a check reporting success without having examined its
+# target -- inside the script written to close a section 3.2 finding.
+#
+# It now returns through `LAST_BUILD` rather than through stdout, and both
+# halves have been run against the cases they exist to reject:
+# `docs/measurements/2026-08-29-signal-delivery-latency.md` records the refusal
+# messages verbatim. A guard nobody has watched reject anything is decoration.
 
 PACKAGE=com.exampleapp
 ACTIVITY=.MainActivity
@@ -72,6 +90,18 @@ command -v unzip >/dev/null 2>&1 || fail "unzip is not on PATH."
 [ -s "$APK_B" ] || fail "no APK at '$APK_B'."
 [ "$LABEL_A" != "$LABEL_B" ] || fail "both APKs are named '$LABEL_A'; the rows would be unreadable."
 
+LOAD_PIDS=()
+
+# Defined before the trap that calls it, not after. It used to be declared 70
+# lines further down, so any `fail` before that point ran the EXIT trap against
+# an undefined function: the script exited 127 with "stop_load: command not
+# found" instead of the 1 its diagnostic had just earned.
+stop_load() {
+  [ "${#LOAD_PIDS[@]}" -gt 0 ] || return 0
+  for p in "${LOAD_PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
+  LOAD_PIDS=()
+}
+
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"; stop_load' EXIT
 
@@ -85,21 +115,37 @@ trap 'rm -rf "$WORK"; stop_load' EXIT
 ABI=$(adb shell getprop ro.product.cpu.abi 2>/dev/null | tr -d '\r')
 [ -n "$ABI" ] || fail "no device: adb reported no ro.product.cpu.abi."
 
+# $1 apk, $2 member path. Prints the digest, or returns 1 if the member is
+# absent.
+#
+# The membership test has to be its own step. Piping `unzip -p` straight into
+# `shasum` cannot report absence: `shasum` of empty input is `e3b0c442...`, a
+# perfectly good-looking digest, so a caller testing the output for emptiness
+# tests nothing. What actually happened under this script's `set -euo
+# pipefail` was that `unzip`'s exit 11 propagated out of the pipeline and
+# aborted the assignment -- fail-closed, so no bogus measurement could come of
+# it, but a bare exit 11 with no message where a diagnostic was written.
 digest_member() {
-  # $1 apk, $2 member path. Empty output means the member is absent.
+  unzip -l "$1" "$2" >/dev/null 2>&1 || return 1
   unzip -p "$1" "$2" 2>/dev/null | shasum -a 256 | cut -c1-16
 }
 
 CORE_SO="lib/$ABI/libmatrix_crypto_ffi.so"
 BUNDLE=assets/index.android.bundle
 
-A_CORE=$(digest_member "$APK_A" "$CORE_SO")
-B_CORE=$(digest_member "$APK_B" "$CORE_SO")
-A_BUNDLE=$(digest_member "$APK_A" "$BUNDLE")
-B_BUNDLE=$(digest_member "$APK_B" "$BUNDLE")
+# `|| VAR=` on each: without it a missing member returns non-zero, `set -e`
+# aborts the assignment, and the diagnostic below never runs.
+A_CORE=$(digest_member "$APK_A" "$CORE_SO") || A_CORE=""
+B_CORE=$(digest_member "$APK_B" "$CORE_SO") || B_CORE=""
+A_BUNDLE=$(digest_member "$APK_A" "$BUNDLE") || A_BUNDLE=""
+B_BUNDLE=$(digest_member "$APK_B" "$BUNDLE") || B_BUNDLE=""
 
-[ -n "$A_CORE" ] || fail "'$APK_A' carries no $CORE_SO. Wrong ABI, or a stub build."
-[ -n "$B_CORE" ] || fail "'$APK_B' carries no $CORE_SO. Wrong ABI, or a stub build."
+[ -n "$A_CORE" ] || fail "'$APK_A' carries no $CORE_SO.
+      This device reports ABI '$ABI'; an APK built for another one, or a stub
+      build that linked nothing, looks like this."
+[ -n "$B_CORE" ] || fail "'$APK_B' carries no $CORE_SO.
+      This device reports ABI '$ABI'; an APK built for another one, or a stub
+      build that linked nothing, looks like this."
 
 if [ "$A_CORE" = "$B_CORE" ]; then
   fail "both APKs carry the same $CORE_SO ($A_CORE).
@@ -124,14 +170,6 @@ fi
 # was being built -- CPU, disk and page cache all contended. 'cpu' reproduces
 # only the first of those, which is why 'io' exists as well.
 # ---------------------------------------------------------------------------
-LOAD_PIDS=()
-
-stop_load() {
-  [ "${#LOAD_PIDS[@]}" -gt 0 ] || return 0
-  for p in "${LOAD_PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
-  LOAD_PIDS=()
-}
-
 start_load() {
   case "$LOAD" in
     none) return 0 ;;
@@ -211,7 +249,12 @@ launch_once() {
     | tee -a "$OUT"
 
   adb shell am force-stop "$PACKAGE" >/dev/null 2>&1 || true
-  printf '%s' "$build"
+
+  # Through a global, NOT through stdout. This function already writes the row
+  # to stdout, so a caller using `$(launch_once ...)` would capture the row and
+  # the id together -- which is exactly how the arm guard below came to be
+  # unable to fire.
+  LAST_BUILD=$build
 }
 
 adb wait-for-device
@@ -220,15 +263,20 @@ echo "device: $(adb shell getprop ro.product.model 2>/dev/null | tr -d '\r') (AP
 start_load
 
 : > "$OUT"
+LAST_BUILD=""
 SEEN_A=""
 SEEN_B=""
 for r in $(seq 1 "$ROUNDS"); do
-  SEEN_A=$(launch_once "$APK_A" "$LABEL_A" "$r")
-  SEEN_B=$(launch_once "$APK_B" "$LABEL_B" "$r")
+  launch_once "$APK_A" "$LABEL_A" "$r"
+  SEEN_A=$LAST_BUILD
+  launch_once "$APK_B" "$LABEL_B" "$r"
+  SEEN_B=$LAST_BUILD
   if [ "$SEEN_A" = "$SEEN_B" ]; then
     fail "round $r: both arms reported the same emission build ($SEEN_A).
       The two APKs differ on disk but the running processes do not
-      distinguish themselves, so nothing measured here is an A/B."
+      distinguish themselves, so nothing measured here is an A/B. A wrong-ABI
+      pick, or a '.so' assembled from a jniLibs/ the on-disk check above did
+      not digest, looks like this."
   fi
 done
 
