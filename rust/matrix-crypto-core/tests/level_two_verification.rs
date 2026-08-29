@@ -80,8 +80,23 @@
 //!
 //! # What is therefore proven here, and what is proven elsewhere
 //!
-//! Proven here, over a real homeserver, against an implementation that
-//! shares no verification code with this one:
+//! Proven here, over a real homeserver, against an implementation whose
+//! *protocol* code shares nothing with this one -- the event vocabulary,
+//! the flow shape, and the commitment computation that turned out to be the
+//! defect are Python written by people who have never seen this code.
+//!
+//! **The floor is the same one the encryption proof has, and it is named
+//! here rather than left to a sibling file.** matrix-nio 0.26 moved its
+//! ratchet to `vodozemac`, the crate `matrix-sdk-crypto` uses, and
+//! `rust/Cargo.lock` and `tests/interop/requirements.txt` pin 0.10.0 on
+//! both sides. nio's SAS key agreement and MAC derivation go through
+//! `vodozemac::sas`, and so do this library's, so a defect inside that
+//! crate -- or a misreading shared below the protocol line -- passes both
+//! sides of this test. What two independent implementations genuinely check
+//! here is everything above it. This file said "shares no verification code
+//! with this one", which is the stronger sentence and is not the true one;
+//! `README.md` already applies this floor to the encryption proof in the
+//! same terms.
 //!
 //! * a third-party client's bare `m.key.verification.start` reaches this
 //!   library and is **announced on the crypto signal channel**, with an
@@ -666,9 +681,12 @@ fn a_third_party_clients_verification_reaches_the_short_authentication_string() 
     let nio_report = nio_report.expect("the loop breaks only once the counterparty stopped");
 
     // ---- THE SECOND PROOF: this library got a string out of it ----------
-    // The key exchange completed against an implementation that shares no
-    // verification code with this one, and this library derived the string
-    // a person would be shown. That the counterparty answered the agreement
+    // The key exchange completed against an implementation whose protocol
+    // code shares nothing with this one, and this library derived the string
+    // a person would be shown. **Not against one that shares no code at
+    // all**, and this is the assertion where that distinction bites
+    // hardest: the key agreement is the half `vodozemac` performs on both
+    // sides, at the same pinned 0.10.0. See this file's header. That the counterparty answered the agreement
     // with a key at all is the other half of it: it parsed the accept this
     // library built for a request-less flow, negotiated against it, and
     // acted on it.
