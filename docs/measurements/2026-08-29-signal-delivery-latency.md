@@ -11,7 +11,7 @@ that a measurement which does not move say **what else the latency is**.
 This file is the measurement. It exists in the tree because the first attempt left its
 harness, its arm swapping and its raw samples in a scratch directory, so re-deriving the
 budget meant rebuilding all three — which is most of the cost of measuring.
-`scripts/measure-signal-latency.sh` is the harness; §8 below is every sample it produced.
+`scripts/measure-signal-latency.sh` is the harness; §9 below is every sample it produced.
 
 ---
 
@@ -233,7 +233,7 @@ between the arms that is consistent across host conditions, and there is one of 
 medians are 2 ms before and 9.5 ms after.
 
 **Nothing was lost.** All 40 launches delivered their callback and reported
-`PROBE_SUMMARY 12/12`. That matters more than the medians do: see section 7.
+`PROBE_SUMMARY 12/12`. That matters more than the medians do: see section 8.
 
 **The race is real, and is why the bounded wait exists.** The callback landed after the
 promise resolved in 20 of the 40 launches. That is the race `interop/suite.ts`'s `waitUntil`
@@ -264,10 +264,10 @@ not move" is the wrong summary: it moved, in the direction this item did not pre
 ## 6. The second-signal experiment
 
 The question the 40 launches above cannot answer: is the new path's excess a cost paid once
-per process, or one paid on every signal? Every one of those samples is the first signal of
-its own cold process -- `launch_once` uninstalls and reinstalls for each launch and the suite
-issues exactly one observed call -- so a once-per-process cost lands in every sample and a
-shifted median is what either hypothesis predicts.
+per process, or one paid on every signal? Every one of those samples is the first observer
+callback its process delivered -- established in section 7, by measurement, after three
+rounds of asserting it from a fact that did not establish it -- so a once-per-process cost
+lands in every sample and a shifted median is what either hypothesis predicts.
 
 One extra `emit` separates them. `ProbeHarness.tsx` now times a second observed signal after
 both suites have run and reports it as `PROBE_SIGNAL2_MS`; the harness records it alongside
@@ -301,7 +301,7 @@ all. No product pays this per signal.
 
 **It is also not fixed work**, which is the part the first draft got wrong. A constant added
 cost `c` would put the new arm's floor at least `c` above the old one's; the floors are 1 ms
-and 0 ms across the 40 launches of section 4, and 1 ms and 0 ms again here. Four of those 40
+and 0 ms across the 40 launches of section 5, and 1 ms and 0 ms again here. Four of those 40
 `after` launches delivered end to end in 1 ms. A fixed 7.5 ms cannot hide inside them. What
 the gap does instead is grow with contention, from +2 ms idle to +22 ms saturated, which is
 what exposure to scheduling looks like and not what a constant amount of work looks like.
@@ -315,7 +315,65 @@ this one. It is recorded as open rather than guessed at a third time.
 
 ---
 
-## 7. What this did not settle
+## 7. Which signal the instrument actually times
+
+Section 6's whole reading turns on `PROBE_SIGNAL_MS` timing a process's *first* signal. For
+three rounds that was asserted, and the reason given for it was wrong.
+
+The reason given was that the interop suite issues exactly one observed call. That is true,
+and it establishes something else: that `ProbeHarness` times only its own call, which is
+what its direct-callback forwarding is for. It does not establish that its call is the
+process's first emission -- and `ProbeHarness.tsx` had already written down why not, forty
+lines above the claim. `App.tsx` renders `GuidedFlow` first, and `GuidedFlow` calls
+`runProbe` on mount with a non-empty input too, so **two emitting calls race on every cold
+launch**.
+
+What the source predicts, and it is only a prediction: `GuidedFlow`'s mount effect runs
+first, but `runFlow` awaits step 1 before reaching step 2's `runProbe`, and that `await`
+yields even though step 1 does no I/O. `ProbeHarness`'s effect then runs and issues its call
+synchronously. So the timed call should be issued first. Nothing enforces that, and no
+version of this argument had ever been checked.
+
+It is now checked on every row. Every emitting call site in the example app draws a number
+from `src/signalOrder.ts` as its signal lands; `ProbeHarness` reports the number its timed
+callback drew as `PROBE_SIGNAL_NTH`, and the harness records it as a column. Eight launches,
+both arms, idle:
+
+```
+before	1	none	1	1	4	1	0.1.0+emit.2cac498d	PROBE_SUMMARY 12/12
+after	1	none	1	1	1	1	0.1.0+emit.1920fc10	PROBE_SUMMARY 12/12
+before	2	none	1	1	1	1	0.1.0+emit.2cac498d	PROBE_SUMMARY 12/12
+after	2	none	2	1	0	2	0.1.0+emit.1920fc10	PROBE_SUMMARY 12/12
+before	3	none	0	1	0	1	0.1.0+emit.2cac498d	PROBE_SUMMARY 12/12
+after	3	none	2	1	1	2	0.1.0+emit.1920fc10	PROBE_SUMMARY 12/12
+before	4	none	3	1	1	3	0.1.0+emit.2cac498d	PROBE_SUMMARY 12/12
+after	4	none	8	1	2	5	0.1.0+emit.1920fc10	PROBE_SUMMARY 12/12
+```
+
+`PROBE_SIGNAL_NTH` is **1 on all eight**, on both arms. The control matters as much as the
+result: a counter nothing else increments would report 1 whatever happened. A separate
+launch, read whole, gives `PROBE_SIGNAL_NTH 1` and `PROBE_SIGNAL2_NTH 3` -- so delivery 2
+was `GuidedFlow`'s, the counter is shared and live, and the timed call really did win the
+race.
+
+**What this is and is not.** It is a measurement of *delivery* order, which is what
+`PROBE_SIGNAL_MS` measures. Whether the two `emit` calls also reached the core in that order
+is inferred from the JS call order above, not measured; separating them needs an instrument
+inside the core. And it is eight launches on one device: the race is real, nothing in the
+source decides it, and a different device or a slower mount could plausibly go the other
+way. What has changed is that a row now carries the answer instead of a comment asserting
+it, so a future run that goes the other way will say so rather than being silently
+misdescribed.
+
+Section 6's conclusion is unaffected: the launches it reports were first-signal launches.
+The two arms here carry `EMIT_BUILD` `2cac498d` and `1920fc10` -- the emission source at the
+tip of this branch rather than at `3e07bbb`, since the ordinal instrument was added after
+section 6 ran. The `emit` statement is identical between them; only the comments around it
+differ, which is exactly the kind of change the fingerprint is built to notice.
+
+---
+
+## 8. What this did not settle
 
 **The 1-in-8 failure at a 2000 ms budget remains unexplained.** The reasoning lives in the
 spec's §5.1 B2 note and at `SIGNAL_WAIT_MS`, rather than being repeated here; the short of
@@ -335,7 +393,7 @@ exists to absorb.
 
 ---
 
-## 8. Every sample
+## 9. Every sample
 
 `label`, `round`, `host load`, `PROBE_SIGNAL_MS`, `PROBE_PROMISE_MS`, `PROBE_EMIT_BUILD`,
 `PROBE_SUMMARY`.

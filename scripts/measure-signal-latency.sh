@@ -245,9 +245,12 @@ launch_once() {
   # missing sometimes: a lost callback is the event this harness is kept for
   # (spec section 5.1, B2), and it used to abort the run rather than record a
   # `NONE`.
-  local log sig sig2 prom build
+  local log sig nth sig2 prom build
   log=$(probe_lines) || log=""
   sig=$(printf '%s\n' "$log" | grep -E '^PROBE_SIGNAL_MS ' | head -1 | awk '{print $2}') || sig=""
+  # Which observer callback of the process the timed one was. The claim that
+  # it is always the first was wrong for three rounds; now every row says.
+  nth=$(printf '%s\n' "$log" | grep -E '^PROBE_SIGNAL_NTH ' | head -1 | awk '{print $2}') || nth=""
   # The second signal of the same process, which is what tells a start-up cost
   # apart from a per-signal one. See ProbeHarness.tsx.
   sig2=$(printf '%s\n' "$log" | grep -E '^PROBE_SIGNAL2_MS ' | head -1 | awk '{print $2}') || sig2=""
@@ -261,9 +264,9 @@ launch_once() {
       ProbeHarness.tsx grew that line will do this."
   fi
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$label" "$round" "$LOAD" "${sig:-NONE}" "${sig2:-NONE}" "${prom:-NONE}" \
-    "$build" "${summary:-NOSUMMARY}" \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$label" "$round" "$LOAD" "${sig:-NONE}" "${nth:-NONE}" "${sig2:-NONE}" \
+    "${prom:-NONE}" "$build" "${summary:-NOSUMMARY}" \
     | tee -a "$OUT"
 
   adb shell am force-stop "$PACKAGE" >/dev/null 2>&1 || true

@@ -11,6 +11,7 @@ import {
 } from 'react-native-matrix-crypto'
 import { DEMO_DEVICE_ID, DEMO_USER_ID, demoMachineConfig } from './cryptoConfig'
 import { FLOW_STEPS, type FlowStep } from './steps'
+import { nthSignal } from './signalOrder'
 
 /**
  * A human-readable walkthrough of the public API, run live against the real
@@ -99,6 +100,10 @@ async function runCall(ctx: RunContext, commit: Commit): Promise<void> {
   try {
     ctx.probeSignals = []
     const report = await runProbe('hello', new Uint8Array([1, 2, 3]), signal => {
+      // Counted, not used here: this screen races ProbeHarness's own call on
+      // every cold launch, and the count is how ProbeHarness's row says which
+      // delivery it timed. See src/signalOrder.ts.
+      nthSignal()
       ctx.probeSignals = [...ctx.probeSignals, signal.kind]
     })
     commit('call', {

@@ -15,7 +15,8 @@
 #   FAKE_BUILD_<label>  the same, for the arm whose APK basename is <label>
 #   FAKE_OMIT           comma-separated PROBE_ line kinds to leave out, so a
 #                       launch that never printed one can be reproduced:
-#                       EMIT_BUILD, SIGNAL_MS, SIGNAL2_MS, PROMISE_MS, SUMMARY
+#                       EMIT_BUILD, SIGNAL_MS, SIGNAL_NTH, SIGNAL2_MS,
+#                       PROMISE_MS, SUMMARY
 #   FAKE_STATE          where the last-installed APK label is remembered
 set -u
 STATE=${FAKE_STATE:-/tmp/fake-adb.state}
@@ -49,6 +50,7 @@ case "${1:-}" in
     omitted PROMISE_MS || echo "PROBE_PROMISE_MS 1"
     omitted EMIT_BUILD || echo "PROBE_EMIT_BUILD 0.1.0+emit.${build}"
     omitted SIGNAL_MS || echo "PROBE_SIGNAL_MS 2"
+    omitted SIGNAL_NTH || echo "PROBE_SIGNAL_NTH ${FAKE_NTH:-1}"
     omitted SIGNAL2_MS || echo "PROBE_SIGNAL2_MS 1"
     omitted SUMMARY || echo "PROBE_SUMMARY 12/12"
     exit 0

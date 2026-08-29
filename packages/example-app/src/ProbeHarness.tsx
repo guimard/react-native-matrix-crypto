@@ -23,6 +23,7 @@ import {
   type CryptoBinding,
 } from 'react-native-matrix-crypto/interop/crypto-suite'
 import { DEMO_DEVICE_ID, DEMO_SCOPE, DEMO_USER_ID, demoMachineConfig } from './cryptoConfig'
+import { nthSignal } from './signalOrder'
 
 /**
  * Adapts the shipped JSI binding to the shared contract from Task 9b.
@@ -64,20 +65,42 @@ import { DEMO_DEVICE_ID, DEMO_SCOPE, DEMO_USER_ID, demoMachineConfig } from './c
  *   that mistake would have produced. This line is how a reader of a probe
  *   log decides which emission path produced the numbers above it, instead
  *   of trusting whoever ran the build.
- * - `PROBE_SIGNAL2_MS n` -- the same measurement again, for a second signal
- *   in the same process. This one exists to settle a question the first
- *   three cannot: whether a difference between two emission implementations
- *   is a one-off start-up cost or a cost the process keeps paying.
+ * - `PROBE_SIGNAL_NTH n` -- which observer callback of this process the
+ *   timed one turned out to be. Not decoration. Three review rounds
+ *   described the line above as timing "the first signal of a cold process",
+ *   arguing from the true fact that the interop suite issues exactly one
+ *   observed call. That fact establishes something else: that this harness
+ *   times only its *own* call, which is what the direct-callback forwarding
+ *   described above is for. It does not establish that this call is the
+ *   process's first emission, and the paragraph forty lines above -- "both
+ *   mount as siblings in App.tsx and both call `runProbe`" -- says why not.
+ *   `GuidedFlow` renders first and calls `runProbe` on mount with a
+ *   non-empty input, so two emitting calls race on every cold launch.
  *
- *   `PROBE_SIGNAL_MS` always times the *first* signal of a cold process,
- *   because the suite issues exactly one observed call and every measured
- *   launch is its own fresh install. So the first signal carries whatever
- *   the emission path builds on first use -- for the blocking pool, this
- *   library's entire tokio runtime -- and no sample anywhere could tell that
- *   apart from a per-signal cost. B2's measurement offered a start-up
- *   explanation it had no way to test; this is the line that tests it. If
- *   the explanation is right, this number is small on both arms; if the two
- *   arms still differ here, the cost is not start-up.
+ *   Rather than reason about which one wins, every emitting call site in
+ *   this app draws a number from `signalOrder.ts` as its signal lands and
+ *   this line reports the one the timed callback drew. A row then carries
+ *   which delivery it measured instead of a comment asserting it.
+ * - `PROBE_SIGNAL2_MS n` -- the same measurement again, for a second signal
+ *   in the same process, issued after both suites have finished. This one
+ *   exists to settle a question the others cannot: whether a difference
+ *   between two emission implementations is a start-up cost or one the
+ *   process keeps paying.
+ *
+ *   Whatever `PROBE_SIGNAL_MS` times is early in a cold process, so it
+ *   carries whatever the emission path builds on first use -- for the
+ *   blocking pool, this library's entire tokio runtime -- and no single
+ *   sample can tell that apart from a per-signal cost. This line is the
+ *   comparison that can. **It has been run:** across 22 launches the gap
+ *   between the two emission paths was 22 ms at the median on the timed
+ *   early signal under CPU saturation and 0 ms on this one, so the excess is
+ *   a start-up cost and not one paid per signal. That does not identify
+ *   *which* start-up cost. Building the runtime is one candidate among
+ *   several -- creating the first pool thread and simply having more
+ *   handoffs to be descheduled between are others -- and nothing measured
+ *   separates them. `observer::emit` and
+ *   `docs/measurements/2026-08-29-signal-delivery-latency.md` carry the
+ *   detail and the samples.
  *
  * They are not checks: nothing passes or fails on them, the summary's
  * denominator does not move, and `scripts/run-probe-on-emulator.sh` prints
@@ -85,7 +108,7 @@ import { DEMO_DEVICE_ID, DEMO_SCOPE, DEMO_USER_ID, demoMachineConfig } from './c
  * suite stays free of them deliberately -- it is the shipped contract every
  * binding must satisfy, and a latency number is a measurement of one
  * binding on one machine, not a property a binding must have. The example
- * app is not the bridge and may log; these carry three integers and a build
+ * app is not the bridge and may log; these carry four integers and a build
  * identifier -- no user identifier, no payload and no key material.
  */
 function jsiBinding(): BridgeBinding {
@@ -98,6 +121,7 @@ function jsiBinding(): BridgeBinding {
         onSignal &&
           ((signal) => {
             console.log(`PROBE_SIGNAL_MS ${Date.now() - calledAt}`)
+            console.log(`PROBE_SIGNAL_NTH ${nthSignal()}`)
             onSignal(signal.kind)
           }),
       )
@@ -169,6 +193,7 @@ async function timeASecondSignal(): Promise<void> {
     const calledAt = Date.now()
     await runProbe('second', new Uint8Array([1]), () => {
       console.log(`PROBE_SIGNAL2_MS ${Date.now() - calledAt}`)
+      console.log(`PROBE_SIGNAL2_NTH ${nthSignal()}`)
     })
   } catch {
     // Deliberately silent. See above: this is an instrument, not a check.
