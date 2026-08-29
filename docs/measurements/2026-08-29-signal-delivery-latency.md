@@ -150,9 +150,12 @@ A guard nobody has seen reject anything is decoration, and one of these was exac
 a whole review cycle. Each is recorded here facing the case it exists to reject, and the real
 pair being accepted. `adb` is stubbed for these runs (the stub answers only the calls this
 harness makes, and lets each arm's reported `PROBE_EMIT_BUILD` be chosen) because the third
-case cannot otherwise be manufactured: two builds differing outside the fingerprinted files
-come out byte-identical, this toolchain being deterministic. The guard under test is shell
-logic, and this tests exactly that.
+case cannot *cheaply* be manufactured. The only honest route to it is a real code change
+outside the two fingerprinted files followed by a full rebuild -- a comment will not do it,
+since a comment cannot change codegen, so the experiment that produced a byte-identical
+`.so` could not have come out any other way and showed less than it appeared to. That is a
+slow way to test a string comparison. The guard under test is shell logic, and a stub tests
+exactly that: the extraction, the return and the comparison are all the shipped script.
 
 | case | what it is | outcome |
 |---|---|---|
@@ -182,18 +185,29 @@ trap called `stop_load` seventy lines before that function was defined, so every
 refusals above exited 127 with `stop_load: command not found` instead of the 1 its diagnostic
 had just earned. Fixed, and the table above is from the re-run.
 
-**To repeat this.** Cases one and two need only real APKs. Case three needs the stub: a
-script named `adb`, first on `PATH`, that answers `wait-for-device`, `uninstall`, `install`,
-`logcat -c` and `am start`/`am force-stop` with exit 0; answers
-`shell getprop ro.product.cpu.abi` with the ABI the APKs carry; and answers `logcat -d` with
-a `PROBE_EMIT_BUILD`, a `PROBE_SIGNAL_MS`, a `PROBE_SIGNAL2_MS` and a `PROBE_SUMMARY 12/12`
-line, choosing the build id from the APK basename it last saw installed. Point both arms at
-the same id and the run must be refused; point them at different ids and it must be
-accepted.
+**This is no longer a manual procedure, and the reason is the fifth guard.** The table above
+was produced by hand and was published as a named limitation: nothing ran it, and a manual
+pass covers the cases someone thought of at the moment they thought of them. The next review
+enumerated a case this one had not -- a launch printing no `PROBE_EMIT_BUILD` line -- and
+found that guard dead too, killed by `set -e` a hundred lines below the comment that
+explains that exact mechanism and fixes it for a neighbour. Two dead guards in one file,
+the second one surviving the review that fixed the first.
 
-**Named limitation:** that is a manual procedure, not a test anything runs. Nothing in CI
-would notice this guard breaking again, and it broke silently once. A self-test driving the
-harness against the stub would close it and is not in this branch.
+`yarn gate:measure-guards` (`scripts/assert-measure-guards.sh`) now faces every refusal in
+this harness with the case it refuses, on every commit, in a few hundred milliseconds. It
+builds its own fixture APKs with `python3 -m zipfile` and runs against
+`scripts/testdata/fake-adb`: no device, no emulator, no Android SDK, no Rust. Six cases --
+the four above, plus the missing-`PROBE_EMIT_BUILD` diagnostic and a launch whose callback
+never arrived, which must be *recorded* as a `NONE` row rather than refused, because a lost
+callback is the event this harness is kept to observe.
+
+It asserts the exit status **and** a distinctive substring of each diagnostic, and both are
+needed. Reintroducing each of the three historical defects one at a time shows why: the trap
+defect is caught by the status (127 where 1 was expected, message already printed); the
+`set -e` defect is caught only by the substring (exit 1, which is correct, and nothing
+said); and the stdout-capture defect is caught only by the accepting case (a run that should
+have been accepted is refused, and writes 2 rows instead of 4). Each of the three is caught
+by a different assertion, and none of the three by all of them.
 
 ---
 
