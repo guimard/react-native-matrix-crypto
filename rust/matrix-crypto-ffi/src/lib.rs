@@ -814,3 +814,103 @@ pub async fn mark_request_sent(id: String, response_json: String) -> Result<(), 
         .await
         .map_err(Into::into)
 }
+
+/// Mirror of the core's `CryptoSignal`, carrying the UniFFI enum derive.
+///
+/// **Appended after every other declaration in this file, deliberately.**
+/// UniFFI assigns wire ordinals by declaration position, so a type or a
+/// variant inserted above an existing one renumbers it and makes stale
+/// bindings decode the wrong value. New declarations go last, always.
+///
+/// `verification_id` rather than the core's `flow_id`: the published
+/// TypeScript surface calls this identifier a `verificationId` at every
+/// call that takes one, and a signal that named it something else would be
+/// asking a product to work out that the two are the same value.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum CryptoSignal {
+    TrustChanged {
+        user: String,
+        state: TrustState,
+    },
+    VerificationRequested {
+        user: String,
+        device_id: String,
+        verification_id: String,
+    },
+}
+
+/// A `From` impl rather than a match buried in the adapter below, for the
+/// reason `tests/value_mapping.rs` states at length: `VerificationRequested`
+/// carries three `String` fields, so swapping any two of them compiles,
+/// passes `clippy -D warnings`, and passes every other test in this
+/// repository. Public and stateless, so that file can pin it.
+impl From<matrix_crypto_core::CryptoSignal> for CryptoSignal {
+    fn from(value: matrix_crypto_core::CryptoSignal) -> Self {
+        // Destructured and matched exhaustively, with no wildcard arm: a
+        // variant or a field the core adds later must fail to compile here
+        // rather than be silently dropped. See Global Constraints.
+        match value {
+            matrix_crypto_core::CryptoSignal::TrustChanged { user, state } => Self::TrustChanged {
+                user,
+                state: state.into(),
+            },
+            matrix_crypto_core::CryptoSignal::VerificationRequested {
+                user,
+                device_id,
+                flow_id,
+            } => Self::VerificationRequested {
+                user,
+                device_id,
+                verification_id: flow_id,
+            },
+        }
+    }
+}
+
+/// `with_foreign` makes this implementable from JavaScript, like
+/// `ProbeObserver`. Unlike `ProbeObserver`, it is registered once for the
+/// process rather than handed to one call.
+#[uniffi::export(with_foreign)]
+pub trait CryptoObserver: Send + Sync {
+    fn on_signal(&self, signal: CryptoSignal);
+}
+
+/// Translation only, exactly like `ObserverAdapter`: by the time this runs,
+/// the core has already detached the call onto a thread of the library's
+/// own, off whatever stack and whatever lock produced the signal.
+struct CryptoObserverAdapter(Arc<dyn CryptoObserver>);
+
+impl matrix_crypto_core::CryptoObserver for CryptoObserverAdapter {
+    fn on_signal(&self, signal: matrix_crypto_core::CryptoSignal) {
+        self.0.on_signal(signal.into());
+    }
+}
+
+/// Registers the process's crypto signal observer, replacing any previous
+/// one. Mirrors `set_crypto_observer`; see its own doc comment in
+/// `matrix-crypto-core::observer`, including why this is not a call a
+/// product ever makes for itself.
+///
+/// Synchronous on purpose. `onCryptoSignal` in the TypeScript facade is a
+/// synchronous subscribe that returns an unsubscribe function, and it calls
+/// this on the first subscription; an async export here would force it to
+/// leave a promise unawaited on the one path that must not fail quietly.
+#[uniffi::export]
+pub fn set_crypto_observer(observer: Arc<dyn CryptoObserver>) {
+    matrix_crypto_core::set_crypto_observer(Arc::new(CryptoObserverAdapter(observer)));
+}
+
+/// Forgets the registered crypto signal observer. Mirrors
+/// `clear_crypto_observer`; see its own doc comment in
+/// `matrix-crypto-core::observer` for why the last unsubscribe must call
+/// this rather than merely dropping its listener.
+///
+/// Appended after `set_crypto_observer`, which is after everything else in
+/// this file, for the ordinal reason `CryptoSignal`'s own comment gives.
+/// Synchronous for the same reason its counterpart is: the TypeScript
+/// unsubscribe is a synchronous closure and must not leave a promise
+/// unawaited on the one path that must not fail quietly.
+#[uniffi::export]
+pub fn clear_crypto_observer() {
+    matrix_crypto_core::clear_crypto_observer();
+}

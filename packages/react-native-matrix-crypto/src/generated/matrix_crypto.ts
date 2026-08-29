@@ -8,6 +8,7 @@ import {
   type UniffiRustFutureContinuationCallback,
   type UniffiForeignFutureDroppedCallback,
   type UniffiForeignFutureDroppedCallbackStruct,
+  type UniffiVTableCallbackInterfaceMatrixCryptoCryptoObserver,
   type UniffiVTableCallbackInterfaceMatrixCryptoProbeObserver,
 } from "./matrix_crypto-ffi";
 import {
@@ -138,6 +139,29 @@ export async function cancelVerification(
     }
     throw __error;
   }
+}
+
+/**
+ * Forgets the registered crypto signal observer. Mirrors
+ * `clear_crypto_observer`; see its own doc comment in
+ * `matrix-crypto-core::observer` for why the last unsubscribe must call
+ * this rather than merely dropping its listener.
+ *
+ * Appended after `set_crypto_observer`, which is after everything else in
+ * this file, for the ordinal reason `CryptoSignal`'s own comment gives.
+ * Synchronous for the same reason its counterpart is: the TypeScript
+ * unsubscribe is a synchronous closure and must not leave a promise
+ * unawaited on the one path that must not fail quietly.
+ */
+export function clearCryptoObserver(): void {
+  uniffiCaller.rustCall(
+    /*caller:*/ (callStatus) => {
+      nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_clear_crypto_observer(
+        callStatus
+      );
+    },
+    /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString)
+  );
 }
 
 /**
@@ -784,6 +808,32 @@ export async function requestVerification(
     }
     throw __error;
   }
+}
+
+/**
+ * Registers the process's crypto signal observer, replacing any previous
+ * one. Mirrors `set_crypto_observer`; see its own doc comment in
+ * `matrix-crypto-core::observer`, including why this is not a call a
+ * product ever makes for itself.
+ *
+ * Synchronous on purpose. `onCryptoSignal` in the TypeScript facade is a
+ * synchronous subscribe that returns an unsubscribe function, and it calls
+ * this on the first subscription; an async export here would force it to
+ * leave a promise unawaited on the one path that must not fail quietly.
+ */
+export function setCryptoObserver(observer: CryptoObserver): void {
+  uniffiCaller.rustCall(
+    /*caller:*/ (callStatus) => {
+      nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_set_crypto_observer(
+        FfiConverterTypeCryptoObserver.lower(
+          observer,
+          nativeModule().rustbuffer_alloc
+        ),
+        callStatus
+      );
+    },
+    /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString)
+  );
 }
 
 /**
@@ -1820,6 +1870,187 @@ const FfiConverterTypeSyncOutcome = (() => {
         FfiConverterUInt32.allocationSize(value.toDeviceEventCount) +
         FfiConverterUInt32.allocationSize(value.newSessionCount)
       );
+    }
+  }
+  return new FFIConverter();
+})();
+
+// Enum: CryptoSignal
+export enum CryptoSignal_Tags {
+  TrustChanged = "TrustChanged",
+  VerificationRequested = "VerificationRequested",
+}
+/**
+ * Mirror of the core's `CryptoSignal`, carrying the UniFFI enum derive.
+ *
+ * **Appended after every other declaration in this file, deliberately.**
+ * UniFFI assigns wire ordinals by declaration position, so a type or a
+ * variant inserted above an existing one renumbers it and makes stale
+ * bindings decode the wrong value. New declarations go last, always.
+ *
+ * `verification_id` rather than the core's `flow_id`: the published
+ * TypeScript surface calls this identifier a `verificationId` at every
+ * call that takes one, and a signal that named it something else would be
+ * asking a product to work out that the two are the same value.
+ */
+export const CryptoSignal = (() => {
+  type TrustChanged__interface = {
+    tag: CryptoSignal_Tags.TrustChanged;
+    inner: Readonly<{ user: string; state: TrustState }>;
+  };
+  class TrustChanged_ extends UniffiEnum implements TrustChanged__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "CryptoSignal";
+    readonly tag = CryptoSignal_Tags.TrustChanged;
+    readonly inner: Readonly<{ user: string; state: TrustState }>;
+    constructor(inner: { user: string; state: TrustState }) {
+      super("CryptoSignal", "TrustChanged");
+
+      this.inner = Object.freeze(inner);
+    }
+    static new(inner: { user: string; state: TrustState }): TrustChanged_ {
+      return new TrustChanged_(inner);
+    }
+
+    static instanceOf(obj: any): obj is TrustChanged_ {
+      return obj.tag === CryptoSignal_Tags.TrustChanged;
+    }
+  }
+
+  type VerificationRequested__interface = {
+    tag: CryptoSignal_Tags.VerificationRequested;
+    inner: Readonly<{ user: string; deviceId: string; verificationId: string }>;
+  };
+  class VerificationRequested_
+    extends UniffiEnum
+    implements VerificationRequested__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "CryptoSignal";
+    readonly tag = CryptoSignal_Tags.VerificationRequested;
+    readonly inner: Readonly<{
+      user: string;
+      deviceId: string;
+      verificationId: string;
+    }>;
+    constructor(inner: {
+      user: string;
+      deviceId: string;
+      verificationId: string;
+    }) {
+      super("CryptoSignal", "VerificationRequested");
+
+      this.inner = Object.freeze(inner);
+    }
+    static new(inner: {
+      user: string;
+      deviceId: string;
+      verificationId: string;
+    }): VerificationRequested_ {
+      return new VerificationRequested_(inner);
+    }
+
+    static instanceOf(obj: any): obj is VerificationRequested_ {
+      return obj.tag === CryptoSignal_Tags.VerificationRequested;
+    }
+  }
+
+  function instanceOf(obj: any): obj is CryptoSignal {
+    return obj[uniffiTypeNameSymbol] === "CryptoSignal";
+  }
+
+  return Object.freeze({
+    instanceOf,
+    TrustChanged: TrustChanged_,
+    VerificationRequested: VerificationRequested_,
+  });
+})();
+/**
+ * Mirror of the core's `CryptoSignal`, carrying the UniFFI enum derive.
+ *
+ * **Appended after every other declaration in this file, deliberately.**
+ * UniFFI assigns wire ordinals by declaration position, so a type or a
+ * variant inserted above an existing one renumbers it and makes stale
+ * bindings decode the wrong value. New declarations go last, always.
+ *
+ * `verification_id` rather than the core's `flow_id`: the published
+ * TypeScript surface calls this identifier a `verificationId` at every
+ * call that takes one, and a signal that named it something else would be
+ * asking a product to work out that the two are the same value.
+ */
+export type CryptoSignal = InstanceType<
+  (typeof CryptoSignal)["TrustChanged" | "VerificationRequested"]
+>;
+
+// FfiConverter for enum CryptoSignal
+const FfiConverterTypeCryptoSignal = (() => {
+  type TypeName = CryptoSignal;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      switch (c.readI32()) {
+        case 1:
+          return new CryptoSignal.TrustChanged({
+            user: FfiConverterString.readFromCursor(c),
+            state: FfiConverterTypeTrustState.readFromCursor(c),
+          });
+        case 2:
+          return new CryptoSignal.VerificationRequested({
+            user: FfiConverterString.readFromCursor(c),
+            deviceId: FfiConverterString.readFromCursor(c),
+            verificationId: FfiConverterString.readFromCursor(c),
+          });
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase();
+      }
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      switch (value.tag) {
+        case CryptoSignal_Tags.TrustChanged: {
+          c.writeI32(1);
+          const inner = value.inner;
+          FfiConverterString.writeIntoCursor(inner.user, c);
+          FfiConverterTypeTrustState.writeIntoCursor(inner.state, c);
+          return;
+        }
+        case CryptoSignal_Tags.VerificationRequested: {
+          c.writeI32(2);
+          const inner = value.inner;
+          FfiConverterString.writeIntoCursor(inner.user, c);
+          FfiConverterString.writeIntoCursor(inner.deviceId, c);
+          FfiConverterString.writeIntoCursor(inner.verificationId, c);
+          return;
+        }
+        default:
+          // Throwing from here means that CryptoSignal_Tags hasn't matched an ordinal.
+          throw new UniffiInternalError.UnexpectedEnumCase();
+      }
+    }
+    allocationSize(value: TypeName): number {
+      switch (value.tag) {
+        case CryptoSignal_Tags.TrustChanged: {
+          const inner = value.inner;
+          let size = 4;
+          size += FfiConverterString.allocationSize(inner.user);
+          size += FfiConverterTypeTrustState.allocationSize(inner.state);
+          return size;
+        }
+        case CryptoSignal_Tags.VerificationRequested: {
+          const inner = value.inner;
+          let size = 4;
+          size += FfiConverterString.allocationSize(inner.user);
+          size += FfiConverterString.allocationSize(inner.deviceId);
+          size += FfiConverterString.allocationSize(inner.verificationId);
+          return size;
+        }
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase();
+      }
     }
   }
   return new FFIConverter();
@@ -2959,6 +3190,178 @@ const FfiConverterTypeVerificationStage = (() => {
 })();
 
 /**
+ * `with_foreign` makes this implementable from JavaScript, like
+ * `ProbeObserver`. Unlike `ProbeObserver`, it is registered once for the
+ * process rather than handed to one call.
+ */
+export interface CryptoObserver {
+  onSignal(signal: CryptoSignal): void;
+}
+
+/**
+ * `with_foreign` makes this implementable from JavaScript, like
+ * `ProbeObserver`. Unlike `ProbeObserver`, it is registered once for the
+ * process rather than handed to one call.
+ */
+export class CryptoObserverImpl
+  extends UniffiAbstractObject
+  implements CryptoObserver
+{
+  readonly [uniffiTypeNameSymbol] = "CryptoObserverImpl";
+  readonly [destructorGuardSymbol]: UniffiGcObject;
+  readonly [pointerLiteralSymbol]: UniffiHandle;
+  // No primary constructor declared for this class.
+  private constructor(pointer: UniffiHandle) {
+    super();
+    this[pointerLiteralSymbol] = pointer;
+    this[destructorGuardSymbol] =
+      uniffiTypeCryptoObserverImplObjectFactory.bless(pointer);
+  }
+
+  onSignal(signal: CryptoSignal): void {
+    uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_method_cryptoobserver_on_signal(
+          uniffiTypeCryptoObserverImplObjectFactory.clonePointer(this),
+          FfiConverterTypeCryptoSignal.lower(
+            signal,
+            nativeModule().rustbuffer_alloc
+          ),
+          callStatus
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString)
+    );
+  }
+
+  uniffiDestroy(): void {
+    const ptr = (this as any)[destructorGuardSymbol];
+    if (ptr !== undefined) {
+      const pointer = uniffiTypeCryptoObserverImplObjectFactory.pointer(this);
+      uniffiTypeCryptoObserverImplObjectFactory.freePointer(pointer);
+      uniffiTypeCryptoObserverImplObjectFactory.unbless(ptr);
+      delete (this as any)[destructorGuardSymbol];
+    }
+  }
+
+  static instanceOf(obj_: any): obj_ is CryptoObserverImpl {
+    return uniffiTypeCryptoObserverImplObjectFactory.isConcreteType(obj_);
+  }
+}
+
+const uniffiTypeCryptoObserverImplObjectFactory: UniffiObjectFactory<CryptoObserver> =
+  (() => {
+    return {
+      create(pointer: UniffiHandle): CryptoObserver {
+        const instance = Object.create(CryptoObserverImpl.prototype);
+        instance[pointerLiteralSymbol] = pointer;
+        instance[destructorGuardSymbol] = this.bless(pointer);
+        instance[uniffiTypeNameSymbol] = "CryptoObserverImpl";
+        return instance;
+      },
+
+      bless(p: UniffiHandle): UniffiGcObject {
+        return uniffiCaller.rustCall(
+          /*caller:*/ (status) =>
+            nativeModule().ubrn_uniffi_internal_fn_method_cryptoobserver_ffi__bless_pointer(
+              p,
+              status
+            ),
+          /*liftString:*/ FfiConverterString.lift
+        );
+      },
+
+      unbless(ptr_: UniffiGcObject) {
+        ptr_.markDestroyed();
+      },
+
+      pointer(obj_: CryptoObserver): UniffiHandle {
+        if ((obj_ as any)[destructorGuardSymbol] === undefined) {
+          throw new UniffiInternalError.UnexpectedNullPointer();
+        }
+        return (obj_ as any)[pointerLiteralSymbol];
+      },
+
+      clonePointer(obj_: CryptoObserver): UniffiHandle {
+        const pointer = this.pointer(obj_);
+        return uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_clone_cryptoobserver(
+              pointer,
+              callStatus
+            ),
+          /*liftString:*/ FfiConverterString.lift
+        );
+      },
+
+      freePointer(pointer: UniffiHandle): void {
+        uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_free_cryptoobserver(
+              pointer,
+              callStatus
+            ),
+          /*liftString:*/ FfiConverterString.lift
+        );
+      },
+
+      isConcreteType(obj_: any): obj_ is CryptoObserver {
+        return (
+          obj_[destructorGuardSymbol] &&
+          obj_[uniffiTypeNameSymbol] === "CryptoObserverImpl"
+        );
+      },
+    };
+  })();
+const FfiConverterTypeCryptoObserver = new FfiConverterObjectWithCallbacks(
+  uniffiTypeCryptoObserverImplObjectFactory
+);
+
+// Add a vtable for the callbacks that go in CryptoObserver.
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+const uniffiCallbackInterfaceCryptoObserver: {
+  vtable: any;
+  register: () => void;
+} = {
+  // Create the VTable using a series of closures.
+  // ts automatically converts these into C callback functions.
+  vtable: {
+    on_signal: (uniffiHandle: bigint, signal: Uint8Array) => {
+      const uniffiMakeCall = (): void => {
+        const jsCallback = FfiConverterTypeCryptoObserver.lift(uniffiHandle);
+        return jsCallback.onSignal(FfiConverterTypeCryptoSignal.lift(signal));
+      };
+      const uniffiResult = UniffiResult.ready<void>();
+      const uniffiHandleSuccess = (obj: any) => {};
+      const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+        UniffiResult.writeError(uniffiResult, code, errBuf);
+      };
+      uniffiTraitInterfaceCall(
+        /*makeCall:*/ uniffiMakeCall,
+        /*handleSuccess:*/ uniffiHandleSuccess,
+        /*handleError:*/ uniffiHandleError,
+        /*lowerString:*/ FfiConverterString.lower.bind(FfiConverterString),
+        /*alloc:*/ nativeModule().rustbuffer_alloc
+      );
+      return uniffiResult;
+    },
+    uniffi_free: (uniffiHandle: UniffiHandle): void => {
+      // this will throw a stale handle error if the handle isn't found.
+      FfiConverterTypeCryptoObserver.drop(uniffiHandle);
+    },
+    uniffi_clone: (uniffiHandle: UniffiHandle): UniffiHandle => {
+      return FfiConverterTypeCryptoObserver.clone(uniffiHandle);
+    },
+  },
+  register: () => {
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_init_callback_vtable_cryptoobserver(
+      uniffiCallbackInterfaceCryptoObserver.vtable
+    );
+  },
+};
+
+/**
  * `with_foreign` makes this implementable from JavaScript.
  */
 export interface ProbeObserver {
@@ -3196,6 +3599,14 @@ function uniffiEnsureInitialized() {
     );
   }
   if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_clear_crypto_observer() !==
+    11772
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_clear_crypto_observer"
+    );
+  }
+  if (
     nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_confirm_verification() !==
     5223
   ) {
@@ -3291,6 +3702,14 @@ function uniffiEnsureInitialized() {
     );
   }
   if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_set_crypto_observer() !==
+    31561
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_set_crypto_observer"
+    );
+  }
+  if (
     nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_share_scope_key() !==
     59510
   ) {
@@ -3331,6 +3750,14 @@ function uniffiEnsureInitialized() {
     );
   }
   if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_method_cryptoobserver_on_signal() !==
+    41518
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_method_cryptoobserver_on_signal"
+    );
+  }
+  if (
     nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_method_probeobserver_on_signal() !==
     23850
   ) {
@@ -3339,6 +3766,7 @@ function uniffiEnsureInitialized() {
     );
   }
 
+  uniffiCallbackInterfaceCryptoObserver.register();
   uniffiCallbackInterfaceProbeObserver.register();
 }
 
@@ -3346,6 +3774,8 @@ export default Object.freeze({
   initialize: uniffiEnsureInitialized,
   converters: {
     FfiConverterTypeCryptoMachineConfig,
+    FfiConverterTypeCryptoObserver,
+    FfiConverterTypeCryptoSignal,
     FfiConverterTypeDeviceStatus,
     FfiConverterTypeEnvelope,
     FfiConverterTypeIdentityKeys,

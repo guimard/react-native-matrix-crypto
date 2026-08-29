@@ -72,7 +72,7 @@ Being precise about that, because a cryptographic library that oversells itself 
 | Persistent encrypted store, surviving restart | working |
 | Encryption and decryption | working, proven between two crypto machines |
 | Interoperability with a third-party Matrix client | proven both directions against `matrix-nio`, over a real homeserver |
-| Crypto signal channel (`onCryptoSignal`) | present and typed, but **nothing emits a signal yet**, see below |
+| Crypto signal channel (`onCryptoSignal`) | working for verification: inbound invitations and completed comparisons emit; the other two variants still have no producer, see below |
 | Sender authenticity, per event | **not provided, and not coming in M3**, see below |
 | Device verification by short string comparison (SAS) | working, proven against a bare `matrix-sdk-crypto` machine driven directly -- upstream's own, not a third-party implementation; a third-party proof is still to come |
 | Device verification by QR code | **deferred**, see the roadmap |
@@ -80,7 +80,7 @@ Being precise about that, because a cryptographic library that oversells itself 
 
 The unimplemented functions exist today as final types that compile, and reject at runtime with a typed `not_implemented` error. That is intentional: a consuming team can build against the real shape while the cryptography underneath is written.
 
-`onCryptoSignal` is the quieter case, and worth stating plainly because it does not throw. The channel is real, subscribing and unsubscribing work, and a listener that throws cannot starve the others. What is missing is a producer: nothing in this milestone emits a `CryptoSignal`, so a listener registered today never fires. The conditions the three variants name do occur now, and reach you elsewhere: a missing key arrives as a rejected `decryptEvent` with kind `missing_key`, not as a `key_missing` signal. The producer is M3's device verification work, and it is now settled that trust changes ride this channel rather than a call-shaped surface. That producer is not written yet, so the paragraph above still describes what a listener sees today. Subscribe if being ready costs you nothing; do not build a flow that waits to be told until this row changes.
+`onCryptoSignal` had no producer for the whole of M1 and M2, and now has two, both belonging to device verification. `verification_requested` says another device has asked to verify itself against this one, and carries the `verificationId` that `acceptVerification` takes -- it is the only way *this library* hands a receiving side that identifier, since no call lists inbound flows. `trust_changed` says a comparison finished and a device belonging to that user moved; `getDeviceStatuses` for that user says which. The other two variants, `unexpected_device` and `key_missing`, still have no producer, and the conditions they name reach you elsewhere: a missing key arrives as a rejected `decryptEvent` with kind `missing_key`, not as a `key_missing` signal. **Subscribe before your first sync**, and keep the subscription. Both producers run inside `receiveSyncChanges`, and nothing is consumed while nobody is subscribed -- so an invitation that arrives while you are away is announced on the first sync after you come back, and the ordinary `useEffect(() => onCryptoSignal(h), [])` does not lose invitations.
 
 **Two limits worth knowing before you build on this.**
 
@@ -250,42 +250,59 @@ await confirmVerification(id, material) // or cancelVerification(id)
 await getDeviceStatuses('@bob:example.org') // BOBDEVICE reads 'verified'
 ```
 
-**The side that is asked is a different application, in a different process, and nothing
-hands it an id.** There is no call that lists or announces an inbound verification. The id
-is the `transaction_id` of the `m.key.verification.request` to-device event, which arrives
-among the `to_device_events` you already forward to `receiveSyncChanges`:
+**The side that is asked is a different application, in a different process, and the signal
+channel is what hands it an id.** Subscribe once, at start-up, and forward your syncs as
+usual:
 
 ```ts
-// Forward the sync first. This is what makes the flow exist at all.
-await receiveSyncChanges(encryptionSlice(sync))
-
-for (const event of sync.to_device?.events ?? []) {
-  if (event.type !== 'm.key.verification.request') continue
-  const id = event.content.transaction_id // <- the verificationId
-  // event.sender and event.content.from_device say who is asking.
-
+onCryptoSignal((signal) => {
+  if (signal.kind !== 'verification_requested') return
+  // signal.user and signal.device say who is asking.
   // Ask the person. Then:
-  await acceptVerification(id) // or cancelVerification(id) to refuse
+  acceptVerification(signal.verificationId) // or cancelVerification to refuse
   // pump, and carry on from `startVerificationComparison` above.
-}
+})
+
+// Forward the sync. This is what makes the flow exist, and what announces it.
+await receiveSyncChanges(encryptionSlice(sync))
 ```
 
-Reading one field out of protocol JSON this library otherwise keeps to itself is a seam,
-and it is the shape of the surface today rather than something to like. Announcing inbound
-flows on the signal channel is a separate, later question.
+**Subscribe before your first sync, and keep the subscription.** Nothing is queued for a
+subscriber that is not there -- and nothing is consumed either, because the layer underneath
+does no work at all with nobody subscribed. An invitation that arrives while you are
+unsubscribed is still `requested` when you come back, and the first `receiveSyncChanges`
+after you resubscribe announces it, so subscribing on mount and unsubscribing on unmount
+does not lose invitations. A completed comparison's `trust_changed` is not re-offered that
+way; `getDeviceStatuses` is the durable answer to that question and always was.
+
+This section used to tell you to filter your own `to_device_events` for
+`m.key.verification.request` and read `content.transaction_id` out of one. That was a seam --
+a field of protocol JSON this library otherwise keeps to itself -- and the announcement
+closes it. The identifier still *is* that transaction id on the wire; you no longer have to
+know that.
 
 **An invitation from a device you have never been told about is discarded on arrival, and
-nothing reports it.** The layer underneath needs the sender's device keys to build the flow;
+is not announced.** The layer underneath needs the sender's device keys to build the flow;
 without them it drops the event. `receiveSyncChanges` still resolves successfully, no flow
-exists, and `acceptVerification` then rejects that transaction id with `unknown_flow`.
+exists, nothing is announced, and `acceptVerification` would reject that transaction id with
+`unknown_flow`. The silence is the channel refusing to hand you an identifier no call here
+answers to, rather than a gap in it.
 
-**Keep the event, because nothing here does.** What was discarded is that arrival, not the
-invitation: feeding the same event to `receiveSyncChanges` a second time, once you have
-queried the sender's devices, does create the flow, and `acceptVerification` then works. So
-on `unknown_flow` for an invitation you have just seen, learn that user's devices, feed the
-kept event again, and retry. Promptly -- an invitation expires ten minutes after it was
-sent. A product that throws away to-device events it could not act on has no way back, which
-is why the device-knowledge step is listed before the flow rather than inside it.
+**Keep the events you could not act on, because nothing here does.** What was discarded is
+that arrival, not the invitation: feeding the same event to `receiveSyncChanges` a second
+time, once you have queried the sender's devices, does create the flow -- and announces it,
+exactly as a first-time arrival would. You never open the event: what you keep is an opaque
+blob and what you get back is the announcement. Promptly, though -- an invitation expires ten
+minutes after it was sent. A product that throws away to-device events it could not act on
+has no way back, which is why the device-knowledge step is listed before the flow rather
+than inside it.
+
+**Keep the ones you did act on, too, until their flow finishes.** Flows live in memory on
+both sides of this boundary, so a process that restarts mid-verification holds a
+`verificationId` that now rejects with `unknown_flow`, and nothing is announced for it
+because there is nothing left to announce. The recovery is the same one: feed the kept
+invitation in again and be told the flow's name as though it had just arrived. The
+ten-minute expiry is still running while you do.
 
 **Every step goes through the queue.** Nothing reaches the other device until you send what
 `takeOutgoingRequests` hands you and report each one with `markRequestSent`. Skipping the
@@ -328,11 +345,11 @@ const recovered = await decryptEvent(scope, incomingEvent)
 
 `gate:logger` enforces that in every language this package ships, and it is worth saying what "enforces" means, because for a while it meant less than this sentence did. The reach is enumerated rather than counted, because the count is what drifted: this paragraph and the gate table below it once disagreed about it, in a repository where a number in prose has no way to be wrong out loud. In Rust it rejects the print macros, `dbg!`, an import of `log` or `tracing` and a fully qualified `log::`/`tracing::` call, and — in the library sources, not the tests — `fs::write`, `File::create`, `io::stdout()` and `write_all`. In TypeScript it rejects reaching for `console` by property, by bracket index or by handing the object to something, and any `fs` import or file-writing call. In C, C++ and Objective-C it rejects every stream and every `printf` family member, plus `fwrite`, `write`, `putchar`, `ofstream`, `fopen` and the platform loggers. In Kotlin it rejects `android.util.Log`, `println`, `System.out`, `System.err` and the file writers. In Swift it rejects `print`, `debugPrint`, `dump`, `NSLog`, `os_log`, `OSLog`, `Logger`, the standard file handles and the file writers, and it does so before this package contains a line of Swift, because the podspec already compiles `ios/**/*.swift` into your app. In the podspec itself, which is Ruby that CocoaPods executes on your machine, it rejects `puts` and its family, the standard streams, the file writers, and both `script_phase` and `prepare_command`, which are the two ways a podspec can run shell inside your build. What it does not claim to stop is a reference laundered past a regex — `globalThis["con" + "sole"]` and its equivalents. The rule is that this bridge's own source does not reach for a log, not that a determined author could not.
 
-There is one exception, and it is worth stating precisely rather than claiming an absolute that is not true. The UniFFI to JSI boundary code that `uniffi-bindgen-react-native` generates writes to `std::cout` when a JavaScript callback throws back across the boundary. There are five such sites in `cpp/generated/matrix_crypto.cpp`, one per callback trampoline; four survive into the shipped `libreact-native-matrix-crypto.so`, and on iOS the file compiles into your app. Each writes a fixed string naming the callback, then `jsi::JSError::what()`, which is the JavaScript exception's message and its stack.
+There is one exception, and it is worth stating precisely rather than claiming an absolute that is not true. The UniFFI to JSI boundary code that `uniffi-bindgen-react-native` generates writes to `std::cout` when a JavaScript callback throws back across the boundary. There are eight such sites in `cpp/generated/matrix_crypto.cpp`, one per callback trampoline, and on iOS the file compiles into your app. There were five until the crypto signal channel got a native producer, which added a second callback interface and with it three more trampolines — its own method, plus the free and clone every vtable carries. Four of the original five survived into the shipped `libreact-native-matrix-crypto.so`; that count has not been re-measured since the three were added. Each site writes a fixed string naming the callback, then `jsi::JSError::what()`, which is the JavaScript exception's message and its stack.
 
-No call argument, ciphertext, key or identifier is interpolated into that stream. The JavaScript functions reached at those five sites are the generator's own, not yours. A callback you pass in runs inside the generated trampoline's TypeScript `try`/`catch`, which lowers a throw into a Rust call status before it can reach the C++ frame; `onCryptoSignal` listeners sit behind a second `try`/`catch` in `emitCryptoSignal` on top of that. What is left to reach the stream is the generator's own fixed-message internal errors, such as a stale handle after a hot reload.
+No call argument, ciphertext, key or identifier is interpolated into that stream. The JavaScript functions reached at those eight sites are the generator's own, not yours. A callback you pass in runs inside the generated trampoline's TypeScript `try`/`catch`, which lowers a throw into a Rust call status before it can reach the C++ frame; `onCryptoSignal` listeners sit behind a second `try`/`catch` in `emitCryptoSignal` on top of that. What is left to reach the stream is the generator's own fixed-message internal errors, such as a stale handle after a hot reload.
 
-It cannot be switched off. The generator's C++ backend takes no configuration at all, the write is unconditional in a template compiled into the tool, and hand-editing generated code is forbidden here and caught by `gate:drift`. So `gate:logger` reads that file instead of skipping it and tolerates exactly that one three-line shape and nothing else anywhere in the shipped C, C++ or Objective-C. Arrangement alone is not enough to earn the exemption: the name in the message must be one the generator emits, and the `try` block the `catch` closes must construct no error of its own, so a site that manufactures a `jsi::JSError` out of a key and prints it is rejected rather than tolerated. The number of tolerated sites is asserted to be exactly five, not merely printed, so a sixth fails the build instead of moving a digit in a log nobody reads.
+It cannot be switched off. The generator's C++ backend takes no configuration at all, the write is unconditional in a template compiled into the tool, and hand-editing generated code is forbidden here and caught by `gate:drift`. So `gate:logger` reads that file instead of skipping it and tolerates exactly that one three-line shape and nothing else anywhere in the shipped C, C++ or Objective-C. Arrangement alone is not enough to earn the exemption: the name in the message must be one the generator emits, and the `try` block the `catch` closes must construct no error of its own, so a site that manufactures a `jsi::JSError` out of a key and prints it is rejected rather than tolerated. The number of tolerated sites is asserted to be exactly eight, not merely printed, so a ninth fails the build instead of moving a digit in a log nobody reads. That is what happened when `CryptoObserver` was added: the build failed, the three new sites were read, and only then was the number raised.
 
 **Errors carry no payload content.** `toCryptoError` reads a small set of known fields and never copies ciphertext, plaintext or arbitrary properties into a message.
 
@@ -373,7 +390,7 @@ Four items, scoped against one test: verification, plus whatever would obstruct 
 | Device verification by short string comparison, in the Rust core | done, two machines completing a comparison and a genuine disagreement refusing |
 | The same, reachable from TypeScript, with `getDeviceStatuses` reporting a verified device | done |
 | `verification_state` on a decrypted event | done, as `EventEnvelope.senderVerification`; it cannot read `verified` before cross-signing, which is stated at the type |
-| Trust changes emitted on the signal channel | not started |
+| Trust changes emitted on the signal channel, and inbound invitations announced with their identifier | done |
 | A third-party client participating in a verification | not started |
 | Signal delivery no longer costing one operating system thread per signal | done |
 

@@ -1,6 +1,7 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::error::ProbeError;
+use crate::identity::TrustState;
 use crate::probe::{probe, ProbeReport};
 
 /// A state change that belongs to no call in flight. Spec sections 7 and 11.
@@ -210,6 +211,168 @@ pub async fn probe_with_observer(
     );
 
     probe(input, payload).await
+}
+
+// ------------------------------------------------------- the crypto channel
+
+/// A crypto state change that belongs to no call in flight and that every
+/// subscriber should learn about. Spec sections 7.3 and 11.
+///
+/// Distinct from [`ProbeSignal`] in what it is *for*, not merely in shape. A
+/// probe signal is one call's own diagnostic and reaches only the caller
+/// that asked for it; these are broadcast, and they describe state this
+/// library changed on its own account while the caller was doing something
+/// else -- or nothing at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CryptoSignal {
+    /// A comparison this process took part in completed, and a device
+    /// belonging to `user` now reports `state`.
+    ///
+    /// Carries the user rather than the device, matching the shape the
+    /// TypeScript union has declared since M1. Which of that user's devices
+    /// moved is [`crate::device_statuses`]' answer, and reading it there is
+    /// what keeps one description of trust in this library rather than two.
+    TrustChanged { user: String, state: TrustState },
+    /// The other side asked this device to verify itself, the flow exists,
+    /// and `flow_id` is the name every call in [`crate::verification`]
+    /// takes for it.
+    ///
+    /// **This variant carries something a receiving side cannot get any
+    /// other way.** Nothing else in this library hands a receiver the name
+    /// of a flow it did not start; without it a product has to read the
+    /// transaction id out of the raw to-device event, which is a protocol
+    /// detail this library otherwise keeps to itself.
+    VerificationRequested {
+        user: String,
+        device_id: String,
+        flow_id: String,
+    },
+}
+
+/// Implemented by the FFI layer's adapter, and through it by JavaScript.
+///
+/// One per process rather than one per call, which is the whole difference
+/// from [`ProbeObserver`]: there is no call in flight to hand these to.
+pub trait CryptoObserver: Send + Sync {
+    fn on_signal(&self, signal: CryptoSignal);
+}
+
+/// The one observer this process delivers crypto signals to.
+///
+/// A `std::sync::RwLock` rather than a `OnceLock`: a JavaScript bundle
+/// reloads, and a stale observer holding a dead runtime has to be
+/// replaceable. Every critical section below is a clone or a store with no
+/// `.await` and no foreign call inside it, so this can never be the lock a
+/// listener deadlocks on -- `emit_crypto` clones the handle out and calls
+/// through it afterwards, exactly as `emit` does.
+static CRYPTO_OBSERVER: RwLock<Option<Arc<dyn CryptoObserver>>> = RwLock::new(None);
+
+/// Registers the process's crypto observer, replacing any previous one.
+///
+/// **Not a call a product makes, and deliberately so.** The Global
+/// Constraint that an added call must not fail silently when skipped cannot
+/// be met by a registration call: forgetting it produces exactly the
+/// silence this channel already had, with nothing to report it. So the
+/// TypeScript side calls this from `onCryptoSignal` itself, on the first
+/// subscription, and a product that subscribes cannot forget to install
+/// what its subscription needs.
+pub fn set_crypto_observer(observer: Arc<dyn CryptoObserver>) {
+    *CRYPTO_OBSERVER
+        .write()
+        .expect("the crypto observer registry is never held across a panic") = Some(observer);
+}
+
+/// Forgets the registered observer, so this process is once again one that
+/// nobody is listening to.
+///
+/// **The counterpart to `set_crypto_observer`, and it is not optional.**
+/// Without it, the last unsubscribe on the TypeScript side leaves an
+/// observer installed with nothing behind it, and the producers keep doing
+/// their full pass: an inbound invitation is registered, marked announced,
+/// and delivered into an empty listener set. `register_if_absent` then
+/// refuses it for the rest of the flow's life, so a later subscriber is
+/// never told about an invitation that is still live -- and there is no
+/// call that lists inbound flows, so there is no way back before it
+/// expires. Clearing restores the property the whole channel rests on:
+/// with nobody listening, nothing is consumed.
+///
+/// The shape this protects is `useEffect(() => onCryptoSignal(h), [])` --
+/// subscribe on mount, unsubscribe on unmount -- which is the ordinary
+/// React Native idiom and therefore the default integration, not an edge
+/// case.
+pub fn clear_crypto_observer() {
+    *CRYPTO_OBSERVER
+        .write()
+        .expect("the crypto observer registry is never held across a panic") = None;
+}
+
+/// The registered observer, if there is one.
+///
+/// Read by the producers *before* they do any work, which is what makes
+/// this channel silent by default and free by default at once: with nobody
+/// subscribed, `verification::announce_state_changes` returns before it
+/// touches the crypto store at all.
+pub(crate) fn crypto_observer() -> Option<Arc<dyn CryptoObserver>> {
+    CRYPTO_OBSERVER
+        .read()
+        .expect("the crypto observer registry is never held across a panic")
+        .clone()
+}
+
+/// Delivers one crypto signal, fire-and-forget, on the same detached path
+/// [`emit`] uses.
+///
+/// Every hazard `emit`'s doc comment lists applies here unchanged, and one
+/// of them applies harder: these signals are produced from inside
+/// `receive_sync_changes`' own call stack, so a synchronous delivery would
+/// run a foreign listener on the thread a product pumps its sync on, and a
+/// listener that called back into this library from there would self-
+/// deadlock exactly as `emit`'s own test demonstrates.
+///
+/// # What this path does and does not inherit from B2's cost line
+///
+/// `emit` names three candidates for the excess it measured on a process's
+/// first signal, and says none of them is separated by anything measured
+/// there: building the runtime, creating the first blocking-pool thread,
+/// or simply having more handoffs to be descheduled between.
+///
+/// **This path eliminates the first of the three, and only the first.**
+/// Not by measurement but by reading, which is enough for this one:
+/// `announce_state_changes` is reached only from `receive_sync_changes`,
+/// which has already been through `machine::with_machine`, which enters
+/// `runtime::in_runtime`, which is what builds the runtime. So
+/// `OnceLock::get_or_init` has fired long before anything here reaches
+/// `spawn_blocking_detached`, and runtime construction cannot be inside a
+/// crypto signal's latency. That is checkable statically and does not
+/// depend on a measurement.
+///
+/// **The other two are untouched**, and this comment claims nothing about
+/// them. The first crypto signal of a process still creates the first
+/// blocking-pool thread, and still crosses however many handoffs the
+/// arrangement costs.
+///
+/// **The crypto channel's own first-signal latency has never been
+/// measured.** B2's harness times `PROBE_SIGNAL_MS` on the probe path,
+/// through a release build on a device, and nothing equivalent exists for
+/// this one. A reader should treat the paragraph above as what it is -- an
+/// argument that removes one candidate -- rather than as a statement that
+/// this path is free of the effect B2 found.
+pub(crate) fn emit_crypto(signal: CryptoSignal) {
+    // No observer, no thread, no work. A dropped signal is the correct
+    // outcome rather than a lost one: nobody asked to be told.
+    let Some(observer) = crypto_observer() else {
+        return;
+    };
+    crate::runtime::spawn_blocking_detached(move || observer.on_signal(signal));
+}
+
+/// Forgets the registered observer, so one test's recorder does not receive
+/// another test's signals.
+#[cfg(test)]
+pub(crate) fn reset_crypto_observer_for_test() {
+    *CRYPTO_OBSERVER
+        .write()
+        .expect("the crypto observer registry is never held across a panic") = None;
 }
 
 #[cfg(test)]

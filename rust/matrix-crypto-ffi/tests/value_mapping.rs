@@ -27,11 +27,13 @@
 //! runs in no measurable time.
 
 use matrix_crypto_core::{
-    DeviceStatus, Envelope, FlowStage, SasEmoji, SasMaterial, SenderVerification, TrustState,
+    CryptoSignal, DeviceStatus, Envelope, FlowStage, SasEmoji, SasMaterial, SenderVerification,
+    TrustState,
 };
 use matrix_crypto_ffi::{
-    DeviceStatus as FfiDeviceStatus, Envelope as FfiEnvelope, SasMaterial as FfiSasMaterial,
-    SenderVerification as FfiSenderVerification, TrustState as FfiTrustState, VerificationStage,
+    CryptoSignal as FfiCryptoSignal, DeviceStatus as FfiDeviceStatus, Envelope as FfiEnvelope,
+    SasMaterial as FfiSasMaterial, SenderVerification as FfiSenderVerification,
+    TrustState as FfiTrustState, VerificationStage,
 };
 
 /// All seven stages, each to its own. One assertion per variant rather than
@@ -384,5 +386,73 @@ fn an_envelope_carries_its_authenticity_across_and_an_absent_one_stays_absent() 
         encrypted.sender_verification.is_none(),
         "an absent authenticity must stay absent, not acquire a default -- \
          a default here would be a claim about an event nobody decrypted"
+    );
+}
+
+/// A trust change keeps the user and the state it belongs to.
+#[test]
+fn a_trust_change_crosses_with_the_user_it_belongs_to() {
+    let crossed = FfiCryptoSignal::from(CryptoSignal::TrustChanged {
+        user: "@someone:example.org".to_string(),
+        state: TrustState::Verified,
+    });
+
+    let FfiCryptoSignal::TrustChanged { user, state } = crossed else {
+        panic!("a trust change must cross as one");
+    };
+    assert_eq!(user, "@someone:example.org");
+    assert!(matches!(state, FfiTrustState::Verified));
+
+    let other = FfiCryptoSignal::from(CryptoSignal::TrustChanged {
+        user: "@another:example.org".to_string(),
+        state: TrustState::Unverified,
+    });
+
+    let FfiCryptoSignal::TrustChanged { user, state } = other else {
+        panic!("a trust change must cross as one");
+    };
+    assert_eq!(user, "@another:example.org");
+    assert!(
+        matches!(state, FfiTrustState::Unverified),
+        "the second signal is here so this test fails against an \
+         implementation that returns a constant"
+    );
+}
+
+/// The three strings of an inbound announcement stay in their own fields.
+///
+/// This is the file's opening hazard in its purest form: `user`,
+/// `device_id` and the identifier are all `String`, so any permutation of
+/// the three compiles and passes every other test in this repository. The
+/// consequence is not cosmetic. The identifier is what a receiving product
+/// passes to `acceptVerification`, and it is the whole reason this variant
+/// exists -- a swap would hand a product a user id to accept a verification
+/// with, and every call it then made would reject with `unknown_flow` for a
+/// reason no error message could explain.
+///
+/// The three fixtures are deliberately distinguishable from one another and
+/// from anything a permutation could make look right.
+#[test]
+fn an_inbound_announcement_keeps_its_three_strings_apart() {
+    let crossed = FfiCryptoSignal::from(CryptoSignal::VerificationRequested {
+        user: "@the-user:example.org".to_string(),
+        device_id: "THE-DEVICE-IDENTIFIER".to_string(),
+        flow_id: "the-flow-identifier".to_string(),
+    });
+
+    let FfiCryptoSignal::VerificationRequested {
+        user,
+        device_id,
+        verification_id,
+    } = crossed
+    else {
+        panic!("an inbound announcement must cross as one");
+    };
+    assert_eq!(user, "@the-user:example.org");
+    assert_eq!(device_id, "THE-DEVICE-IDENTIFIER");
+    assert_eq!(
+        verification_id, "the-flow-identifier",
+        "the core calls this a flow id and this crate calls it a verification id; they \
+         must be the same value, because it is the one a product hands back"
     );
 }

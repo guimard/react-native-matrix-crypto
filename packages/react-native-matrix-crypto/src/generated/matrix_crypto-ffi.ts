@@ -166,6 +166,14 @@ interface NativeModuleInterface {
     uniffi_out_err: UniffiRustCallStatus
   ): void;
   ubrn_ffi_matrix_crypto_ffi_rust_future_free_void(handle: bigint): void;
+  ubrn_uniffi_matrix_crypto_ffi_fn_clone_cryptoobserver(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_free_cryptoobserver(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): void;
   ubrn_uniffi_matrix_crypto_ffi_fn_clone_probeobserver(
     ptr: bigint,
     uniffi_out_err: UniffiRustCallStatus
@@ -173,6 +181,9 @@ interface NativeModuleInterface {
   ubrn_uniffi_matrix_crypto_ffi_fn_free_probeobserver(
     ptr: bigint,
     uniffi_out_err: UniffiRustCallStatus
+  ): void;
+  ubrn_uniffi_matrix_crypto_ffi_fn_init_callback_vtable_cryptoobserver(
+    vtable: UniffiVTableCallbackInterfaceMatrixCryptoCryptoObserver
   ): void;
   ubrn_uniffi_matrix_crypto_ffi_fn_init_callback_vtable_probeobserver(
     vtable: UniffiVTableCallbackInterfaceMatrixCryptoProbeObserver
@@ -183,6 +194,9 @@ interface NativeModuleInterface {
   ubrn_uniffi_matrix_crypto_ffi_fn_func_cancel_verification(
     verificationId: Uint8Array
   ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_clear_crypto_observer(
+    uniffi_out_err: UniffiRustCallStatus
+  ): void;
   ubrn_uniffi_matrix_crypto_ffi_fn_func_confirm_verification(
     verificationId: Uint8Array
   ): bigint;
@@ -228,6 +242,10 @@ interface NativeModuleInterface {
     userId: Uint8Array,
     deviceId: Uint8Array
   ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_set_crypto_observer(
+    observer: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): void;
   ubrn_uniffi_matrix_crypto_ffi_fn_func_share_scope_key(
     scope: Uint8Array,
     users: Uint8Array
@@ -242,6 +260,11 @@ interface NativeModuleInterface {
   ubrn_uniffi_matrix_crypto_ffi_fn_func_verification_stage(
     verificationId: Uint8Array
   ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_method_cryptoobserver_on_signal(
+    uniffiSelf: bigint,
+    signal: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus
+  ): void;
   ubrn_uniffi_matrix_crypto_ffi_fn_method_probeobserver_on_signal(
     uniffiSelf: bigint,
     signal: Uint8Array,
@@ -250,6 +273,7 @@ interface NativeModuleInterface {
   ubrn_ffi_matrix_crypto_ffi_uniffi_contract_version(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_accept_verification(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_cancel_verification(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_clear_crypto_observer(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_confirm_verification(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_create_crypto_machine(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_decrypt_event(): number;
@@ -262,12 +286,18 @@ interface NativeModuleInterface {
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_probe_with_observer(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_receive_sync_changes(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_request_verification(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_set_crypto_observer(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_share_scope_key(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_start_verification_comparison(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_take_outgoing_requests(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_verification_material(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_verification_stage(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_method_cryptoobserver_on_signal(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_method_probeobserver_on_signal(): number;
+  ubrn_uniffi_internal_fn_method_cryptoobserver_ffi__bless_pointer(
+    pointer: bigint,
+    uniffi_out_err: UniffiRustCallStatus
+  ): UniffiGcObject;
   ubrn_uniffi_internal_fn_method_probeobserver_ffi__bless_pointer(
     pointer: bigint,
     uniffi_out_err: UniffiRustCallStatus
@@ -293,6 +323,21 @@ export type UniffiForeignFutureDroppedCallback = (handle: bigint) => void;
 export type UniffiForeignFutureDroppedCallbackStruct = {
   handle: bigint;
   free: UniffiForeignFutureDroppedCallback;
+};
+type UniffiCallbackInterfaceMatrixCryptoCryptoObserverMethod0 = (
+  uniffiHandle: bigint,
+  signal: Uint8Array
+) => UniffiResult<void>;
+type UniffiCallbackInterfaceCloneMatrixCryptoCryptoObserver = (
+  handle: bigint
+) => UniffiResult<void>;
+type UniffiCallbackInterfaceFreeMatrixCryptoCryptoObserver = (
+  handle: bigint
+) => void;
+export type UniffiVTableCallbackInterfaceMatrixCryptoCryptoObserver = {
+  uniffi_free: UniffiCallbackInterfaceFreeMatrixCryptoCryptoObserver;
+  uniffi_clone: UniffiCallbackInterfaceCloneMatrixCryptoCryptoObserver;
+  on_signal: UniffiCallbackInterfaceMatrixCryptoCryptoObserverMethod0;
 };
 type UniffiCallbackInterfaceMatrixCryptoProbeObserverMethod0 = (
   uniffiHandle: bigint,
