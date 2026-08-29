@@ -978,3 +978,142 @@ fn a_finished_flow_is_not_retained_forever() {
         );
     }));
 }
+
+/// The other interleaving: the library's user says "they match" first, and
+/// the counterparty's user says it after.
+///
+/// This is not a variation for completeness. It is the case where the two
+/// closing messages come out of *different* queues. Upstream returns the
+/// confirmation and the acknowledgement together only when the peer
+/// confirmed first (`verification/sas/inner_sas.rs:243`, reached from
+/// `MacReceived`); when we confirm first, our confirmation is handed back
+/// to us and our acknowledgement is produced later, as a reaction to the
+/// peer's own confirmation, and goes into upstream's own queue
+/// (`inner_sas.rs:336-346` through `verification/machine.rs:472-494`).
+///
+/// So the pump has to order two requests that did not come from the same
+/// place, and it has to get it right: the far side drops an acknowledgement
+/// that arrives before the confirmation it acknowledges
+/// (`inner_sas.rs:354-363` matches `Done` only against `WaitingForDone`)
+/// and then waits forever for one that has already been sent. That failure
+/// is asymmetric and silent -- this side reaches `Done` and records the peer
+/// verified, while the peer records nothing and reports no error.
+///
+/// The two are deliberately taken in one batch here rather than pumped
+/// apart, because a product that pumps after every call never sees this and
+/// a product that pumps on a timer always can.
+#[test]
+fn a_comparison_confirmed_before_the_peer_completes_on_both_sides() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    futures::executor::block_on(in_runtime(async move {
+        let bob_user = "@confirmingsecond:example.org";
+        let bob_device = "COUNTERPARTYFIVE";
+        let bob = counterparty(bob_user, bob_device).await;
+
+        // ---- Up to a string on both screens -----------------------------
+        let flow = request_flow(bob_user, bob_device)
+            .await
+            .expect("a known device can be asked to verify itself");
+        pump_to_bare(&bob, bob_user, bob_device).await;
+
+        let alice: OwnedUserId = ALICE_USER.parse().expect("a literal user id parses");
+        let ready = bob
+            .get_verification_request(&alice, &flow.0)
+            .expect("the counterparty must have received the request")
+            .accept_with_methods(vec![VerificationMethod::SasV1])
+            .expect("a fresh request can be accepted");
+        deliver_verification_request(&ready, bob_user).await;
+
+        begin_comparison(&flow)
+            .await
+            .expect("a ready flow can start a comparison");
+        pump_to_bare(&bob, bob_user, bob_device).await;
+
+        let bob_sas = bare_comparison(&bob, &flow);
+        let accept = bob_sas
+            .accept()
+            .expect("a started comparison is acceptable");
+        deliver_verification_request(&accept, bob_user).await;
+
+        pump_to_bare(&bob, bob_user, bob_device).await;
+        pump_bare_to_library(&bob, bob_user).await;
+
+        let material = read_material(&flow)
+            .await
+            .expect("the string is available once the keys are exchanged");
+        assert_eq!(
+            material.decimals,
+            bob_sas
+                .decimals()
+                .expect("the counterparty has a string too"),
+            "both sides must be looking at the same string"
+        );
+
+        // ---- This side says it matches first, and does not pump ---------
+        confirm_flow(&flow)
+            .await
+            .expect("a flow showing a string can be confirmed");
+        assert_eq!(
+            flow_stage(&flow).await.expect("the flow exists"),
+            FlowStage::Confirmed
+        );
+
+        // ---- Then the counterparty says so, and its confirmation lands --
+        // This is what makes the acknowledgement appear, in the other
+        // queue, behind a confirmation of ours that has not left yet.
+        let (contents, _signatures) = bob_sas
+            .confirm()
+            .await
+            .expect("the counterparty can confirm");
+        assert_eq!(
+            contents.len(),
+            1,
+            "a counterparty confirming second sends its confirmation alone"
+        );
+        for content in &contents {
+            deliver_verification_request(content, bob_user).await;
+        }
+
+        // ---- One batch, carrying both, in the order they were produced --
+        let crossed = pump_to_bare(&bob, bob_user, bob_device).await;
+        assert_eq!(
+            crossed,
+            vec![
+                "m.key.verification.mac".to_string(),
+                "m.key.verification.done".to_string()
+            ],
+            "one batch carrying a confirmation and the acknowledgement that \
+             follows it must list them in that order, whichever queue each \
+             came out of: {crossed:?}"
+        );
+
+        // ---- And both sides finish --------------------------------------
+        assert!(
+            bob_sas.is_done(),
+            "the counterparty must have finished -- an acknowledgement it \
+             receives before the confirmation it acknowledges is discarded, \
+             and it then waits forever for one that was already sent"
+        );
+        assert!(
+            bare_reports_verified(&bob).await,
+            "the counterparty must report the library's device verified"
+        );
+
+        let crossed = pump_bare_to_library(&bob, bob_user).await;
+        assert!(
+            crossed.contains(&"m.key.verification.done".to_string()),
+            "the counterparty's acknowledgement must reach the library: {crossed:?}"
+        );
+        assert_eq!(
+            flow_stage(&flow).await.expect("the flow exists"),
+            FlowStage::Done
+        );
+        assert!(
+            library_reports_verified(bob_user, bob_device).await,
+            "the library must report the counterparty's device verified"
+        );
+    }));
+}
