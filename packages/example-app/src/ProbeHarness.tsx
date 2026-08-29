@@ -182,8 +182,12 @@ function jsiCryptoBinding(): CryptoBinding {
  * Placed last, after both suites, for two reasons. It must not perturb what
  * the suites measure, and by the time it runs the process is as warm as this
  * app ever gets -- runtime built, pool threads created, store open. That is
- * the comparison worth having against `PROBE_SIGNAL_MS`, which is always the
- * first signal of a cold process.
+ * the comparison worth having against `PROBE_SIGNAL_MS`, which every launch
+ * measured so far reports as the process's first delivery -- read off
+ * `PROBE_SIGNAL_NTH`, not assumed. This sentence said "always the first
+ * signal of a cold process" for four rounds, including one round after the
+ * bullet a hundred lines above had that same claim removed and replaced with
+ * the measured account. There were two copies; one was fixed.
  *
  * The observer is a fresh inline closure, so this call's signal is its own
  * and reaches nothing else.
