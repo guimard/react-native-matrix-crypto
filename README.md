@@ -74,7 +74,7 @@ Being precise about that, because a cryptographic library that oversells itself 
 | Interoperability with a third-party Matrix client | proven both directions against `matrix-nio`, over a real homeserver |
 | Crypto signal channel (`onCryptoSignal`) | present and typed, but **nothing emits a signal yet**, see below |
 | Sender authenticity | **not provided**, see below |
-| Device verification by short string comparison (SAS) | working, proven against a crypto machine this library does not control; QR is **not implemented** |
+| Device verification by short string comparison (SAS) | working, proven against a bare `matrix-sdk-crypto` machine driven directly -- upstream's own, not a third-party implementation; a third-party proof is still to come, and QR is **not implemented** |
 | Secret export and import | **not implemented**, see the roadmap |
 
 The unimplemented functions exist today as final types that compile, and reject at runtime with a typed `not_implemented` error. That is intentional: a consuming team can build against the real shape while the cryptography underneath is written.
@@ -218,12 +218,20 @@ nothing.
 
 A flow is named by an opaque id. Hand it back verbatim; parse nothing out of it.
 
+**Both sides must already know each other's devices before any of this.** A verification
+cannot be started against, or accepted from, a device this library has never been told
+about: track the user, drain the `keys_query` and report it with `markRequestSent`, and
+check that `getDeviceStatuses` for that user answers non-empty. On the receiving side this
+is not merely a precondition that errors -- see the warning after the second listing.
+
+The side that asks:
+
 ```ts
 const id = await requestVerification('@bob:example.org', 'BOBDEVICE')
 // pump: takeOutgoingRequests -> send in order -> markRequestSent each
 
-// The other side calls acceptVerification(id) and pumps. Once their answer
-// has been fed back in through receiveSyncChanges, this reads 'ready':
+// Wait for the other side to agree. Their answer arrives in a later /sync,
+// which you feed to receiveSyncChanges as usual; then this reads 'ready':
 await getVerificationStage(id)
 
 await startVerificationComparison(id) // either side may; pump again
@@ -236,6 +244,43 @@ await confirmVerification(id, material) // or cancelVerification(id)
 // Pump once more. The stage reaches 'done', and only then:
 await getDeviceStatuses('@bob:example.org') // BOBDEVICE reads 'verified'
 ```
+
+**The side that is asked is a different application, in a different process, and nothing
+hands it an id.** There is no call that lists or announces an inbound verification. The id
+is the `transaction_id` of the `m.key.verification.request` to-device event, which arrives
+among the `to_device_events` you already forward to `receiveSyncChanges`:
+
+```ts
+// Forward the sync first. This is what makes the flow exist at all.
+await receiveSyncChanges(encryptionSlice(sync))
+
+for (const event of sync.to_device?.events ?? []) {
+  if (event.type !== 'm.key.verification.request') continue
+  const id = event.content.transaction_id // <- the verificationId
+  // event.sender and event.content.from_device say who is asking.
+
+  // Ask the person. Then:
+  await acceptVerification(id) // or cancelVerification(id) to refuse
+  // pump, and carry on from `startVerificationComparison` above.
+}
+```
+
+Reading one field out of protocol JSON this library otherwise keeps to itself is a seam,
+and it is the shape of the surface today rather than something to like. Announcing inbound
+flows on the signal channel is a separate, later question.
+
+**An invitation from a device you have never been told about is discarded on arrival, and
+nothing reports it.** The layer underneath needs the sender's device keys to build the flow;
+without them it drops the event. `receiveSyncChanges` still resolves successfully, no flow
+exists, and `acceptVerification` then rejects that transaction id with `unknown_flow`.
+
+**Keep the event, because nothing here does.** What was discarded is that arrival, not the
+invitation: feeding the same event to `receiveSyncChanges` a second time, once you have
+queried the sender's devices, does create the flow, and `acceptVerification` then works. So
+on `unknown_flow` for an invitation you have just seen, learn that user's devices, feed the
+kept event again, and retry. Promptly -- an invitation expires ten minutes after it was
+sent. A product that throws away to-device events it could not act on has no way back, which
+is why the device-knowledge step is listed before the flow rather than inside it.
 
 **Every step goes through the queue.** Nothing reaches the other device until you send what
 `takeOutgoingRequests` hands you and report each one with `markRequestSent`. Skipping the

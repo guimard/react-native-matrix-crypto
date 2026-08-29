@@ -484,6 +484,15 @@ export async function shareScopeKey(scope: CryptoScopeId, userIds: string[]): Pr
  * order the requests were produced in, across both of the places inside the
  * library they come from.
  *
+ * **What that guarantee is worth, stated so it is not read as more.** Two
+ * requests this library produced in an order that matters come out in it,
+ * which is the whole point and is what the verification pair needs. Two
+ * requests with no ordering requirement between them may come out in either
+ * order, run to run, and nothing here promises otherwise -- the last
+ * paragraph of this comment is a measured example of exactly that. So:
+ * preserve the order you are given, and do not read meaning into the
+ * relative position of two requests that have none.
+ *
  * Up to and including `0.1.0-rc.2` this comment said the opposite: that the
  * array was an unordered set and a product must not infer sequencing from
  * position. That was true of every request the library could then produce,
@@ -509,13 +518,21 @@ export async function shareScopeKey(scope: CryptoScopeId, userIds: string[]): Pr
  * in that same batch carries what the older one was for.
  *
  * **What a caller must do about it: resolve a batch before drawing the
- * next.** Drain, send, and `markRequestSent` each response, and only then
- * call this again. Sending and marking the members of a *single* batch
- * concurrently is safe, because nothing in one batch evicts another member
- * of it. What is not safe is a second drain overlapping unresolved requests
- * from an earlier one: two pumps racing, or a drain on a timer alongside a
- * drain after a write, will produce `unknown_request` for ids the product
- * still holds.
+ * next.** Drain, send in order, `markRequestSent` each response, and only
+ * then call this again.
+ *
+ * Within one batch, marking may overlap sending -- nothing in one batch
+ * evicts another member of it, so request *n* need not be marked before
+ * request *n+1* is sent. **The sends themselves stay ordered**, which is
+ * the half of this that changed after `0.1.0-rc.2`; see the ordering rule
+ * at the top of this comment. This paragraph used to say sending and
+ * marking within a single batch were both safe to do concurrently, which
+ * is the sentence that section retracts.
+ *
+ * What is not safe is a second drain overlapping unresolved requests from
+ * an earlier one: two pumps racing, or a drain on a timer alongside a drain
+ * after a write, will produce `unknown_request` for ids the product still
+ * holds.
  *
  * **On `unknown_request` for an id from an earlier batch, do not retry it.**
  * Discard the response that id was going to carry and pump again. Nothing
@@ -531,7 +548,11 @@ export async function shareScopeKey(scope: CryptoScopeId, userIds: string[]): Pr
  * a to-device request the machine could not yet deliver -- a stale
  * `m.room_key.withheld` notice sitting alongside the actual session key, in
  * no reliable order relative to it (measured across ten runs of the same
- * sequence: six with the notice first, four with the key first). The
+ * sequence: six with the notice first, four with the key first). That is
+ * not a counter-example to the ordering rule above and is the reason it is
+ * scoped as it is: neither of those two requests is order-significant
+ * against the other, they are held keyed by transaction id rather than by
+ * production order, and a transaction id is random. The
  * measured harm from that specific case is bounded -- that withheld notice
  * carries no scope and no session id of its own, so it names nothing for a
  * recipient to act on, and a `matrix-sdk-crypto`-based recipient's own
@@ -657,8 +678,9 @@ export async function getDeviceStatuses(userId: string): Promise<DeviceStatus[]>
  *    {@link getDeviceStatuses} report the device verified
  *
  * The side that was asked does the same from step 2, calling
- * {@link acceptVerification} first. Either side may call
- * {@link startVerificationComparison}; the other gets
+ * {@link acceptVerification} first -- see that function for where its
+ * `verificationId` comes from, since nothing hands it one. Either side may
+ * call {@link startVerificationComparison}; the other gets
  * `'comparison_already_started'` and carries on from step 4.
  */
 export async function requestVerification(userId: string, deviceId: string): Promise<string> {
@@ -676,14 +698,88 @@ export async function requestVerification(userId: string, deviceId: string): Pro
  * For the side that *received* an invitation. The flow reaches `'ready'`
  * once the answer has been sent and reported.
  *
- * **Skipping this does not fail silently.** Nothing advances: the flow
+ * # Where `verificationId` comes from on this side
+ *
+ * There is no call that lists or announces an inbound verification, and
+ * nothing hands you the identifier. You read it off the invitation itself.
+ *
+ * The invitation arrives as an ordinary to-device event in your `/sync`
+ * response -- one of the events you already forward to
+ * {@link receiveSyncChanges} as `to_device_events`. It looks like this:
+ *
+ * ```json
+ * {
+ *   "sender": "@bob:example.org",
+ *   "type": "m.key.verification.request",
+ *   "content": {
+ *     "from_device": "BOBDEVICE",
+ *     "transaction_id": "the value you want",
+ *     "methods": ["m.sas.v1"],
+ *     "timestamp": 1700000000000
+ *   }
+ * }
+ * ```
+ *
+ * `content.transaction_id` **is** the `verificationId` every call in this
+ * group takes. So a receiving product, per sync:
+ *
+ * 1. forwards the sync to {@link receiveSyncChanges} as usual -- this is
+ *    what makes the flow exist at all, and it must happen before any call
+ *    below;
+ * 2. scans the same `to_device_events` for `type ===
+ *    'm.key.verification.request'` and keeps `content.transaction_id` and
+ *    `sender`;
+ * 3. asks the person whether to go ahead, then calls this function with
+ *    that transaction id, or {@link cancelVerification} to refuse.
+ *
+ * From there the flow is the one {@link requestVerification} documents,
+ * from its step 2 onward.
+ *
+ * That this library asks a product to read one field out of protocol JSON
+ * it otherwise keeps to itself is a real seam, and it is the shape of the
+ * surface today rather than a convention worth liking. Announcing inbound
+ * flows on the signal channel is a separate, later question.
+ *
+ * # Keep the event: an unmet sender's invitation is dropped on arrival
+ *
+ * **If this library has never been told about the sender's device, the
+ * invitation is discarded as it arrives and nothing reports it.** The layer
+ * underneath needs the sender's device keys to build the flow at all;
+ * without them it drops the event. `receiveSyncChanges` still resolves
+ * successfully, no flow exists, and this function rejects that transaction
+ * id with `'unknown_flow'`.
+ *
+ * **It is recoverable, and recovering it is your job because nothing here
+ * kept the event.** What was discarded is that *arrival*, not the
+ * invitation: the same event fed in again, once the device is known, does
+ * create the flow. So on `'unknown_flow'` for an invitation you have just
+ * seen:
+ *
+ * 1. keep the raw to-device event;
+ * 2. learn the sender's devices -- a real `/sync` names them in
+ *    `device_lists.changed`, which {@link encryptionSlice} maps to
+ *    `changed_devices`; forward that, then drain the resulting
+ *    `'keys_query'` and report it with {@link markRequestSent}.
+ *    {@link getDeviceStatuses} for that user answering non-empty is how you
+ *    know it worked;
+ * 3. pass the kept event to {@link receiveSyncChanges} a second time, and
+ *    call this function again.
+ *
+ * Promptly, though: an invitation expires ten minutes after it was sent, so
+ * a recovery that takes longer than that leaves the other side to ask
+ * again. A product that discards to-device events it could not act on has
+ * no way back, which is the reason this is spelled out rather than left to
+ * the error kind.
+ *
+ * **Skipping this call does not fail silently.** Nothing advances: the flow
  * stays at `'requested'`, and {@link startVerificationComparison} on it
  * rejects with `'wrong_stage'` rather than starting a comparison the other
  * side never agreed to.
  *
  * Rejects with `'wrong_stage'` for a flow this device asked for itself, or
  * one already answered, cancelled or finished. It is never a successful
- * no-op.
+ * no-op. Rejects with `'unknown_flow'` for a transaction id that names no
+ * flow -- see the two sections above for the two ways that happens.
  */
 export async function acceptVerification(verificationId: string): Promise<void> {
   try {
@@ -790,14 +886,33 @@ export async function getVerificationMaterial(verificationId: string): Promise<S
  * the flow currently holds, and a mismatch rejects with
  * `'material_mismatch'` rather than confirming.
  *
- * That argument is the whole reason this call cannot be got wrong quietly.
- * Without it, a product could confirm a comparison it never displayed --
- * the layer underneath only checks that a string *exists*, not that anybody
- * saw it -- and "verified" would then mean nothing at all. It also catches
- * the case where the flow was cancelled and a new one started between the
- * moment the string went on screen and the moment the person answered: the
- * material a person actually compared is the material that gets confirmed,
- * or nothing is.
+ * **What that argument does and does not guarantee.** It guarantees the
+ * confirmation names *this flow's current string*: the caller cannot
+ * produce a passing `data` without having read the material, because the
+ * digits and symbols are derived from keys only this flow has, and the
+ * layer underneath checks only that a string exists. So the material a
+ * product confirms is material it obtained, for the flow it is confirming.
+ *
+ * It does not guarantee that anybody looked. `confirmVerification(id, await
+ * getVerificationMaterial(id))` satisfies every check here while displaying
+ * nothing, and no API can do better: whether a human read a string off a
+ * screen and compared it with another human is not observable from inside
+ * this process. **That last step is yours, and it is the step the whole
+ * protocol rests on.** A product that confirms without asking a person has
+ * verified nothing, however well-formed its arguments were.
+ *
+ * `'material_mismatch'` therefore means one thing: `data` is not this
+ * flow's current string. In practice that is material obtained from a
+ * different flow, or a value constructed rather than read.
+ *
+ * It is *not* what you get for a flow that ended while the string was on
+ * screen -- cancelled by either side, timed out, or refused. A flow's
+ * string does not change once the keys are exchanged, and a replacement
+ * flow has a different id, so that case is caught one step earlier, by the
+ * read this function makes before it compares anything: `'unknown_flow'` or
+ * `'wrong_stage'`. Worth knowing which check catches what, because the two
+ * kinds tell a product different things -- ask the person again on a new
+ * flow, versus you are holding the wrong string.
  *
  * `data` was typed `unknown` up to `0.1.0-rc.2`, on a function that had only
  * ever rejected with `'not_implemented'`, so no caller has ever passed
@@ -810,7 +925,8 @@ export async function getVerificationMaterial(verificationId: string): Promise<S
  *
  * Rejects with `'material_not_ready'` if the string is not available (see
  * {@link getVerificationMaterial}), and with `'wrong_stage'` if the flow is
- * over or never became a comparison.
+ * over or never became a comparison. Both come from the read above, before
+ * anything is confirmed.
  */
 export async function confirmVerification(verificationId: string, data: SasMaterial): Promise<void> {
   // Read before confirming, not after: this is the check, and a check that
