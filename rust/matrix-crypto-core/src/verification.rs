@@ -483,6 +483,15 @@ pub async fn accept_flow(flow: &FlowId) -> Result<(), MachineError> {
 /// is not safe, and is refused here, is the *same* side calling twice: by
 /// the second call the flow is no longer ready, and the reason that has to
 /// be an error rather than a second attempt is below.
+///
+/// **For whoever bridges this.** `WrongStage` here covers two conditions a
+/// person needs told apart: "the other side started it, carry on and wait
+/// for the string" and "this flow is over, start again". This is the one
+/// place in this module those are folded, and folding them is deliberate --
+/// both mean *this call* has nothing to do -- but a surface that shows a
+/// user one sentence for both is showing the wrong one half the time.
+/// [`flow_stage`] separates them for free: `Started` or later is the first,
+/// `Cancelled` or `Done` is the second.
 pub async fn begin_comparison(flow: &FlowId) -> Result<(), MachineError> {
     let handles = handles(flow).await?;
 
