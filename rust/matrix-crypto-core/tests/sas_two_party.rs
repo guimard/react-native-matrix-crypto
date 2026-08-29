@@ -59,7 +59,7 @@ use matrix_crypto_core::{
     create_machine, device_statuses, flow_stage, in_runtime, mark_request_sent, read_material,
     receive_sync_changes, request_flow, set_crypto_observer, share_scope_key,
     take_outgoing_requests, with_machine, CryptoObserver, CryptoSignal, FlowId, FlowStage,
-    MachineConfig, MachineError, TrustState,
+    MachineConfig, MachineError, SasMaterial, TrustState,
 };
 use matrix_sdk_common::ruma::api::client::keys::get_keys::v3::Response as KeysQueryResponse;
 use matrix_sdk_common::ruma::api::client::keys::upload_keys::v3::Response as KeysUploadResponse;
@@ -1836,5 +1836,495 @@ fn a_comparison_confirmed_before_the_peer_completes_on_both_sides() {
             deliver_to_library(vec![]).await;
         }
         no_signal("one completed comparison is one trust change, whichever side confirmed first");
+    }));
+}
+
+/// The counterparty opens a comparison the deprecated way: an
+/// `m.key.verification.start` with no `m.key.verification.request` before
+/// it, to-device only.
+///
+/// `Device::start_verification` is upstream's own entry point for that
+/// shape and is still present in 0.18.0. It is driven on the *bare*
+/// machine and never on the library, which is the whole point: this library
+/// deliberately offers no way to send one, and what it has to be able to do
+/// is answer one somebody else sent.
+///
+/// The request it produces is handed over by hand rather than drained from
+/// the bare machine's pump, because upstream returns it to its caller and
+/// queues nothing -- `VerificationMachine::start_sas` inserts the
+/// comparison into its cache and hands the request back.
+async fn bare_start_from(bob: &OlmMachine, bob_user: &str) -> Sas {
+    let alice: OwnedUserId = ALICE_USER.parse().expect("a literal user id parses");
+    let alice_device: OwnedDeviceId = ALICE_DEVICE.into();
+    let library_device = bob
+        .get_device(&alice, &alice_device, None)
+        .await
+        .expect("the bare machine's store must be readable")
+        .expect("the bare machine knows the library's device");
+    let (bob_sas, start) = library_device
+        .start_verification()
+        .await
+        .expect("the bare machine can open a comparison against a device it knows");
+    let start: OutgoingVerificationRequest = start.into();
+    assert_eq!(
+        declared_event_type(&verification_body(&start)),
+        "m.key.verification.start",
+        "this helper is worthless unless what it delivers really is a bare start"
+    );
+    deliver_verification_request(&start, bob_user).await;
+    bob_sas
+}
+
+/// The short authentication string both sides computed, asserted equal, and
+/// returned so the caller can go on to agree with it or to differ from it.
+async fn agreed_material(flow: &FlowId, bob_sas: &Sas) -> SasMaterial {
+    let material = read_material(flow)
+        .await
+        .expect("the string is available once the keys are exchanged");
+    assert_eq!(
+        material.decimals,
+        bob_sas
+            .decimals()
+            .expect("the counterparty has a string too"),
+        "the two sides must have computed the same digits"
+    );
+    let bare_emoji = bob_sas.emoji().expect("both sides negotiated the symbols");
+    let library_emoji = material
+        .emoji
+        .as_ref()
+        .expect("both sides negotiated the symbols");
+    let bare_symbols: Vec<&str> = bare_emoji.iter().map(|emoji| emoji.symbol).collect();
+    let library_symbols: Vec<&str> = library_emoji
+        .iter()
+        .map(|emoji| emoji.symbol.as_str())
+        .collect();
+    assert_eq!(
+        library_symbols, bare_symbols,
+        "the two sides must have computed the same symbols, in the same order"
+    );
+    material
+}
+
+/// Everything from the announcement to the string, for a flow that arrived
+/// as a bare start: the announcement is read off the channel, checked
+/// against what the counterparty actually opened, and the flow is then
+/// driven to `KeysExchanged` through the public surface alone.
+///
+/// The identifier is taken from the signal and from nowhere else, which is
+/// the property both tests below rest on: nothing in this process knew this
+/// flow's name until the channel said it.
+async fn announced_bare_flow(
+    bob: &OlmMachine,
+    bob_user: &str,
+    bob_device: &str,
+    bob_sas: &Sas,
+) -> FlowId {
+    let announced = next_signal("a comparison started without a request must be announced");
+    let CryptoSignal::VerificationRequested {
+        user,
+        device_id,
+        flow_id,
+    } = announced.clone()
+    else {
+        panic!("a bare start must announce itself as an invitation, not as {announced:?}");
+    };
+    assert_eq!(user, bob_user, "the announcement must name who is asking");
+    assert_eq!(
+        device_id, bob_device,
+        "the announcement must name which of that user's devices is asking"
+    );
+    assert_eq!(
+        flow_id,
+        bob_sas.flow_id().as_str(),
+        "the identifier the channel hands over must be the comparison's own, which for \
+         this shape is the transaction id the start event carried"
+    );
+    no_signal("one start is one announcement");
+    let flow = FlowId(flow_id);
+
+    // Announced once, and once only, however many syncs go by while a
+    // person is deciding. Three empty ones rather than one, so an
+    // implementation that repeated on alternate calls fails too.
+    for _ in 0..3 {
+        deliver_to_library(vec![]).await;
+    }
+    assert_eq!(
+        flow_stage(&flow)
+            .await
+            .expect("an announced flow is findable by the identifier the channel gave"),
+        FlowStage::Started,
+        "this proves nothing unless the flow is still in the state that would be re-announced"
+    );
+    no_signal("a start already announced must not be announced again on every sync");
+
+    // There is nothing to begin: it began before this library ever heard of
+    // it. Refused rather than quietly building a second comparison under
+    // the same identifier, which is what upstream's cache would then cancel
+    // both halves of.
+    assert_eq!(
+        begin_comparison(&flow)
+            .await
+            .expect_err("a flow that arrived as a comparison cannot have one started"),
+        MachineError::WrongStage
+    );
+    assert_eq!(
+        read_material(&flow)
+            .await
+            .expect_err("no keys have crossed yet"),
+        MachineError::MaterialNotReady
+    );
+
+    // The library agrees. For this shape that is upstream's `Sas::accept`
+    // rather than the request's, and the message it produces is the one the
+    // peer is waiting for before it will send its key.
+    accept_flow(&flow)
+        .await
+        .expect("a comparison the other side started can be agreed to");
+    let crossed = pump_to_bare(bob, bob_user, bob_device).await;
+    assert!(
+        crossed.contains(&"m.key.verification.accept".to_string()),
+        "the agreement must reach the counterparty through the pump: {crossed:?}"
+    );
+
+    // The starting side sends its key first, and this side's own key only
+    // counts once the pump has reported it sent.
+    let crossed = pump_bare_to_library(bob, bob_user).await;
+    assert!(
+        crossed.contains(&"m.key.verification.key".to_string()),
+        "the counterparty's key must reach the library: {crossed:?}"
+    );
+    let crossed = pump_to_bare(bob, bob_user, bob_device).await;
+    assert!(
+        crossed.contains(&"m.key.verification.key".to_string()),
+        "the library's key must reach the counterparty through the pump: {crossed:?}"
+    );
+
+    assert_eq!(
+        flow_stage(&flow).await.expect("the flow exists"),
+        FlowStage::KeysExchanged
+    );
+    flow
+}
+
+/// The other shape a verification can arrive in, driven end to end: a bare
+/// `m.key.verification.start` with no request before it.
+///
+/// # Why this is not an exotic case
+///
+/// MSC3122 deprecated the shape and this library never sends it. It is
+/// nonetheless what a real third-party client sends: `matrix-nio` 0.26.0
+/// implements the short-string verification **only** this way -- its event
+/// vocabulary is `start`, `accept`, `key`, `mac`, `cancel` and nothing else
+/// -- and `matrix-sdk-crypto` 0.18.0 still both emits it (driven here) and
+/// accepts it. Until this test existed such a flow reached the library,
+/// existed inside its own machine, and could be reached through no call on
+/// the public surface at all: `get_verification` found the comparison while
+/// `flow_stage`, `read_material`, `accept_flow` and `begin_comparison`
+/// every one answered `UnknownFlow`.
+///
+/// # What is the same, and what is not
+///
+/// The same: it is announced on the same channel under the same variant,
+/// and it is driven with the same calls -- agree, read the string, confirm
+/// or refuse.
+///
+/// Different in three places, each asserted rather than described. There is
+/// no `Ready` stage, so `begin_comparison` has nothing to do and says so.
+/// The library's own `confirm_flow` **finishes** the flow outright instead
+/// of leaving it `Confirmed`, because upstream forks on
+/// `started_from_request` (`verification/sas/inner_sas.rs:243-258`) and a
+/// flow that came from no request needs no acknowledgement back. And
+/// consequently no `m.key.verification.done` is ever sent -- which is
+/// exactly what makes the shape usable against a client that has no such
+/// event, and is asserted negatively here for that reason.
+#[test]
+fn a_comparison_started_without_a_request_is_announced_and_completes() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    futures::executor::block_on(in_runtime(async move {
+        let bob_user = "@starting:example.org";
+        let bob_device = "COUNTERPARTYSIX";
+        let bob = counterparty(bob_user, bob_device).await;
+        subscribe_and_drain();
+
+        let trust_before = library_device_status(bob_user, bob_device).await;
+        assert_eq!(
+            trust_before,
+            TrustState::Unverified,
+            "a device this machine merely knows the keys of is not verified"
+        );
+        assert!(
+            !bare_reports_verified(&bob).await,
+            "nothing may be verified before a comparison has happened"
+        );
+
+        let bob_sas = bare_start_from(&bob, bob_user).await;
+        let flow = announced_bare_flow(&bob, bob_user, bob_device, &bob_sas).await;
+        let material = agreed_material(&flow, &bob_sas).await;
+        assert_eq!(
+            material.decimals,
+            bob_sas.decimals().expect("the counterparty has a string"),
+            "the digits both people are about to read out must be the same ones"
+        );
+
+        // ---- Both sides say it matches ----------------------------------
+        // The counterparty first, so the library's own confirmation is the
+        // one that finishes the flow and the one whose effect is asserted.
+        // It is also the interleaving that reaches the fork this shape
+        // exists for: the library confirms from `MacReceived`, which is
+        // where upstream decides between waiting for a `done` and being
+        // finished.
+        let (contents, _signatures) = bob_sas
+            .confirm()
+            .await
+            .expect("the counterparty can confirm");
+        for content in &contents {
+            deliver_verification_request(content, bob_user).await;
+        }
+        assert!(
+            !library_reports_verified(bob_user, bob_device).await,
+            "one side confirming must not verify anything"
+        );
+
+        confirm_flow(&flow)
+            .await
+            .expect("a flow showing a string can be confirmed");
+
+        // Finished here, not two messages later. This is the assertion the
+        // request-shaped tests cannot make: there they hold at `Confirmed`
+        // until the peer's `m.key.verification.done` arrives.
+        assert_eq!(
+            flow_stage(&flow).await.expect("the flow exists"),
+            FlowStage::Done,
+            "a comparison that came from no request is over when both sides have said \
+             the strings match; there is nothing left to acknowledge"
+        );
+        assert!(
+            library_reports_verified(bob_user, bob_device).await,
+            "the library must report the counterparty's device verified"
+        );
+
+        let crossed = pump_to_bare(&bob, bob_user, bob_device).await;
+        assert!(
+            crossed.contains(&"m.key.verification.mac".to_string()),
+            "the library's confirmation must reach the counterparty: {crossed:?}"
+        );
+        assert!(
+            !crossed.contains(&"m.key.verification.done".to_string()),
+            "a flow that came from no request terminates on the MAC. A `done` here would \
+             be an event the clients that speak only this shape cannot send and cannot \
+             answer, and its presence would mean the flow was waiting for one back: \
+             {crossed:?}"
+        );
+        assert!(
+            bob_sas.is_done(),
+            "the counterparty's comparison must have finished too"
+        );
+        assert!(
+            bare_reports_verified(&bob).await,
+            "the counterparty must report the library's device verified"
+        );
+
+        let trust_after = library_device_status(bob_user, bob_device).await;
+        assert_ne!(
+            trust_after, trust_before,
+            "a completed comparison must change what this device reports"
+        );
+        assert_eq!(trust_after, TrustState::Verified);
+
+        // ---- And a subscriber was told, on the next sync ----------------
+        // On the *next* sync, and not from `confirm_flow`: the channel's
+        // producers run inside `receive_sync_changes` and nowhere else. For
+        // this shape that is a visible delay rather than an invisible one,
+        // because here the confirmation is what finished the flow. The
+        // empty sync below is therefore load-bearing, not padding.
+        no_signal("the channel announces from a sync, and none has run since the confirmation");
+        deliver_to_library(vec![]).await;
+        assert_eq!(
+            next_signal("a completed comparison must announce the trust change"),
+            CryptoSignal::TrustChanged {
+                user: bob_user.to_string(),
+                state: TrustState::Verified,
+            },
+            "the channel must name the user whose device changed, and the state it changed to"
+        );
+
+        for _ in 0..3 {
+            deliver_to_library(vec![]).await;
+        }
+        no_signal("a completed comparison announces one trust change and no more");
+    }));
+}
+
+/// The refusal, on the shape that has no request behind it.
+///
+/// The successful case above cannot stand in for this one, and a
+/// verification surface that can only ever agree proves nothing at all --
+/// the module's own header opens with that sentence. `cancel_flow` reaches
+/// upstream through a different handle on this shape than on the requested
+/// one (there is no request to cancel, only the comparison), so the
+/// refusal has to be exercised here separately rather than inferred from
+/// `a_disagreement_refuses`.
+#[test]
+fn a_disagreement_on_a_comparison_nobody_requested_refuses() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    futures::executor::block_on(in_runtime(async move {
+        let bob_user = "@startingandrefused:example.org";
+        let bob_device = "COUNTERPARTYSEVEN";
+        let bob = counterparty(bob_user, bob_device).await;
+        subscribe_and_drain();
+
+        let bob_sas = bare_start_from(&bob, bob_user).await;
+        let flow = announced_bare_flow(&bob, bob_user, bob_device, &bob_sas).await;
+        let material = agreed_material(&flow, &bob_sas).await;
+
+        // ---- The two people are not looking at the same string ----------
+        // The difference is put here rather than discovered, for the reason
+        // `a_disagreement_refuses` records: this stands in for a person,
+        // and a branch written around it would be a tautology dressed as a
+        // decision. What carries the weight is everything after the
+        // refusal.
+        let heard_from_the_other_side = (
+            material.decimals.0,
+            material.decimals.1,
+            material.decimals.2 ^ 1,
+        );
+        assert_ne!(
+            heard_from_the_other_side, material.decimals,
+            "the string this test puts in the user's mouth must differ from the one on \
+             the library's own screen, or there is nothing to refuse"
+        );
+
+        cancel_flow(&flow)
+            .await
+            .expect("a string that does not match what the user sees is refused");
+
+        let crossed = pump_to_bare(&bob, bob_user, bob_device).await;
+        assert!(
+            crossed.contains(&"m.key.verification.cancel".to_string()),
+            "the refusal must reach the counterparty: {crossed:?}"
+        );
+
+        assert_eq!(
+            flow_stage(&flow)
+                .await
+                .expect("a refused flow is still readable"),
+            FlowStage::Cancelled
+        );
+        assert_eq!(
+            read_material(&flow)
+                .await
+                .expect_err("a refused flow has nothing to show"),
+            MachineError::WrongStage
+        );
+        assert!(
+            !library_reports_verified(bob_user, bob_device).await,
+            "a refused comparison must verify nothing on the library's side"
+        );
+        assert!(
+            bob_sas.is_cancelled(),
+            "the counterparty must observe the refusal"
+        );
+        assert!(
+            !bare_reports_verified(&bob).await,
+            "a refused comparison must verify nothing on the counterparty's side"
+        );
+
+        // Synced first, and that is not padding: nothing on this channel is
+        // emitted except from a sync, so silence after a refusal proves
+        // nothing unless a sync has since run against the refused flow.
+        deliver_to_library(vec![]).await;
+        no_signal(
+            "a refused comparison changes no device's trust, so the channel has nothing \
+             to say about it",
+        );
+    }));
+}
+
+/// The bare-start flow a product finds without the channel, and the one
+/// property the two flow shapes do not share.
+///
+/// # Why a flow nobody announced still has to be answerable
+///
+/// A request-shaped invitation that arrives while nobody is subscribed is
+/// announced on the first sync after somebody subscribes, because
+/// `announce_state_changes` re-enumerates upstream's request map every
+/// time. There is no such map for the other shape: `VerificationCache`
+/// offers keyed lookup and no listing at all, so the sync that carried the
+/// start event is the only chance to notice it. That difference is asserted
+/// here rather than left in a doc comment, because it is the kind of claim
+/// that stops being true quietly.
+///
+/// What is left is the route this test then takes: the identifier is on the
+/// wire, in `content.transaction_id` of the start event the product was
+/// handed, and a flow named that way must be as usable as one the channel
+/// announced. That is `handles`'s fallback through
+/// `OlmMachine::get_verification`, and this is the only test that reaches
+/// it -- everywhere else the announcement has already put the flow in the
+/// registry, so the fallback is never asked.
+#[test]
+fn a_comparison_nobody_requested_is_answerable_without_the_channel() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    futures::executor::block_on(in_runtime(async move {
+        let bob_user = "@startingunheard:example.org";
+        let bob_device = "COUNTERPARTYEIGHT";
+        let bob = counterparty(bob_user, bob_device).await;
+        // Installed and then removed, which is what a product is between
+        // unmounting one subscribing component and mounting the next.
+        subscribe_and_drain();
+        unsubscribe();
+
+        let bob_sas = bare_start_from(&bob, bob_user).await;
+        no_signal("with no observer installed the channel produces nothing at all");
+
+        // Back, and told nothing. This is the asymmetry, and it is the
+        // reason the facade tells a product to subscribe before it syncs.
+        subscribe();
+        for _ in 0..3 {
+            deliver_to_library(vec![]).await;
+        }
+        no_signal(
+            "a bare start's only witness is the sync that carried it. Upstream keeps such \
+             a flow where nothing can enumerate it, so unlike a request-shaped invitation \
+             it cannot be re-offered to whoever subscribes next",
+        );
+
+        // The flow is nonetheless live inside the machine, and answerable
+        // by the name the wire carried. Read off the counterparty's own
+        // comparison here, which is the same string a product would read
+        // out of `content.transaction_id`.
+        let flow = FlowId(bob_sas.flow_id().as_str().to_string());
+        assert_eq!(
+            flow_stage(&flow)
+                .await
+                .expect("a flow the channel never announced is still findable by name"),
+            FlowStage::Started,
+            "the comparison exists inside the machine and the public surface must reach it"
+        );
+
+        // Usable, not merely readable: the surface's answer is worth
+        // nothing if the flow it found cannot be driven.
+        accept_flow(&flow)
+            .await
+            .expect("a flow found this way can be agreed to like any other");
+        let crossed = pump_to_bare(&bob, bob_user, bob_device).await;
+        assert!(
+            crossed.contains(&"m.key.verification.accept".to_string()),
+            "the agreement must reach the counterparty: {crossed:?}"
+        );
+        let crossed = pump_bare_to_library(&bob, bob_user).await;
+        assert!(
+            crossed.contains(&"m.key.verification.key".to_string()),
+            "the counterparty must have acted on that agreement by sending its key, which \
+             is the only evidence from outside that the agreement was a real one: {crossed:?}"
+        );
     }));
 }

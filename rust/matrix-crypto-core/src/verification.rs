@@ -49,6 +49,31 @@
 //! the proof, and it is the same shape as the pump's own
 //! `a_stale_keys_upload_id_does_not_accumulate_across_repeated_calls`.
 //!
+//! # Two shapes of flow, and one surface over both
+//!
+//! A verification normally opens with an `m.key.verification.request`: one
+//! side invites, the other agrees, and only then does either start the
+//! comparison. That is the shape this library sends and the only one M3
+//! could answer.
+//!
+//! The Matrix protocol also still carries the shape MSC3122 deprecated --
+//! a bare `m.key.verification.start` with no request before it, to-device
+//! only. It is not a legacy curiosity: it is what some third-party clients
+//! implement and *all* they implement, `matrix-nio` among them, and
+//! `matrix-sdk-crypto` 0.18.0 both emits it (`Device::start_verification`)
+//! and accepts it (`verification/machine.rs:430-450`). A flow that arrives
+//! that way exists inside upstream's machine as a comparison and nothing
+//! else -- there is no request object behind it and there never will be.
+//!
+//! Every call on this surface answers both, and a caller does not have to
+//! know which it has: [`accept_flow`] agrees to the flow, [`read_material`]
+//! shows the string, [`confirm_flow`] says it matched, [`cancel_flow`]
+//! refuses. The one visible difference is that a bare-start flow is never
+//! [`FlowStage::Ready`] -- it is a comparison from the moment it exists --
+//! so [`begin_comparison`] has nothing to do on one and says so. See
+//! [`accept_flow`] for what agreeing means on each shape and why the two
+//! are the same promise.
+//!
 //! # Requests
 //!
 //! Every call here that produces a message hands it to
@@ -65,10 +90,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex as StdMutex;
 
+use matrix_sdk_common::deserialized_responses::ProcessedToDeviceEvent;
 use matrix_sdk_common::ruma::events::key::verification::VerificationMethod;
 use matrix_sdk_common::ruma::{OwnedDeviceId, OwnedUserId};
 use matrix_sdk_crypto::types::requests::OutgoingRequest as UpstreamOutgoingRequest;
-use matrix_sdk_crypto::{Sas, SasState, VerificationRequest, VerificationRequestState};
+use matrix_sdk_crypto::{
+    Sas, SasState, Verification, VerificationRequest, VerificationRequestState,
+};
 
 use crate::identity::TrustState;
 use crate::machine::{with_machine, MachineError};
@@ -182,7 +210,19 @@ pub enum FlowStage {
 /// lookup against upstream's own map is needed -- and would not survive that
 /// map's garbage collection anyway.
 struct FlowRecord {
-    request: VerificationRequest,
+    /// The request handle, for a flow that began with one.
+    ///
+    /// `None` for a flow that began as a bare `m.key.verification.start`
+    /// with no `m.key.verification.request` before it. That is the shape
+    /// MSC3122 deprecated, and upstream still both emits it
+    /// (`identities/device.rs`'s `Device::start_verification`) and accepts
+    /// it (`verification/machine.rs:430-450`), where it builds the
+    /// comparison straight from the start event and writes **nothing** to
+    /// the map `get_verification_request` reads. So such a flow has no
+    /// request behind it and never will. It is also the only shape some
+    /// third-party clients speak, which is what this option is here for;
+    /// see the module header's own section on it.
+    request: Option<VerificationRequest>,
     comparison: Option<Sas>,
     /// Whether this flow's completion has already been announced on the
     /// crypto signal channel.
@@ -194,6 +234,34 @@ struct FlowRecord {
     /// Eviction is not a substitute: `release_finished` runs on the next
     /// registration, which is later than both.
     completion_announced: bool,
+}
+
+impl FlowRecord {
+    /// A flow that began with an `m.key.verification.request`.
+    fn from_request(request: VerificationRequest) -> Self {
+        FlowRecord {
+            request: Some(request),
+            comparison: None,
+            completion_announced: false,
+        }
+    }
+
+    /// A flow that began as a bare `m.key.verification.start`, registered
+    /// with the comparison it produced.
+    ///
+    /// These two constructors are the only way a record is built, and
+    /// between them they keep this module's one structural invariant:
+    /// **every record holds at least one handle.** Neither field is ever
+    /// set back to `None` afterwards, so a record keeps whichever it was
+    /// built with for the life of the entry, and every function below can
+    /// say truthfully which shape it is looking at.
+    fn from_comparison(comparison: Sas) -> Self {
+        FlowRecord {
+            request: None,
+            comparison: Some(comparison),
+            completion_announced: false,
+        }
+    }
 }
 
 /// Process-wide registry of the flows this library is taking part in.
@@ -240,7 +308,9 @@ fn store_failed() -> MachineError {
 /// observes the same state the registry's copy does -- so nothing read
 /// through one of these is stale by the time it is read.
 struct Handles {
-    request: VerificationRequest,
+    /// `None` exactly when the flow began as a bare
+    /// `m.key.verification.start` -- see [`FlowRecord::request`].
+    request: Option<VerificationRequest>,
     comparison: Option<Sas>,
 }
 
@@ -253,7 +323,11 @@ struct Handles {
 /// the map it is not garbage-collected out from under us.
 fn comparison_of(record: &mut FlowRecord) -> Option<&Sas> {
     if record.comparison.is_none() {
-        if let VerificationRequestState::Transitioned { verification, .. } = record.request.state()
+        // Only a request-shaped record can reach here with nothing cached:
+        // a request-less one is registered with its comparison already in
+        // hand and never loses it.
+        if let Some(VerificationRequestState::Transitioned { verification, .. }) =
+            record.request.as_ref().map(VerificationRequest::state)
         {
             record.comparison = verification.sas_v1().map(|boxed| *boxed);
         }
@@ -265,10 +339,22 @@ fn stage_of(record: &mut FlowRecord) -> FlowStage {
     if let Some(comparison) = comparison_of(record) {
         return stage_of_comparison(comparison);
     }
+    let Some(request) = record.request.as_ref() else {
+        // Neither handle. Not reachable through either of `FlowRecord`'s
+        // two constructors -- one supplies a request, the other supplies a
+        // comparison, and nothing sets either back to `None` -- so this
+        // arm keeps the function total rather than describing a flow
+        // anything can produce. `Cancelled` is the one stage that cannot
+        // mislead a caller into acting on it: it says "there is nothing
+        // further to do here", which is exactly true of a flow with no
+        // handle behind it. Named rather than left to a fallthrough, which
+        // is the class this crate closed in `ecfd293`.
+        return FlowStage::Cancelled;
+    };
     // Exhaustive, no wildcard, like every other upstream match in this
     // crate: a state upstream adds later must fail this build rather than
     // be reported as whichever stage a wildcard happened to name.
-    match record.request.state() {
+    match request.state() {
         VerificationRequestState::Created { .. } | VerificationRequestState::Requested { .. } => {
             FlowStage::Requested
         }
@@ -369,19 +455,31 @@ fn cached(flow_id: &str) -> Option<Handles> {
     })
 }
 
-fn register(flow_id: &str, request: VerificationRequest) -> Handles {
+fn register(flow_id: &str, record: FlowRecord) -> Handles {
     let mut flows = FLOWS.lock().expect("verification registry poisoned");
     release_finished(&mut flows);
-    let record = flows.entry(flow_id.to_string()).or_insert(FlowRecord {
-        request,
-        comparison: None,
-        completion_announced: false,
-    });
+    let record = flows.entry(flow_id.to_string()).or_insert(record);
     let comparison = comparison_of(record).cloned();
     Handles {
         request: record.request.clone(),
         comparison,
     }
+}
+
+/// The identifier upstream itself gives the flow behind a record.
+///
+/// Read back off the handle rather than taken from whatever string the
+/// caller passed, so the registry is keyed by exactly what upstream keys
+/// by. `None` only for a record holding neither handle, which
+/// [`FlowRecord`]'s two constructors cannot produce.
+fn upstream_flow_id(record: &FlowRecord) -> Option<String> {
+    if let Some(request) = &record.request {
+        return Some(request.flow_id().as_str().to_string());
+    }
+    record
+        .comparison
+        .as_ref()
+        .map(|comparison| comparison.flow_id().as_str().to_string())
 }
 
 /// Registers `request` under `flow_id` if the registry does not already
@@ -399,20 +497,13 @@ fn register(flow_id: &str, request: VerificationRequest) -> Handles {
 /// observable changes -- but two functions doing the same two things in
 /// opposite orders is a question a reader has to answer, and it costs
 /// nothing not to ask it.
-fn register_if_absent(flow_id: &str, request: VerificationRequest) -> bool {
+fn register_if_absent(flow_id: &str, record: FlowRecord) -> bool {
     let mut flows = FLOWS.lock().expect("verification registry poisoned");
     release_finished(&mut flows);
     if flows.contains_key(flow_id) {
         return false;
     }
-    flows.insert(
-        flow_id.to_string(),
-        FlowRecord {
-            request,
-            comparison: None,
-            completion_announced: false,
-        },
-    );
+    flows.insert(flow_id.to_string(), record);
     true
 }
 
@@ -441,8 +532,19 @@ fn remember_comparison(flow_id: &str, comparison: Sas) {
 /// is the set a verification counterparty is necessarily in (a device has
 /// to have been queried before it can be verified).
 ///
-/// A flow found that way is registered only if it is still live. Adopting a
-/// finished one would undo the eviction rule -- an identifier released by
+/// # A request first, and a comparison only where there is no request
+///
+/// Upstream keeps requests and comparisons in two separate maps, and a
+/// request-shaped flow whose comparison has started is in **both**. Its
+/// request is the handle that can still be accepted and cancelled *as a
+/// request* and that carries the comparison along with it, so it is the one
+/// that wins here; resolving such a flow to its bare comparison instead
+/// would quietly downgrade every later call on it. The comparison map is
+/// therefore reached only for a flow that is in no other map -- one that
+/// began as a bare `m.key.verification.start`.
+///
+/// A flow found either way is registered only if it is still live. Adopting
+/// a finished one would undo the eviction rule -- an identifier released by
 /// `release_finished` would be picked straight back up from upstream's map
 /// on the next mention of it, and the registry would grow by one entry per
 /// verification the process ever ran.
@@ -458,25 +560,28 @@ async fn handles(flow: &FlowId) -> Result<Handles, MachineError> {
                 .tracked_users()
                 .await
                 .map_err(|_upstream| store_failed())?;
+            if let Some(request) = tracked
+                .iter()
+                .find_map(|user| machine.get_verification_request(user, &flow_id))
+            {
+                return Ok(Some(FlowRecord::from_request(request)));
+            }
             Ok(tracked
                 .iter()
-                .find_map(|user| machine.get_verification_request(user, &flow_id)))
+                .find_map(|user| machine.get_verification(user, &flow_id))
+                .and_then(Verification::sas_v1)
+                .map(|comparison| FlowRecord::from_comparison(*comparison)))
         })
     })
     .await??;
 
-    let request = found.ok_or(MachineError::UnknownFlow)?;
-    let flow_id = request.flow_id().as_str().to_string();
-    let mut probe = FlowRecord {
-        request: request.clone(),
-        comparison: None,
-        completion_announced: false,
-    };
-    if is_finished(stage_of(&mut probe)) {
+    let mut record = found.ok_or(MachineError::UnknownFlow)?;
+    if is_finished(stage_of(&mut record)) {
         return Err(MachineError::UnknownFlow);
     }
+    let flow_id = upstream_flow_id(&record).ok_or(MachineError::UnknownFlow)?;
 
-    Ok(register(&flow_id, request))
+    Ok(register(&flow_id, record))
 }
 
 /// Hands one request upstream produced to the outbound pump.
@@ -535,22 +640,54 @@ pub async fn request_flow(user_id: &str, device_id: &str) -> Result<FlowId, Mach
     })
     .await??;
 
-    register(&flow_id, request);
+    register(&flow_id, FlowRecord::from_request(request));
     queue(outgoing);
 
     Ok(FlowId(flow_id))
 }
 
 /// Agrees to a verification the other side asked for.
+///
+/// # What this means for a flow that arrived as a bare start
+///
+/// A request-shaped flow is agreed to by answering the request, which is
+/// what advertises the methods this library can carry out and what moves
+/// the flow to [`FlowStage::Ready`] so either side may start a comparison.
+/// A flow that arrived as a bare `m.key.verification.start` has no request
+/// to answer and skipped `Ready` entirely: the peer has already chosen the
+/// method and opened the comparison, so the only thing left to agree to is
+/// the comparison itself. That is upstream's `Sas::accept`, which replies
+/// `m.key.verification.accept` naming the protocols both sides support and
+/// is the message the peer is waiting for before it will send its key.
+///
+/// So this call means the same thing on both shapes -- *yes, go ahead* --
+/// and a caller drives the two identically: accept, wait for
+/// [`FlowStage::KeysExchanged`], read the string, confirm. What differs is
+/// only that [`begin_comparison`] has nothing to do on a bare-start flow,
+/// because the comparison it would start already exists; it reports
+/// [`MachineError::WrongStage`] there, which [`flow_stage`] tells apart
+/// from the over-and-done case exactly as its own doc comment describes.
+///
+/// `Sas::accept` returns `None` for any state but `SasState::Started`, and
+/// that `None` is a wrong-state answer rather than an absence -- accepting
+/// a comparison already accepted, cancelled or finished. It is reported as
+/// [`MachineError::WrongStage`], the same as the request shape's `None`,
+/// and never as a successful no-op.
 pub async fn accept_flow(flow: &FlowId) -> Result<(), MachineError> {
     let handles = handles(flow).await?;
     // `None` from upstream means "not in a state where this applies" --
     // accepting our own request, or one already answered, cancelled or
     // finished. Reported, never treated as a successful no-op.
-    let outgoing = handles
-        .request
-        .accept_with_methods(vec![VerificationMethod::SasV1])
-        .ok_or(MachineError::WrongStage)?;
+    let outgoing = match (&handles.request, &handles.comparison) {
+        (Some(request), _) => request.accept_with_methods(vec![VerificationMethod::SasV1]),
+        (None, Some(comparison)) => comparison.accept(),
+        // Unreachable: `handles` returns a record built by one of
+        // `FlowRecord`'s two constructors, each of which supplies a handle.
+        // Mapped to the same error the two real arms produce rather than
+        // left to a fallthrough that would report success.
+        (None, None) => None,
+    }
+    .ok_or(MachineError::WrongStage)?;
     queue(outgoing);
     Ok(())
 }
@@ -595,7 +732,13 @@ pub async fn begin_comparison(flow: &FlowId) -> Result<(), MachineError> {
     }
 
     let flow_id = flow.0.clone();
-    let request = handles.request;
+    // Only a request-shaped flow can be `Ready`: that stage comes from
+    // `VerificationRequestState::Ready` and nowhere else, and a flow that
+    // arrived as a bare `m.key.verification.start` is a comparison from the
+    // moment it exists -- it is refused by the check above, which is
+    // correct, because the comparison this call would start is the one
+    // already running.
+    let request = handles.request.ok_or(MachineError::WrongStage)?;
 
     // Through `with_machine` like every other operation in this crate, and
     // not because the machine itself is needed: this call reaches the
@@ -686,16 +829,31 @@ pub async fn confirm_flow(flow: &FlowId) -> Result<(), MachineError> {
         queue(upload);
     }
 
-    // Nothing is announced from here, and the reason is upstream's rather
-    // than a decision taken in this file. A confirmation can only finish a
-    // comparison outright from `InnerSas::MacReceived`, and only when
-    // `started_from_request` is false
-    // (`verification/sas/inner_sas.rs:243-258`); every flow this library
-    // runs comes from a request, so this call always leaves the comparison
-    // in `WaitingForDone` -- which reads as `Confirmed`, not `Done`. The
-    // trust change therefore always arrives with the peer's own
-    // acknowledgement, through `receive_sync_changes`, and putting a
-    // producer here as well would add a branch nothing can reach.
+    // Nothing is announced from here, and on one flow shape that is now a
+    // visible delay rather than a technicality.
+    //
+    // Upstream finishes a comparison from a confirmation only out of
+    // `InnerSas::MacReceived`, and then only when `started_from_request` is
+    // false (`verification/sas/inner_sas.rs:243-258`). A flow that came
+    // from a request therefore always lands in `WaitingForDone` here --
+    // which reads as `Confirmed` -- and its trust change arrives later
+    // anyway, with the peer's own acknowledgement. **A flow that arrived as
+    // a bare `m.key.verification.start` takes the other branch and is
+    // `Done` when this call returns**, with the device already verified,
+    // and yet still nothing is emitted: `announce_state_changes` runs from
+    // `receive_sync_changes` and nowhere else, so its `TrustChanged` waits
+    // for the next sync.
+    //
+    // Left that way on purpose. One producer, one moment, one ordering to
+    // reason about -- a second producer here would have to take the
+    // registry lock, mark the completion and race the sync path for it, to
+    // save a delay a product does not experience, because it is syncing.
+    // What a product must not do is read a returned `Ok` as a
+    // verification; `flow_stage` and `device_statuses` are the answers to
+    // that, and both are correct the instant this returns. The delay is
+    // asserted in both directions -- silent before the next sync,
+    // announced after it -- by
+    // `a_comparison_started_without_a_request_is_announced_and_completes`.
     Ok(())
 }
 
@@ -707,9 +865,11 @@ pub async fn confirm_flow(flow: &FlowId) -> Result<(), MachineError> {
 /// behind it -- and the request otherwise.
 pub async fn cancel_flow(flow: &FlowId) -> Result<(), MachineError> {
     let handles = handles(flow).await?;
-    let outgoing = match &handles.comparison {
-        Some(comparison) => comparison.cancel(),
-        None => handles.request.cancel(),
+    let outgoing = match (&handles.comparison, &handles.request) {
+        (Some(comparison), _) => comparison.cancel(),
+        (None, Some(request)) => request.cancel(),
+        // Unreachable, for the reason `accept_flow` gives.
+        (None, None) => None,
     }
     // Upstream returns `None` when the flow is already cancelled. Reported
     // rather than treated as success: "already refused" and "refused by
@@ -780,6 +940,49 @@ fn take_pending_completions() -> Vec<(OwnedUserId, OwnedDeviceId)> {
     completions
 }
 
+/// The `(sender, transaction id)` of every `m.key.verification.start` among
+/// one sync's processed to-device events.
+///
+/// Read from what upstream handed *back*, never from what the caller passed
+/// in, and the difference is not cosmetic: a verification event may arrive
+/// Olm-encrypted, in which case `receive_sync_changes` returns the
+/// decrypted event in its place (`ProcessedToDeviceEvent::Decrypted`).
+/// Parsing the input would see `m.room.encrypted` and miss every encrypted
+/// flow, silently.
+///
+/// A candidate is no more than a transaction id that might name a flow.
+/// Nothing is announced from one until upstream has confirmed it; see
+/// [`announce_state_changes`], which is the only caller.
+fn bare_start_candidates(processed: &[ProcessedToDeviceEvent]) -> Vec<(OwnedUserId, String)> {
+    processed
+        .iter()
+        .filter_map(|event| {
+            let raw = event.as_raw().json().get();
+            // A substring test before the parse. This runs once per
+            // to-device event on a path that also carries every room key a
+            // product receives, and a full parse of each would be real
+            // per-sync work for a message type that appears only while
+            // somebody is verifying.
+            if !raw.contains(START_EVENT_TYPE) {
+                return None;
+            }
+            let event: serde_json::Value = serde_json::from_str(raw).ok()?;
+            if event.get("type")?.as_str()? != START_EVENT_TYPE {
+                return None;
+            }
+            let sender: OwnedUserId = event.get("sender")?.as_str()?.parse().ok()?;
+            let transaction = event.get("content")?.get("transaction_id")?.as_str()?;
+            Some((sender, transaction.to_string()))
+        })
+        .collect()
+}
+
+/// The to-device event that opens a comparison.
+///
+/// Matched as a candidate only; nothing is believed on its say-so. See
+/// [`bare_start_candidates`].
+const START_EVENT_TYPE: &str = "m.key.verification.start";
+
 /// Emits everything the crypto signal channel owes its subscribers, and
 /// returns having emitted nothing when there are none.
 ///
@@ -825,34 +1028,49 @@ fn take_pending_completions() -> Vec<(OwnedUserId, OwnedDeviceId)> {
 /// library's most frequent call. Nothing here has measured that case, and
 /// the small-account figure must not be read as covering it.
 ///
-/// # What it does not see: a verification begun without a request
+/// # A verification begun without a request
 ///
-/// The enumeration below reads `VerificationMachine::requests`. A peer that
-/// starts a comparison the deprecated way -- an `m.key.verification.start`
-/// with no `m.key.verification.request` before it -- takes upstream's other
-/// branch (`verification/machine.rs:430-450`): `Sas::from_start_event`
-/// followed by `verifications.insert_sas`, which writes to the comparison
-/// cache and *nothing* to `requests`. So no `VerificationRequested` is
-/// announced for it, silently, and no `TrustChanged` either, because such a
-/// flow never enters this registry.
+/// A peer that starts a comparison the deprecated way -- an
+/// `m.key.verification.start` with no `m.key.verification.request` before
+/// it -- takes upstream's other branch
+/// (`verification/machine.rs:430-450`): `Sas::from_start_event` followed by
+/// `verifications.insert_sas`, which writes to the comparison cache and
+/// *nothing* to the `requests` map the enumeration below reads. Such a flow
+/// cannot be enumerated at all -- `VerificationCache` offers keyed lookup
+/// and no listing -- so it is announced from `processed` instead.
 ///
-/// **This is Task 6's, and it is a stated acceptance criterion there**, not
-/// a defect left here: no counterparty this milestone drives starts that
-/// way. Whoever adds it must not close it by announcing off the wire.
-/// `VerificationCache` has no per-user enumerator at all, so the cheapest
-/// shape that keeps this function's invariant is to read the candidate
-/// transaction id off the `m.key.verification.start` event and then confirm
-/// through `OlmMachine::get_verification` (`machine/mod.rs:1444`) that a
-/// flow actually exists before announcing. The invariant being kept is the
-/// one this whole task rests on: never hand a product an identifier that no
-/// call in this module answers to.
-pub(crate) async fn announce_state_changes() {
+/// Announced *from* it, not *off* it. The transaction id read off the start
+/// event is only a candidate; the flow is then confirmed against upstream
+/// through `OlmMachine::get_verification` (`machine/mod.rs:1444`), and
+/// everything the announcement carries is read back off the comparison
+/// upstream produced rather than off the wire. That keeps this function's
+/// one invariant: never hand a product an identifier that no call in this
+/// module answers to. A start from a device this machine has never met
+/// builds no comparison -- upstream's branch returns without one when
+/// `get_device` misses -- so nothing is announced for it, which is the same
+/// rule, with the same remedy, as the request-shaped invitation from an
+/// unmet device.
+///
+/// # The one property the two shapes do not share
+///
+/// A request-shaped invitation that arrives while nobody is subscribed is
+/// announced on the first sync after somebody subscribes, because it is
+/// re-enumerated from upstream every time. **A bare start is not.** Its
+/// only witness is the sync that carried it, and this function returns
+/// before looking at `processed` when there is no observer. Nothing cheaper
+/// closes that: upstream has no enumerator to ask later, and the event is
+/// delivered once. A product that wants inbound invitations has to
+/// subscribe before it starts syncing, which is what the facade already
+/// tells it to do -- and which is now load-bearing for one flow shape
+/// rather than merely advisable for both.
+pub(crate) async fn announce_state_changes(processed: &[ProcessedToDeviceEvent]) {
     // Silent by default, and free by default. See the doc comment above.
     if crate::observer::crypto_observer().is_none() {
         return;
     }
 
     let completions = take_pending_completions();
+    let candidates = bare_start_candidates(processed);
 
     let collected = with_machine(move |machine| {
         Box::pin(async move {
@@ -918,9 +1136,65 @@ pub(crate) async fn announce_state_changes() {
                     // Registering is the deduplication: a flow this
                     // registry already holds has been announced, or was
                     // started here and needs no announcement.
-                    if register_if_absent(&flow_id, request) {
+                    if register_if_absent(&flow_id, FlowRecord::from_request(request)) {
                         signals.push(announcement);
                     }
+                }
+            }
+
+            // Inbound comparisons nobody requested: the deprecated shape,
+            // reached from this sync's own start events because upstream
+            // keeps them where nothing can enumerate them. See this
+            // function's header.
+            for (sender, transaction) in candidates {
+                // A request wins wherever there is one, which is
+                // `handles`'s rule, kept local here rather than argued
+                // from a distance. A request-shaped flow whose comparison
+                // has started carries an `m.key.verification.start` too,
+                // and a record built from that start alone would hold no
+                // request handle.
+                //
+                // Stated plainly: nothing reaches this line today. Such a
+                // flow is already in the registry by the time its start
+                // arrives -- the peer cannot start one until this side has
+                // sent `m.key.verification.ready`, and the only call that
+                // sends one registers the flow first -- so
+                // `register_if_absent` below would refuse it anyway. That
+                // is an argument about four other functions, and this is
+                // one map lookup.
+                if machine
+                    .get_verification_request(&sender, &transaction)
+                    .is_some()
+                {
+                    continue;
+                }
+                let Some(comparison) = machine
+                    .get_verification(&sender, &transaction)
+                    .and_then(Verification::sas_v1)
+                else {
+                    continue;
+                };
+                let comparison = *comparison;
+
+                let mut record = FlowRecord::from_comparison(comparison.clone());
+                // A flow already over announces nothing. Registering one
+                // would also undo the eviction rule, for the reason
+                // `handles` gives about adopting a finished flow.
+                if is_finished(stage_of(&mut record)) {
+                    continue;
+                }
+
+                let flow_id = comparison.flow_id().as_str().to_string();
+                let announcement = CryptoSignal::VerificationRequested {
+                    user: comparison.other_user_id().to_string(),
+                    device_id: comparison.other_device_id().to_string(),
+                    flow_id: flow_id.clone(),
+                };
+                // The same deduplication the request path uses, and it is
+                // also what keeps a flow this process started from being
+                // announced back to it: its identifier is already here.
+                if register_if_absent(&flow_id, record) {
+                    signals.push(announcement);
                 }
             }
 
