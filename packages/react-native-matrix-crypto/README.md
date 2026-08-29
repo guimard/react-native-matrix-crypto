@@ -421,6 +421,8 @@ Scoped against one test: verification, plus whatever would obstruct a team build
 
 QR verification is **deferred, not rejected**. It would add a dependency absent from `rust/Cargo.lock`, an off-by-default Cargo feature, and pressure on a size budget that has already been tripped once.
 
+**What M3 cost in binary size is a bound, not a row.** No dependency entered the tree for it -- `grep -c matrix-sdk-qrcode rust/Cargo.lock` is `0` and neither crate enables a `qrcode` feature -- so the growth is compiled code from the Rust this milestone added, on a tarball already at 44 percent of its budget with a full three-architecture framework. `artifact-sizes.json` carries no M3 row on purpose. Measuring one needs both platform legs built from this tree, which is the release workflow's job and not a thing a developer's machine does incidentally; a number taken from whatever binary happened to be lying around would be a real measurement of the wrong artifact, and would read exactly like a real measurement of the right one. `scripts/measure-artifacts.sh` now refuses that case rather than recording it, comparing every file in each binary against the newest Rust source. The row comes from the release build, where both legs are built minutes before it runs.
+
 ### M4 and beyond
 
 * **cross-signing**, which is what turns a verified device into a verified *sender*. Named here rather than in M3 because M3 established that a string comparison alone cannot do it: the event path consults cross-signing, and a comparison sets local trust. This is the item that turns `sender` from transport metadata into a claim you can rely on
