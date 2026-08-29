@@ -11,23 +11,28 @@ import type { CryptoSignal } from './signals'
  * `vi.hoisted` because `vi.mock`'s factory is hoisted above the imports and
  * cannot close over an ordinary module-level `const`.
  */
-const { installed } = vi.hoisted(() => ({
+const { installed, cleared } = vi.hoisted(() => ({
   installed: [] as Array<{ onSignal: (signal: NativeCryptoSignal) => void }>,
+  cleared: { count: 0 },
 }))
 
-// Only `setCryptoObserver` is mocked -- there is no JSI host object under
-// vitest (Node), so it can never actually run here. Everything else in the
-// generated module comes through `importOriginal` untouched, including
-// `CryptoSignal`'s own tagged classes and the `TrustState` enum. That is
-// load-bearing: the signals these tests feed the observer are built with
-// the real generated constructors, so a reader that only works against a
-// hand-typed `{ tag, inner }` fixture fails here rather than in production.
+// Only the two observer-registry calls are mocked -- there is no JSI host
+// object under vitest (Node), so neither can actually run here. Everything
+// else in the generated module comes through `importOriginal` untouched,
+// including `CryptoSignal`'s own tagged classes and the `TrustState` enum.
+// That is load-bearing: the signals these tests feed the observer are built
+// with the real generated constructors, so a reader that only works against
+// a hand-typed `{ tag, inner }` fixture fails here rather than in
+// production.
 vi.mock('./generated/matrix_crypto', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./generated/matrix_crypto')>()
   return {
     ...actual,
     setCryptoObserver: vi.fn((observer: { onSignal: (signal: NativeCryptoSignal) => void }) => {
       installed.push(observer)
+    }),
+    clearCryptoObserver: vi.fn(() => {
+      cleared.count += 1
     }),
   }
 })
@@ -44,6 +49,7 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
 async function freshSignals() {
   vi.resetModules()
   installed.length = 0
+  cleared.count = 0
   return import('./signals')
 }
 
@@ -56,6 +62,7 @@ const TRUST_CHANGED: CryptoSignal = {
 describe('onCryptoSignal', () => {
   beforeEach(() => {
     installed.length = 0
+    cleared.count = 0
   })
 
   it('installs nothing until something subscribes', async () => {
@@ -77,11 +84,59 @@ describe('onCryptoSignal', () => {
     // the first native-side rather than add to it.
     expect(installed).toHaveLength(1)
   })
+
+  it('keeps the native observer while any listener is still subscribed', async () => {
+    const { onCryptoSignal } = await freshSignals()
+
+    const first = onCryptoSignal(() => {})
+    onCryptoSignal(() => {})
+    first()
+
+    expect(cleared.count).toBe(0)
+  })
+
+  it('uninstalls the native observer when the last listener unsubscribes', async () => {
+    const { onCryptoSignal } = await freshSignals()
+
+    const only = onCryptoSignal(() => {})
+    expect(cleared.count).toBe(0)
+    only()
+
+    // Not tidiness. While an observer is installed the Rust side does its
+    // full pass, registers an inbound invitation, marks it announced and
+    // delivers it into a listener set that is now empty -- and then refuses
+    // to announce it again for the life of the flow. Nothing lists inbound
+    // flows, so the invitation is lost until it expires. See
+    // `clear_crypto_observer` in the core.
+    expect(cleared.count).toBe(1)
+  })
+
+  it('installs again, and delivers again, when something resubscribes', async () => {
+    const { onCryptoSignal } = await freshSignals()
+
+    onCryptoSignal(() => {})()
+
+    const received: CryptoSignal[] = []
+    onCryptoSignal((s) => received.push(s))
+
+    // A second registration, not the first one reused: the resubscribe has
+    // to reach the native side, or the Rust observer stays cleared and the
+    // channel is silent from here on.
+    expect(installed).toHaveLength(2)
+    installed[1].onSignal(
+      new NativeCryptoSignal.TrustChanged({
+        user: '@alice:example.org',
+        state: NativeTrustState.Verified,
+      }),
+    )
+    expect(received).toEqual([TRUST_CHANGED])
+  })
 })
 
 describe('the native producer', () => {
   beforeEach(() => {
     installed.length = 0
+    cleared.count = 0
   })
 
   it('delivers a trust change as the public signal', async () => {
@@ -182,8 +237,15 @@ describe('the native producer', () => {
   it('does not deliver the signal in progress to a listener registered during dispatch', async () => {
     const { onCryptoSignal } = await freshSignals()
     const lateReceived: CryptoSignal[] = []
-    onCryptoSignal(() => {
-      onCryptoSignal((s) => lateReceived.push(s))
+    // The control. Without it this test passes against an implementation
+    // with no fan-out at all: the outer listener would never run, no late
+    // listener would ever be registered, and `lateReceived` would be empty
+    // for the wrong reason. Its sibling above has the same shape for the
+    // same reason.
+    const outerReceived: CryptoSignal[] = []
+    onCryptoSignal((s) => {
+      outerReceived.push(s)
+      onCryptoSignal((late) => lateReceived.push(late))
     })
 
     installed[0].onSignal(
@@ -193,6 +255,7 @@ describe('the native producer', () => {
       }),
     )
 
+    expect(outerReceived).toEqual([TRUST_CHANGED])
     expect(lateReceived).toEqual([])
   })
 })

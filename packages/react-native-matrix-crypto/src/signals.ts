@@ -1,4 +1,5 @@
 import {
+  clearCryptoObserver,
   CryptoSignal as NativeCryptoSignal,
   CryptoSignal_Tags as NativeCryptoSignalTag,
   setCryptoObserver,
@@ -30,17 +31,16 @@ export type Unsubscribe = () => void
 const listeners = new Set<(s: CryptoSignal) => void>()
 
 /**
- * Whether the native observer has been installed for this process.
+ * Whether the native observer is installed for this process.
  *
- * Installed on the first subscription rather than at import time, which is
- * what makes the channel free when nobody is listening: the Rust side reads
- * whether an observer exists before it does any work, so an application
- * that never calls {@link onCryptoSignal} pays nothing on its sync path.
+ * Tracked here so it can be kept in lockstep with `listeners`: installed
+ * when the set becomes non-empty, uninstalled when it becomes empty again.
+ * Nothing else may write it.
  */
 let nativeInstalled = false
 
 /**
- * Installs the one native observer this process has, at most once.
+ * Installs the one native observer this process has.
  *
  * Deliberately not a function a product calls. A registration call that a
  * caller can forget would fail by producing silence, which is precisely
@@ -63,12 +63,53 @@ function installNativeObserver(): void {
 }
 
 /**
+ * Uninstalls it again once the last listener has gone.
+ *
+ * **This is not tidying up.** While an observer is installed the native
+ * side does its full pass on every sync: an inbound invitation is
+ * enumerated, *registered*, marked announced, and delivered here -- into an
+ * empty listener set. Registration is the producer's deduplication, so the
+ * same invitation is never announced again for the rest of its life, and no
+ * call lists inbound flows. The invitation is then simply lost until it
+ * expires, ten minutes after it was sent, with no error anywhere.
+ *
+ * The shape that reaches this is `useEffect(() => onCryptoSignal(h), [])`
+ * -- subscribe on mount, unsubscribe on unmount -- which is the ordinary
+ * React Native idiom, so it is the default integration rather than an edge
+ * case. Uninstalling restores the property the channel rests on: with
+ * nobody listening, nothing is consumed, and whatever is still live is
+ * announced to whoever subscribes next.
+ *
+ * **One window this cannot close.** A hot reload re-evaluates this module,
+ * resetting `nativeInstalled`, while the native side still holds the
+ * observer built by the previous copy -- pointing at a listener set that is
+ * now unreachable. Nothing runs on unload, so nothing can uninstall it. The
+ * next `onCryptoSignal` replaces it (the native registry is a lock, not a
+ * once-cell, for exactly this reason), but an invitation arriving in
+ * between is consumed by the stale observer and lost the same way. That is
+ * a development-time hazard rather than a shipped one, and it is recorded
+ * rather than claimed away.
+ */
+function uninstallNativeObserver(): void {
+  if (!nativeInstalled) return
+  nativeInstalled = false
+  clearCryptoObserver()
+}
+
+/**
  * Rebuilds the public union from the generated tagged one.
  *
  * `switch` on the tag with no `default`, like `facade.ts`'s own readers: a
  * variant added to the Rust enum must fail this file to compile rather than
- * fall through to a silent drop. The `never` return below is what makes
- * that a compile error rather than an implicit `undefined`.
+ * fall through to a silent drop.
+ *
+ * The mechanism is `noImplicitReturns` in this package's `tsconfig.json`,
+ * together with the declared return type. A tag with no `case` makes the
+ * function fall off its end, `noImplicitReturns` rejects a function that
+ * returns a value on some paths and not others, and the declared
+ * `CryptoSignal` means the implicit `undefined` is not assignable anyway.
+ * There is no explicit `never` here and none is needed; an earlier draft of
+ * this comment claimed one, which sent the next reader looking for it.
  */
 function cryptoSignalOf(signal: NativeCryptoSignal): CryptoSignal {
   switch (signal.tag) {
@@ -111,12 +152,13 @@ function trustStateOf(trust: NativeTrustState): TrustState {
  *
  * - `verification_requested` -- **another device has asked to verify
  *   itself against this one, and `verificationId` is what you pass to
- *   {@link acceptVerification}.** This is the only way a receiving side
- *   learns that identifier. There is no call that lists inbound flows, and
- *   before this signal existed a product had to filter its own
- *   `to_device_events` for `m.key.verification.request` and read
- *   `content.transaction_id` out of one -- a protocol detail this library
- *   keeps to itself everywhere else.
+ *   {@link acceptVerification}.** This is the only way *this library* hands
+ *   you that identifier: there is no call that lists inbound flows. The
+ *   value itself is the `transaction_id` on the wire, and before this
+ *   signal existed a product had to go and get it -- filter its own
+ *   `to_device_events` for `m.key.verification.request` and read the field
+ *   out of one, which is a protocol detail this library keeps to itself
+ *   everywhere else.
  * - `trust_changed` -- a comparison finished and a device belonging to
  *   `user` moved. Read {@link getDeviceStatuses} for that user to see
  *   which; the signal deliberately does not duplicate that answer.
@@ -138,34 +180,52 @@ function trustStateOf(trust: NativeTrustState): TrustState {
  * which is unchanged except that you no longer have to read anything out of
  * the event you kept.
  *
- * # Subscribe before you sync
+ * # What happens across an unsubscribe, which is less than you might fear
  *
- * A signal produced while nobody is listening is dropped, not queued. In
- * practice that means subscribing at start-up, before the first
- * {@link receiveSyncChanges}, rather than when a screen mounts -- an
- * invitation announced to nobody is an invitation the person on the other
- * device is waiting on, and it expires in ten minutes.
+ * **The channel re-offers what is still live rather than replaying what it
+ * once sent.** Nothing is queued for a subscriber that is not there; what
+ * happens instead is that nothing is *consumed* while nobody is listening,
+ * because the native producer does no work at all with no observer
+ * installed. So an invitation that arrives while you are unsubscribed is
+ * still `requested` when you come back, and the first
+ * {@link receiveSyncChanges} after you resubscribe announces it. Subscribe
+ * at start-up if you can, but `useEffect(() => onCryptoSignal(h), [])` does
+ * not lose invitations.
+ *
+ * Two things it genuinely does not do. A `trust_changed` for a comparison
+ * that finished while you were away is not re-offered -- ask
+ * {@link getDeviceStatuses}, which is the durable answer and always was.
+ * And a hot reload leaves the previous module copy's observer installed
+ * until something subscribes again; an invitation arriving in that window
+ * is consumed by a listener set nothing can reach.
  *
  * A listener that throws does not affect the others, and does not affect
  * the sync that produced the signal: delivery happens on a thread of the
  * library's own, after the call that caused it has completed.
  */
 export function onCryptoSignal(cb: (s: CryptoSignal) => void): Unsubscribe {
-  installNativeObserver()
   listeners.add(cb)
+  installNativeObserver()
   return () => {
     listeners.delete(cb)
+    // The last one out uninstalls. See `uninstallNativeObserver` for why an
+    // observer left installed behind an empty set does not merely waste
+    // work -- it consumes announcements irrecoverably.
+    if (listeners.size === 0) uninstallNativeObserver()
   }
 }
 
 /**
- * Internal. Called by the shim when the native observer fires.
+ * Internal. Called by the shim when the native observer fires, and by
+ * nothing else -- `installNativeObserver` above is its only caller.
  *
- * Exported for this module's own tests, which drive it directly to exercise
- * fan-out and isolation without a native module. The shipped path into it
- * is `installNativeObserver` above, and nothing else calls it.
+ * Not exported. It was, so that this module's tests could drive fan-out and
+ * isolation without a native module; they now drive the installed observer
+ * instead, which exercises the reader as well as the fan-out, so the export
+ * was a hole in the public shape with nothing left behind it.
+ * `index.ts` never re-exported it, so removing it changes no published API.
  */
-export function emitCryptoSignal(signal: CryptoSignal): void {
+function emitCryptoSignal(signal: CryptoSignal): void {
   // Snapshot before dispatch: a listener that subscribes while we are
   // iterating must not receive the signal that triggered its own
   // registration. Unsubscribing mid-dispatch remains safe either way.
