@@ -1,17 +1,40 @@
-import type { CryptoAlgorithm, CryptoScopeId, EventEnvelope, SyncDelta, TrustState } from './types'
+import type {
+  CryptoAlgorithm,
+  CryptoScopeId,
+  EventEnvelope,
+  SasEmoji,
+  SasMaterial,
+  SyncDelta,
+  TrustState,
+  VerificationStage,
+} from './types'
 import { asCryptoScopeId } from './types'
 import { toCryptoError } from './errors'
 import {
+  acceptVerification as nativeAcceptVerification,
+  cancelVerification as nativeCancelVerification,
+  confirmVerification as nativeConfirmVerification,
   createCryptoMachine as nativeCreateCryptoMachine,
   decryptEvent as nativeDecryptEvent,
   deviceIdentityKeys as nativeDeviceIdentityKeys,
+  deviceStatuses as nativeDeviceStatuses,
   encryptEvent as nativeEncryptEvent,
   markRequestSent as nativeMarkRequestSent,
   openCryptoStore as nativeOpenCryptoStore,
   receiveSyncChanges as nativeReceiveSyncChanges,
+  requestVerification as nativeRequestVerification,
   shareScopeKey as nativeShareScopeKey,
+  startVerificationComparison as nativeStartVerificationComparison,
   takeOutgoingRequests as nativeTakeOutgoingRequests,
+  TrustState as NativeTrustState,
+  verificationMaterial as nativeVerificationMaterial,
+  verificationStage as nativeVerificationStage,
+  VerificationStage as NativeVerificationStage,
 } from './generated/matrix_crypto'
+// Type-only, and imported rather than restated structurally: a field renamed
+// in the Rust record must be a compile error here rather than a silently
+// absent value. `sasMaterialOf` below is the one place that reads it.
+import type { SasMaterial as NativeSasMaterial } from './generated/matrix_crypto'
 
 function notImplemented(name: string): Promise<never> {
   return Promise.reject(toCryptoError({ name: 'NotImplemented', reason: `${name} is not implemented yet` }))
@@ -88,8 +111,10 @@ export interface DeviceStatus {
  * to hand them to the product -- see the two disclosed exceptions the
  * core's own `describe_outgoing` documents for itself.
  *
- * See {@link shareScopeKey}'s own doc comment for the order these must be
- * sent and marked in, which is not optional: design doc section 3ter.
+ * See {@link shareScopeKey}'s own doc comment for the order a key has to
+ * travel in, which is not optional: design doc section 3ter. See
+ * {@link takeOutgoingRequests} for the separate rule that a *batch* must be
+ * sent in the order it was handed to you, while marking stays unordered.
  */
 export interface OutgoingRequest {
   /** Opaque; hand it back verbatim to {@link markRequestSent}. */
@@ -431,12 +456,40 @@ export async function shareScopeKey(scope: CryptoScopeId, userIds: string[]): Pr
  * for -- a machine that encrypts to nobody and never learns that any of it
  * happened.
  *
- * **The returned array is an unordered set, not a sequence.** Nothing about
- * a request's position says anything about when it should be sent relative
- * to the others: the underlying order is lexicographic on each request's own
- * randomly-generated transaction id, which carries no meaning of its own. A
- * product must not infer sequencing -- "send index 0 before index 1" -- from
- * array position.
+ * **The returned order is significant, and you must preserve it. Send the
+ * requests in the order this returns them** -- not "start them in that order
+ * and let them race": each one has to reach your homeserver before the next
+ * is sent, because the server relays them to the other device in the order
+ * it receives them.
+ *
+ * That is a real constraint with exactly one source, and it is worth naming
+ * so it is not optimised away. A verification flow's last two messages are a
+ * confirmation and the acknowledgement that closes the flow, and the far
+ * side **silently discards** an acknowledgement that arrives before the
+ * confirmation it acknowledges. It then waits for one that has already been
+ * sent. The failure is asymmetric -- your side completes and records the
+ * other device as verified, the other side records nothing -- and neither
+ * side is told. Both messages can land in the same batch, from two different
+ * queues inside the library, so a product that pumps on a timer rather than
+ * after every call is the one that meets this.
+ *
+ * **Resolving them with {@link markRequestSent} is a different matter and is
+ * not ordered at all.** It is a lookup by id, so mark them in whatever order
+ * the responses come back, and do not wait for request *n* to be marked
+ * before sending request *n+1*.
+ *
+ * Requests from *different* batches were never orderable against each other
+ * -- a batch is a snapshot -- and nothing here changes that. What this
+ * function guarantees is that within one batch, the order it returns is the
+ * order the requests were produced in, across both of the places inside the
+ * library they come from.
+ *
+ * Up to and including `0.1.0-rc.2` this comment said the opposite: that the
+ * array was an unordered set and a product must not infer sequencing from
+ * position. That was true of every request the library could then produce,
+ * and it stopped being true when device verification arrived. The sentence
+ * is recorded here rather than deleted because a consumer who read the old
+ * one and built on it has to be able to find out that it changed.
  *
  * **{@link markRequestSent} is not the only thing that ends a request's
  * life. A later call to this function ends some of them too.** Three of the
@@ -529,16 +582,408 @@ export async function markRequestSent(id: string, responseJson: string): Promise
   }
 }
 
-export function getDeviceStatuses(_userId: string): Promise<DeviceStatus[]> {
-  return notImplemented('getDeviceStatuses')
+/**
+ * Every device this library has been told about for `userId`, and the trust
+ * it currently reports for each, sorted by device id.
+ *
+ * **This is the only place a completed verification becomes visible.** A
+ * device that has been through {@link requestVerification} to
+ * {@link confirmVerification}, with both sides agreeing, reads `'verified'`
+ * here where it read `'unverified'` before. Nothing else in this library
+ * changes as a result of a verification -- in particular a decrypted
+ * event's sender does not become authenticated, because that path consults
+ * cross-signing and a short-string comparison sets local trust. See
+ * {@link TrustState}.
+ *
+ * **An empty array does not mean the user has no devices.** It means this
+ * library has been told about none of them. Devices arrive through the
+ * outbound pump: {@link receiveSyncChanges} flags a user as changed, that
+ * produces a `'keys_query'` request among {@link takeOutgoingRequests}'
+ * output, and only {@link markRequestSent} on that request puts anything in
+ * the store. A caller that has never done that gets `[]` for a user with a
+ * dozen devices, and gets it successfully. There is no way for this library
+ * to tell the two apart, because it sends nothing itself.
+ *
+ * **Your own device always reads `'verified'`, and always has.** This
+ * library marks it locally trusted the moment it creates the machine,
+ * because this process holds its private keys and there is nothing left to
+ * prove. That is correct, and it is a trap for anything reading this list:
+ * "some device here reads verified" is true of an installation that has
+ * never run a verification in its life. What carries a claim is a device of
+ * *another* user changing from `'unverified'` to `'verified'`.
+ */
+export async function getDeviceStatuses(userId: string): Promise<DeviceStatus[]> {
+  try {
+    const statuses = await nativeDeviceStatuses(userId)
+    // Destructured per element, not returned directly. See encryptEvent above.
+    return statuses.map(({ deviceId, trust }) => ({ deviceId, trust: trustStateOf(trust) }))
+  } catch (e) {
+    throw toCryptoError(e)
+  }
 }
 
-export function requestVerification(_userId: string, _deviceId: string): Promise<string> {
-  return notImplemented('requestVerification')
+/**
+ * Asks `deviceId`, belonging to `userId`, to verify itself against this
+ * device, and returns the opaque identifier every other call below
+ * addresses that flow by.
+ *
+ * The identifier is opaque: hand it back verbatim and parse nothing out of
+ * it.
+ *
+ * **The device must already be known**, which means a `'keys_query'` for
+ * that user must have been pumped and marked sent -- see
+ * {@link getDeviceStatuses}. A device this library has never been told
+ * about rejects with kind `'unknown_device'`, which is fixed by querying
+ * and calling again, and is deliberately a different kind from
+ * `'malformed_identifier'`, which no retry fixes.
+ *
+ * **Nothing reaches the other device until you pump.** This queues an
+ * invitation among {@link takeOutgoingRequests}' output; the far side sees
+ * nothing until you have sent it and reported it with
+ * {@link markRequestSent}. That is true of every call in this group.
+ *
+ * The full sequence, for the side that asks:
+ *
+ * 1. `requestVerification` -> pump
+ * 2. wait for {@link getVerificationStage} to read `'ready'` (the other
+ *    side has called {@link acceptVerification} and you have pumped their
+ *    answer in through {@link receiveSyncChanges})
+ * 3. {@link startVerificationComparison} -> pump
+ * 4. wait for the stage to read `'keys-exchanged'`, pumping throughout
+ * 5. {@link getVerificationMaterial}, and show it to a person
+ * 6. {@link confirmVerification} with what you showed, or
+ *    {@link cancelVerification} if the person says it does not match
+ * 7. pump again -- the flow reaches `'done'`, and only then does
+ *    {@link getDeviceStatuses} report the device verified
+ *
+ * The side that was asked does the same from step 2, calling
+ * {@link acceptVerification} first. Either side may call
+ * {@link startVerificationComparison}; the other gets
+ * `'comparison_already_started'` and carries on from step 4.
+ */
+export async function requestVerification(userId: string, deviceId: string): Promise<string> {
+  try {
+    return await nativeRequestVerification(userId, deviceId)
+  } catch (e) {
+    throw toCryptoError(e)
+  }
 }
 
-export function confirmVerification(_verificationId: string, _data: unknown): Promise<void> {
-  return notImplemented('confirmVerification')
+/**
+ * Agrees to a verification the other side asked for, and queues the answer
+ * for the pump.
+ *
+ * For the side that *received* an invitation. The flow reaches `'ready'`
+ * once the answer has been sent and reported.
+ *
+ * **Skipping this does not fail silently.** Nothing advances: the flow
+ * stays at `'requested'`, and {@link startVerificationComparison} on it
+ * rejects with `'wrong_stage'` rather than starting a comparison the other
+ * side never agreed to.
+ *
+ * Rejects with `'wrong_stage'` for a flow this device asked for itself, or
+ * one already answered, cancelled or finished. It is never a successful
+ * no-op.
+ */
+export async function acceptVerification(verificationId: string): Promise<void> {
+  try {
+    await nativeAcceptVerification(verificationId)
+  } catch (e) {
+    throw toCryptoError(e)
+  }
+}
+
+/**
+ * Starts the comparison itself, once both sides are ready, and queues its
+ * opening message for the pump.
+ *
+ * Either side may call this, and only while {@link getVerificationStage}
+ * reads `'ready'`. Two sides calling it at the same moment is safe: the
+ * protocol settles which comparison survives.
+ *
+ * **The same side calling twice is refused, and that is deliberate.** A
+ * double tap on a button, or a retry after an unrelated failure, would
+ * otherwise build a second comparison under the same identifier and destroy
+ * the flow while reporting success.
+ *
+ * **Three different rejections, because three different things have to
+ * happen next.** The layer underneath reports one error for all of them;
+ * this function reads {@link getVerificationStage} to tell them apart,
+ * because a screen that shows a person one sentence for all three is
+ * showing the wrong one most of the time:
+ *
+ * - `'comparison_already_started'` -- the *other* side started it first.
+ *   Nothing is wrong. Carry on from the stage the flow is at: wait for
+ *   `'keys-exchanged'` and call {@link getVerificationMaterial}.
+ * - `'verification_ended'` -- the flow is over, whether it finished or was
+ *   refused. There is nothing to carry on with; ask again with
+ *   {@link requestVerification} if you still want to.
+ * - `'wrong_stage'` -- anything else, which today means the flow has not
+ *   been accepted by both sides yet. Wait, or call
+ *   {@link acceptVerification} if the invitation was yours to answer.
+ */
+export async function startVerificationComparison(verificationId: string): Promise<void> {
+  try {
+    await nativeStartVerificationComparison(verificationId)
+  } catch (e) {
+    throw await unfoldStartRejection(e, verificationId)
+  }
+}
+
+/**
+ * How far along the flow is. The free discriminator: it is the one call in
+ * this group that reads state without changing any, so it costs nothing to
+ * poll and it is what tells apart conditions the calls below can only
+ * report as one error.
+ *
+ * Rejects with `'unknown_flow'` for an identifier this library is not
+ * taking part in -- including a flow that finished and has since been
+ * released, which happens the next time a flow is started rather than on a
+ * timer.
+ */
+export async function getVerificationStage(verificationId: string): Promise<VerificationStage> {
+  try {
+    return verificationStageOf(await nativeVerificationStage(verificationId))
+  } catch (e) {
+    throw toCryptoError(e)
+  }
+}
+
+/**
+ * The short authentication string for this flow, once there is one.
+ *
+ * **Show it to a person and ask whether it matches what the person at the
+ * other device sees, over a channel this flow did not establish.** See
+ * {@link SasMaterial}, including why the value is secret while the flow is
+ * open.
+ *
+ * **If you drained the pump and never called {@link markRequestSent}, this
+ * is where you find out.** The underlying state machine advances from
+ * "accepted" to "keys exchanged" on that report and on nothing else, so a
+ * caller that skips it parks the flow permanently with no error and no
+ * timeout anywhere else. This call names that state instead: it rejects
+ * with kind `'material_not_ready'` rather than resolving with an empty
+ * record or hanging. Supplying the missing report, and nothing else, is
+ * what completes the exchange.
+ *
+ * The two failure kinds are worth keeping apart:
+ *
+ * - `'material_not_ready'` -- the flow is live and has not got there yet,
+ *   which in practice almost always means the report above is missing.
+ *   Retrying this call alone never fixes it.
+ * - `'wrong_stage'` -- it never will: the flow is over, or no comparison was
+ *   ever started on it.
+ */
+export async function getVerificationMaterial(verificationId: string): Promise<SasMaterial> {
+  try {
+    return sasMaterialOf(await nativeVerificationMaterial(verificationId))
+  } catch (e) {
+    throw toCryptoError(e)
+  }
+}
+
+/**
+ * Says the strings matched, and queues the confirmation for the pump.
+ *
+ * **`data` is the material you showed the person**, exactly as
+ * {@link getVerificationMaterial} returned it. It is checked against what
+ * the flow currently holds, and a mismatch rejects with
+ * `'material_mismatch'` rather than confirming.
+ *
+ * That argument is the whole reason this call cannot be got wrong quietly.
+ * Without it, a product could confirm a comparison it never displayed --
+ * the layer underneath only checks that a string *exists*, not that anybody
+ * saw it -- and "verified" would then mean nothing at all. It also catches
+ * the case where the flow was cancelled and a new one started between the
+ * moment the string went on screen and the moment the person answered: the
+ * material a person actually compared is the material that gets confirmed,
+ * or nothing is.
+ *
+ * `data` was typed `unknown` up to `0.1.0-rc.2`, on a function that had only
+ * ever rejected with `'not_implemented'`, so no caller has ever passed
+ * anything to it successfully.
+ *
+ * **Confirming is not verifying.** When this resolves, the flow reads
+ * `'confirmed'` and the other device is *not* verified: the other side has
+ * still to say the same, and two more messages have to cross. Pump, and
+ * watch for {@link getVerificationStage} to read `'done'`.
+ *
+ * Rejects with `'material_not_ready'` if the string is not available (see
+ * {@link getVerificationMaterial}), and with `'wrong_stage'` if the flow is
+ * over or never became a comparison.
+ */
+export async function confirmVerification(verificationId: string, data: SasMaterial): Promise<void> {
+  // Read before confirming, not after: this is the check, and a check that
+  // ran after the confirmation had already been queued would be reporting
+  // on something it could no longer prevent. It also produces exactly the
+  // error the confirmation itself would have -- 'material_not_ready' or
+  // 'wrong_stage' -- for a flow with nothing to show, so nothing is lost by
+  // reaching this first.
+  const current = await getVerificationMaterial(verificationId)
+  if (!sameMaterial(current, data)) {
+    throw toCryptoError({ name: 'MaterialMismatch' })
+  }
+  try {
+    await nativeConfirmVerification(verificationId)
+  } catch (e) {
+    throw toCryptoError(e)
+  }
+}
+
+/**
+ * Refuses the verification, or abandons it, and queues the refusal for the
+ * pump.
+ *
+ * **The call a product must be able to make at any point a person can look
+ * at a screen and say "that is not what I see".** Refusing is not a failure
+ * of this library; a comparison that can only ever agree proves nothing.
+ *
+ * Cancels the comparison if one has started -- which cancels the invitation
+ * behind it -- and the invitation otherwise. Nothing is verified, on either
+ * side.
+ *
+ * Rejects with `'wrong_stage'` for a flow that was already cancelled.
+ * "Already refused" and "refused by this call" are the same outcome, but a
+ * caller told `Ok` for a cancellation it did not perform has been told
+ * something false.
+ *
+ * **Skipping this does not fail silently, but it does fail slowly.** A flow
+ * nobody cancels sits open until the protocol's own ten-minute timeout
+ * retires it.
+ */
+export async function cancelVerification(verificationId: string): Promise<void> {
+  try {
+    await nativeCancelVerification(verificationId)
+  } catch (e) {
+    throw toCryptoError(e)
+  }
+}
+
+/**
+ * Maps the generated numeric enum onto the facade's closed string union.
+ *
+ * A `switch` with no `default`, over an enum the code generator emits from
+ * the Rust source: a stage added to that source and not handled here is a
+ * compile error, which is the only way this mapping can be kept honest
+ * without a runtime test per variant. The `never` return is unreachable and
+ * exists so the exhaustiveness is enforced rather than merely intended.
+ */
+function verificationStageOf(stage: NativeVerificationStage): VerificationStage {
+  switch (stage) {
+    case NativeVerificationStage.Requested:
+      return 'requested'
+    case NativeVerificationStage.Ready:
+      return 'ready'
+    case NativeVerificationStage.Started:
+      return 'started'
+    case NativeVerificationStage.KeysExchanged:
+      return 'keys-exchanged'
+    case NativeVerificationStage.Confirmed:
+      return 'confirmed'
+    case NativeVerificationStage.Done:
+      return 'done'
+    case NativeVerificationStage.Cancelled:
+      return 'cancelled'
+  }
+}
+
+/** See {@link verificationStageOf}: exhaustive by compile error. */
+function trustStateOf(trust: NativeTrustState): TrustState {
+  switch (trust) {
+    case NativeTrustState.Unverified:
+      return 'unverified'
+    case NativeTrustState.Recognized:
+      return 'recognized'
+    case NativeTrustState.Verified:
+      return 'verified'
+  }
+}
+
+/**
+ * Rebuilds the facade's `SasMaterial` from the generated record.
+ *
+ * The three decimals travel as three separate fields because the boundary
+ * has no tuple type; they are a fixed-length tuple again here, so a consumer
+ * cannot index past the end of something it believed was an array.
+ */
+function sasMaterialOf(material: NativeSasMaterial): SasMaterial {
+  // Destructured, not returned directly. See encryptEvent above.
+  const { emoji, decimalOne, decimalTwo, decimalThree } = material
+  const rebuilt: SasMaterial = { decimals: [decimalOne, decimalTwo, decimalThree] }
+  if (emoji !== undefined) {
+    rebuilt.emoji = emoji.map(({ symbol, description }): SasEmoji => ({ symbol, description }))
+  }
+  return rebuilt
+}
+
+/**
+ * Is `offered` the material the flow is actually showing?
+ *
+ * Compares the digits always and the symbols when either side has them. The
+ * digits alone would be enough to catch a stale or fabricated argument --
+ * they are always present, and they are derived from the same key material
+ * the symbols are -- but comparing only them would let a caller pass a
+ * record whose symbols are wrong, which is what a screen showing symbols
+ * actually displayed. `description` is deliberately not compared: it is a
+ * label for the symbol and a product may translate it.
+ */
+function sameMaterial(current: SasMaterial, offered: SasMaterial): boolean {
+  // Read through `unknown` rather than through the declared type: this
+  // argument is the check, and a caller that reaches this function from
+  // plain JavaScript, or past an `as any`, is exactly the caller it exists
+  // to stop. The same discipline `decryptEvent` applies to its `scope`.
+  const raw: unknown = offered
+  if (typeof raw !== 'object' || raw === null) return false
+  const { decimals, emoji } = raw as { decimals?: unknown; emoji?: unknown }
+
+  if (!Array.isArray(decimals) || decimals.length !== current.decimals.length) return false
+  if (!current.decimals.every((digit, index) => digit === decimals[index])) return false
+
+  const currentSymbols = current.emoji?.map(({ symbol }) => symbol)
+  // A flow with no symbols must be confirmed with a record that has none:
+  // a caller offering symbols for a comparison that negotiated none is
+  // describing a different screen from the one this flow produced.
+  if (currentSymbols === undefined) return emoji === undefined
+  if (!Array.isArray(emoji) || emoji.length !== currentSymbols.length) return false
+  return currentSymbols.every(
+    (symbol, index) => symbol === (emoji[index] as SasEmoji | undefined)?.symbol,
+  )
+}
+
+/**
+ * Splits {@link startVerificationComparison}'s one rejection into the three
+ * a product has to answer differently. See that function's own doc comment
+ * for what each means.
+ *
+ * Only a `'wrong_stage'` rejection is unfolded; everything else is passed
+ * through unchanged, because everything else already says what it means. If
+ * reading the stage itself fails -- the flow was released between the two
+ * calls, say -- the original rejection is what the caller gets, since an
+ * error about the diagnosis would be worse than the one it replaced.
+ */
+async function unfoldStartRejection(raw: unknown, verificationId: string): Promise<Error> {
+  const original = toCryptoError(raw)
+  if (original.kind !== 'wrong_stage') return original
+
+  let stage: VerificationStage
+  try {
+    stage = await getVerificationStage(verificationId)
+  } catch {
+    return original
+  }
+
+  switch (stage) {
+    case 'started':
+    case 'keys-exchanged':
+    case 'confirmed':
+      return toCryptoError({ name: 'ComparisonAlreadyStarted' })
+    case 'done':
+    case 'cancelled':
+      return toCryptoError({ name: 'VerificationEnded' })
+    case 'requested':
+    case 'ready':
+      return original
+  }
 }
 
 export function exportSecrets(_passphrase: string): Promise<Uint8Array> {

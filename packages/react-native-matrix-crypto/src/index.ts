@@ -19,7 +19,16 @@
 // it because there is no native module to install in Node either way.
 import './index.tsx'
 
-export type { CryptoAlgorithm, CryptoScopeId, EventEnvelope, SyncDelta, TrustState } from './types'
+export type {
+  CryptoAlgorithm,
+  CryptoScopeId,
+  EventEnvelope,
+  SasEmoji,
+  SasMaterial,
+  SyncDelta,
+  TrustState,
+  VerificationStage,
+} from './types'
 export { asCryptoScopeId } from './types'
 
 export type { CryptoError, CryptoErrorKind } from './errors'
@@ -33,6 +42,8 @@ export { runProbe } from './probe'
 
 export type { CryptoMachineConfig, DeviceStatus, IdentityKeys, OutgoingRequest } from './facade'
 export {
+  acceptVerification,
+  cancelVerification,
   confirmVerification,
   createCryptoMachine,
   decryptEvent,
@@ -42,6 +53,8 @@ export {
   getDeviceIdentityKeys,
   getDeviceStatuses,
   getSupportedAlgorithms,
+  getVerificationMaterial,
+  getVerificationStage,
   importSecrets,
   markRequestSent,
   openCryptoStore,
@@ -49,5 +62,6 @@ export {
   requestVerification,
   restoreCryptoMachine,
   shareScopeKey,
+  startVerificationComparison,
   takeOutgoingRequests,
 } from './facade'
