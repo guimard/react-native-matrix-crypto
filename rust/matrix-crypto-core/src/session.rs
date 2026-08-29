@@ -375,7 +375,17 @@ pub async fn receive_sync_changes(raw_json: &str) -> Result<SyncOutcome, Session
             // invitation arriving, a peer's confirmation completing a
             // comparison, a flow timing out. It returns without touching
             // the store when nobody has subscribed to the signal channel.
-            crate::verification::announce_state_changes().await;
+            //
+            // The processed events are handed over rather than the payload
+            // this function was given, and upstream's own doc comment on
+            // `receive_sync_changes` is the reason: what it returns is
+            // "decrypted where needed and where possible", so a
+            // verification event that arrived Olm-encrypted appears here in
+            // the clear. The one flow shape that cannot be enumerated out
+            // of the machine has to be recognised from these, and
+            // recognising it from the raw input instead would miss every
+            // encrypted one. See `verification::bare_start_candidates`.
+            crate::verification::announce_state_changes(&events).await;
             Ok(SyncOutcome {
                 to_device_event_count: events.len() as u32,
                 new_session_count: room_keys.len() as u32,

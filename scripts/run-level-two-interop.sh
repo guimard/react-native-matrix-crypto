@@ -1,9 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Runs the level 2 interoperability test (design doc section 8, M2's final
-# exit criterion) against a Matrix homeserver this script starts, provisions,
-# and destroys.
+# Runs both level 2 interoperability proofs (design doc section 8) against a
+# Matrix homeserver this script starts, provisions, and destroys.
+#
+#   * `level_two_interop` -- a third-party client decrypts what this library
+#     encrypts, and this library decrypts what it sends. M2's final exit
+#     criterion.
+#   * `level_two_verification` -- a third-party client opens a device
+#     verification against this library, this library announces it and
+#     agrees to it, and the exchange runs to the point where the third
+#     party's own defect stops it. M3's.
+#
+#     Read that literally: **no third-party verification completes here, and
+#     no third-party refusal of a mismatched string is driven anywhere.**
+#     matrix-nio 0.26.0 writes the SAS commitment as hexadecimal where the
+#     specification requires unpadded base64, so it rejects every
+#     spec-compliant peer and can never reach a short authentication string.
+#     The test proves what it can and attributes the halt from inside nio's
+#     own process; the completion and the refusal are proven at level 1, in
+#     rust/matrix-crypto-core/tests/sas_two_party.rs, against a machine this
+#     library does not control. That file's header has the whole of it.
 #
 #   ./scripts/run-level-two-interop.sh
 #
@@ -34,8 +51,13 @@ set -euo pipefail
 #   * TWO `test level_two_interoperability_over_a_real_homeserver ... ok`
 #     lines, and TWO `test result: ok. 1 passed; 0 failed; 0 ignored`
 #     summaries -- the parent process and the phase-two child it spawns of
-#     itself to reopen the store. Exactly two, asserted; see the block that
-#     checks them for what one and what three each mean.
+#     itself to reopen the store;
+#   * ONE of each for
+#     `test a_third_party_clients_verification_reaches_the_short_authentication_string`,
+#     which spawns no child.
+#
+# Exactly those counts, asserted per test; see `run_proof` for what a smaller
+# and what a larger number each mean.
 #
 # and it requires the homeserver to have answered a real login before cargo
 # is invoked at all. A container that never started, a test that never ran,
@@ -389,86 +411,120 @@ from importlib.metadata import version
 print(f"matrix-nio {version('matrix-nio')}, vodozemac {version('vodozemac')}")
 PY
 
-# --- 3. the test -----------------------------------------------------------
-
-OUTPUT="$WORKDIR/cargo-test-output.txt"
-TEST_NAME=level_two_interoperability_over_a_real_homeserver
-
-echo "Running the level 2 test..."
-set +e
-cargo test --manifest-path "$REPO_ROOT/rust/Cargo.toml" \
-  -p matrix-crypto-core --test level_two_interop \
-  -- --ignored --exact "$TEST_NAME" 2>&1 | tee "$OUTPUT"
-CARGO_STATUS=${PIPESTATUS[0]}
-set -e
+# --- 3. the tests ----------------------------------------------------------
+#
+# TWO proofs, one homeserver. `level_two_interop` asks whether a third-party
+# client decrypts what this library encrypts; `level_two_verification` asks
+# whether one will complete a device verification with it. They are separate
+# test binaries because this library holds one crypto machine per process and
+# Cargo gives each file under tests/ its own -- see
+# level_two_verification.rs's header.
 
 # --- 4. what actually happened ---------------------------------------------
-
-if [ "$CARGO_STATUS" != "0" ]; then
-  RUN_FAILED=1
-  fail "cargo test exited $CARGO_STATUS. See the output above."
-fi
-
-# Everything below reads the file rather than trusting that exit status.
 #
-# `--exact` above means a renamed test matches nothing, and libtest then
-# prints `0 passed; 0 failed; ...; 1 filtered out` and exits 0. So does a run
-# where the test is still `#[ignore]`d and `--ignored` was dropped. Both are
-# the seven-times-repeated failure of this milestone, and both are caught by
+# Everything below reads cargo's output rather than trusting its exit status.
+#
+# `--exact` means a renamed test matches nothing, and libtest then prints
+# `0 passed; 0 failed; ...; 1 filtered out` and exits 0. So does a run where
+# the test is still `#[ignore]`d and `--ignored` was dropped. Both are the
+# seven-times-repeated failure of this milestone, and both are caught by
 # insisting on the count.
-OK_LINES=$(grep -c "^test $TEST_NAME \.\.\. ok\$" "$OUTPUT" || true)
-if [ "$OK_LINES" -lt 1 ]; then
-  RUN_FAILED=1
-  fail "cargo test exited 0 but never reported '$TEST_NAME ... ok'.
+#
+# The expected count is PINNED per test rather than printed, the same way
+# scripts/run-probe-on-emulator.sh pins PROBE_SUMMARY 12/12: if a test stops
+# spawning a child, or starts spawning one, this fails until somebody changes
+# the number on purpose.
+#
+# That number was once in a comment and in no check. The comment claimed "what
+# matters is that neither of them is a nought, which the two checks above have
+# already established for both", and those checks are `-lt 1` on a `grep -c`,
+# which establishes it for one. Fed a stream where the parent passed and the
+# child matched no test, this script printed "1 libtest summaries" and exited
+# 0 -- and the child is the cross-process restore proof, the whole reason the
+# second process exists. Reproduced 2026-08-28 by the verification-
+# infrastructure review, and again here after the fix.
+#
+#   run_proof <test target> <test name> <expected libtest runs> <what they are>
+run_proof() {
+  local target="$1"
+  local name="$2"
+  local expected="$3"
+  local shape="$4"
+  local output="$WORKDIR/$target-output.txt"
+  local status ok_lines summaries
+
+  echo
+  echo "Running $name..."
+  set +e
+  cargo test --manifest-path "$REPO_ROOT/rust/Cargo.toml" \
+    -p matrix-crypto-core --test "$target" \
+    -- --ignored --exact "$name" 2>&1 | tee "$output"
+  # A plain assignment, on its own line and before any other command: every
+  # command run in between -- `local` included -- replaces PIPESTATUS.
+  status=${PIPESTATUS[0]}
+  set -e
+
+  if [ "$status" != "0" ]; then
+    RUN_FAILED=1
+    fail "cargo test exited $status running $name. See the output above."
+  fi
+
+  ok_lines=$(grep -c "^test $name \.\.\. ok\$" "$output" || true)
+  if [ "$ok_lines" -lt 1 ]; then
+    RUN_FAILED=1
+    fail "cargo test exited 0 but never reported '$name ... ok'.
       That is not a pass. The test was filtered out, renamed, or the process
       died before libtest could report on it."
-fi
+  fi
 
-SUMMARIES=$(grep -c '^test result: ok\. 1 passed; 0 failed; 0 ignored' "$OUTPUT" || true)
-if [ "$SUMMARIES" -lt 1 ]; then
-  RUN_FAILED=1
-  fail "cargo test exited 0 but printed no 'test result: ok. 1 passed; 0 failed;
-      0 ignored' summary. libtest reported:
-$(grep '^test result:' "$OUTPUT" || echo '      (no test result line at all)')"
-fi
+  summaries=$(grep -c '^test result: ok\. 1 passed; 0 failed; 0 ignored' "$output" || true)
+  if [ "$summaries" -lt 1 ]; then
+    RUN_FAILED=1
+    fail "cargo test exited 0 but printed no 'test result: ok. 1 passed; 0 failed;
+      0 ignored' summary for $name. libtest reported:
+$(grep '^test result:' "$output" || echo '      (no test result line at all)')"
+  fi
 
-# The test spawns a second copy of itself to prove `openCryptoStore` restores
-# a session across processes: `std::env::current_exe()` re-invoked with
-# `--exact <this test> --ignored --test-threads=1`, inheriting stdout. So the
-# child runs libtest too, and its `... ok` line and its own summary land in
-# this same stream. TWO of each are expected, exactly.
-#
-# That number was in this comment and in no check. The comment claimed "what
-# matters is that neither of them is a nought, which the two checks above have
-# already established for both", and the checks above are `-lt 1` on a
-# `grep -c`, which establishes it for one. Fed a stream where the parent
-# passed and the child matched no test, this script printed
-# "1 libtest summaries" and exited 0 -- and the child is the cross-process
-# restore proof, the whole reason the second process exists. Reproduced
-# 2026-08-28 by the verification-infrastructure review, and again here against
-# this script after the fix.
-#
-# Pinned rather than printed, the same way scripts/run-probe-on-emulator.sh
-# pins PROBE_SUMMARY 12/12: if the test stops spawning a child, or starts
-# spawning two, this fails until someone changes the number on purpose.
-EXPECTED_LIBTEST_RUNS=2
-
-if [ "$OK_LINES" -ne "$EXPECTED_LIBTEST_RUNS" ] || [ "$SUMMARIES" -ne "$EXPECTED_LIBTEST_RUNS" ]; then
-  RUN_FAILED=1
-  fail "this run reported $OK_LINES '$TEST_NAME ... ok' lines and $SUMMARIES
-      libtest summaries; exactly $EXPECTED_LIBTEST_RUNS of each are expected -- the parent
-      process and the phase-two child it spawns of itself to reopen the store.
-      One of each means the child matched no test, which is the cross-process
-      openCryptoStore restore silently not happening. More than that means
+  if [ "$ok_lines" -ne "$expected" ] || [ "$summaries" -ne "$expected" ]; then
+    RUN_FAILED=1
+    fail "this run reported $ok_lines '$name ... ok' lines and $summaries
+      libtest summaries; exactly $expected of each are expected -- $shape.
+      Fewer means a libtest process matched no test at all. More means
       something re-ran and the result is ambiguous.
 libtest reported:
-$(grep '^test result:' "$OUTPUT" || echo '      (no test result line at all)')"
-fi
+$(grep '^test result:' "$output" || echo '      (no test result line at all)')"
+  fi
+
+  echo "PASS: $name ($summaries libtest summaries, asserted)"
+}
+
+# The encryption proof spawns a second copy of itself to show that
+# `openCryptoStore` restores a session across processes:
+# `std::env::current_exe()` re-invoked with `--exact <this test> --ignored
+# --test-threads=1`, inheriting stdout. So the child runs libtest too, and its
+# `... ok` line and its own summary land in the same stream. TWO of each.
+run_proof level_two_interop \
+  level_two_interoperability_over_a_real_homeserver \
+  2 \
+  "the parent process and the phase-two child it spawns of itself to reopen the store"
+
+# The verification proof spawns nothing: it needs no second process, because
+# what it proves happens between two live devices rather than across a
+# restart. ONE of each.
+run_proof level_two_verification \
+  a_third_party_clients_verification_reaches_the_short_authentication_string \
+  1 \
+  "this test spawns no child, so there is exactly one libtest process"
 
 echo
-echo "PASS: $TEST_NAME"
-echo "      $SUMMARIES libtest summaries, asserted, all 'ok. 1 passed; 0 failed;"
-echo "      0 ignored' -- the parent and the phase-two child."
+echo "PASS: both level 2 proofs."
+echo "      A third-party matrix-nio client decrypted what this library encrypted,"
+echo "      and this library decrypted what matrix-nio sent."
+echo "      A verification matrix-nio opened was announced by this library, agreed"
+echo "      to, and carried to a short authentication string. It goes no further,"
+echo "      and the reason is the commitment encoding matrix-nio 0.26.0 uses; the"
+echo "      second test attributes that from inside nio rather than assuming it."
+echo "      See rust/matrix-crypto-core/tests/level_two_verification.rs."
 if [ -n "$CONTAINER" ]; then
   echo "      Proven against a throwaway $SERVER_NAME homeserver this script started"
   echo "      and is about to destroy. No credential was read from anywhere."

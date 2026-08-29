@@ -190,14 +190,21 @@ function trustStateOf(trust: NativeTrustState): TrustState {
  * still `requested` when you come back, and the first
  * {@link receiveSyncChanges} after you resubscribe announces it. Subscribe
  * at start-up if you can, but `useEffect(() => onCryptoSignal(h), [])` does
- * not lose invitations.
+ * not lose **those** -- with the one exception named below, which is a real
+ * exception and not a hedge.
  *
- * Two things it genuinely does not do. A `trust_changed` for a comparison
+ * Three things it genuinely does not do. A `trust_changed` for a comparison
  * that finished while you were away is not re-offered -- ask
  * {@link getDeviceStatuses}, which is the durable answer and always was.
- * And a hot reload leaves the previous module copy's observer installed
+ * A hot reload leaves the previous module copy's observer installed
  * until something subscribes again; an invitation arriving in that window
- * is consumed by a listener set nothing can reach.
+ * is consumed by a listener set nothing can reach. And **one shape of
+ * invitation is not re-offered at all**: a peer that opens the comparison
+ * directly, without asking first -- see {@link acceptVerification} for who
+ * does that and why it makes no difference to your code -- leaves nothing
+ * behind that can be enumerated on a later sync. The sync that carried it
+ * is its only witness, which is why "subscribe at start-up if you can"
+ * above is the stronger advice for it.
  *
  * A listener that throws does not affect the others, and does not affect
  * the sync that produced the signal: delivery happens on a thread of the

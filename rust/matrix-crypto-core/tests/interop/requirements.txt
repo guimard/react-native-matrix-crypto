@@ -1,8 +1,9 @@
 # The level 2 counterparty, pinned.
 #
-# `nio_party.py` is driven as a subprocess by `tests/level_two_interop.rs`,
-# and it is the whole point of that test that the client on the other end is
-# not this library. A floating `matrix-nio[e2e]` would make the proof depend
+# `nio_party.py` is driven as a subprocess by both level 2 tests --
+# `tests/level_two_interop.rs` for encryption and
+# `tests/level_two_verification.rs` for device verification -- and it is the
+# whole point of both that the client on the other end is not this library. A floating `matrix-nio[e2e]` would make the proof depend
 # on whatever PyPI resolved on the day, which is the opposite of what a
 # milestone exit criterion should rest on.
 #
