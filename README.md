@@ -74,7 +74,7 @@ Being precise about that, because a cryptographic library that oversells itself 
 | Interoperability with a third-party Matrix client | proven both directions against `matrix-nio`, over a real homeserver |
 | Crypto signal channel (`onCryptoSignal`) | present and typed, but **nothing emits a signal yet**, see below |
 | Sender authenticity | **not provided**, see below |
-| Device verification (SAS, QR) | **not implemented**, see the roadmap |
+| Device verification by short string comparison (SAS) | working, proven against a crypto machine this library does not control; QR is **not implemented** |
 | Secret export and import | **not implemented**, see the roadmap |
 
 The unimplemented functions exist today as final types that compile, and reject at runtime with a typed `not_implemented` error. That is intentional: a consuming team can build against the real shape while the cryptography underneath is written.
@@ -83,7 +83,7 @@ The unimplemented functions exist today as final types that compile, and reject 
 
 **Two limits worth knowing before you build on this.**
 
-Decryption does not authenticate the sender. `EventEnvelope.sender` is the value the homeserver delivered, and a successfully decrypted event does not prove who sent it. That authentication comes from device verification, which is not implemented yet. Treat `sender` and `algorithm` as unauthenticated transport metadata until it is.
+Decryption does not authenticate the sender. `EventEnvelope.sender` is the value the homeserver delivered, and a successfully decrypted event does not prove who sent it. **Verifying a device does not change this**, and it is worth being blunt about that, because "verification landed" is exactly the sentence that would make a reader assume otherwise: a short string comparison establishes *local* trust in a device, and the path that decides what a decrypted event says about its sender consults *cross-signing*, which nothing here publishes yet. So a device can read `verified` from `getDeviceStatuses` while an event from that same device still carries an unauthenticated sender. Treat `sender` and `algorithm` as unauthenticated transport metadata until cross-signing lands.
 
 The interoperability proof has a floor, and it is the ratchet. `matrix-nio`, a Matrix client written in Python by people who have never seen this code, decrypts what this library encrypts and this library decrypts what it sends, over a real homeserver, in two tests anyone can run: one driving the Rust core, one driving the published TypeScript API on an emulator. What neither proves is the ratchet itself. `matrix-nio` 0.26 and this library both call `vodozemac 0.10.0`, so a defect inside that crate, or a misreading shared below the protocol line, would pass both sides. What is genuinely tested by two independent implementations is everything above it: event shapes, the `/keys/*` payloads a real homeserver accepts and answers, to-device routing, and the order a session key has to travel in. That is where this library's own code lives.
 
@@ -208,6 +208,56 @@ library orders the batch it hands you correctly, across both of the places those
 come from, but it never sees your requests leave, so preserving that order is yours to
 do.
 
+### Verifying a device
+
+Two people compare a seven-symbol string, read off their two screens, over a channel this
+library did not establish -- in person, or on a call they already trust. If it matches, each
+side records the other's device as verified. If it does not, the flow is cancelled and
+nothing is recorded. That refusal is the point: a comparison that can only ever agree proves
+nothing.
+
+A flow is named by an opaque id. Hand it back verbatim; parse nothing out of it.
+
+```ts
+const id = await requestVerification('@bob:example.org', 'BOBDEVICE')
+// pump: takeOutgoingRequests -> send in order -> markRequestSent each
+
+// The other side calls acceptVerification(id) and pumps. Once their answer
+// has been fed back in through receiveSyncChanges, this reads 'ready':
+await getVerificationStage(id)
+
+await startVerificationComparison(id) // either side may; pump again
+// Keep pumping until the stage reads 'keys-exchanged'.
+
+const material = await getVerificationMaterial(id)
+// Show material.emoji (or material.decimals) to a person and ask.
+
+await confirmVerification(id, material) // or cancelVerification(id)
+// Pump once more. The stage reaches 'done', and only then:
+await getDeviceStatuses('@bob:example.org') // BOBDEVICE reads 'verified'
+```
+
+**Every step goes through the queue.** Nothing reaches the other device until you send what
+`takeOutgoingRequests` hands you and report each one with `markRequestSent`. Skipping the
+report is the one way this flow could fail silently: the state machine advances on that
+report and on nothing else, so the string is simply never produced. It is reported instead --
+`getVerificationMaterial` rejects with kind `material_not_ready` rather than resolving with
+an empty record or hanging. That kind is deliberately **not** retriable: retrying the same
+call never resolves it, and pumping does.
+
+**`getDeviceStatuses` is the only place a verification becomes visible.** A decrypted event's
+sender does not become authenticated by it, and will not until cross-signing lands: the event
+path consults cross-signing, and a string comparison sets local trust. Note also that your own
+device reads `verified` from the moment it exists, because this process holds its private
+keys -- so "some device in this list reads verified" says nothing. What carries a claim is
+another user's device changing.
+
+**`startVerificationComparison` reports three different things.** `comparison_already_started`
+means the other side got there first, which is not a failure: carry on and wait for the
+string. `verification_ended` means the flow is over and you need a new one.
+`wrong_stage` means it has not been agreed to yet. `getVerificationStage` is free to call and
+tells you which at any point.
+
 Once a key has travelled, encryption and decryption are ordinary:
 
 ```ts
@@ -261,12 +311,12 @@ Both obstacles named when this milestone was planned turned out real, and both w
 
 **Why the last two rows exist.** Two of our own crypto machines agreeing proves the implementation is self consistent. It cannot prove the wire format is right, because a consistent misreading of the protocol passes it cleanly on both sides. Only a third party client decrypting a real message answers that, so both proofs run against `matrix-nio` over a real homeserver, and either can be run by anyone: `./scripts/run-level-two-interop.sh` for the core, and the level two harness in `packages/example-app` for the published surface.
 
-What those proofs still cannot reach is stated under Status: `matrix-nio` and this library both call `vodozemac`, so the ratchet is the floor, and sender authenticity waits on device verification in M3.
+What those proofs still cannot reach is stated under Status: `matrix-nio` and this library both call `vodozemac`, so the ratchet is the floor, and sender authenticity waits on cross-signing -- not on device verification, which has now landed and does not provide it.
 
 ### M3 and beyond
 
-* device verification, SAS and QR
-* **sender authenticity**, which arrives with verification and not before. Until a device is verified, a decrypted event's sender is what the server said it was, so this is the item that turns `sender` from transport metadata into a claim you can rely on
+* device verification by QR code, alongside the short string comparison that has landed
+* **sender authenticity**, which needs cross-signing and does not arrive with the string comparison. A verified *device* is not a verified *event*: the event path consults cross-signing, and a comparison sets local trust. This is the item that turns `sender` from transport metadata into a claim you can rely on
 * secret export and import, for recovery
 * multi participant scenarios and federation neutral test coverage
 * cross implementation testing against both Synapse and Continuwuity
