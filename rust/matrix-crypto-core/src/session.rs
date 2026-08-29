@@ -45,7 +45,12 @@ use matrix_sdk_common::ruma::{
     OneTimeKeyAlgorithm, OwnedRoomId, OwnedTransactionId, OwnedUserId, TransactionId, UInt,
 };
 use matrix_sdk_crypto::types::events::room::encrypted::EncryptedEvent;
-use matrix_sdk_crypto::types::requests::{AnyOutgoingRequest, ToDeviceRequest};
+// `OutgoingRequest` is renamed on import: this module publishes a public
+// type of the same name, and the upstream one is only ever held, never
+// exposed.
+use matrix_sdk_crypto::types::requests::{
+    AnyOutgoingRequest, OutgoingRequest as UpstreamOutgoingRequest, ToDeviceRequest,
+};
 // Reached through `matrix_sdk_crypto`'s own `pub use vodozemac;` re-export
 // rather than a direct `vodozemac` dependency this crate would then have to
 // keep version-matched by hand -- the same reasoning `machine.rs` documents
@@ -234,9 +239,18 @@ impl From<MachineError> for SessionError {
             // for the reason above, and mapping it truthfully costs
             // nothing if it ever stops being.
             MachineError::MalformedIdentifier { .. } => SessionError::MalformedIdentifier,
+            // The three verification-flow kinds belong to `verification.rs`,
+            // which returns `MachineError` directly and never routes through
+            // this conversion. Listed by name for the same no-wildcard reason
+            // as everything above: they are unreachable here today, and a
+            // future variant must still fail this build rather than land on
+            // `Failed` unnoticed.
             MachineError::AlreadyInitialised
             | MachineError::Store { .. }
-            | MachineError::MismatchedAccount => SessionError::Failed,
+            | MachineError::MismatchedAccount
+            | MachineError::UnknownFlow
+            | MachineError::WrongStage
+            | MachineError::MaterialNotReady => SessionError::Failed,
         }
     }
 }
@@ -987,7 +1001,7 @@ impl PendingKind {
 
 /// Process-wide outbound-request bookkeeping this module owns.
 ///
-/// Three distinct jobs share one lock rather than three, so a caller can
+/// Four distinct jobs share one lock rather than four, so a caller can
 /// never observe one updated without the others:
 ///
 /// * `queued_to_device` -- to-device requests [`share_scope_key`] obtained
@@ -1005,6 +1019,15 @@ impl PendingKind {
 ///   second `share_scope_key` call before the first claim is taken
 ///   overwrites it rather than accumulating a second one describing
 ///   overlapping or stale missing-session state.
+/// * `queued_action` -- requests upstream handed back to *its* caller
+///   instead of queueing itself, which is how every verification flow's own
+///   messages arrive (see [`queue_action_request`]). A `Vec` in the order
+///   upstream produced them, not a map: a verification's last two messages
+///   are a confirmation and the acknowledgement that follows it, and the
+///   far side drops the acknowledgement if it arrives first. Valued by
+///   upstream's own request, so `describe_outgoing` decides the kind and
+///   the wire body here exactly as it does for the requests upstream queued
+///   for itself.
 /// * `pending` -- every request id this module has ever handed out via
 ///   [`take_outgoing_requests`] that has not yet been resolved by
 ///   [`mark_request_sent`], with the [`PendingKind`] needed to parse its
@@ -1020,20 +1043,67 @@ impl PendingKind {
 struct RequestState {
     queued_to_device: BTreeMap<String, std::sync::Arc<ToDeviceRequest>>,
     pending_claim: Option<(OwnedTransactionId, KeysClaimRequest)>,
+    queued_action: Vec<UpstreamOutgoingRequest>,
     pending: BTreeMap<String, PendingKind>,
 }
 
 static STATE: StdMutex<RequestState> = StdMutex::new(RequestState {
     queued_to_device: BTreeMap::new(),
     pending_claim: None,
+    queued_action: Vec::new(),
     pending: BTreeMap::new(),
 });
+
+/// Queues one request upstream handed back to its caller instead of
+/// queueing itself, so [`take_outgoing_requests`] hands it out like any
+/// other.
+///
+/// Upstream splits the requests a verification flow produces in two, and
+/// only one half is automatic. The messages it generates in *reaction* to
+/// an incoming event -- the key message, a MAC the far side asked for
+/// first, a timeout cancellation -- it queues into its own cache, and
+/// `OlmMachine::outgoing_requests` already returns them. The requests
+/// produced by an *action* the caller took -- requesting a verification,
+/// accepting one, starting a comparison, confirming, cancelling -- it
+/// returns directly and never queues. Nothing sends those unless this
+/// module holds on to them, and a verification whose first message is
+/// never sent is indistinguishable from one nobody answered.
+///
+/// A `Vec` in the order the requests were produced, rather than a map keyed
+/// by request id the way `queued_to_device` is. The keyed form was tried
+/// first and is wrong here: upstream's request ids are random, so a map
+/// hands the batch out in an arbitrary order, and these requests are not
+/// order-independent. A confirmation is followed immediately by the
+/// acknowledgement that closes the flow, and a far side that receives the
+/// acknowledgement first discards it and waits forever for one that has
+/// already been sent. That is what this looked like before the order was
+/// fixed: a flow that completed or hung depending on how two random
+/// identifiers happened to sort.
+///
+/// De-duplicated by request id on the way in, which is what the keyed form
+/// bought and is kept: a caller that repeats an action before the first is
+/// taken would otherwise queue the same id twice, and the second
+/// `mark_request_sent` for it would fail with `UnknownRequest` once the
+/// first consumed the entry. The scan is linear over a queue that holds a
+/// handful of entries between two pump calls.
+pub(crate) fn queue_action_request(request: UpstreamOutgoingRequest) {
+    let mut state = STATE.lock().expect("request registry poisoned");
+    if state
+        .queued_action
+        .iter()
+        .any(|queued| queued.request_id() == request.request_id())
+    {
+        return;
+    }
+    state.queued_action.push(request);
+}
 
 #[cfg(test)]
 fn reset_request_state_for_test() {
     let mut state = STATE.lock().expect("request registry poisoned");
     state.queued_to_device.clear();
     state.pending_claim = None;
+    state.queued_action.clear();
     state.pending.clear();
 }
 
@@ -1257,10 +1327,28 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
         fresh.push((txn_id.to_string(), PendingKind::KeysClaim, body));
     }
 
+    // Read by reference rather than cloned: `AnyOutgoingRequest` is not
+    // `Clone` (it is `Debug` and nothing else upstream), and the borrow
+    // ends before the drain below. Same "read, not drained, until every
+    // serialisation has already succeeded" discipline as the two queues
+    // above, for the same reason. Iterated in queue order, which is the
+    // order upstream produced them and the order the far side has to
+    // receive them in -- see `queue_action_request`. Each entry carries
+    // upstream's own request id, so `describe_outgoing` decides the kind
+    // here exactly as it does for the requests upstream queued itself: a
+    // verification action request is not a distinct kind on this crate's
+    // surface, it is a `to_device`, a `signature_upload` or a
+    // `room_message` like any other.
+    for request in &state.queued_action {
+        let (kind, body) = describe_outgoing(request.request())?;
+        fresh.push((request.request_id().to_string(), kind, body));
+    }
+
     // Every fallible step above has now succeeded, so the two queues can
     // safely be drained for real.
     state.queued_to_device.clear();
     state.pending_claim = None;
+    state.queued_action.clear();
 
     // Evict every existing `pending` entry whose kind this batch is about
     // to refresh, once per call rather than once per item -- per-item
@@ -1860,6 +1948,107 @@ mod tests {
         assert!(
             after_claim.contains(&"m.room.encrypted".to_string()),
             "sharing after a keys-claim round trip must deliver the session key: {after_claim:?}"
+        );
+    }
+
+    /// Requests upstream hands back to its caller must leave in the order
+    /// they were produced.
+    ///
+    /// A regression test with a specific defect behind it. `queued_action`
+    /// was first a map keyed by request id, mirroring `queued_to_device`.
+    /// Upstream's request ids are random, so that handed each batch out in
+    /// an arbitrary order -- and unlike a shared key, a verification's
+    /// messages are ordered: a confirmation is followed by the
+    /// acknowledgement that closes the flow, and a far side that receives
+    /// the acknowledgement first drops it and waits for one that has
+    /// already been sent. The two-party verification test completed or hung
+    /// depending on how two random identifiers happened to sort.
+    ///
+    /// The two ids below therefore sort the opposite way round from the
+    /// order they are queued in: under the map this asserted `["aaaa",
+    /// "zzzz"]` and failed.
+    #[test]
+    fn action_requests_leave_in_the_order_they_were_queued() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        fn action(txn_id: &str) -> UpstreamOutgoingRequest {
+            let recipient: OwnedUserId = "@other:example.org".parse().unwrap();
+            let mut request = ToDeviceRequest::new(
+                &recipient,
+                matrix_sdk_common::ruma::to_device::DeviceIdOrAllDevices::AllDevices,
+                "m.dummy",
+                Raw::from_json_string("{}".to_string()).unwrap(),
+            );
+            request.txn_id = <&TransactionId>::from(txn_id).to_owned();
+            matrix_sdk_crypto::types::requests::OutgoingVerificationRequest::ToDevice(request)
+                .into()
+        }
+
+        let handed_out = futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+            queue_action_request(action("zzzz"));
+            queue_action_request(action("aaaa"));
+            take_outgoing_requests().await.unwrap()
+        });
+
+        let ours: Vec<String> = handed_out
+            .into_iter()
+            .map(|request| request.id)
+            .filter(|id| id == "zzzz" || id == "aaaa")
+            .collect();
+        assert_eq!(
+            ours,
+            vec!["zzzz".to_string(), "aaaa".to_string()],
+            "action requests must be handed out in the order they were queued, \
+             not in the order their random identifiers happen to sort"
+        );
+    }
+
+    /// Queueing the same action twice before the pump takes it must not
+    /// hand the same id out twice: the second `mark_request_sent` for it
+    /// would fail with `UnknownRequest` once the first consumed the entry.
+    #[test]
+    fn queueing_the_same_action_twice_hands_it_out_once() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        let handed_out = futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+            let recipient: OwnedUserId = "@other:example.org".parse().unwrap();
+            for _ in 0..2 {
+                let mut request = ToDeviceRequest::new(
+                    &recipient,
+                    matrix_sdk_common::ruma::to_device::DeviceIdOrAllDevices::AllDevices,
+                    "m.dummy",
+                    Raw::from_json_string("{}".to_string()).unwrap(),
+                );
+                request.txn_id = <&TransactionId>::from("repeated").to_owned();
+                queue_action_request(
+                    matrix_sdk_crypto::types::requests::OutgoingVerificationRequest::ToDevice(
+                        request,
+                    )
+                    .into(),
+                );
+            }
+            take_outgoing_requests().await.unwrap()
+        });
+
+        let repeats = handed_out
+            .iter()
+            .filter(|request| request.id == "repeated")
+            .count();
+        assert_eq!(
+            repeats, 1,
+            "the same action queued twice must be handed out once, not {repeats} times"
         );
     }
 

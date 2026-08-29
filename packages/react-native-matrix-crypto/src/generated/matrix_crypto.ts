@@ -1099,6 +1099,9 @@ export enum MachineFfiError_Tags {
   MalformedIdentifier = "MalformedIdentifier",
   Store = "Store",
   MismatchedAccount = "MismatchedAccount",
+  UnknownFlow = "UnknownFlow",
+  WrongStage = "WrongStage",
+  MaterialNotReady = "MaterialNotReady",
 }
 /**
  * Mirror of the core's machine error, carrying the UniFFI error derive.
@@ -1264,6 +1267,87 @@ export const MachineFfiError = (() => {
     }
   }
 
+  type UnknownFlow__interface = {
+    tag: MachineFfiError_Tags.UnknownFlow;
+  };
+  class UnknownFlow_ extends UniffiError implements UnknownFlow__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.UnknownFlow;
+    constructor() {
+      super("MachineFfiError", "UnknownFlow");
+    }
+
+    static new(): UnknownFlow_ {
+      return new UnknownFlow_();
+    }
+
+    static instanceOf(obj: any): obj is UnknownFlow_ {
+      return obj.tag === MachineFfiError_Tags.UnknownFlow;
+    }
+    static hasInner(obj: any): obj is UnknownFlow_ {
+      return false;
+    }
+  }
+
+  type WrongStage__interface = {
+    tag: MachineFfiError_Tags.WrongStage;
+  };
+  class WrongStage_ extends UniffiError implements WrongStage__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.WrongStage;
+    constructor() {
+      super("MachineFfiError", "WrongStage");
+    }
+
+    static new(): WrongStage_ {
+      return new WrongStage_();
+    }
+
+    static instanceOf(obj: any): obj is WrongStage_ {
+      return obj.tag === MachineFfiError_Tags.WrongStage;
+    }
+    static hasInner(obj: any): obj is WrongStage_ {
+      return false;
+    }
+  }
+
+  type MaterialNotReady__interface = {
+    tag: MachineFfiError_Tags.MaterialNotReady;
+  };
+  class MaterialNotReady_
+    extends UniffiError
+    implements MaterialNotReady__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.MaterialNotReady;
+    constructor() {
+      super("MachineFfiError", "MaterialNotReady");
+    }
+
+    static new(): MaterialNotReady_ {
+      return new MaterialNotReady_();
+    }
+
+    static instanceOf(obj: any): obj is MaterialNotReady_ {
+      return obj.tag === MachineFfiError_Tags.MaterialNotReady;
+    }
+    static hasInner(obj: any): obj is MaterialNotReady_ {
+      return false;
+    }
+  }
+
   function instanceOf(obj: any): obj is MachineFfiError {
     return obj[uniffiTypeNameSymbol] === "MachineFfiError";
   }
@@ -1275,6 +1359,9 @@ export const MachineFfiError = (() => {
     MalformedIdentifier: MalformedIdentifier_,
     Store: Store_,
     MismatchedAccount: MismatchedAccount_,
+    UnknownFlow: UnknownFlow_,
+    WrongStage: WrongStage_,
+    MaterialNotReady: MaterialNotReady_,
   });
 })();
 /**
@@ -1290,7 +1377,10 @@ export type MachineFfiError = InstanceType<
     | "AlreadyInitialised"
     | "MalformedIdentifier"
     | "Store"
-    | "MismatchedAccount"]
+    | "MismatchedAccount"
+    | "UnknownFlow"
+    | "WrongStage"
+    | "MaterialNotReady"]
 >;
 
 // FfiConverter for enum MachineFfiError
@@ -1313,6 +1403,12 @@ const FfiConverterTypeMachineFfiError = (() => {
           });
         case 5:
           return new MachineFfiError.MismatchedAccount();
+        case 6:
+          return new MachineFfiError.UnknownFlow();
+        case 7:
+          return new MachineFfiError.WrongStage();
+        case 8:
+          return new MachineFfiError.MaterialNotReady();
         default:
           throw new UniffiInternalError.UnexpectedEnumCase();
       }
@@ -1343,6 +1439,18 @@ const FfiConverterTypeMachineFfiError = (() => {
           c.writeI32(5);
           return;
         }
+        case MachineFfiError_Tags.UnknownFlow: {
+          c.writeI32(6);
+          return;
+        }
+        case MachineFfiError_Tags.WrongStage: {
+          c.writeI32(7);
+          return;
+        }
+        case MachineFfiError_Tags.MaterialNotReady: {
+          c.writeI32(8);
+          return;
+        }
         default:
           // Throwing from here means that MachineFfiError_Tags hasn't matched an ordinal.
           throw new UniffiInternalError.UnexpectedEnumCase();
@@ -1369,6 +1477,15 @@ const FfiConverterTypeMachineFfiError = (() => {
           return size;
         }
         case MachineFfiError_Tags.MismatchedAccount: {
+          return 4;
+        }
+        case MachineFfiError_Tags.UnknownFlow: {
+          return 4;
+        }
+        case MachineFfiError_Tags.WrongStage: {
+          return 4;
+        }
+        case MachineFfiError_Tags.MaterialNotReady: {
           return 4;
         }
         default:

@@ -89,6 +89,43 @@ pub enum MachineError {
     /// are exactly the identifiers this crate's errors must never contain.
     #[error("the store belongs to a different account")]
     MismatchedAccount,
+    /// No verification flow with the identifier this call named is known to
+    /// this process. Either the identifier never named a flow, or the flow
+    /// it named has finished and the registry has since released it -- see
+    /// `verification.rs`'s own eviction rule for exactly when that happens.
+    ///
+    /// **Appended, not inserted.** The three variants from here down were
+    /// added after this enum already had a mirror carrying UniFFI's error
+    /// derive, and UniFFI assigns each variant's wire ordinal by
+    /// declaration position: inserting one renumbers every variant after it
+    /// and makes bindings generated before the insert decode the wrong
+    /// error. The rule, and why the mirror's order is deliberately not this
+    /// one's, is stated in full at `matrix-crypto-ffi/src/lib.rs`.
+    #[error("no such verification flow")]
+    UnknownFlow,
+    /// The call is one this flow supports, but not at the stage the flow is
+    /// currently at -- accepting a flow nobody has requested, starting a
+    /// comparison before both sides are ready, confirming or cancelling a
+    /// flow that has already finished. This is what upstream reports by
+    /// returning `None` from an otherwise infallible call; returned as a
+    /// named error rather than passed on as an absence, because "did
+    /// nothing, successfully" is the one answer a verification call must
+    /// never give.
+    #[error("the flow is not at a stage where this call applies")]
+    WrongStage,
+    /// The flow has not exchanged keys yet, so there is no short
+    /// authentication string to show.
+    ///
+    /// This is the loud form of the one silent failure this flow has.
+    /// Upstream advances from "accepted" to "keys exchanged" only when the
+    /// caller reports the key message as sent, through the same outbound
+    /// pump every other request goes through. A caller that drains the pump
+    /// but never resolves what it drained leaves the flow parked forever:
+    /// no error, no timeout, and a short authentication string that is
+    /// simply never produced. A caller that gets this error back has been
+    /// told which of the two it is.
+    #[error("the short authentication string is not available yet")]
+    MaterialNotReady,
 }
 
 struct Held {
