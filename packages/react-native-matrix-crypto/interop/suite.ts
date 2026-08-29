@@ -54,51 +54,120 @@ export interface InteropSuiteOptions {
  * budget far above any delivery the path can produce stays green long after
  * the thing it measures has broken.
  *
- * WHAT THIS NUMBER IS MEASURED FROM
+ * WHERE THE ORIGINAL NUMBER CAME FROM, AND WHAT IS STILL UNEXPLAINED
  *
  * 15000 came from a release build on emulator-5554 (API 35, 2026-08-28),
  * where a 2000 ms budget still reported `signal FAIL (none)` on 1 launch in 8
- * and 15000 ms passed 8 of 8 -- so delivery was thought to take seconds. That
- * was measured against `observer.rs`'s thread-per-signal emission, which M3
- * replaced with the runtime's blocking pool (spec section 5.1, B2).
+ * and 15000 ms passed 8 of 8.
+ *
+ * **That 1-in-8 has never been explained, and nothing since has reproduced
+ * it.** It is stated here rather than left implicit because everything below
+ * is sized against it. Two things in it are worth keeping apart:
+ *
+ * - It was taken with a pass/fail check and no latency instrument, so it
+ *   cannot tell "the callback arrived after 2000 ms" from "the callback did
+ *   not arrive". The 8-of-8 pass at 15000 ms is weaker than it looks: at a
+ *   1-in-8 rate, eight clean launches happen 34% of the time.
+ * - The emission mechanism has been ruled out, and nothing has been ruled in.
+ *   M3 replaced `observer.rs`'s thread-per-signal emission with the runtime's
+ *   blocking pool (spec section 5.1, B2), and the before arm of the
+ *   measurement below *is* that thread-per-signal emission. Both arms are
+ *   milliseconds, and the slower of the two is the new one. So the sentence
+ *   this comment used to carry -- delivery was thought to take seconds, and
+ *   that was measured against the emission M3 replaced -- invited a causal
+ *   reading its own before arm refutes twice over.
+ *
+ * WHAT WAS MEASURED
  *
  * Re-measured on the same emulator, same API level, same release build, with
  * `PROBE_SIGNAL_MS` (see `ProbeHarness.tsx`) reporting the delivery in
- * milliseconds rather than only pass or fail. 46 launches, 23 on each side of
- * the change, interleaved launch by launch so host load fell on both arms
- * equally; 30 of the 46 with the host deliberately saturated:
+ * milliseconds rather than only pass or fail. 40 launches, 20 on each side
+ * of the change, interleaved launch by launch so host state fell on both arms
+ * equally; 28 of them with the host deliberately saturated, 10 by CPU
+ * and 18 by disk:
  *
- *   before (thread per signal): median 3 ms, p90 14 ms, max 102 ms
- *   after  (blocking pool):     median 4 ms, p90 28 ms, max 38 ms
+ *   before (thread per signal): median 2 ms, p90 23.1 ms, max 37 ms
+ *   after  (blocking pool):     median 9.5 ms, p90 32.6 ms, max 59 ms
  *
- * Every one of the 46 passed. **The seconds did not reproduce, on either
+ * Every one of the 40 passed. **The seconds did not reproduce, on either
  * arm.** What did reproduce is the race: the callback lands after the promise
- * in 28 of the 46, which is exactly why this bounded wait exists and why it
+ * in 20 of the 40, which is exactly why this bounded wait exists and why it
  * must stay. Its magnitude is milliseconds, not seconds.
  *
- * WHY 3000 AND NOT 100
+ * WHICH WAY THE DIFFERENCE RUNS
  *
- * 3000 ms is roughly thirty times the worst of those 46 launches. The margin
- * is not measured, and saying so is the point: `probe-android` runs an
- * x86_64 emulator under a software GPU on a four-vCPU hosted runner, which is
- * a slower machine than the one measured above and could not be measured
- * here. The margin is for that, and it is deliberately large.
+ * The blocking pool is the slower of the two on this measurement, and
+ * by a margin this design can see: median 9.5 ms against 2 ms, and
+ * higher in every host condition separately. The tails overlap -- p90
+ * 32.6 ms against 23.1 ms, worst 59 ms against 37 ms -- so the
+ * separation is in the body rather than the tail. There is a mechanism
+ * and it is documented at `observer::emit`: what is timed here is the
+ * first signal of a cold process, and on that path the first `emit`
+ * builds this library's whole tokio runtime and then a blocking-pool
+ * thread, where a thread per signal built one bare thread and nothing
+ * else. It is a one-off per process, it is milliseconds, and it does
+ * not bear on this budget -- but "the measurement did not move" would
+ * be the wrong summary of it. The gap is widest under CPU saturation,
+ * where building a runtime competes for the cores it is asking for: 20
+ * ms against 5 ms at the median, 56 ms against 33 ms at worst.
  *
- * It is still five times tighter than 15000, which is what makes it useful: a
- * regression that puts delivery back into seconds -- the condition B2 was
- * opened for -- now fails this check instead of passing quietly inside the
- * budget.
+ * The two arms were provably different binaries, which the first attempt at
+ * this measurement could not establish: `coreVersion` now carries a
+ * fingerprint of the emission path compiled into the running `.so`
+ * (`observer.rs`'s `EMIT_BUILD`), every launch printed it, and the two arms
+ * printed different values. The full record, procedure and every sample is
+ * `docs/measurements/2026-08-29-signal-delivery-latency.md`.
+ *
+ * WHY 10000 AND NOT 3000
+ *
+ * Because the margin has to be measured against the phenomenon this budget
+ * exists to absorb, and that phenomenon is not in the distribution above --
+ * the distribution above is precisely the one that could not reproduce it.
+ * "Thirty times the worst of those launches" is a true sentence about the
+ * wrong distribution.
+ *
+ * The only hard facts available are that 2000 ms was observed to be
+ * insufficient on this hardware, and that 15000 ms was observed sufficient
+ * eight times out of eight, which as noted above is weak. 10000 sits five
+ * times above the value known to fail and below the value never observed
+ * failing. It is not derived from the clean distribution at all, and it
+ * should not be: a budget sized at 1.5x a number that was watched failing is
+ * sized against the wrong evidence, and `probe-android` is the wrong job to
+ * be wrong in -- a slower machine than the one measured (x86_64 emulator,
+ * software GPU, four-vCPU hosted runner), taking most of an hour, gated on
+ * the verbatim `PROBE_SUMMARY 12/12` line, so one late signal turns it red
+ * with no partial credit.
+ *
+ * Tightening this number is also no longer how sensitivity is bought.
+ * `PROBE_SIGNAL_MS` reports the actual delivery time on every launch, so a
+ * regression that puts delivery back into seconds is visible in the log of
+ * every run whether or not this check fails. What is left for the budget to
+ * do is not turn an hour-long job red on a phenomenon nobody has bounded.
+ *
+ * WHAT THIS NUMBER DOES NOT COVER
+ *
+ * iOS. This constant lives in the binding-agnostic contract every binding
+ * must satisfy, and it was derived from Android alone: `ci.yml` runs no iOS
+ * end-to-end leg, so the JSI callback path this bounds on iOS has never been
+ * measured and is not exercised by any job. The number is not known to be
+ * right there; it is known to be generous on the one binding that was
+ * measured.
  *
  * IF THIS EVER GOES RED
  *
  * Read the `PROBE_SIGNAL_MS` line from the same launch before touching this
  * number. The callback keeps arriving after this check has given up, and the
- * harness keeps logging for another ten seconds or so, so a late delivery
- * still prints its own latency -- the line's absence means the callback was
- * lost, its presence means it was late, and the check alone cannot tell those
- * apart.
+ * app keeps running, so a late delivery still prints its own latency -- the
+ * line's absence means the callback was lost, its presence means it was late,
+ * and the check alone cannot tell those apart. That guidance is only true if
+ * the log is read after the window in which a late callback can still arrive:
+ * `scripts/run-probe-on-emulator.sh` waits `PROBE_LATE_GRACE_SECONDS` (15 by
+ * default) after the summary before dumping the `PROBE_` lines, for exactly
+ * this reason. It used to read the log once, immediately, so the absence of
+ * the line was unreliable evidence in exactly the case this paragraph is
+ * about.
  */
-const SIGNAL_WAIT_MS = 3000
+const SIGNAL_WAIT_MS = 10000
 const SIGNAL_POLL_MS = 20
 
 async function waitUntil(predicate: () => boolean, budgetMs: number): Promise<void> {
@@ -219,10 +288,12 @@ export async function runInteropSuite(
     // callback was never lost: with a long enough wait it always arrived
     // (8 of 8). This line used to read the array before it got there.
     //
-    // Re-measured after M3 changed the emission mechanism, and the race is
-    // still here: the callback landed after the promise in 28 of 46 release
-    // launches. Only its size changed -- see SIGNAL_WAIT_MS, which now says
-    // milliseconds where it used to say seconds.
+    // Re-measured after M3 changed the emission mechanism, against both the
+    // old emission and the new one, and the race is still here: the callback
+    // landed after the promise in 20 of 40 release launches. What changed is
+    // not its size but what is known about it -- see SIGNAL_WAIT_MS, which
+    // now says milliseconds where it used to say seconds, and says which of
+    // the two emission paths each launch was running.
     //
     // Bounded, so it cannot turn the check into a no-op: a binding that never
     // calls the observer still fails, it just takes the budget to say so.
