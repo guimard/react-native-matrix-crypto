@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { CryptoScopeId } from './types'
+import type { CryptoScopeId, SyncDelta } from './types'
 import { asCryptoScopeId } from './types'
 import { isCryptoError } from './errors'
 import {
   createCryptoMachine,
   decryptEvent,
   encryptEvent,
+  encryptionSlice,
   exportSecrets,
   getDeviceIdentityKeys,
   markRequestSent,
@@ -171,12 +172,15 @@ describe('receiveSyncChanges wiring to the native layer', () => {
   it('rejects with malformed_payload before ever calling native, when the payload names none of the recognised fields', async () => {
     vi.mocked(nativeReceiveSyncChanges).mockClear()
 
-    await expect(receiveSyncChanges({ toDeviceEvents: [] })).rejects.toSatisfy(
-      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
-    )
-    await expect(receiveSyncChanges({ nonsense: true })).rejects.toSatisfy(
-      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
-    )
+    // Cast, deliberately: this is how a JavaScript consumer with no types
+    // reaches this function, and the guard exists for exactly them -- see
+    // the `encryptionSlice` describe block below for the same pattern.
+    await expect(
+      receiveSyncChanges({ toDeviceEvents: [] } as unknown as SyncDelta),
+    ).rejects.toSatisfy((e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload')
+    await expect(
+      receiveSyncChanges({ nonsense: true } as unknown as SyncDelta),
+    ).rejects.toSatisfy((e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload')
 
     expect(nativeReceiveSyncChanges).not.toHaveBeenCalled()
   })
@@ -193,9 +197,16 @@ describe('receiveSyncChanges wiring to the native layer', () => {
   it('rejects a raw /sync response, which names none of the recognised fields', async () => {
     vi.mocked(nativeReceiveSyncChanges).mockClear()
 
-    await expect(receiveSyncChanges(SYNC_RESPONSE)).rejects.toSatisfy(
-      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
-    )
+    // Cast, deliberately: SYNC_RESPONSE's keys and SyncDelta's have no
+    // member in common (the whole point of this test), and TypeScript's own
+    // weak-type check (every SyncDelta field is optional) refuses that
+    // assignment on sight -- this is the compile-time half of the same
+    // rejection the runtime guard proves below. A JavaScript caller with no
+    // types reaches this shape without a cast, which is why the guard, not
+    // the type, has to be the one that actually stops it.
+    await expect(
+      receiveSyncChanges(SYNC_RESPONSE as unknown as SyncDelta),
+    ).rejects.toSatisfy((e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload')
 
     expect(nativeReceiveSyncChanges).not.toHaveBeenCalled()
   })
@@ -238,19 +249,64 @@ describe('receiveSyncChanges wiring to the native layer', () => {
 
   /**
    * Regression for F6 (Task 7 fix round 1): `JSON.stringify(undefined)` is
-   * the *value* `undefined`, not a string, and `syncDelta: unknown` lets
-   * it through the type system. This proves it is rejected before native
-   * is ever called, rather than forwarded as the four-character string
-   * `"undefined"` or the bare value `undefined`.
+   * the *value* `undefined`, not a string. `syncDelta` is now typed
+   * `SyncDelta` rather than `unknown`, which is exactly why the call below
+   * needs the cast: a typed caller cannot reach this path at all any more,
+   * but an untyped JavaScript one still can, and the guard has to catch it
+   * for them. This proves it is rejected before native is ever called,
+   * rather than forwarded as the four-character string `"undefined"` or the
+   * bare value `undefined`.
    */
   it('rejects with malformed_payload before ever calling native, when syncDelta stringifies to undefined', async () => {
     vi.mocked(nativeReceiveSyncChanges).mockClear()
 
-    await expect(receiveSyncChanges(undefined)).rejects.toSatisfy(
+    await expect(receiveSyncChanges(undefined as unknown as SyncDelta)).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
     )
 
     expect(nativeReceiveSyncChanges).not.toHaveBeenCalled()
+  })
+})
+
+describe('encryptionSlice', () => {
+  it('renames all five fields a sync response carries', () => {
+    const slice = encryptionSlice({
+      to_device: { events: [{ type: 'm.room.encrypted' }] },
+      device_lists: { changed: ['@a:example.org'], left: [] },
+      device_one_time_keys_count: { signed_curve25519: 42 },
+      device_unused_fallback_key_types: ['signed_curve25519'],
+      next_batch: 's72595_4483_1934',
+      rooms: { join: {} },
+      presence: { events: [] },
+    })
+    expect(slice).toEqual({
+      to_device_events: [{ type: 'm.room.encrypted' }],
+      changed_devices: { changed: ['@a:example.org'], left: [] },
+      one_time_keys_counts: { signed_curve25519: 42 },
+      unused_fallback_keys: ['signed_curve25519'],
+      next_batch_token: 's72595_4483_1934',
+    })
+  })
+
+  it('omits absent fields rather than passing undefined', () => {
+    expect(encryptionSlice({ next_batch: 'x' })).toEqual({ next_batch_token: 'x' })
+    expect(Object.keys(encryptionSlice({ next_batch: 'x' }))).toEqual(['next_batch_token'])
+  })
+
+  it('produces something the guard accepts, for an uneventful sync', async () => {
+    // The point of this test: the helper and the guard must agree. An empty
+    // sync is the shape most syncs have, and a helper that produced a payload
+    // its own library rejects would fail here rather than in a product.
+    await expect(receiveSyncChanges(encryptionSlice({ rooms: {} }))).resolves.toBeUndefined()
+  })
+
+  it('still rejects a camelCase payload', async () => {
+    // The guard is what makes the wrong shape loud. Typing the parameter must
+    // not weaken it: this is the assertion that proves the runtime half
+    // survived the compile-time half being added.
+    await expect(
+      receiveSyncChanges({ toDeviceEvents: [] } as unknown as SyncDelta),
+    ).rejects.toThrow(/malformed_payload/)
   })
 })
 

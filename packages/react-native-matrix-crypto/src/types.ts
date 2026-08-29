@@ -24,6 +24,27 @@ export type CryptoAlgorithm = 'megolm' | 'olm' | (string & {})
 /** Product-facing trust signal. Only 'verified' has cryptographic value. */
 export type TrustState = 'unverified' | 'recognized' | 'verified'
 
+/**
+ * The five fields `receiveSyncChanges` reads. Named as the native call names
+ * them, not as a `/sync` response names them: the two vocabularies have no
+ * member in common, and renaming here would only move the rename into a
+ * place with no compile-time help.
+ *
+ * Every field is optional and defaults independently, native-side, when
+ * absent. Omit a field the caller has nothing for; do not set it to
+ * `undefined` explicitly instead -- `encryptionSlice` (in `facade.ts`) only
+ * ever assigns a key it has a real value for, and a hand-built `SyncDelta`
+ * should follow the same rule so `Object.keys` on the result means what it
+ * looks like it means.
+ */
+export interface SyncDelta {
+  to_device_events?: unknown[]
+  changed_devices?: unknown
+  one_time_keys_counts?: Record<string, number>
+  unused_fallback_keys?: string[]
+  next_batch_token?: string
+}
+
 /** Typed envelope for an encrypted or decrypted event. */
 export interface EventEnvelope {
   scope: CryptoScopeId

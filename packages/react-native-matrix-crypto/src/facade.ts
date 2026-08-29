@@ -1,4 +1,4 @@
-import type { CryptoAlgorithm, CryptoScopeId, EventEnvelope, TrustState } from './types'
+import type { CryptoAlgorithm, CryptoScopeId, EventEnvelope, SyncDelta, TrustState } from './types'
 import { asCryptoScopeId } from './types'
 import { toCryptoError } from './errors'
 import {
@@ -166,6 +166,35 @@ function syncDeltaNamesNoRecognisedField(syncDelta: unknown): boolean {
 }
 
 /**
+ * Maps a `/sync` response to the slice {@link receiveSyncChanges} consumes
+ * -- the five-row rename table on that function's own doc comment, as code,
+ * so a product never hand-writes it. A field is copied when its source key
+ * is present at all, `null` included; it is not copied when the source key
+ * is absent, which is what leaves it to `SyncDelta`'s own per-field default
+ * rather than forwarding `undefined`.
+ *
+ * A transcription of `encryption_slice` in
+ * `rust/matrix-crypto-core/tests/level_two_interop.rs`, which is the same
+ * mapping exercised against a real homeserver and a third-party client, and
+ * the two must stay identical in behaviour -- that Rust function is this
+ * one's source of truth, not the other way around.
+ */
+export function encryptionSlice(sync: Record<string, unknown>): SyncDelta {
+  const slice: SyncDelta = {}
+  const toDevice = sync.to_device as Record<string, unknown> | undefined
+  if (toDevice?.events !== undefined) slice.to_device_events = toDevice.events as unknown[]
+  if (sync.device_lists !== undefined) slice.changed_devices = sync.device_lists
+  if (sync.device_one_time_keys_count !== undefined) {
+    slice.one_time_keys_counts = sync.device_one_time_keys_count as Record<string, number>
+  }
+  if (sync.device_unused_fallback_key_types !== undefined) {
+    slice.unused_fallback_keys = sync.device_unused_fallback_key_types as string[]
+  }
+  if (sync.next_batch !== undefined) slice.next_batch_token = sync.next_batch as string
+  return slice
+}
+
+/**
  * Feeds the encryption-relevant slice of a `/sync` response into the
  * crypto machine -- design doc section 7. This is how the machine learns
  * which devices exist: a product that never calls this encrypts to
@@ -217,32 +246,13 @@ function syncDeltaNamesNoRecognisedField(syncDelta: unknown): boolean {
  * holds -- `rooms`, `presence`, `account_data` -- is no part of this
  * payload.
  *
- * Worked example, the whole mapping, which is what a product's sync loop
- * actually needs:
+ * Use {@link encryptionSlice} to build `syncDelta` from a `/sync` response
+ * rather than writing this mapping again -- it is this same rename table,
+ * as code:
  *
  * ```ts
- * type SyncResponse = Record<string, any>
- *
- * function encryptionSlice(sync: SyncResponse): Record<string, unknown> {
- *   const syncDelta: Record<string, unknown> = {}
- *   if (sync.to_device?.events) syncDelta.to_device_events = sync.to_device.events
- *   if (sync.device_lists) syncDelta.changed_devices = sync.device_lists
- *   if (sync.device_one_time_keys_count) {
- *     syncDelta.one_time_keys_counts = sync.device_one_time_keys_count
- *   }
- *   if (sync.device_unused_fallback_key_types) {
- *     syncDelta.unused_fallback_keys = sync.device_unused_fallback_key_types
- *   }
- *   if (sync.next_batch) syncDelta.next_batch_token = sync.next_batch
- *   return syncDelta
- * }
- *
  * await receiveSyncChanges(encryptionSlice(await fetchSync()))
  * ```
- *
- * `encryptionSlice` above is a transcription of `encryption_slice` in
- * `rust/matrix-crypto-core/tests/level_two_interop.rs`, which is the same
- * mapping exercised against a real homeserver and a third-party client.
  *
  * `{}` is the shape an ordinary, uneventful sync sends, and is accepted:
  * it reports nothing, correctly. **camelCase silently does nothing**, and
@@ -264,7 +274,7 @@ function syncDeltaNamesNoRecognisedField(syncDelta: unknown): boolean {
  * return type is frozen from M1a. A product that needs those counts reads
  * them off the sync response it already holds.
  */
-export async function receiveSyncChanges(syncDelta: unknown): Promise<void> {
+export async function receiveSyncChanges(syncDelta: SyncDelta): Promise<void> {
   if (syncDeltaNamesNoRecognisedField(syncDelta)) {
     throw toCryptoError({ name: 'MalformedPayload' })
   }
