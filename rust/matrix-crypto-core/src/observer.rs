@@ -126,11 +126,19 @@ mod tests {
         (Arc::new(ChannelObserver { tx }), rx)
     }
 
-    /// Generous relative to how fast the handoff to the blocking pool
-    /// actually completes -- measured at roughly eight microseconds per
-    /// signal, delivery included, over two thousand of them one at a time;
-    /// tight enough that a genuinely broken delivery path still fails a
-    /// test in a few seconds rather than hanging it.
+    /// Generous relative to how fast delivery actually completes, and the
+    /// evidence for that is in this file rather than in someone's notes:
+    /// `a_burst_is_delivered_without_a_thread_per_signal` below emits `BURST`
+    /// signals and requires every one of them delivered inside this same
+    /// bound, on whatever machine is running the suite. Whatever that run
+    /// costs there, one signal costs less. Tight enough, meanwhile, that a
+    /// genuinely broken delivery path fails a test in a few seconds rather
+    /// than hanging it.
+    ///
+    /// A number quoted from a measurement nobody can re-run is the defect
+    /// `SIGNAL_WAIT_MS` was re-derived to remove, turned inward; the earlier
+    /// draft of this comment quoted "roughly eight microseconds per signal"
+    /// from exactly such a measurement.
     const DELIVERY_BOUND: Duration = Duration::from_secs(5);
 
     #[tokio::test]
@@ -255,6 +263,116 @@ mod tests {
             .recv_timeout(DELIVERY_BOUND)
             .expect("a signal emitted with no ambient runtime must reach the observer");
         assert_eq!(signal.kind, "probe_started");
+    }
+
+    /// One operating system thread per signal is what B2's cost line names,
+    /// and this is the assertion that closes it, rather than a note saying
+    /// it was measured once somewhere.
+    ///
+    /// `std::thread::ThreadId` is never reused within a process, so a thread
+    /// per signal would show exactly `BURST` distinct delivering threads.
+    /// Tokio caps its blocking pool at 512 threads by default and this crate
+    /// does not raise it, so the pool cannot show more than 512 however the
+    /// burst is scheduled. `BURST` is set above that cap so the two
+    /// implementations cannot both satisfy the assertion: the shipped one
+    /// passes by construction, and reverting `emit` to `std::thread::spawn`
+    /// fails here with a count rather than with a timeout.
+    ///
+    /// The burst is concurrent rather than sequential, deliberately. The
+    /// microbenchmark this replaces emitted one signal at a time and waited
+    /// for nothing, so what it measured was how fast a loop can call `emit`
+    /// -- not the regime the cost line describes ("once verification and key
+    /// events flow through the channel"). Every signal here is in flight
+    /// before any of them is waited on.
+    ///
+    /// The timing assertion is deliberately coarse: the whole burst must be
+    /// delivered inside `DELIVERY_BOUND`, the same bound a single signal gets
+    /// elsewhere in this file. That is what makes `DELIVERY_BOUND` a measured
+    /// number rather than a quoted one -- if `BURST` signals fit inside it,
+    /// one does, on whatever machine is running the suite. It is not a
+    /// performance threshold: one on shared CI hardware is a flake generator,
+    /// and this bound is meant to stay far looser than anything it could
+    /// plausibly measure.
+    ///
+    /// No margin is quoted, and that is deliberate. Quoting one would mean
+    /// quoting a measurement this file cannot show you -- the defect
+    /// `DELIVERY_BOUND`'s own comment was rewritten to remove. Nothing here
+    /// writes to stdout either, and that is a constraint rather than a
+    /// preference: `scripts/assert-no-logger.sh` scans this crate's `src` for
+    /// the print macros and does not exempt `#[cfg(test)]`. The actual
+    /// durations travel in the assertion messages, where a reader who wants
+    /// them can get them by making the test fail.
+    #[test]
+    fn a_burst_is_delivered_without_a_thread_per_signal() {
+        use std::collections::HashSet;
+        use std::sync::Mutex;
+        use std::time::Instant;
+
+        /// Comfortably above tokio's blocking pool cap, so the two
+        /// implementations give different answers.
+        const BURST: usize = 2000;
+        /// Tokio's default `max_blocking_threads`, which this crate leaves
+        /// alone -- see `runtime::spawn_blocking_detached`.
+        const POOL_CAP: usize = 512;
+
+        struct Counting {
+            tx: mpsc::Sender<()>,
+            threads: Arc<Mutex<HashSet<std::thread::ThreadId>>>,
+        }
+
+        impl ProbeObserver for Counting {
+            fn on_signal(&self, _signal: ProbeSignal) {
+                self.threads
+                    .lock()
+                    .expect("the recorder's mutex is never held across a panic")
+                    .insert(std::thread::current().id());
+                let _ = self.tx.send(());
+            }
+        }
+
+        let (tx, rx) = mpsc::channel();
+        let threads = Arc::new(Mutex::new(HashSet::new()));
+        let observer: Arc<dyn ProbeObserver> = Arc::new(Counting {
+            tx,
+            threads: Arc::clone(&threads),
+        });
+
+        let started = Instant::now();
+        for _ in 0..BURST {
+            emit(
+                &observer,
+                ProbeSignal {
+                    kind: "probe_started".to_string(),
+                    detail: String::new(),
+                },
+            );
+        }
+        let handed_off = started.elapsed();
+
+        for i in 0..BURST {
+            rx.recv_timeout(DELIVERY_BOUND)
+                .unwrap_or_else(|e| panic!("signal {i} of {BURST} was never delivered: {e}"));
+        }
+        let delivered = started.elapsed();
+
+        let distinct = threads
+            .lock()
+            .expect("the recorder's mutex is never held across a panic")
+            .len();
+
+        assert!(
+            distinct <= POOL_CAP,
+            "{BURST} signals were delivered by {distinct} distinct threads, more than the \
+             blocking pool's {POOL_CAP}-thread cap allows: emission is spawning threads of \
+             its own again rather than reusing the pool (handed off in {handed_off:?}, \
+             all delivered in {delivered:?})"
+        );
+        assert!(
+            delivered < DELIVERY_BOUND,
+            "{BURST} signals took {delivered:?} to deliver, which does not fit inside the \
+             {DELIVERY_BOUND:?} a single signal is given elsewhere in this file \
+             (handed off in {handed_off:?}, across {distinct} threads)"
+        );
     }
 
     /// Emission must never happen under the machine lock.
