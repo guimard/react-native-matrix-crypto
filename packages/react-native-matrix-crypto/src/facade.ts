@@ -379,11 +379,14 @@ export async function encryptEvent(
  * `senderVerification` carries what this library knew about the sender at
  * the moment it decrypted -- see {@link SenderVerification}. It does not
  * turn `sender` into an authenticated value, and in this release it can
- * never read `'verified'`. What it can do is tell an ordinary unsigned
- * device apart from an event whose claimed sender is not the owner of the
- * session that encrypted it, and the second of those is an impersonation
- * signal a product should react to. It is a snapshot taken at decryption
- * time, not a live value; see the field.
+ * never read `'verified'`. What it can do is tell three different things
+ * apart: an ordinary unsigned device, a device its owner cross-signed whose
+ * owner you have not verified (`'unverified_identity'`, which this release
+ * does produce, from any peer whose client has cross-signing set up), and
+ * an event whose claimed sender is not the owner of the session that
+ * encrypted it. The last of those is an impersonation signal a product
+ * should react to. It is a snapshot taken at decryption time, not a live
+ * value; see the field.
  */
 export async function decryptEvent(scope: CryptoScopeId, rawEvent: unknown): Promise<EventEnvelope> {
   // `CryptoScopeId` performs no runtime validation (see types.ts) --

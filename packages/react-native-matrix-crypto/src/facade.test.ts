@@ -698,9 +698,15 @@ describe('decryptEvent wiring to the native layer', () => {
       NativeSenderVerification.NoDeviceMissing,
       NativeSenderVerification.NoDeviceInsecureSource,
       NativeSenderVerification.MismatchedSender,
-      // Not producible today either, but neither is a claim of
-      // authenticity, and both become producible when cross-signing lands.
+      // Producible today, and this list said otherwise until 0.1.0. It
+      // depends on the sender's cross-signing identity rather than on ours,
+      // so any peer whose client has cross-signing set up produces it. The
+      // most important entry here for that reason: "cross-signed" read as
+      // "trusted" is how it would end up mapped to `verified`.
       NativeSenderVerification.UnverifiedIdentity,
+      // Genuinely not producible: it needs a previous verification by us,
+      // which needs a cross-signing identity this release cannot create.
+      // Here so that it must map to itself on the day it can arrive.
       NativeSenderVerification.VerificationViolation,
     ]
 

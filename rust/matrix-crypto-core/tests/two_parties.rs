@@ -658,11 +658,19 @@ fn two_parties_exchange_a_group_key_and_each_decrypts_what_the_other_encrypted()
         // block red and leave the first untouched; keeping them apart is
         // what makes that observable in one run instead of three.
         //
-        // Nothing here cross-signs anything, so the only levels available
-        // are the ones needing no published master key. That is the honest
-        // shape of this milestone: it cannot reach `Verified`, so it proves
-        // instead that the values it *can* reach are told apart -- and does
-        // not prove anything with a fixture faking the one it cannot.
+        // Nothing in *this file* cross-signs anything, so the only levels
+        // available here are the ones needing no cross-signing identity on
+        // either side. Read that as a fact about these fixtures and not
+        // about the library: `tests/cross_signed_peer.rs` gives the
+        // counterparty an identity and reaches `UnverifiedIdentity`, which
+        // this build does produce. Until 0.1.0 the absence of that file was
+        // read as evidence that it did not, which is how the type
+        // documentation came to say so.
+        //
+        // What stays true here is the part about `Verified`: it cannot be
+        // reached, so this file proves instead that the values it *can*
+        // reach are told apart, and proves nothing with a fixture faking
+        // the one it cannot.
 
         // (2) The same ciphertext, re-addressed.
         //
@@ -785,7 +793,9 @@ fn two_parties_exchange_a_group_key_and_each_decrypts_what_the_other_encrypted()
              `UnsignedDevice`: the event path consults cross-signing, and a \
              short-string comparison sets local trust. This is why \
              `SenderVerification::Verified` is documented as unreachable in \
-             this build, and why no test here fabricates it"
+             this build, and why no test here fabricates it. It says nothing \
+             about `UnverifiedIdentity`, which this build does produce and \
+             `tests/cross_signed_peer.rs` proves"
         );
     }));
 }

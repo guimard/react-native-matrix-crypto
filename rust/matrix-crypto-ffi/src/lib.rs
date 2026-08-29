@@ -568,10 +568,13 @@ impl From<matrix_crypto_core::SyncOutcome> for SyncOutcome {
 /// The order itself is not this crate's choice and is not the core's
 /// either -- both take it from upstream's own `VerificationState` and
 /// `VerificationLevel` declarations, so the three lists can be read side by
-/// side. The core's own enum documents what each value means, and which
-/// three of them this build cannot produce; this mirror deliberately
-/// repeats none of it, so the two cannot drift into saying different
-/// things.
+/// side. The core's own enum documents what each value means, and which of
+/// them this build cannot produce; this mirror deliberately repeats none of
+/// it, so the two cannot drift into saying different things.
+///
+/// It said "which three of them" until 0.1.0, and repeating a count was
+/// exactly the drift this paragraph forbids: the count was wrong, and this
+/// file had no way to know.
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
 pub enum SenderVerification {
     Verified,
