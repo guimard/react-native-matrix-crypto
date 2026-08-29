@@ -30,6 +30,11 @@ use matrix_sdk_common::ruma::api::client::keys::claim_keys::v3::{
 use matrix_sdk_common::ruma::api::client::keys::get_keys::v3::Response as KeysQueryResponse;
 use matrix_sdk_common::ruma::api::client::keys::upload_keys::v3::Response as KeysUploadResponse;
 use matrix_sdk_common::ruma::api::client::keys::upload_signatures::v3::Response as SignatureUploadResponse;
+// The seventh response type, reached through `ruma` directly: unlike the six
+// above it is not re-exported by `matrix_sdk_crypto::types::requests`, which
+// imports it privately for `AnyIncomingResponse`'s own declaration and stops
+// there.
+use matrix_sdk_common::ruma::api::client::keys::upload_signing_keys::v3::Response as SigningKeysUploadResponse;
 use matrix_sdk_common::ruma::api::client::message::send_message_event::v3::Response as RoomMessageResponse;
 use matrix_sdk_common::ruma::api::client::sync::sync_events::DeviceLists;
 use matrix_sdk_common::ruma::api::client::to_device::send_event_to_device::v3::Response as ToDeviceHttpResponse;
@@ -44,14 +49,15 @@ use matrix_sdk_common::ruma::events::{
 use matrix_sdk_common::ruma::exports::http;
 use matrix_sdk_common::ruma::serde::Raw;
 use matrix_sdk_common::ruma::{
-    OneTimeKeyAlgorithm, OwnedRoomId, OwnedTransactionId, OwnedUserId, TransactionId, UInt,
+    OneTimeKeyAlgorithm, OwnedRoomId, OwnedTransactionId, OwnedUserId, TransactionId, UInt, UserId,
 };
 use matrix_sdk_crypto::types::events::room::encrypted::EncryptedEvent;
 // `OutgoingRequest` is renamed on import: this module publishes a public
 // type of the same name, and the upstream one is only ever held, never
 // exposed.
 use matrix_sdk_crypto::types::requests::{
-    AnyOutgoingRequest, OutgoingRequest as UpstreamOutgoingRequest, ToDeviceRequest,
+    AnyIncomingResponse, AnyOutgoingRequest, KeysQueryRequest,
+    OutgoingRequest as UpstreamOutgoingRequest, ToDeviceRequest, UploadSigningKeysRequest,
 };
 // Reached through `matrix_sdk_crypto`'s own `pub use vodozemac;` re-export
 // rather than a direct `vodozemac` dependency this crate would then have to
@@ -263,12 +269,18 @@ impl From<MachineError> for SessionError {
             // mapping it truthfully costs nothing. Still unreachable here --
             // `with_machine` only ever produces `NotInitialised`.
             MachineError::UnknownDevice => SessionError::UnknownDevice,
+            // The two identity-bootstrap kinds belong to `signing.rs`, which
+            // returns `MachineError` directly and never routes through this
+            // conversion either. Listed by name for the same no-wildcard
+            // reason as everything above.
             MachineError::AlreadyInitialised
             | MachineError::Store { .. }
             | MachineError::MismatchedAccount
             | MachineError::UnknownFlow
             | MachineError::WrongStage
-            | MachineError::MaterialNotReady => SessionError::Failed,
+            | MachineError::MaterialNotReady
+            | MachineError::AccountKeysNotFetched
+            | MachineError::IdentityAlreadyExists => SessionError::Failed,
         }
     }
 }
@@ -1182,23 +1194,58 @@ pub async fn share_scope_key(scope: &str, users: &[String]) -> Result<(), Sessio
 enum PendingKind {
     KeysUpload,
     KeysQuery,
+    /// A `/keys/query` whose user list names **this machine's own account**.
+    ///
+    /// The same endpoint and the same wire `kind` tag as [`KeysQuery`]: a
+    /// caller cannot tell the two apart and has nothing to do differently
+    /// with them. The distinction is this module's own bookkeeping, and it
+    /// exists for exactly one reader -- `signing.rs`'s ordering gate, which
+    /// must know whether this process has *asked the server about its own
+    /// account and received an answer*, not merely whether its local
+    /// identity happens to be empty. Recorded from the outgoing request
+    /// rather than from the incoming response, because a response naming no
+    /// identity for this account and a response about somebody else are
+    /// indistinguishable once the question is gone.
+    ///
+    /// [`KeysQuery`]: PendingKind::KeysQuery
+    AccountKeysQuery,
     KeysClaim,
     ToDevice,
     SignatureUpload,
     RoomMessage,
+    /// `POST /_matrix/client/v3/keys/device_signing/upload`, the third
+    /// request class.
+    ///
+    /// M3 established two: *reaction* requests upstream queues for itself
+    /// and the pump drains, and *action* requests upstream hands back to its
+    /// caller for [`queue_action_request`]. This is neither.
+    /// `AnyOutgoingRequest` has six variants and none for this endpoint, so
+    /// `outgoing_requests()` can never produce it and
+    /// [`queue_action_request`] can never accept it -- upstream returns it
+    /// to its caller in a crate-local struct of three key fields. Hence its
+    /// own queue slot, its own hand-serialised body
+    /// ([`describe_signing_keys`]), and its own arm in [`mark_sent`].
+    SigningKeysUpload,
 }
 
 impl PendingKind {
     /// The public, open-tag `kind` string -- spec section 3bis's own
     /// examples for the first three, extended the same way for the rest.
+    ///
+    /// Not injective, and deliberately so: `KeysQuery` and
+    /// `AccountKeysQuery` are one endpoint with one wire tag, distinguished
+    /// only inside this module. Everything downstream of this string treats
+    /// them as one request kind, which is what the eviction rule below
+    /// relies on.
     fn tag(self) -> &'static str {
         match self {
             PendingKind::KeysUpload => "keys_upload",
-            PendingKind::KeysQuery => "keys_query",
+            PendingKind::KeysQuery | PendingKind::AccountKeysQuery => "keys_query",
             PendingKind::KeysClaim => "keys_claim",
             PendingKind::ToDevice => "to_device",
             PendingKind::SignatureUpload => "signature_upload",
             PendingKind::RoomMessage => "room_message",
+            PendingKind::SigningKeysUpload => "signing_keys_upload",
         }
     }
 
@@ -1232,10 +1279,35 @@ impl PendingKind {
     /// documents each endpoint as live. They are still given no blanket
     /// eviction rule, which is what the sentence above is for -- one would
     /// have been wrong then and is wrong now.
+    ///
+    /// False for `signing_keys_upload` too, and for the same reason as
+    /// `signature_upload`: it is a one-shot publication of an identity a
+    /// caller asked for, not a standing need upstream re-derives. Upstream
+    /// forgets nothing when it hands one out, because it never hands one out
+    /// -- see [`PendingKind::SigningKeysUpload`].
+    ///
+    /// True for `AccountKeysQuery`, which is a `/keys/query` like any other:
+    /// `users_for_key_query`'s "Forget about any previous key queries in
+    /// flight" applies to it identically.
+    ///
+    /// **The eviction that follows from this is grouped by
+    /// [`tag`](PendingKind::tag), not by variant**, and for the two
+    /// `/keys/query` variants those differ. Upstream mints one uncorrelated
+    /// id per *endpoint* and forgets the last, so a fresh `keys_query` of
+    /// either variant makes a stale one of *either* variant permanently
+    /// unresolvable. Evicting per variant would leave a stale
+    /// `AccountKeysQuery` entry behind a fresh `KeysQuery` (and the reverse):
+    /// an id `mark_request_sent` still accepts, whose response upstream then
+    /// has no request to correlate, and which here would additionally record
+    /// "we have asked about our own account" for a question the server was
+    /// never asked. See `take_outgoing_requests`'s eviction block.
     fn superseded_by_a_fresh_request(self) -> bool {
         matches!(
             self,
-            PendingKind::KeysUpload | PendingKind::KeysQuery | PendingKind::KeysClaim
+            PendingKind::KeysUpload
+                | PendingKind::KeysQuery
+                | PendingKind::AccountKeysQuery
+                | PendingKind::KeysClaim
         )
     }
 }
@@ -1312,7 +1384,42 @@ struct RequestState {
     queued_to_device: BTreeMap<String, std::sync::Arc<ToDeviceRequest>>,
     pending_claim: Option<(OwnedTransactionId, KeysClaimRequest)>,
     queued_action: Vec<(u64, UpstreamOutgoingRequest)>,
+    /// At most one outstanding publication of this account's signing
+    /// identity, not yet handed out. A single slot rather than a queue,
+    /// mirroring `pending_claim`'s reasoning for the same shape: an account
+    /// has exactly one identity, so a second `bootstrap_identity` before the
+    /// first is drained re-derives the *same* three keys, and handing the
+    /// caller two of them would cost it two rounds of user-interactive
+    /// authentication at the homeserver to publish one identity.
+    ///
+    /// Replacing keeps the sequence the slot already had, so the
+    /// publication does not jump behind the signature upload queued
+    /// alongside it -- the one ordering upstream states outright, because a
+    /// signature may reference a key that is not published yet.
+    queued_signing_keys: Option<(u64, OwnedTransactionId, UploadSigningKeysRequest)>,
+    /// At most one outstanding out-of-band `/keys/query` for this machine's
+    /// own account, not yet handed out. Also a single slot: it asks one
+    /// question about one account, and asking it twice tells nobody
+    /// anything new.
+    ///
+    /// Queued by `signing.rs` when it refuses a bootstrap for want of an
+    /// answer, so the refusal is recoverable through the ordinary pump loop
+    /// rather than a dead end -- upstream only volunteers an own-account key
+    /// query while the account is not yet tracked
+    /// (`identities/manager.rs:836-852`), which after the first sync it
+    /// always is.
+    queued_account_query: Option<(u64, OwnedTransactionId, KeysQueryRequest)>,
     pending: BTreeMap<String, Pending>,
+    /// Whether a `/keys/query` naming this machine's own account has been
+    /// answered in this process.
+    ///
+    /// Set only by [`mark_request_sent`], and only once upstream has
+    /// accepted the response: "we asked" is not the fact the gate needs,
+    /// "we asked and were answered" is. Never unset, and deliberately not
+    /// persisted -- a process that reopens a store has not asked anything
+    /// *yet*, and refusing until it does costs one round trip and is the
+    /// safe direction. See `signing.rs`.
+    account_keys_answered: bool,
     next_sequence: u64,
 }
 
@@ -1335,7 +1442,10 @@ static STATE: StdMutex<RequestState> = StdMutex::new(RequestState {
     queued_to_device: BTreeMap::new(),
     pending_claim: None,
     queued_action: Vec::new(),
+    queued_signing_keys: None,
+    queued_account_query: None,
     pending: BTreeMap::new(),
+    account_keys_answered: false,
     next_sequence: 0,
 });
 
@@ -1396,13 +1506,66 @@ pub(crate) fn queue_action_request(request: UpstreamOutgoingRequest) {
     state.queued_action.push((sequence, request));
 }
 
+/// Queues this account's signing-identity publication, the one request
+/// upstream hands back in a type [`queue_action_request`] cannot accept.
+///
+/// The transaction id is minted here, which is sound for this endpoint and
+/// for no other: upstream's `receive_cross_signing_upload_response`
+/// (`machine/mod.rs:641-648`) takes no request id at all -- it marks the
+/// identity as shared and saves. So there is nothing to correlate, and the
+/// id exists only so this module's own `pending` bookkeeping, and the
+/// caller's own `mark_request_sent`, have something to name the request by.
+/// Upstream mints ids the same way for the two `From<_> for OutgoingRequest`
+/// impls it does provide (`types/requests/enums.rs:116-126`).
+///
+/// See [`RequestState::queued_signing_keys`] for why this is a single slot
+/// and why replacing it preserves the sequence.
+pub(crate) fn queue_signing_keys_request(request: UploadSigningKeysRequest) {
+    let mut state = STATE.lock().expect("request registry poisoned");
+    let sequence = match &state.queued_signing_keys {
+        Some((sequence, _, _)) => *sequence,
+        None => state.next_sequence(),
+    };
+    state.queued_signing_keys = Some((sequence, TransactionId::new(), request));
+}
+
+/// Queues the out-of-band `/keys/query` for this machine's own account that
+/// `signing.rs` refuses a bootstrap in favour of.
+///
+/// The id comes from upstream (`OlmMachine::query_keys_for_users` returns
+/// one alongside the request) and must be used verbatim: unlike the signing
+/// keys upload above, `mark_request_as_sent` does pass it on to
+/// `receive_keys_query_response`, which looks it up among the queries it
+/// believes are in flight.
+pub(crate) fn queue_account_key_query(id: OwnedTransactionId, request: KeysQueryRequest) {
+    let mut state = STATE.lock().expect("request registry poisoned");
+    let sequence = match &state.queued_account_query {
+        Some((sequence, _, _)) => *sequence,
+        None => state.next_sequence(),
+    };
+    state.queued_account_query = Some((sequence, id, request));
+}
+
+/// Whether a `/keys/query` naming this machine's own account has been asked
+/// *and answered* in this process. `signing.rs`'s ordering gate reads this
+/// and nothing else for the "have we asked" half of its question.
+pub(crate) fn account_keys_answered() -> bool {
+    STATE
+        .lock()
+        .expect("request registry poisoned")
+        .account_keys_answered
+}
+
 #[cfg(test)]
 fn reset_request_state_for_test() {
     let mut state = STATE.lock().expect("request registry poisoned");
     state.queued_to_device.clear();
     state.pending_claim = None;
     state.queued_action.clear();
+    state.queued_signing_keys = None;
+    state.queued_account_query = None;
     state.pending.clear();
+    state.account_keys_answered = false;
     state.next_sequence = 0;
 }
 
@@ -1439,6 +1602,69 @@ fn describe_keys_claim(r: &KeysClaimRequest) -> Result<String, SessionError> {
     body.insert("one_time_keys".to_string(), to_json(&r.one_time_keys)?);
     if let Some(ms) = r.timeout.map(|d| d.as_millis() as u64) {
         body.insert("timeout".to_string(), serde_json::json!(ms));
+    }
+    Ok(serde_json::Value::Object(body).to_string())
+}
+
+/// The wire body of a `/keys/query` request: `device_keys` always, plus
+/// `timeout` when upstream set one. `device_keys` is present even when
+/// empty, because ruma's own `Request` has no `skip_serializing_if` on it.
+///
+/// Shared between [`describe_outgoing`]'s `KeysQuery` arm and
+/// [`take_outgoing_requests`]'s draining of
+/// [`RequestState::queued_account_query`], which carries the identical
+/// upstream type -- `OlmMachine::query_keys_for_users` returns the same
+/// `KeysQueryRequest` `AnyOutgoingRequest::KeysQuery` wraps, just built
+/// out-of-band. Factored out for that second caller the same way
+/// [`describe_keys_claim`] already was.
+fn describe_keys_query(r: &KeysQueryRequest) -> Result<String, SessionError> {
+    let mut body = serde_json::Map::new();
+    body.insert("device_keys".to_string(), to_json(&r.device_keys)?);
+    if let Some(ms) = r.timeout.map(|d| d.as_millis() as u64) {
+        body.insert("timeout".to_string(), serde_json::json!(ms));
+    }
+    Ok(serde_json::Value::Object(body).to_string())
+}
+
+/// The wire body of a `/keys/device_signing/upload` request.
+///
+/// Hand-serialised field by field rather than through `to_json` on the
+/// request itself, because upstream's `UploadSigningKeysRequest`
+/// (`types/requests/signing_keys.rs:21-32`) derives `Debug` and `Clone` and
+/// **not** `Serialize`: it is a crate-local struct of three key fields, not
+/// a ruma request, and nothing in `matrix-sdk-crypto` ever turns it into
+/// one. Each field is omitted when absent, matching the
+/// `skip_serializing_if = "Option::is_none"` ruma's real request carries on
+/// all three (`ruma-client-api-0.24.0/src/keys/upload_signing_keys.rs`).
+///
+/// **`auth` is deliberately absent**, and its absence is the design, not an
+/// omission. That endpoint is user-interactive: the server refuses the first
+/// attempt with a challenge, and only then can a caller say anything
+/// meaningful about authentication. So the product sends this body, reads
+/// the challenge out of the 401, asks its user, and sends the same body
+/// again with an `auth` object merged in -- a field added to opaque JSON,
+/// which is what [`OutgoingRequest::body`] has always been. This library
+/// never sees the credential, and [`mark_request_sent`] looks its entry up
+/// without removing it, so the id survives any number of refused attempts
+/// and the retry is an ordinary second send.
+fn describe_signing_keys(r: &UploadSigningKeysRequest) -> Result<String, SessionError> {
+    let mut body = serde_json::Map::new();
+    // Destructured, not field-accessed: a field upstream adds later must
+    // fail this to compile rather than be silently dropped from a request
+    // whose whole purpose is to publish exactly these keys.
+    let UploadSigningKeysRequest {
+        master_key,
+        self_signing_key,
+        user_signing_key,
+    } = r;
+    for (field, key) in [
+        ("master_key", master_key),
+        ("self_signing_key", self_signing_key),
+        ("user_signing_key", user_signing_key),
+    ] {
+        if let Some(key) = key {
+            body.insert(field.to_string(), to_json(key)?);
+        }
     }
     Ok(serde_json::Value::Object(body).to_string())
 }
@@ -1496,19 +1722,7 @@ fn describe_outgoing(request: &AnyOutgoingRequest) -> Result<(PendingKind, Strin
                 serde_json::Value::Object(body).to_string(),
             ))
         }
-        AnyOutgoingRequest::KeysQuery(r) => {
-            let mut body = serde_json::Map::new();
-            // Always present, even when empty: ruma's own `Request` has no
-            // `skip_serializing_if` on `device_keys`.
-            body.insert("device_keys".to_string(), to_json(&r.device_keys)?);
-            if let Some(ms) = r.timeout.map(|d| d.as_millis() as u64) {
-                body.insert("timeout".to_string(), serde_json::json!(ms));
-            }
-            Ok((
-                PendingKind::KeysQuery,
-                serde_json::Value::Object(body).to_string(),
-            ))
-        }
+        AnyOutgoingRequest::KeysQuery(r) => Ok((PendingKind::KeysQuery, describe_keys_query(r)?)),
         AnyOutgoingRequest::KeysClaim(r) => Ok((PendingKind::KeysClaim, describe_keys_claim(r)?)),
         AnyOutgoingRequest::ToDeviceRequest(r) => {
             // `ToDeviceRequest` is this crate's own type and derives
@@ -1534,6 +1748,36 @@ fn describe_outgoing(request: &AnyOutgoingRequest) -> Result<(PendingKind, Strin
                 serde_json::Value::Object(body).to_string(),
             ))
         }
+    }
+}
+
+/// Narrows a `/keys/query` to [`PendingKind::AccountKeysQuery`] when its
+/// user list names `account`, and leaves every other kind exactly as
+/// [`describe_outgoing`] classified it.
+///
+/// Applied after `describe_outgoing` rather than inside it, so the wire
+/// bodies that function produces stay a pure function of the request and
+/// nothing about this module's own bookkeeping can perturb them.
+///
+/// A key query that names this account *among others* counts: the answer
+/// covers this account either way, which is the only thing the gate reading
+/// this cares about. Upstream splits large user lists across several
+/// requests (`identities/manager.rs`'s own "convert the set of users into
+/// multiple /keys/query requests"), so at most one sibling in such a batch
+/// is narrowed here and the rest stay ordinary key queries -- correct,
+/// because only that one asks about this account.
+fn account_scoped(
+    kind: PendingKind,
+    request: &AnyOutgoingRequest,
+    account: &UserId,
+) -> PendingKind {
+    match (kind, request) {
+        (PendingKind::KeysQuery, AnyOutgoingRequest::KeysQuery(r))
+            if r.device_keys.contains_key(account) =>
+        {
+            PendingKind::AccountKeysQuery
+        }
+        (kind, _) => kind,
     }
 }
 
@@ -1606,10 +1850,18 @@ impl std::fmt::Debug for OutgoingRequest {
 /// is the order the requests were produced in, across both of the places
 /// they come from.
 pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionError> {
-    let upstream =
-        with_machine(|machine| Box::pin(async move { machine.outgoing_requests().await }))
-            .await?
-            .map_err(|_upstream| SessionError::Failed)?;
+    // The account is read in the same trip as the requests, not from the
+    // config: it is what [`account_scoped`] below compares each key query's
+    // user list against, and reading it from the machine that produced those
+    // requests is the only way the two cannot disagree.
+    let (account, upstream) = with_machine(|machine| {
+        Box::pin(async move {
+            let requests = machine.outgoing_requests().await;
+            (machine.user_id().to_owned(), requests)
+        })
+    })
+    .await?;
+    let upstream = upstream.map_err(|_upstream| SessionError::Failed)?;
 
     // Every entry this call will hand out, built in full before
     // `state.pending` is touched: a serialisation failure partway through
@@ -1627,7 +1879,12 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
     for request in &upstream {
         let id = request.request_id().to_string();
         let (kind, body) = describe_outgoing(request.request())?;
-        fresh.push((None, id, kind, body));
+        fresh.push((
+            None,
+            id,
+            account_scoped(kind, request.request(), &account),
+            body,
+        ));
     }
 
     let mut state = STATE.lock().expect("request registry poisoned");
@@ -1661,6 +1918,36 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
         fresh.push((None, txn_id.to_string(), PendingKind::KeysClaim, body));
     }
 
+    // The two slots `signing.rs` fills, each carrying the sequence it was
+    // stamped with when it was queued rather than one assigned here -- like
+    // `queued_action` below and unlike the two queues above, because these
+    // are requests this module witnessed the production of. The signing-keys
+    // upload in particular *must* keep its stamp: it was queued between the
+    // device-key upload and the signature upload of the same bootstrap, and
+    // upstream states that order outright.
+    if let Some((sequence, txn_id, query)) = &state.queued_account_query {
+        let body = describe_keys_query(query)?;
+        fresh.push((
+            Some(*sequence),
+            txn_id.to_string(),
+            // Not routed through `account_scoped`: this request exists only
+            // because `signing.rs` asked for this account by name, so the
+            // narrowing that function performs is already a given here.
+            PendingKind::AccountKeysQuery,
+            body,
+        ));
+    }
+
+    if let Some((sequence, txn_id, signing_keys)) = &state.queued_signing_keys {
+        let body = describe_signing_keys(signing_keys)?;
+        fresh.push((
+            Some(*sequence),
+            txn_id.to_string(),
+            PendingKind::SigningKeysUpload,
+            body,
+        ));
+    }
+
     // Read by reference rather than cloned: `AnyOutgoingRequest` is not
     // `Clone` (it is `Debug` and nothing else upstream), and the borrow
     // ends before the drain below. Same "read, not drained, until every
@@ -1678,7 +1965,7 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
         fresh.push((
             Some(*sequence),
             request.request_id().to_string(),
-            kind,
+            account_scoped(kind, request.request(), &account),
             body,
         ));
     }
@@ -1727,11 +2014,13 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
     // built in rather than an arbitrary one.
     ordered.sort_by_key(|(sequence, _, _, _)| *sequence);
 
-    // Every fallible step above has now succeeded, so the two queues can
-    // safely be drained for real.
+    // Every fallible step above has now succeeded, so the queues can safely
+    // be drained for real.
     state.queued_to_device.clear();
     state.pending_claim = None;
     state.queued_action.clear();
+    state.queued_account_query = None;
+    state.queued_signing_keys = None;
 
     // Evict every existing `pending` entry whose kind this batch is about
     // to refresh, once per call rather than once per item -- per-item
@@ -1743,15 +2032,21 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
     // the first of those siblings would discard the second. See
     // `PendingKind::superseded_by_a_fresh_request`'s own doc comment for
     // why eviction is correct here at all.
-    let refreshed_kinds: Vec<PendingKind> = ordered
+    //
+    // Grouped by `tag()`, the endpoint, rather than by variant: the two
+    // `/keys/query` variants are one endpoint upstream re-derives as one, so
+    // a fresh request of either must evict a stale entry of either. See
+    // `superseded_by_a_fresh_request`'s own doc comment.
+    let refreshed_endpoints: Vec<&'static str> = ordered
         .iter()
         .map(|(_, _, kind, _)| *kind)
         .filter(|kind| kind.superseded_by_a_fresh_request())
+        .map(|kind| kind.tag())
         .collect();
-    if !refreshed_kinds.is_empty() {
+    if !refreshed_endpoints.is_empty() {
         state
             .pending
-            .retain(|_, entry| !refreshed_kinds.contains(&entry.kind));
+            .retain(|_, entry| !refreshed_endpoints.contains(&entry.kind.tag()));
     }
 
     let mut out = Vec::with_capacity(ordered.len());
@@ -1812,7 +2107,7 @@ async fn mark_sent(
                 .mark_request_as_sent(&transaction_id, &response)
                 .await
         }
-        PendingKind::KeysQuery => {
+        PendingKind::KeysQuery | PendingKind::AccountKeysQuery => {
             let response = KeysQueryResponse::try_from_http_response(http_response(body))
                 .map_err(|_| SessionError::MalformedPayload)?;
             machine
@@ -1845,6 +2140,30 @@ async fn mark_sent(
                 .map_err(|_| SessionError::MalformedPayload)?;
             machine
                 .mark_request_as_sent(&transaction_id, &response)
+                .await
+        }
+        // The one arm that names its incoming variant by hand. Every other
+        // arm passes `&response` and lets the blanket
+        // `impl From<&'a T> for AnyIncomingResponse` pick the variant --
+        // upstream provides one for seven of the eight response types and
+        // **not** for this one (`types/requests/enums.rs:162-205`). Passing
+        // `&response` here does not compile, which is the good outcome: the
+        // asymmetry is caught by the type checker rather than by an identity
+        // that is silently never marked as published.
+        //
+        // `transaction_id` is passed for symmetry and is genuinely unused by
+        // upstream: `receive_cross_signing_upload_response`
+        // (`machine/mod.rs:641-648`) takes no id, marks the identity shared
+        // and saves. See `queue_signing_keys_request` for why this module
+        // mints one at all.
+        PendingKind::SigningKeysUpload => {
+            let response = SigningKeysUploadResponse::try_from_http_response(http_response(body))
+                .map_err(|_| SessionError::MalformedPayload)?;
+            machine
+                .mark_request_as_sent(
+                    &transaction_id,
+                    AnyIncomingResponse::SigningKeysUpload(&response),
+                )
                 .await
         }
     };
@@ -1890,6 +2209,16 @@ pub async fn mark_request_sent(id: &str, response_json: &str) -> Result<(), Sess
     if result.is_ok() {
         let mut state = STATE.lock().expect("request registry poisoned");
         state.pending.remove(id);
+        // Recorded here and nowhere else: upstream has accepted an answer to
+        // a question this process asked about its own account. Handing the
+        // request out is not enough -- a caller can drain the pump and never
+        // send anything -- and neither is the response alone, which cannot
+        // say whether it was asked about this account or somebody else. This
+        // is the "have we asked" half of `signing.rs`'s ordering gate; the
+        // "and what did it say" half is a separate read of the store.
+        if kind == PendingKind::AccountKeysQuery {
+            state.account_keys_answered = true;
+        }
     }
 
     result
@@ -2572,6 +2901,13 @@ mod tests {
     /// `#[ruma_api(body)]` attribute says does not exist on the wire, and
     /// `room_message` omitted `event_type` entirely, leaving the product
     /// no way to build that endpoint's URL at all.
+    ///
+    /// "Every kind" means every `AnyOutgoingRequest` variant, which is what
+    /// `describe_outgoing` matches on, and that is still all six. It does
+    /// **not** mean every [`PendingKind`]: `signing_keys_upload` has no
+    /// `AnyOutgoingRequest` variant to construct here at all, which is the
+    /// reason it exists as a separate kind. Its body is asserted against a
+    /// real bootstrap instead, in `tests/identity_bootstrap.rs`.
     #[test]
     fn describe_outgoing_produces_the_real_wire_body_for_every_kind() {
         // keys_upload: device_keys/one_time_keys/fallback_keys all
