@@ -48,6 +48,20 @@ APK=${1:-packages/example-app/android/app/build/outputs/apk/release/app-release.
 # trip, on an emulator; slow is normal, silent is not.
 TIMEOUT_SECONDS=${PROBE_TIMEOUT_SECONDS:-240}
 
+# How long to keep reading the log after the summary has been found, before
+# dumping the PROBE_ lines.
+#
+# The observer callback races the promise `runProbe` returns, and the summary
+# is printed once the suite's own bounded wait has given up on it. A callback
+# that arrives after that still prints its `PROBE_SIGNAL_MS` line -- the app is
+# still running -- but this script used to read the log once, immediately, and
+# would have missed it. `interop/suite.ts` tells whoever is debugging a red
+# `signal` check that the line's absence means the callback was lost and its
+# presence means it was late; that guidance is only true if the log is read
+# after the window in which a late callback can still arrive. This is that
+# window, and it is a fixed cost on a job that already takes most of an hour.
+LATE_GRACE_SECONDS=${PROBE_LATE_GRACE_SECONDS:-15}
+
 fail() {
   echo "FAIL: $*" >&2
   exit 1
@@ -107,6 +121,11 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
   fi
   sleep 5
 done
+
+if [ -n "$SUMMARY" ]; then
+  echo "Waiting ${LATE_GRACE_SECONDS}s for a late signal before reading the log."
+  sleep "$LATE_GRACE_SECONDS"
+fi
 
 echo
 echo "--- probe output ---"
