@@ -28,6 +28,14 @@ Nothing is ever printed outside that protocol, and nothing is written to disk
 except nio's own crypto store, in a temporary directory the caller supplies
 and removes.
 
+# Two proofs, one counterparty
+
+This process serves both level 2 tests. `level_two_interop.rs` uses the
+encryption operations (`send`, `collect`); `level_two_verification.rs` uses
+the `sas_*` ones. They share the login, the sync pump and the store, which is
+the whole reason they share a file: a second script would be a second,
+slightly different idea of what "settle" means.
+
 # Credentials
 
 The password arrives in the environment (`MATRIX_INTEROP_PASSWORD`) and is
@@ -36,17 +44,21 @@ into a reply, and never placed on a command line, where `ps` would show it.
 """
 
 import asyncio
+import base64
+import hashlib
 import json
 import os
 import sys
 import traceback
 
 from nio import (
+    Api,
     AsyncClient,
     AsyncClientConfig,
     LoginResponse,
     MegolmEvent,
     RoomSendResponse,
+    ToDeviceResponse,
 )
 
 # nio marks every device it has not verified as unverified, and refuses by
@@ -61,6 +73,11 @@ IGNORE_UNVERIFIED = True
 class Party:
     def __init__(self):
         self.client = None
+        # The `m.key.verification.start` content of every comparison this
+        # process opened, kept from the moment it was built. nio refuses to
+        # rebuild one from a cancelled comparison, and a cancelled
+        # comparison is exactly when `sas_commitment_probe` needs it.
+        self.starts = {}
 
     async def op_login(self, cmd):
         homeserver = os.environ["MATRIX_INTEROP_HOMESERVER"]
@@ -194,6 +211,218 @@ class Party:
             "ok": True,
             "events": done,
             "missing": sorted(wanted - set(done)),
+        }
+
+    # ------------------------------------------------------------------
+    # Device verification by short authentication string
+    #
+    # nio speaks exactly one of the two shapes the Matrix protocol carries
+    # for this: the deprecated bare `m.key.verification.start`, to-device
+    # only, with `accept`, `key`, `mac` and `cancel` after it. Its event
+    # vocabulary has no `request`, no `ready` and no `done` -- an
+    # `m.key.verification.request` reaches it as an unrecognised to-device
+    # event and is dropped -- and it has no in-room verification at all.
+    #
+    # So **nio always opens the flow** in the operations below. That is not
+    # a preference of this harness; it is the only direction the two
+    # implementations have in common, and the reason the Rust side of this
+    # test drives it that way.
+    #
+    # Nothing here decides anything on nio's behalf either. No operation
+    # below tells nio to cancel, and none is needed: it stops on its own,
+    # at its own commitment check, and `sas_commitment_probe` exists to
+    # attribute that stop rather than to cause it.
+    # ------------------------------------------------------------------
+
+    def _sas(self, transaction_id):
+        sas = self.client.key_verifications.get(transaction_id)
+        if sas is None:
+            raise KeyError(
+                f"nio is not taking part in a verification with transaction id "
+                f"{transaction_id!r}; it knows "
+                f"{sorted(self.client.key_verifications)}"
+            )
+        return sas
+
+    def _sas_report(self, sas):
+        """Everything nio knows about one comparison, in one shape.
+
+        `decimals` and `emoji` are `None` until the keys have crossed --
+        absent rather than empty, so the Rust side cannot mistake "not yet"
+        for "there is nothing to show".
+        """
+        showable = sas.established_sas is not None
+        device = sas.other_olm_device
+        return {
+            "state": sas.state.name,
+            "verified": sas.verified,
+            "canceled": sas.canceled,
+            "sas_accepted": sas.sas_accepted,
+            "we_started_it": sas.we_started_it,
+            "cancel_code": sas.cancel_code,
+            "decimals": list(sas.get_decimals()) if showable else None,
+            "emoji": [list(pair) for pair in sas.get_emoji()] if showable else None,
+            "verified_devices": list(sas.verified_devices),
+            # Read back off the device store rather than off the comparison,
+            # which is the same question the Rust side asks its own library
+            # through `deviceStatuses`.
+            "other_device_verified": self.client.device_store[device.user_id][
+                device.id
+            ].verified,
+        }
+
+    async def op_sas_start(self, cmd):
+        """Open a comparison against the named device.
+
+        The device has to be in nio's own store first, and that is the one
+        precondition this whole exchange has: an `m.key.verification.start`
+        naming a device nio has never queried is dropped on arrival with a
+        log line and nothing else, and the same is true in reverse -- nio
+        cannot address a device it has not been told about. So this settles
+        until the device appears rather than assuming a previous `settle`
+        was enough, and reports how many rounds that took.
+        """
+        user_id = cmd["user_id"]
+        device_id = cmd["device_id"]
+        deadline = asyncio.get_event_loop().time() + float(cmd.get("timeout_s", 60))
+
+        rounds = 0
+        device = None
+        while device is None:
+            try:
+                device = self.client.device_store[user_id][device_id]
+            except KeyError:
+                if asyncio.get_event_loop().time() >= deadline:
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"nio never learned about {user_id}'s device {device_id} "
+                            f"after {rounds} query rounds, so it cannot address a "
+                            f"verification to it"
+                        ),
+                    }
+                rounds += 1
+                await self.settle(rounds=1)
+
+        message = self.client.create_key_verification(device)
+        transaction_id = message.content["transaction_id"]
+        self.starts[transaction_id] = dict(message.content)
+        response = await self.client.to_device(message)
+        if not isinstance(response, ToDeviceResponse):
+            return {"ok": False, "error": f"the start could not be sent: {response}"}
+        return {
+            "ok": True,
+            "transaction_id": transaction_id,
+            "event_type": message.type,
+            "query_rounds": rounds,
+        }
+
+    def _reached(self, sas, want):
+        """The two end states this proof observes.
+
+        `verified` is deliberately absent: nothing here can reach it, so a
+        branch for it would be one nothing runs. See
+        `level_two_verification.rs`'s header for why, and add it back with
+        the assertion that needs it.
+        """
+        if want == "string":
+            return sas.established_sas is not None
+        if want == "canceled":
+            return sas.canceled
+        raise ValueError(f"unknown condition {want!r}")
+
+    async def op_sas_await(self, cmd):
+        """Sync, sending whatever nio queues in reply, until the comparison
+        reaches the named condition.
+
+        This is the whole driver. nio answers a `start` it received with an
+        `accept`, an `accept` with its key, and a key with its own key, by
+        appending to `outgoing_to_device_messages`; `sync_forever` would
+        post those automatically and this posts them explicitly, so a
+        message that was never sent is a visible missing step rather than a
+        silent absence.
+
+        `want` is `string` (the short authentication string can be shown),
+        `verified`, or `canceled`. The reply always says whether the
+        condition was reached, never merely that the call returned.
+
+        **Whatever is queued is posted before the condition is examined**,
+        and the order is not incidental: nio decides to cancel while
+        handling an incoming event and only queues the cancellation. A loop
+        that looked first would report the flow cancelled and return with
+        the cancellation still sitting in nio's queue, so the far side would
+        never hear about it. That happened, and cost a run.
+        """
+        transaction_id = cmd["transaction_id"]
+        want = cmd["want"]
+        deadline = asyncio.get_event_loop().time() + float(cmd.get("timeout_s", 90))
+
+        sent = []
+        while True:
+            sent.extend(
+                message.type for message in self.client.outgoing_to_device_messages
+            )
+            await self.client.send_to_device_messages()
+
+            sas = self.client.key_verifications.get(transaction_id)
+            if sas is not None and self._reached(sas, want):
+                reply = {"ok": True, "reached": True, "sent": sent}
+                reply.update(self._sas_report(sas))
+                return reply
+            if asyncio.get_event_loop().time() >= deadline:
+                break
+
+            await self.client.sync(timeout=2000, full_state=False)
+
+        sas = self.client.key_verifications.get(transaction_id)
+        reply = {
+            "ok": True,
+            "reached": False,
+            "sent": sent,
+            # A comparison the far side cancelled is removed from nio's map
+            # outright, so "gone" and "still going" are different answers
+            # and this says which.
+            "known": sas is not None,
+        }
+        if sas is not None:
+            reply.update(self._sas_report(sas))
+        return reply
+
+    async def op_sas_commitment_probe(self, cmd):
+        """Recompute the commitment the far side sent, in both encodings.
+
+        Here to *attribute* an `m.mismatched_commitment` refusal rather than
+        merely report one. nio keeps the commitment it received in the
+        `accept` (`Sas.receive_accept_event`) and, when the peer's key
+        arrives, compares it against one it computes itself over the same
+        two inputs: the peer's public key and the canonical JSON of the
+        start message. This recomputes that digest and returns it written
+        down both ways, so the Rust side can say which of "the two sides
+        hashed different things" and "the two sides wrote the same hash
+        differently" actually happened -- and say it from the bytes rather
+        than from a string comparison.
+
+        Nothing here is secret: a commitment and a public key are both
+        already on the wire.
+        """
+        transaction_id = cmd["transaction_id"]
+        content = self.starts.get(transaction_id)
+        if content is None:
+            return {
+                "ok": False,
+                "error": f"this process never opened a comparison with transaction id "
+                f"{transaction_id!r}",
+            }
+        sas = self._sas(transaction_id)
+        canonical = Api.to_canonical_json(content)
+        digest = hashlib.sha256(cmd["peer_key"].encode() + canonical.encode()).digest()
+        return {
+            "ok": True,
+            # What the far side put in its `m.key.verification.accept`.
+            "received": sas.commitment,
+            # The same digest, written the two ways.
+            "hex": digest.hex(),
+            "unpadded_base64": base64.b64encode(digest).decode().rstrip("="),
         }
 
     async def op_quit(self, cmd):
