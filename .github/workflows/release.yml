@@ -207,18 +207,44 @@ jobs:
       # This runner's tree is the one the artifact comes from, and no other job
       # can see it. gate:stubs is the only check that reads it.
       - run: yarn gate:stubs
-      - name: Collect the xcframework
+      - name: Collect the xcframework, and the commit it was built from
         run: |
           set -euo pipefail
-          cd packages/react-native-matrix-crypto
+          PKG=packages/react-native-matrix-crypto
           # Refuse to hand an empty artifact downstream. The pack job would
           # catch it, but it would catch it as "the tarball has no
           # xcframework", which points at the wrong job.
-          if [ ! -d MatrixCryptoFramework.xcframework ]; then
+          if [ ! -d "$PKG/MatrixCryptoFramework.xcframework" ]; then
             echo "FAIL: ubrn build ios exited 0 and produced no xcframework."
             exit 1
           fi
-          tar czf "$RUNNER_TEMP/ios-xcframework.tgz" MatrixCryptoFramework.xcframework
+
+          # WHAT MAKES THE SIZE MEASUREMENT IN `pack` MEAN ANYTHING.
+          #
+          # `pack` records the published artifact's size, and that number is
+          # only worth having if the bytes measured were built from the Rust
+          # the row attributes them to. `pack` cannot ask this runner: it is a
+          # different machine with its own checkout, and all it ever sees of
+          # this build is the tar. So this build states what it built from,
+          # and the statement travels inside that tar.
+          #
+          # It used to be inferred from modification times, and that inference
+          # is what release run 33261962635 (tag v0.1.0) broke on: this
+          # framework, built here, reaches `pack` through a tar that preserves
+          # these build times -- which are older than the sources
+          # actions/checkout writes at that job's start, so the check reported
+          # a stale binary for the one build where the number was right. A
+          # commit sha does not have that failure mode, because it is an
+          # identity rather than a proxy for one.
+          ./scripts/record-build-provenance.sh ios "$PKG/MatrixCryptoFramework.xcframework"
+
+          cd "$PKG"
+          # The stamp goes in the SAME tar as the binary it describes. A
+          # provenance record that travelled separately could arrive paired
+          # with bytes from another build, which is the confusion it exists to
+          # prevent.
+          tar czf "$RUNNER_TEMP/ios-xcframework.tgz" \
+            MatrixCryptoFramework.xcframework .build-provenance/ios.env
           echo "Slices built:"
           ls MatrixCryptoFramework.xcframework | sed 's/^/  /'
       - uses: actions/upload-artifact@v4
@@ -283,17 +309,25 @@ jobs:
             --targets aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android \
             --release
       - run: yarn gate:stubs
-      - name: Collect the Android binaries
+      - name: Collect the Android binaries, and the commit they were built from
         run: |
           set -euo pipefail
-          cd packages/react-native-matrix-crypto
-          if [ ! -d android/src/main/jniLibs ]; then
+          PKG=packages/react-native-matrix-crypto
+          if [ ! -d "$PKG/android/src/main/jniLibs" ]; then
             echo "FAIL: ubrn build android exited 0 and produced no jniLibs."
             exit 1
           fi
+          # The same provenance stamp the iOS leg writes, for the same reason
+          # and against the same failure. Run 33261962635 happened to fail on
+          # iOS first only because that job finished first; this leg reaches
+          # `pack` through a tar in exactly the same way, so it carried the
+          # identical defect and needs the identical fix.
+          ./scripts/record-build-provenance.sh android "$PKG/android/src/main/jniLibs"
           echo "ABIs built:"
-          ls android/src/main/jniLibs | sed 's/^/  /'
-          tar czf "$RUNNER_TEMP/android-binaries.tgz" android/src/main/jniLibs
+          ls "$PKG/android/src/main/jniLibs" | sed 's/^/  /'
+          cd "$PKG"
+          tar czf "$RUNNER_TEMP/android-binaries.tgz" \
+            android/src/main/jniLibs .build-provenance/android.env
       - uses: actions/upload-artifact@v4
         with:
           name: android-binaries
@@ -369,6 +403,21 @@ jobs:
         # reaching a shell through `${{ }}` is a habit worth not having.
         env:
           TAG: ${{ needs.preflight.outputs.tag }}
+          # DEMAND THE IDENTITY CHECK HERE. Both build legs stamped the commit
+          # they built from next to the binary, and both stamps arrived in the
+          # tars unpacked above; this requires the script to find them and to
+          # find that they name this job's own HEAD.
+          #
+          # Without it the script would be free to fall back to its
+          # modification-time heuristic, which is not merely weaker here -- it
+          # is wrong here. The binaries reach this job through tars that
+          # preserve their original build times, which are older than the
+          # sources actions/checkout wrote at this job's start, so that
+          # heuristic reports every correct release build as stale. It did, on
+          # run 33261962635 (tag v0.1.0), which is why this variable exists:
+          # a check known to be wrong on this path must not be reachable from
+          # it, quietly or otherwise.
+          REQUIRE_BUILD_PROVENANCE: '1'
         run: ./scripts/measure-artifacts.sh "release-$TAG"
       - uses: actions/upload-artifact@v4
         with: { name: artifact-sizes-release, path: artifact-sizes.json }

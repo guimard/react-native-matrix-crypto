@@ -8,6 +8,14 @@ Pods/
 .gradle/
 .cxx/
 jniLibs/
+# The provenance stamps scripts/record-build-provenance.sh writes next to
+# each build output: the commit that build had checked out, which
+# scripts/measure-artifacts.sh requires to be the tree it is measuring. Each
+# one describes one build on one machine, so a committed copy would be wrong
+# for every checkout except the one that wrote it -- and wrong in the
+# direction that matters, since a stamp naming this tree's HEAD is exactly
+# what makes the gate accept a binary.
+.build-provenance/
 .DS_Store
 # Not produced by the documented invocations, checked 2026-08-28: both Python
 # programs here (packages/example-app/level-two/run_level_two.py and
