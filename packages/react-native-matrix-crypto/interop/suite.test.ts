@@ -65,8 +65,14 @@ describe('interop suite', () => {
     //
     // `signalWaitMs` is shortened because this test is about the branch, not
     // about the budget -- the shipped default carries a margin for a slower
-    // emulator than this one and would spend 3 seconds here proving nothing
+    // emulator than this one and would spend ten seconds here proving nothing
     // extra.
+    //
+    // Written as words rather than as a figure on purpose: this line said
+    // "3 seconds" for one commit after `SIGNAL_WAIT_MS` moved to 10000, in the
+    // very commit whose subject was about sizing that constant. A duplicated
+    // number goes stale silently; a description of what the default is for
+    // does not.
     const binding = referenceBinding()
     const direct = binding.runProbe
     binding.runProbe = (input, payload) => direct(input, payload, undefined)
