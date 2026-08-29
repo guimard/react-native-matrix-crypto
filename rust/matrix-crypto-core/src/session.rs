@@ -1458,6 +1458,19 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
     // built it, which is the order this function has always used and which
     // a stable sort therefore leaves exactly as it was.
     //
+    // Which is the narrow claim, and the whole one: a batch of requests all
+    // seen for the first time comes out exactly as it did before this
+    // ordering existed. A batch containing a re-offered unresolved request
+    // does *not*, and that is reachable with no verification in sight -- a
+    // second `share_scope_key` before the first is marked sent re-queues
+    // the same `txn_id`, which then sorts ahead of the freshly stamped key
+    // upload and key query beside it. That reordering is harmless because
+    // those kinds carry no ordering requirement between them, which is
+    // exactly what the pre-verification contract asserted of them and what
+    // the current one still affirms; only the verification pair is
+    // order-significant. Written down because "nothing moves" is the easier
+    // sentence and is not the true one.
+    //
     // This runs after every fallible step above and before any queue is
     // drained: it consumes counter values, which is harmless (the counter
     // is monotonic and gaps in it mean nothing), and it mutates nothing a
@@ -2516,6 +2529,116 @@ mod tests {
             to_device.len(),
             1,
             "two share_scope_key calls before marking must not duplicate the queued request: {to_device:?}"
+        );
+    }
+
+    /// A request upstream re-offers keeps the position it was first given,
+    /// rather than being restamped and sent to the back of a later batch.
+    ///
+    /// This is the arm of the stamping in `take_outgoing_requests` that
+    /// reads a sequence back out of `pending`, and a previous round of this
+    /// work called it unreachable. It is not: it fires for *any* unresolved
+    /// request upstream offers again, and the key-sharing path produces one
+    /// on its own, because `share_room_key` returns the whole persisted
+    /// `to_share_with_set` on every call and so re-queues an unmarked
+    /// to-device request under the same `txn_id`. That is what this drives.
+    ///
+    /// It also matters for verification, which is what the arm was written
+    /// for: `cancel_flow` has no stage gate -- it is the one call that must
+    /// work at any moment -- so a cancel queued later can share a batch with
+    /// an earlier, still-unmarked key message, and the earlier one has to go
+    /// first.
+    ///
+    /// Both halves are asserted, because the position is only meaningful if
+    /// something newer is in the batch to be ahead of.
+    #[test]
+    fn a_request_upstream_re_offers_keeps_the_position_it_was_given() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        let (first_id, second_batch): (String, Vec<OutgoingRequest>) =
+            futures::executor::block_on(crate::in_runtime(async move {
+                crate::machine::create_machine(config_in(dir.path()))
+                    .await
+                    .unwrap();
+
+                let bob_user: matrix_sdk_common::ruma::OwnedUserId =
+                    "@bob:example.org".parse().unwrap();
+                let bob_device: matrix_sdk_common::ruma::OwnedDeviceId = "BOBDEVICE".into();
+                let bob = matrix_sdk_crypto::OlmMachine::new(&bob_user, &bob_device).await;
+                let bob_device_keys = bob
+                    .outgoing_requests()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .find_map(|r| match r.request() {
+                        AnyOutgoingRequest::KeysUpload(u) => u.device_keys.clone(),
+                        _ => None,
+                    })
+                    .expect("a fresh machine always has device keys to upload");
+
+                receive_sync_changes(&format!(
+                    r#"{{"changed_devices":{{"changed":["{bob_user}"],"left":[]}}}}"#
+                ))
+                .await
+                .unwrap();
+                let query_id = take_outgoing_requests()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|r| r.kind == "keys_query")
+                    .unwrap()
+                    .id;
+                let mut devices = BTreeMap::new();
+                devices.insert(
+                    bob_device.to_string(),
+                    serde_json::to_value(&bob_device_keys).unwrap(),
+                );
+                let mut by_user = BTreeMap::new();
+                by_user.insert(bob_user.to_string(), devices);
+                mark_request_sent(
+                    &query_id,
+                    &serde_json::json!({ "device_keys": by_user }).to_string(),
+                )
+                .await
+                .unwrap();
+
+                // Handed out once and deliberately never marked sent, so
+                // upstream still holds it and the next share re-queues the
+                // same `txn_id`.
+                share_scope_key("!s:example.org", &[bob_user.to_string()])
+                    .await
+                    .unwrap();
+                let first_id = take_outgoing_requests()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|r| r.kind == "to_device")
+                    .expect("sharing to a device with no session queues a withheld notice")
+                    .id;
+
+                share_scope_key("!s:example.org", &[bob_user.to_string()])
+                    .await
+                    .unwrap();
+                let second_batch = take_outgoing_requests().await.unwrap();
+
+                (first_id, second_batch)
+            }));
+
+        assert!(
+            second_batch
+                .iter()
+                .any(|request| request.kind != "to_device"),
+            "the second batch must carry something newer for the re-offered request to be \
+             ahead of, or this asserts nothing: {second_batch:?}"
+        );
+        assert_eq!(
+            second_batch.first().map(|request| request.id.as_str()),
+            Some(first_id.as_str()),
+            "a request handed out in an earlier batch and still unresolved must keep its \
+             place ahead of everything stamped since: {second_batch:?}"
         );
     }
 
