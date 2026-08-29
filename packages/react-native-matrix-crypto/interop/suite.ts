@@ -94,6 +94,26 @@ export interface InteropSuiteOptions {
  * in 20 of the 40, which is exactly why this bounded wait exists and why it
  * must stay. Its magnitude is milliseconds, not seconds.
  *
+ * AND ON THE OTHER BINDING
+ *
+ * Everything above is Android. The same experiment has now been run on an
+ * iOS simulator: the same two emission arms, the same interleaving, 40
+ * launches under the same three host conditions, every launch reporting
+ * `PROBE_SUMMARY 12/12`.
+ *
+ *   before (thread per signal): median 3 ms, p90 5.2 ms, max 7 ms
+ *   after  (blocking pool):     median 4 ms, p90 26.2 ms, max 29 ms
+ *
+ * Two things there bear on this constant. **No signal was lost**, in any of
+ * the 40, so the 1-in-8 above has not reproduced on iOS either. And **the
+ * callback never lost the race to the promise**, where on Android it lost it
+ * in half the launches: 26 of the 40 landed in the same millisecond and 14
+ * landed earlier. So this bounded wait absorbs nothing on iOS today. It stays
+ * regardless, because a budget sized for the platform that needs it is not
+ * made wrong by the platform that does not, and because a simulator is not a
+ * device: no thermal behaviour, no app lifecycle, and the host's own
+ * processor rather than a phone's. iOS hardware is still unmeasured.
+ *
  * WHICH WAY THE DIFFERENCE RUNS
  *
  * The blocking pool is the slower of the two on this measurement: median
