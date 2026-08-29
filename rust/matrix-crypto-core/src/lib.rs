@@ -11,6 +11,7 @@ mod observer;
 mod probe;
 mod runtime;
 mod session;
+mod verification;
 
 pub use error::ProbeError;
 pub use identity::{device_identity_keys, IdentityKeys};
@@ -21,4 +22,8 @@ pub use runtime::in_runtime;
 pub use session::{
     decrypt_event, encrypt_event, mark_request_sent, receive_sync_changes, share_scope_key,
     take_outgoing_requests, Envelope, OutgoingRequest, SessionError, SyncOutcome,
+};
+pub use verification::{
+    accept_flow, begin_comparison, cancel_flow, confirm_flow, flow_stage, read_material,
+    request_flow, FlowId, FlowStage, SasEmoji, SasMaterial,
 };

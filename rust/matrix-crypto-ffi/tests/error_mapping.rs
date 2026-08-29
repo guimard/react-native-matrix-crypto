@@ -127,7 +127,7 @@ fn every_session_error_maps_to_the_matching_ffi_variant() {
     );
 }
 
-/// All five `MachineError` variants, each to its own kind, and both
+/// All nine `MachineError` variants, each to its own kind, and both
 /// `detail`-carrying variants checked for the payload as well as the kind.
 ///
 /// The two field-carrying variants are the ones a swap could hide behind a
@@ -187,5 +187,49 @@ fn every_machine_error_maps_to_the_matching_ffi_variant() {
         "MachineError::Store must arrive as the same kind, carrying the same \
          detail -- it has the same shape as MalformedIdentifier, so a swap \
          between them type-checks and carries the detail along with it"
+    );
+
+    // The three verification-flow kinds. Fieldless and mutually
+    // indistinguishable to the compiler, like the five decryption kinds
+    // above and with the same consequence: each tells a product to do
+    // something different -- start over with a flow that still exists, wait
+    // for the stage this call needs, or go and report the request it
+    // drained as sent -- and a swap sends it to do the wrong one.
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::UnknownFlow),
+            MachineFfiError::UnknownFlow
+        ),
+        "MachineError::UnknownFlow must not arrive as another kind -- it is \
+         the only one of the three that means the identifier itself is no \
+         longer worth holding on to"
+    );
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::WrongStage),
+            MachineFfiError::WrongStage
+        ),
+        "MachineError::WrongStage must not arrive as another kind -- a \
+         product told MaterialNotReady instead would wait for a string that \
+         is never coming"
+    );
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::MaterialNotReady),
+            MachineFfiError::MaterialNotReady
+        ),
+        "MachineError::MaterialNotReady must not arrive as another kind -- it \
+         is the one that names a caller's own omission, and a product told \
+         WrongStage instead would abandon a flow that is still live and one \
+         report away from completing"
+    );
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::UnknownDevice),
+            MachineFfiError::UnknownDevice
+        ),
+        "MachineError::UnknownDevice must not arrive as another kind -- it is \
+         fixed by querying that user's devices and trying again, which is not \
+         what any of the other eight asks for"
     );
 }

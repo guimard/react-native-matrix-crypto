@@ -131,6 +131,23 @@ pub enum MachineFfiError {
     Store { detail: String },
     #[error("the store belongs to a different account")]
     MismatchedAccount,
+    // Appended, never inserted, for the reason `SessionFfiError` below
+    // states in full: UniFFI assigns each variant's wire ordinal by
+    // declaration position, so inserting one renumbers every variant after
+    // it and any binding generated before the insert misdecodes all of
+    // them rather than failing cleanly on the one that was added. These
+    // three mirror the three the core's `MachineError` grew for verification
+    // flows, in the core's own order, because appending to a five-variant
+    // list happens to put them in the same place either way -- not because
+    // the two orders are required to agree.
+    #[error("no such verification flow")]
+    UnknownFlow,
+    #[error("the flow is not at a stage where this call applies")]
+    WrongStage,
+    #[error("the short authentication string is not available yet")]
+    MaterialNotReady,
+    #[error("no such device")]
+    UnknownDevice,
 }
 
 impl From<matrix_crypto_core::MachineError> for MachineFfiError {
@@ -144,6 +161,10 @@ impl From<matrix_crypto_core::MachineError> for MachineFfiError {
             }
             matrix_crypto_core::MachineError::Store { detail } => Self::Store { detail },
             matrix_crypto_core::MachineError::MismatchedAccount => Self::MismatchedAccount,
+            matrix_crypto_core::MachineError::UnknownFlow => Self::UnknownFlow,
+            matrix_crypto_core::MachineError::WrongStage => Self::WrongStage,
+            matrix_crypto_core::MachineError::MaterialNotReady => Self::MaterialNotReady,
+            matrix_crypto_core::MachineError::UnknownDevice => Self::UnknownDevice,
         }
     }
 }

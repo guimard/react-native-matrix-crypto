@@ -89,6 +89,58 @@ pub enum MachineError {
     /// are exactly the identifiers this crate's errors must never contain.
     #[error("the store belongs to a different account")]
     MismatchedAccount,
+    /// No verification flow with the identifier this call named is known to
+    /// this process. Either the identifier never named a flow, or the flow
+    /// it named has finished and the registry has since released it -- see
+    /// `verification.rs`'s own eviction rule for exactly when that happens.
+    ///
+    /// **Appended, not inserted.** The three variants from here down were
+    /// added after this enum already had a mirror carrying UniFFI's error
+    /// derive, and UniFFI assigns each variant's wire ordinal by
+    /// declaration position: inserting one renumbers every variant after it
+    /// and makes bindings generated before the insert decode the wrong
+    /// error. The rule, and why the mirror's order is deliberately not this
+    /// one's, is stated in full at `matrix-crypto-ffi/src/lib.rs`.
+    #[error("no such verification flow")]
+    UnknownFlow,
+    /// The call is one this flow supports, but not at the stage the flow is
+    /// currently at -- accepting a flow nobody has requested, starting a
+    /// comparison before both sides are ready, confirming or cancelling a
+    /// flow that has already finished. This is what upstream reports by
+    /// returning `None` from an otherwise infallible call; returned as a
+    /// named error rather than passed on as an absence, because "did
+    /// nothing, successfully" is the one answer a verification call must
+    /// never give.
+    #[error("the flow is not at a stage where this call applies")]
+    WrongStage,
+    /// The flow has not exchanged keys yet, so there is no short
+    /// authentication string to show.
+    ///
+    /// This is the loud form of the one silent failure this flow has.
+    /// Upstream advances from "accepted" to "keys exchanged" only when the
+    /// caller reports the key message as sent, through the same outbound
+    /// pump every other request goes through. A caller that drains the pump
+    /// but never resolves what it drained leaves the flow parked forever:
+    /// no error, no timeout, and a short authentication string that is
+    /// simply never produced. A caller that gets this error back has been
+    /// told which of the two it is.
+    #[error("the short authentication string is not available yet")]
+    MaterialNotReady,
+    /// The identifiers this call named are well-formed, but no such device
+    /// is in the store.
+    ///
+    /// Kept distinct from `MalformedIdentifier`, which it was folded into
+    /// first: the two call for different things from a caller. A malformed
+    /// identifier is a mistake in what was passed and no retry helps; an
+    /// unknown device is a device this machine has not been told about yet,
+    /// and querying that user's devices through the outbound pump and
+    /// trying again is exactly what resolves it. The session taxonomy
+    /// already draws this line (`SessionError::UnknownDevice`), and
+    /// rendering "malformed identifier: no such device" drew it nowhere.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("no such device")]
+    UnknownDevice,
 }
 
 struct Held {
@@ -294,6 +346,24 @@ where
 
 #[cfg(test)]
 pub(crate) fn reset_for_test() {
+    // Cleared **first**, and the order is the whole point of doing it here
+    // at all. A verification registry entry holds an upstream handle, which
+    // holds an `Arc` on the crypto store this function is about to drop.
+    // Clearing while `HELD` still holds its own reference releases the
+    // registry's without running the store's destructor. Clearing
+    // afterwards makes the registry's reference the *last* one, released on
+    // this bare synchronous test thread -- which is precisely the abort the
+    // block below exists to avoid, relocated rather than removed. It was
+    // written that way once and read twice without anyone noticing;
+    // `verification.rs`'s
+    // `the_registry_is_emptied_before_the_store_it_holds_alive_is_dropped`
+    // is what now keeps these two statements in this order.
+    //
+    // `session`'s request registry needs no such treatment: it holds
+    // request bodies, not store handles, which is why only this one is
+    // reset from here.
+    crate::verification::reset_flows_for_test();
+
     // `RwLock`, not `OnceLock`: the registry must be clearable between tests
     // that each need their own fresh machine, all run in one process rather
     // than one process per test.

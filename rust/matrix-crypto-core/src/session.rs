@@ -45,7 +45,12 @@ use matrix_sdk_common::ruma::{
     OneTimeKeyAlgorithm, OwnedRoomId, OwnedTransactionId, OwnedUserId, TransactionId, UInt,
 };
 use matrix_sdk_crypto::types::events::room::encrypted::EncryptedEvent;
-use matrix_sdk_crypto::types::requests::{AnyOutgoingRequest, ToDeviceRequest};
+// `OutgoingRequest` is renamed on import: this module publishes a public
+// type of the same name, and the upstream one is only ever held, never
+// exposed.
+use matrix_sdk_crypto::types::requests::{
+    AnyOutgoingRequest, OutgoingRequest as UpstreamOutgoingRequest, ToDeviceRequest,
+};
 // Reached through `matrix_sdk_crypto`'s own `pub use vodozemac;` re-export
 // rather than a direct `vodozemac` dependency this crate would then have to
 // keep version-matched by hand -- the same reasoning `machine.rs` documents
@@ -234,9 +239,23 @@ impl From<MachineError> for SessionError {
             // for the reason above, and mapping it truthfully costs
             // nothing if it ever stops being.
             MachineError::MalformedIdentifier { .. } => SessionError::MalformedIdentifier,
+            // The three verification-flow kinds belong to `verification.rs`,
+            // which returns `MachineError` directly and never routes through
+            // this conversion. Listed by name for the same no-wildcard reason
+            // as everything above: they are unreachable here today, and a
+            // future variant must still fail this build rather than land on
+            // `Failed` unnoticed.
+            // Carried across by name, like `MalformedIdentifier` above and
+            // for the same reason: this enum has the matching kind, so
+            // mapping it truthfully costs nothing. Still unreachable here --
+            // `with_machine` only ever produces `NotInitialised`.
+            MachineError::UnknownDevice => SessionError::UnknownDevice,
             MachineError::AlreadyInitialised
             | MachineError::Store { .. }
-            | MachineError::MismatchedAccount => SessionError::Failed,
+            | MachineError::MismatchedAccount
+            | MachineError::UnknownFlow
+            | MachineError::WrongStage
+            | MachineError::MaterialNotReady => SessionError::Failed,
         }
     }
 }
@@ -985,9 +1004,32 @@ impl PendingKind {
     }
 }
 
+/// One request this module has handed out and is waiting to have resolved.
+///
+/// The `sequence` is this module's answer to a question the two queues it
+/// draws from cannot answer between them: **in what order were these
+/// produced?** Requests reach the pump from two places -- upstream's own
+/// cache, which is a `BTreeMap` keyed by a random transaction id and so has
+/// no order at all, and [`RequestState::queued_action`], which upstream
+/// hands back to its caller. A verification's closing pair straddles that
+/// boundary (see [`queue_action_request`]), so ordering each source
+/// separately, or concatenating them in a fixed source order, is not enough:
+/// only one number spanning both is.
+///
+/// Assigned when this module first learns of a request -- at queue time for
+/// the requests it is handed, at hand-out time for the ones it reads from
+/// upstream -- and kept for as long as the request is unresolved, so a
+/// request re-offered by upstream in a later batch keeps the position it
+/// had rather than jumping to the end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Pending {
+    kind: PendingKind,
+    sequence: u64,
+}
+
 /// Process-wide outbound-request bookkeeping this module owns.
 ///
-/// Three distinct jobs share one lock rather than three, so a caller can
+/// Four distinct jobs share one lock rather than four, so a caller can
 /// never observe one updated without the others:
 ///
 /// * `queued_to_device` -- to-device requests [`share_scope_key`] obtained
@@ -1005,6 +1047,16 @@ impl PendingKind {
 ///   second `share_scope_key` call before the first claim is taken
 ///   overwrites it rather than accumulating a second one describing
 ///   overlapping or stale missing-session state.
+/// * `queued_action` -- requests upstream handed back to *its* caller
+///   instead of queueing itself, which is how every verification flow's own
+///   messages arrive (see [`queue_action_request`]). A `Vec`, not a map,
+///   each entry stamped with the [`Pending::sequence`] it was queued at:
+///   a verification's last two messages are a confirmation and the
+///   acknowledgement that follows it, the far side drops the
+///   acknowledgement if it arrives first, and the two do not always come
+///   from the same queue. Valued by upstream's own request, so
+///   `describe_outgoing` decides the kind and the wire body here exactly as
+///   it does for the requests upstream queued for itself.
 /// * `pending` -- every request id this module has ever handed out via
 ///   [`take_outgoing_requests`] that has not yet been resolved by
 ///   [`mark_request_sent`], with the [`PendingKind`] needed to parse its
@@ -1013,6 +1065,9 @@ impl PendingKind {
 ///   retried with corrected input); also evicted early for the three kinds
 ///   `PendingKind::superseded_by_a_fresh_request` names, since a stale id
 ///   of one of those can never be resolved regardless.
+/// * `next_sequence` -- the counter behind [`Pending::sequence`], read and
+///   incremented under the same lock as everything else here, so two
+///   requests learned of in either order can always be put back into it.
 ///
 /// A `std::sync::Mutex`, not `tokio::sync::Mutex`: every critical section
 /// below is a plain synchronous map/vec operation with no `.await` inside
@@ -1020,21 +1075,99 @@ impl PendingKind {
 struct RequestState {
     queued_to_device: BTreeMap<String, std::sync::Arc<ToDeviceRequest>>,
     pending_claim: Option<(OwnedTransactionId, KeysClaimRequest)>,
-    pending: BTreeMap<String, PendingKind>,
+    queued_action: Vec<(u64, UpstreamOutgoingRequest)>,
+    pending: BTreeMap<String, Pending>,
+    next_sequence: u64,
+}
+
+impl RequestState {
+    /// The next position in this module's single production order.
+    ///
+    /// A `u64` counter that is never reset in production. At one request
+    /// per nanosecond it wraps after roughly six hundred years, so the
+    /// overflow this deliberately does not handle is not reachable; a
+    /// wrapping counter would be, and would silently sort a new request
+    /// ahead of every old one.
+    fn next_sequence(&mut self) -> u64 {
+        let sequence = self.next_sequence;
+        self.next_sequence += 1;
+        sequence
+    }
 }
 
 static STATE: StdMutex<RequestState> = StdMutex::new(RequestState {
     queued_to_device: BTreeMap::new(),
     pending_claim: None,
+    queued_action: Vec::new(),
     pending: BTreeMap::new(),
+    next_sequence: 0,
 });
+
+/// Queues one request upstream handed back to its caller instead of
+/// queueing itself, so [`take_outgoing_requests`] hands it out like any
+/// other.
+///
+/// Upstream splits the requests a verification flow produces in two, and
+/// only one half is automatic. The messages it generates in *reaction* to
+/// an incoming event -- the key message, a MAC the far side asked for
+/// first, a timeout cancellation -- it queues into its own cache, and
+/// `OlmMachine::outgoing_requests` already returns them. The requests
+/// produced by an *action* the caller took -- requesting a verification,
+/// accepting one, starting a comparison, confirming, cancelling -- it
+/// returns directly and never queues. Nothing sends those unless this
+/// module holds on to them, and a verification whose first message is
+/// never sent is indistinguishable from one nobody answered.
+///
+/// Stamped with a [`Pending::sequence`] on the way in, and held in a `Vec`
+/// rather than a map keyed by request id the way `queued_to_device` is.
+/// These requests are not order-independent, and the keyed form was tried
+/// first and is wrong twice over:
+///
+/// * Upstream's request ids are random, so a map hands the batch out in an
+///   arbitrary order. A confirmation is followed immediately by the
+///   acknowledgement that closes the flow, and a far side that receives the
+///   acknowledgement first discards it and waits forever for one that has
+///   already been sent -- so a flow completed or hung depending on how two
+///   random identifiers happened to sort.
+/// * Ordering this queue alone is not enough either, because the pair does
+///   not always come out of this queue. Upstream returns both together only
+///   when the *peer* confirmed first; when we confirm first, it hands back
+///   the confirmation and later produces the acknowledgement as a reaction
+///   to the peer's own, into its own cache. One batch then carries one from
+///   each source, which is why the sequence spans both rather than each
+///   source being ordered separately.
+///
+/// De-duplicated by request id on the way in: a caller that repeats an
+/// action before the first is taken would otherwise queue the same id
+/// twice, and the second `mark_request_sent` for it would fail with
+/// `UnknownRequest` once the first consumed the entry. Checked against
+/// `pending` as well as against this queue, since an id already handed out
+/// and not yet resolved is in neither the queue nor upstream's hands but is
+/// just as unrepeatable. Both scans are over collections holding a handful
+/// of entries.
+pub(crate) fn queue_action_request(request: UpstreamOutgoingRequest) {
+    let mut state = STATE.lock().expect("request registry poisoned");
+    let id = request.request_id().to_string();
+    if state
+        .queued_action
+        .iter()
+        .any(|(_, queued)| queued.request_id() == request.request_id())
+        || state.pending.contains_key(&id)
+    {
+        return;
+    }
+    let sequence = state.next_sequence();
+    state.queued_action.push((sequence, request));
+}
 
 #[cfg(test)]
 fn reset_request_state_for_test() {
     let mut state = STATE.lock().expect("request registry poisoned");
     state.queued_to_device.clear();
     state.pending_claim = None;
+    state.queued_action.clear();
     state.pending.clear();
+    state.next_sequence = 0;
 }
 
 /// Serialises `value`, mapping a failure to [`SessionError::Failed`] rather
@@ -1201,29 +1334,64 @@ impl std::fmt::Debug for OutgoingRequest {
 
 /// Drains every outstanding outbound request: device/one-time key uploads
 /// and key queries upstream still wants sent (`OlmMachine::outgoing_requests`),
-/// any to-device requests [`share_scope_key`] queued, and any `/keys/claim`
-/// request it queued (design doc section 3ter).
+/// any to-device requests [`share_scope_key`] queued, any `/keys/claim`
+/// request it queued (design doc section 3ter), and every request a
+/// verification flow handed back rather than queueing
+/// ([`queue_action_request`]).
 ///
 /// This is the half of the pump the design doc section 3bis is named for.
 /// A fresh machine's device keys and one-time keys are otherwise never
 /// published, and a shared session key never leaves the process -- both
 /// silent failures that pass every test which never calls this.
+///
+/// # The returned order is significant, and a caller must preserve it
+///
+/// **Send the requests in the order this returns them.** Not "start them in
+/// that order and let them race" -- each one has to reach the homeserver
+/// before the next is sent, because the server relays them to the other
+/// device in the order it receives them.
+///
+/// This is a real constraint, not a defensive one, and it has exactly one
+/// source: a verification flow's last two messages are a confirmation and
+/// the acknowledgement that closes the flow, and the far side **silently
+/// discards** an acknowledgement that arrives before the confirmation it
+/// acknowledges. It then waits for one that has already been sent. The
+/// failure is asymmetric -- this side completes and records the other device
+/// as verified, the other side records nothing -- and neither side is told.
+///
+/// Resolving them through [`mark_request_sent`] is a different matter and
+/// stays unordered: it is a map lookup by id, and marking the second before
+/// the first is harmless. So a caller may still send request *n+1* as soon
+/// as *n*'s response arrives, without waiting for *n* to be marked.
+///
+/// Requests from *different* batches were never orderable against each
+/// other -- a batch is a snapshot -- and nothing here changes that. What
+/// this function guarantees is that within one batch, the order it returns
+/// is the order the requests were produced in, across both of the places
+/// they come from.
 pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionError> {
     let upstream =
         with_machine(|machine| Box::pin(async move { machine.outgoing_requests().await }))
             .await?
             .map_err(|_upstream| SessionError::Failed)?;
 
-    // Every `(id, kind, body)` this call will hand out, built in full
-    // before `state.pending` is touched: a serialisation failure partway
-    // through must not leave `pending` holding an id this call never
-    // actually returned to the caller, which nothing could ever resolve.
-    let mut fresh: Vec<(String, PendingKind, String)> = Vec::with_capacity(upstream.len() + 2);
+    // Every entry this call will hand out, built in full before
+    // `state.pending` is touched: a serialisation failure partway through
+    // must not leave `pending` holding an id this call never actually
+    // returned to the caller, which nothing could ever resolve.
+    //
+    // The leading `Option<u64>` is the position the entry already has in
+    // this module's production order, for the one source that knows it:
+    // `queued_action` stamps its entries when they are queued. Everything
+    // else is learned of here, for the first time or again, and is stamped
+    // below.
+    let mut fresh: Vec<(Option<u64>, String, PendingKind, String)> =
+        Vec::with_capacity(upstream.len() + 2);
 
     for request in &upstream {
         let id = request.request_id().to_string();
         let (kind, body) = describe_outgoing(request.request())?;
-        fresh.push((id, kind, body));
+        fresh.push((None, id, kind, body));
     }
 
     let mut state = STATE.lock().expect("request registry poisoned");
@@ -1249,18 +1417,85 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
     let queued_to_device = state.queued_to_device.clone();
     for (id, to_device) in &queued_to_device {
         let body = serde_json::to_string(to_device.as_ref()).map_err(|_| SessionError::Failed)?;
-        fresh.push((id.clone(), PendingKind::ToDevice, body));
+        fresh.push((None, id.clone(), PendingKind::ToDevice, body));
     }
 
     if let Some((txn_id, claim_request)) = &state.pending_claim {
         let body = describe_keys_claim(claim_request)?;
-        fresh.push((txn_id.to_string(), PendingKind::KeysClaim, body));
+        fresh.push((None, txn_id.to_string(), PendingKind::KeysClaim, body));
     }
+
+    // Read by reference rather than cloned: `AnyOutgoingRequest` is not
+    // `Clone` (it is `Debug` and nothing else upstream), and the borrow
+    // ends before the drain below. Same "read, not drained, until every
+    // serialisation has already succeeded" discipline as the two queues
+    // above, for the same reason. Each entry keeps the sequence it was
+    // stamped with when it was queued -- these are the only requests whose
+    // production this module actually witnessed -- and carries upstream's
+    // own request id, so `describe_outgoing` decides the kind here exactly
+    // as it does for the requests upstream queued itself: a verification
+    // action request is not a distinct kind on this crate's surface, it is
+    // a `to_device`, a `signature_upload` or a `room_message` like any
+    // other.
+    for (sequence, request) in &state.queued_action {
+        let (kind, body) = describe_outgoing(request.request())?;
+        fresh.push((
+            Some(*sequence),
+            request.request_id().to_string(),
+            kind,
+            body,
+        ));
+    }
+
+    // Every entry now carries a position in one order spanning both
+    // sources, and the batch is put into it.
+    //
+    // An entry stamped at queue time keeps that stamp. An entry upstream is
+    // offering keeps the stamp it was given the first time it was offered,
+    // read back out of `pending`, so a request handed out and not yet
+    // resolved does not jump ahead of everything queued since. Anything
+    // genuinely new is stamped here, in the order the three blocks above
+    // built it, which is the order this function has always used and which
+    // a stable sort therefore leaves exactly as it was.
+    //
+    // Which is the narrow claim, and the whole one: a batch of requests all
+    // seen for the first time comes out exactly as it did before this
+    // ordering existed. A batch containing a re-offered unresolved request
+    // does *not*, and that is reachable with no verification in sight -- a
+    // second `share_scope_key` before the first is marked sent re-queues
+    // the same `txn_id`, which then sorts ahead of the freshly stamped key
+    // upload and key query beside it. That reordering is harmless because
+    // those kinds carry no ordering requirement between them, which is
+    // exactly what the pre-verification contract asserted of them and what
+    // the current one still affirms; only the verification pair is
+    // order-significant. Written down because "nothing moves" is the easier
+    // sentence and is not the true one.
+    //
+    // This runs after every fallible step above and before any queue is
+    // drained: it consumes counter values, which is harmless (the counter
+    // is monotonic and gaps in it mean nothing), and it mutates nothing a
+    // failed call would have to put back.
+    let mut ordered: Vec<(u64, String, PendingKind, String)> = Vec::with_capacity(fresh.len());
+    for (queued_at, id, kind, body) in fresh {
+        // Copied out of the map before the counter is touched: holding the
+        // borrow across `next_sequence` would be a mutable and an immutable
+        // borrow of `state` at once.
+        let already_handed_out = state.pending.get(&id).map(|entry| entry.sequence);
+        let sequence = match queued_at.or(already_handed_out) {
+            Some(sequence) => sequence,
+            None => state.next_sequence(),
+        };
+        ordered.push((sequence, id, kind, body));
+    }
+    // Stable, so entries stamped in this call keep the order they were
+    // built in rather than an arbitrary one.
+    ordered.sort_by_key(|(sequence, _, _, _)| *sequence);
 
     // Every fallible step above has now succeeded, so the two queues can
     // safely be drained for real.
     state.queued_to_device.clear();
     state.pending_claim = None;
+    state.queued_action.clear();
 
     // Evict every existing `pending` entry whose kind this batch is about
     // to refresh, once per call rather than once per item -- per-item
@@ -1272,20 +1507,20 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
     // the first of those siblings would discard the second. See
     // `PendingKind::superseded_by_a_fresh_request`'s own doc comment for
     // why eviction is correct here at all.
-    let refreshed_kinds: Vec<PendingKind> = fresh
+    let refreshed_kinds: Vec<PendingKind> = ordered
         .iter()
-        .map(|(_, kind, _)| *kind)
+        .map(|(_, _, kind, _)| *kind)
         .filter(|kind| kind.superseded_by_a_fresh_request())
         .collect();
     if !refreshed_kinds.is_empty() {
         state
             .pending
-            .retain(|_, kind| !refreshed_kinds.contains(kind));
+            .retain(|_, entry| !refreshed_kinds.contains(&entry.kind));
     }
 
-    let mut out = Vec::with_capacity(fresh.len());
-    for (id, kind, body) in fresh {
-        state.pending.insert(id.clone(), kind);
+    let mut out = Vec::with_capacity(ordered.len());
+    for (sequence, id, kind, body) in ordered {
+        state.pending.insert(id.clone(), Pending { kind, sequence });
         out.push(OutgoingRequest {
             id,
             kind: kind.tag().to_string(),
@@ -1405,7 +1640,7 @@ async fn mark_sent(
 pub async fn mark_request_sent(id: &str, response_json: &str) -> Result<(), SessionError> {
     let kind = {
         let state = STATE.lock().expect("request registry poisoned");
-        state.pending.get(id).copied()
+        state.pending.get(id).map(|entry| entry.kind)
     }
     .ok_or(SessionError::UnknownRequest)?;
 
@@ -1863,6 +2098,162 @@ mod tests {
         );
     }
 
+    /// Requests upstream hands back to its caller must leave in the order
+    /// they were produced.
+    ///
+    /// A regression test with a specific defect behind it. `queued_action`
+    /// was first a map keyed by request id, mirroring `queued_to_device`.
+    /// Upstream's request ids are random, so that handed each batch out in
+    /// an arbitrary order -- and unlike a shared key, a verification's
+    /// messages are ordered: a confirmation is followed by the
+    /// acknowledgement that closes the flow, and a far side that receives
+    /// the acknowledgement first drops it and waits for one that has
+    /// already been sent. The two-party verification test completed or hung
+    /// depending on how two random identifiers happened to sort.
+    ///
+    /// The two ids below therefore sort the opposite way round from the
+    /// order they are queued in: under the map this asserted `["aaaa",
+    /// "zzzz"]` and failed.
+    #[test]
+    fn action_requests_leave_in_the_order_they_were_queued() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        fn action(txn_id: &str) -> UpstreamOutgoingRequest {
+            let recipient: OwnedUserId = "@other:example.org".parse().unwrap();
+            let mut request = ToDeviceRequest::new(
+                &recipient,
+                matrix_sdk_common::ruma::to_device::DeviceIdOrAllDevices::AllDevices,
+                "m.dummy",
+                Raw::from_json_string("{}".to_string()).unwrap(),
+            );
+            request.txn_id = <&TransactionId>::from(txn_id).to_owned();
+            matrix_sdk_crypto::types::requests::OutgoingVerificationRequest::ToDevice(request)
+                .into()
+        }
+
+        let handed_out = futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+            queue_action_request(action("zzzz"));
+            queue_action_request(action("aaaa"));
+            take_outgoing_requests().await.unwrap()
+        });
+
+        let ours: Vec<String> = handed_out
+            .into_iter()
+            .map(|request| request.id)
+            .filter(|id| id == "zzzz" || id == "aaaa")
+            .collect();
+        assert_eq!(
+            ours,
+            vec!["zzzz".to_string(), "aaaa".to_string()],
+            "action requests must be handed out in the order they were queued, \
+             not in the order their random identifiers happen to sort"
+        );
+    }
+
+    /// A request queued before the pump ran must be handed out before the
+    /// requests the pump learns of while running.
+    ///
+    /// The companion to the test above, and the half that matters more.
+    /// Ordering `queued_action` internally fixes the pair that comes out of
+    /// one upstream call; it does nothing for the pair that straddles the
+    /// two sources, which is the shape a verification produces whenever
+    /// this side confirms first. The action below is queued first and
+    /// appended to the batch last, so it can only come out first if the
+    /// whole batch is ordered rather than concatenated.
+    ///
+    /// A fresh machine always has a key upload waiting, which is what
+    /// supplies the other side of the comparison: it is real, it comes from
+    /// upstream, and this module learns of it only while the pump is
+    /// running -- after the action was queued.
+    #[test]
+    fn an_action_queued_first_is_handed_out_before_what_upstream_offers_later() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        let handed_out = futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+            let recipient: OwnedUserId = "@other:example.org".parse().unwrap();
+            let mut request = ToDeviceRequest::new(
+                &recipient,
+                matrix_sdk_common::ruma::to_device::DeviceIdOrAllDevices::AllDevices,
+                "m.dummy",
+                Raw::from_json_string("{}".to_string()).unwrap(),
+            );
+            request.txn_id = <&TransactionId>::from("queued-first").to_owned();
+            queue_action_request(
+                matrix_sdk_crypto::types::requests::OutgoingVerificationRequest::ToDevice(request)
+                    .into(),
+            );
+            take_outgoing_requests().await.unwrap()
+        });
+
+        assert!(
+            handed_out
+                .iter()
+                .any(|request| request.kind == "keys_upload"),
+            "this test needs a request from upstream to order against: {handed_out:?}"
+        );
+        assert_eq!(
+            handed_out.first().map(|request| request.id.as_str()),
+            Some("queued-first"),
+            "a request queued before the pump ran must be handed out before the \
+             ones the pump learned of while running: {handed_out:?}"
+        );
+    }
+
+    /// Queueing the same action twice before the pump takes it must not
+    /// hand the same id out twice: the second `mark_request_sent` for it
+    /// would fail with `UnknownRequest` once the first consumed the entry.
+    #[test]
+    fn queueing_the_same_action_twice_hands_it_out_once() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        let handed_out = futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+            let recipient: OwnedUserId = "@other:example.org".parse().unwrap();
+            for _ in 0..2 {
+                let mut request = ToDeviceRequest::new(
+                    &recipient,
+                    matrix_sdk_common::ruma::to_device::DeviceIdOrAllDevices::AllDevices,
+                    "m.dummy",
+                    Raw::from_json_string("{}".to_string()).unwrap(),
+                );
+                request.txn_id = <&TransactionId>::from("repeated").to_owned();
+                queue_action_request(
+                    matrix_sdk_crypto::types::requests::OutgoingVerificationRequest::ToDevice(
+                        request,
+                    )
+                    .into(),
+                );
+            }
+            take_outgoing_requests().await.unwrap()
+        });
+
+        let repeats = handed_out
+            .iter()
+            .filter(|request| request.id == "repeated")
+            .count();
+        assert_eq!(
+            repeats, 1,
+            "the same action queued twice must be handed out once, not {repeats} times"
+        );
+    }
+
     /// An `id` this module never handed out (or already resolved) must be
     /// rejected rather than silently accepted or mistaken for "not
     /// initialised"/"failed".
@@ -2138,6 +2529,116 @@ mod tests {
             to_device.len(),
             1,
             "two share_scope_key calls before marking must not duplicate the queued request: {to_device:?}"
+        );
+    }
+
+    /// A request upstream re-offers keeps the position it was first given,
+    /// rather than being restamped and sent to the back of a later batch.
+    ///
+    /// This is the arm of the stamping in `take_outgoing_requests` that
+    /// reads a sequence back out of `pending`, and a previous round of this
+    /// work called it unreachable. It is not: it fires for *any* unresolved
+    /// request upstream offers again, and the key-sharing path produces one
+    /// on its own, because `share_room_key` returns the whole persisted
+    /// `to_share_with_set` on every call and so re-queues an unmarked
+    /// to-device request under the same `txn_id`. That is what this drives.
+    ///
+    /// It also matters for verification, which is what the arm was written
+    /// for: `cancel_flow` has no stage gate -- it is the one call that must
+    /// work at any moment -- so a cancel queued later can share a batch with
+    /// an earlier, still-unmarked key message, and the earlier one has to go
+    /// first.
+    ///
+    /// Both halves are asserted, because the position is only meaningful if
+    /// something newer is in the batch to be ahead of.
+    #[test]
+    fn a_request_upstream_re_offers_keeps_the_position_it_was_given() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        let (first_id, second_batch): (String, Vec<OutgoingRequest>) =
+            futures::executor::block_on(crate::in_runtime(async move {
+                crate::machine::create_machine(config_in(dir.path()))
+                    .await
+                    .unwrap();
+
+                let bob_user: matrix_sdk_common::ruma::OwnedUserId =
+                    "@bob:example.org".parse().unwrap();
+                let bob_device: matrix_sdk_common::ruma::OwnedDeviceId = "BOBDEVICE".into();
+                let bob = matrix_sdk_crypto::OlmMachine::new(&bob_user, &bob_device).await;
+                let bob_device_keys = bob
+                    .outgoing_requests()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .find_map(|r| match r.request() {
+                        AnyOutgoingRequest::KeysUpload(u) => u.device_keys.clone(),
+                        _ => None,
+                    })
+                    .expect("a fresh machine always has device keys to upload");
+
+                receive_sync_changes(&format!(
+                    r#"{{"changed_devices":{{"changed":["{bob_user}"],"left":[]}}}}"#
+                ))
+                .await
+                .unwrap();
+                let query_id = take_outgoing_requests()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|r| r.kind == "keys_query")
+                    .unwrap()
+                    .id;
+                let mut devices = BTreeMap::new();
+                devices.insert(
+                    bob_device.to_string(),
+                    serde_json::to_value(&bob_device_keys).unwrap(),
+                );
+                let mut by_user = BTreeMap::new();
+                by_user.insert(bob_user.to_string(), devices);
+                mark_request_sent(
+                    &query_id,
+                    &serde_json::json!({ "device_keys": by_user }).to_string(),
+                )
+                .await
+                .unwrap();
+
+                // Handed out once and deliberately never marked sent, so
+                // upstream still holds it and the next share re-queues the
+                // same `txn_id`.
+                share_scope_key("!s:example.org", &[bob_user.to_string()])
+                    .await
+                    .unwrap();
+                let first_id = take_outgoing_requests()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|r| r.kind == "to_device")
+                    .expect("sharing to a device with no session queues a withheld notice")
+                    .id;
+
+                share_scope_key("!s:example.org", &[bob_user.to_string()])
+                    .await
+                    .unwrap();
+                let second_batch = take_outgoing_requests().await.unwrap();
+
+                (first_id, second_batch)
+            }));
+
+        assert!(
+            second_batch
+                .iter()
+                .any(|request| request.kind != "to_device"),
+            "the second batch must carry something newer for the re-offered request to be \
+             ahead of, or this asserts nothing: {second_batch:?}"
+        );
+        assert_eq!(
+            second_batch.first().map(|request| request.id.as_str()),
+            Some(first_id.as_str()),
+            "a request handed out in an earlier batch and still unresolved must keep its \
+             place ahead of everything stamped since: {second_batch:?}"
         );
     }
 
