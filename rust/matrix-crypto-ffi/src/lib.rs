@@ -76,9 +76,13 @@ pub trait ProbeObserver: Send + Sync {
 ///
 /// No thread-safety work happens here, and none is needed. By the time
 /// `on_signal` below runs, the core's emission path has already detached
-/// the call onto its own freshly spawned thread, off whatever stack -- and
-/// whatever lock -- produced the signal (see `observer.rs`'s `emit` in
-/// `matrix-crypto-core`, and design doc section 5). Calling the foreign
+/// the call onto a thread of the library's own -- one of the runtime's
+/// blocking-pool threads since M3 replaced the thread per signal, and this
+/// comment said "its own freshly spawned thread" until that was noticed --
+/// off whatever stack, and whatever lock, produced the signal (see
+/// `observer.rs`'s `emit` in `matrix-crypto-core`, and design doc section 5,
+/// item B2). What this crate depends on is only that the thread is not the
+/// caller's; which thread it is has never mattered here. Calling the foreign
 /// callback from that thread, whichever one it happens to be, is safe
 /// because ubrn's generated glue is what marshals the call onto the JS
 /// thread; that marshalling, not this crate, is the boundary a callback
