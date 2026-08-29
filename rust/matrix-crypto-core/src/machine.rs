@@ -364,6 +364,12 @@ pub(crate) fn reset_for_test() {
     // reset from here.
     crate::verification::reset_flows_for_test();
 
+    // Same reason, one layer up: a recorder installed by one test would
+    // otherwise keep receiving another test's signals, and a test that
+    // asserts on "exactly one signal" would fail for a reason belonging to
+    // its neighbour.
+    crate::observer::reset_crypto_observer_for_test();
+
     // `RwLock`, not `OnceLock`: the registry must be clearable between tests
     // that each need their own fresh machine, all run in one process rather
     // than one process per test.

@@ -49,13 +49,16 @@
 //! crate happens to be the only supplier of.
 
 use std::collections::BTreeMap;
+use std::sync::mpsc;
+use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::time::Duration;
 
 use matrix_crypto_core::{
     accept_flow, begin_comparison, cancel_flow, confirm_flow, create_machine, device_statuses,
     flow_stage, in_runtime, mark_request_sent, read_material, receive_sync_changes, request_flow,
-    share_scope_key, take_outgoing_requests, with_machine, FlowId, FlowStage, MachineConfig,
-    MachineError, TrustState,
+    set_crypto_observer, share_scope_key, take_outgoing_requests, with_machine, CryptoObserver,
+    CryptoSignal, FlowId, FlowStage, MachineConfig, MachineError, TrustState,
 };
 use matrix_sdk_common::ruma::api::client::keys::get_keys::v3::Response as KeysQueryResponse;
 use matrix_sdk_common::ruma::api::client::keys::upload_keys::v3::Response as KeysUploadResponse;
@@ -92,6 +95,100 @@ static SERIAL: StdMutex<()> = StdMutex::new(());
 /// The library machine's published device keys, captured the first time a
 /// test needs them, so each counterparty can be taught who this device is.
 static LIBRARY_DEVICE_KEYS: StdMutex<Option<String>> = StdMutex::new(None);
+
+// -------------------------------------------------- the signal channel
+
+/// What the crypto signal channel delivered to this process, in order.
+///
+/// A channel rather than a `Vec` a test reads whenever it likes, because
+/// delivery is detached: the library hands a signal to a thread of its own
+/// and it arrives when that thread runs. A vector would let a test that
+/// checked at the wrong instant report an absence that was really a
+/// not-yet. A channel lets a test *wait*, bounded, which is the only shape
+/// that can distinguish the two.
+static SIGNALS: StdMutex<Option<mpsc::Receiver<CryptoSignal>>> = StdMutex::new(None);
+
+/// How long a signal that is coming gets to arrive.
+///
+/// The same number, for the same reasons, as `observer.rs`'s own
+/// `DELIVERY_BOUND`: far looser than delivery actually takes, so it is not
+/// a performance threshold and cannot flake under load, and tight enough
+/// that a channel which has stopped delivering fails a test in seconds
+/// rather than hanging it.
+const DELIVERY_BOUND: Duration = Duration::from_secs(5);
+
+/// How long a signal that must *not* come gets to prove it.
+///
+/// Shorter than `DELIVERY_BOUND`, and the asymmetry is deliberate: this
+/// bound is paid in full by every negative assertion, on every run. What
+/// keeps it honest is that no negative assertion in this file stands alone
+/// -- each is followed by a positive one on the same channel, so an
+/// implementation that had simply stopped delivering fails the pair.
+const QUIET_BOUND: Duration = Duration::from_millis(750);
+
+struct Recorder {
+    tx: mpsc::Sender<CryptoSignal>,
+}
+
+impl CryptoObserver for Recorder {
+    fn on_signal(&self, signal: CryptoSignal) {
+        let _ = self.tx.send(signal);
+    }
+}
+
+/// Installs this file's recorder, once, and empties whatever a previous
+/// test left behind.
+///
+/// The observer is process-wide and there is no call to remove one, which
+/// is why installation is idempotent and the draining is what gives each
+/// test a known-empty start. Tests here serialise on `SERIAL`, so no two
+/// are ever filling this channel at once.
+///
+/// **Drained until quiet rather than until empty**, and the difference is
+/// not pedantry: delivery is detached, so a signal a previous test caused
+/// can still be in flight when this runs. A `try_recv` loop would report
+/// the channel empty and then let that signal arrive in the middle of the
+/// next test -- observed exactly once, as a `TrustChanged` from
+/// `@confirmingsecond` surfacing inside `a_disagreement_refuses` under
+/// `--test-threads=1`, which is an ordering the default parallel run does
+/// not produce.
+fn subscribe_and_drain() {
+    let mut held = SIGNALS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if held.is_none() {
+        let (tx, rx) = mpsc::channel();
+        *held = Some(rx);
+        set_crypto_observer(Arc::new(Recorder { tx }));
+    }
+    let received = held.as_ref().expect("the recorder was just installed");
+    while received.recv_timeout(QUIET_BOUND).is_ok() {}
+}
+
+/// The next signal, or a panic naming what was expected.
+fn next_signal(expected: &str) -> CryptoSignal {
+    let held = SIGNALS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    held.as_ref()
+        .expect("subscribe_and_drain must run first")
+        .recv_timeout(DELIVERY_BOUND)
+        .unwrap_or_else(|e| panic!("{expected}: nothing reached the signal channel ({e})"))
+}
+
+/// Requires that nothing arrives, having waited for it.
+fn no_signal(why: &str) {
+    let held = SIGNALS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Ok(signal) = held
+        .as_ref()
+        .expect("subscribe_and_drain must run first")
+        .recv_timeout(QUIET_BOUND)
+    {
+        panic!("{why}, and yet {signal:?} was delivered");
+    }
+}
 
 // ---------------------------------------------------------------- helpers
 
@@ -510,6 +607,7 @@ fn two_parties_complete_a_comparison() {
         let bob_user = "@agreeing:example.org";
         let bob_device = "COUNTERPARTYONE";
         let bob = counterparty(bob_user, bob_device).await;
+        subscribe_and_drain();
 
         // Read and kept, not merely asserted against a constant: the claim
         // this test carries for the whole milestone is that this value
@@ -758,6 +856,23 @@ fn two_parties_complete_a_comparison() {
             TrustState::Verified,
             "this machine's own device is trusted because it holds its own keys"
         );
+
+        // ---- And a subscriber was told, exactly once --------------------
+        // The first producer the crypto signal channel has ever had. This
+        // flow was started by the library, so its identifier was never in
+        // doubt and there is nothing inbound to announce: the one signal a
+        // completed comparison owes a subscriber is the trust change, and
+        // "exactly one" is asserted rather than "at least one" because a
+        // channel that fired on every sync would satisfy the weaker claim.
+        assert_eq!(
+            next_signal("a completed comparison must announce the trust change"),
+            CryptoSignal::TrustChanged {
+                user: bob_user.to_string(),
+                state: TrustState::Verified,
+            },
+            "the channel must name the user whose device changed, and the state it changed to"
+        );
+        no_signal("a completed comparison announces one trust change and no more");
     }));
 }
 
@@ -779,6 +894,7 @@ fn a_disagreement_refuses() {
         let bob_user = "@disagreeing:example.org";
         let bob_device = "COUNTERPARTYTWO";
         let bob = counterparty(bob_user, bob_device).await;
+        subscribe_and_drain();
 
         // ---- The counterparty asks --------------------------------------
         let alice: OwnedUserId = ALICE_USER.parse().expect("a literal user id parses");
@@ -790,17 +906,71 @@ fn a_disagreement_refuses() {
             .expect("the bare machine knows the library's device");
         let (bob_request, asking) =
             library_device.request_verification_with_methods(vec![VerificationMethod::SasV1]);
-        let flow = FlowId(bob_request.flow_id().as_str().to_string());
         deliver_verification_request(&asking, bob_user).await;
 
-        // Nothing in this process registered that flow. It is found because
-        // the library resolves an unknown identifier against the users it
-        // tracks, which is the only way a flow the other side started can
-        // ever be answered.
+        // ---- The library is told, and told which flow -------------------
+        // This is the half a receiving side cannot get any other way. Until
+        // this signal existed, a product had to filter the raw to-device
+        // events for `m.key.verification.request` and read
+        // `content.transaction_id` out of one -- a protocol detail this
+        // library keeps to itself everywhere else. Every call below takes
+        // the identifier from the signal, so the whole of the rest of this
+        // test is the proof that a product never has to open the event.
+        let announced = next_signal("an inbound invitation must be announced");
+        let CryptoSignal::VerificationRequested {
+            user,
+            device_id,
+            flow_id,
+        } = announced.clone()
+        else {
+            panic!("an inbound invitation must announce itself as one, not as {announced:?}");
+        };
+        assert_eq!(user, bob_user, "the announcement must name who is asking");
+        assert_eq!(
+            device_id, bob_device,
+            "the announcement must name which of that user's devices is asking"
+        );
+        assert_eq!(
+            flow_id,
+            bob_request.flow_id().as_str(),
+            "the identifier the channel hands over must be the flow's own, the same value \
+             the transaction id on the wire carries"
+        );
+        no_signal("one invitation is one announcement");
+        let flow = FlowId(flow_id);
+
+        // ---- And it stays one, however long the person takes ------------
+        // The window that matters is the one a product actually lives in:
+        // an invitation sits at `Requested` until a person answers it,
+        // which is minutes, and a product syncs throughout. If the channel
+        // announced whatever it found rather than whatever is new, every
+        // one of those syncs would repeat this invitation, and the noise
+        // would grow with how long the user thinks rather than with how
+        // many verifications happen.
+        //
+        // Three empty syncs rather than one, because one would also pass
+        // against an implementation that merely announced on alternate
+        // calls.
+        for _ in 0..3 {
+            deliver_to_library(vec![]).await;
+        }
         assert_eq!(
             flow_stage(&flow)
                 .await
-                .expect("an incoming flow is findable"),
+                .expect("the invitation is still live"),
+            FlowStage::Requested,
+            "this proves nothing unless the flow is still in the state that would be \
+             re-announced"
+        );
+        no_signal("an invitation already announced must not be announced again on every sync");
+
+        // Nothing in this process registered that flow before the sync that
+        // announced it, and the announcement is now the only place its name
+        // came from.
+        assert_eq!(
+            flow_stage(&flow)
+                .await
+                .expect("an announced flow is findable by the identifier the channel gave"),
             FlowStage::Requested
         );
 
@@ -900,6 +1070,17 @@ fn a_disagreement_refuses() {
         assert!(
             !bare_reports_verified(&bob).await,
             "a refused comparison must verify nothing on the counterparty's side"
+        );
+        // Synced again first, and that is not padding: nothing on this
+        // channel is emitted except from a sync, so an assertion that the
+        // channel stayed quiet after a refusal proves nothing unless a sync
+        // has since run. Written without this once, and it passed against a
+        // producer that announced every finished flow without checking
+        // whether anything had actually become verified.
+        deliver_to_library(vec![]).await;
+        no_signal(
+            "a refused comparison changes no device's trust, so the channel has nothing \
+             to say about it",
         );
     }));
 }
@@ -1032,6 +1213,7 @@ fn an_invitation_from_an_unmet_device_needs_its_event_fed_again() {
         let bob_user = "@unmet:example.org";
         let bob_device = "COUNTERPARTYFOUR";
         let alice_device_keys = library_device_keys().await;
+        subscribe_and_drain();
 
         let bob_user_id: OwnedUserId = bob_user.parse().expect("a literal user id parses");
         let bob_device_id: OwnedDeviceId = bob_device.into();
@@ -1128,6 +1310,17 @@ fn an_invitation_from_an_unmet_device_needs_its_event_fed_again() {
             MachineError::UnknownFlow,
             "an invitation from a device this machine has never met leaves no flow behind,              and the sync that carried it reported success"
         );
+        // And nothing is announced either, which is the honest behaviour
+        // rather than a gap: the channel announces flows, and no flow
+        // exists. Announcing off the wire event instead would hand a
+        // product an identifier that every call in this library then
+        // rejects with `UnknownFlow` -- worse than silence, because it
+        // looks actionable. This is the one part of the retention advice
+        // the announcement does not retire, and this assertion is why.
+        no_signal(
+            "an invitation that built no flow has no flow to announce, and announcing the \
+             wire event's own identifier would name something no call here answers to",
+        );
 
         // ---- Learning about the device, and feeding the event again ----
         // The recovery path, and the reason this test exists in the shape
@@ -1163,11 +1356,44 @@ fn an_invitation_from_an_unmet_device_needs_its_event_fed_again() {
         );
 
         deliver_to_library(vec![event]).await;
-        let recovered = FlowId(on_the_wire);
+
+        // ---- The recovery announces itself, and hands over the id -------
+        // The half that makes the retention advice bearable. A product
+        // still has to keep the events it could not act on and feed them
+        // again -- nothing here remembers them -- but it never has to
+        // *read* one. It re-feeds an opaque blob and is told, by the same
+        // channel and in the same shape as a first-time arrival, that a
+        // flow now exists and what it is called.
+        let announced = next_signal("a recovered invitation must announce itself");
+        let CryptoSignal::VerificationRequested {
+            user,
+            device_id,
+            flow_id,
+        } = announced.clone()
+        else {
+            panic!("a recovered invitation must announce itself as one, not as {announced:?}");
+        };
+        assert_eq!(user, bob_user, "the announcement must name who is asking");
+        assert_eq!(
+            device_id, bob_device,
+            "the announcement must name which device is asking"
+        );
+        assert_eq!(
+            flow_id, on_the_wire,
+            "the identifier the channel hands over for a recovered invitation must be the \
+             same one the retained event carried, or a product would have to read the \
+             event after all"
+        );
+        no_signal("one recovery is one announcement");
+
+        // Deliberately `flow_id`, not `on_the_wire`: from here on this test
+        // drives the flow with what the channel said, so nothing below can
+        // be passing on a value taken out of the event.
+        let recovered = FlowId(flow_id);
         assert_eq!(
             flow_stage(&recovered)
                 .await
-                .expect("the same event, re-delivered, now names a flow"),
+                .expect("the announced identifier names a live flow"),
             FlowStage::Requested,
             "re-feeding a retained invitation once its sender's device is known is what \
              recovers it -- there is no other route, because nothing in this library kept \
@@ -1304,6 +1530,7 @@ fn a_comparison_confirmed_before_the_peer_completes_on_both_sides() {
         let bob_user = "@confirmingsecond:example.org";
         let bob_device = "COUNTERPARTYFIVE";
         let bob = counterparty(bob_user, bob_device).await;
+        subscribe_and_drain();
 
         // ---- Up to a string on both screens -----------------------------
         let flow = request_flow(bob_user, bob_device)
@@ -1407,5 +1634,21 @@ fn a_comparison_confirmed_before_the_peer_completes_on_both_sides() {
             library_reports_verified(bob_user, bob_device).await,
             "the library must report the counterparty's device verified"
         );
+
+        // ---- And this interleaving announces the same one thing ---------
+        // Not a duplicate of the assertion in
+        // `two_parties_complete_a_comparison`. There, the peer had already
+        // confirmed when this side did; here this side confirmed first and
+        // the completion arrives with the peer's acknowledgement, out of a
+        // different queue. The channel must say the same thing either way,
+        // once, and this is the pair that establishes it.
+        assert_eq!(
+            next_signal("the other interleaving must announce the trust change too"),
+            CryptoSignal::TrustChanged {
+                user: bob_user.to_string(),
+                state: TrustState::Verified,
+            },
+        );
+        no_signal("one completed comparison is one trust change, whichever side confirmed first");
     }));
 }

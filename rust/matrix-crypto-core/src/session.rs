@@ -367,10 +367,20 @@ pub async fn receive_sync_changes(raw_json: &str) -> Result<SyncOutcome, Session
     .await?;
 
     match processed {
-        Ok((events, room_keys)) => Ok(SyncOutcome {
-            to_device_event_count: events.len() as u32,
-            new_session_count: room_keys.len() as u32,
-        }),
+        Ok((events, room_keys)) => {
+            // After the machine lock is released, never inside the closure
+            // above -- which is exactly what that closure's own comment
+            // warns against. This is the moment every verification
+            // transition this library observes actually happens: an
+            // invitation arriving, a peer's confirmation completing a
+            // comparison, a flow timing out. It returns without touching
+            // the store when nobody has subscribed to the signal channel.
+            crate::verification::announce_state_changes().await;
+            Ok(SyncOutcome {
+                to_device_event_count: events.len() as u32,
+                new_session_count: room_keys.len() as u32,
+            })
+        }
         // Upstream `Display` output can embed event content, a device id or
         // a user id (e.g. `OlmError::SessionWedged(OwnedUserId, Curve25519PublicKey)`,
         // matrix-sdk-crypto-0.18.0/src/error.rs:61) -- never forwarded, per

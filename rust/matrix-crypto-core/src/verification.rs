@@ -62,7 +62,7 @@
 //! drained never sees a short authentication string at all. That failure is
 //! named rather than silent -- see [`MachineError::MaterialNotReady`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex as StdMutex;
 
 use matrix_sdk_common::ruma::events::key::verification::VerificationMethod;
@@ -70,7 +70,9 @@ use matrix_sdk_common::ruma::{OwnedDeviceId, OwnedUserId};
 use matrix_sdk_crypto::types::requests::OutgoingRequest as UpstreamOutgoingRequest;
 use matrix_sdk_crypto::{Sas, SasState, VerificationRequest, VerificationRequestState};
 
+use crate::identity::TrustState;
 use crate::machine::{with_machine, MachineError};
+use crate::observer::CryptoSignal;
 
 /// The opaque name of one verification flow.
 ///
@@ -182,6 +184,16 @@ pub enum FlowStage {
 struct FlowRecord {
     request: VerificationRequest,
     comparison: Option<Sas>,
+    /// Whether this flow's completion has already been announced on the
+    /// crypto signal channel.
+    ///
+    /// A flow reaches [`FlowStage::Done`] once and is announced once, but
+    /// the two moments that can notice it -- the confirmation that finished
+    /// it, and the next sync -- can both fire for the same flow. Without
+    /// this, whichever ran second would emit a duplicate `TrustChanged`.
+    /// Eviction is not a substitute: `release_finished` runs on the next
+    /// registration, which is later than both.
+    completion_announced: bool,
 }
 
 /// Process-wide registry of the flows this library is taking part in.
@@ -294,6 +306,7 @@ fn stage_from(handles: &Handles) -> FlowStage {
     let mut record = FlowRecord {
         request: handles.request.clone(),
         comparison: handles.comparison.clone(),
+        completion_announced: false,
     };
     stage_of(&mut record)
 }
@@ -328,12 +341,37 @@ fn register(flow_id: &str, request: VerificationRequest) -> Handles {
     let record = flows.entry(flow_id.to_string()).or_insert(FlowRecord {
         request,
         comparison: None,
+        completion_announced: false,
     });
     let comparison = comparison_of(record).cloned();
     Handles {
         request: record.request.clone(),
         comparison,
     }
+}
+
+/// Registers `request` under `flow_id` if the registry does not already
+/// hold that flow, and reports whether it did.
+///
+/// Separate from [`register`] because the announcement path needs the
+/// insertion and the "was it new?" question answered under one lock. Split
+/// into a `contains_key` and a `register`, an inbound flow could be
+/// announced twice by two syncs that interleaved between them.
+fn register_if_absent(flow_id: &str, request: VerificationRequest) -> bool {
+    let mut flows = FLOWS.lock().expect("verification registry poisoned");
+    if flows.contains_key(flow_id) {
+        return false;
+    }
+    release_finished(&mut flows);
+    flows.insert(
+        flow_id.to_string(),
+        FlowRecord {
+            request,
+            comparison: None,
+            completion_announced: false,
+        },
+    );
+    true
 }
 
 /// Records a comparison handle against a flow already in the registry.
@@ -390,6 +428,7 @@ async fn handles(flow: &FlowId) -> Result<Handles, MachineError> {
     let mut probe = FlowRecord {
         request: request.clone(),
         comparison: None,
+        completion_announced: false,
     };
     if is_finished(stage_of(&mut probe)) {
         return Err(MachineError::UnknownFlow);
@@ -604,6 +643,17 @@ pub async fn confirm_flow(flow: &FlowId) -> Result<(), MachineError> {
     if let Some(upload) = signature_upload {
         queue(upload);
     }
+
+    // Nothing is announced from here, and the reason is upstream's rather
+    // than a decision taken in this file. A confirmation can only finish a
+    // comparison outright from `InnerSas::MacReceived`, and only when
+    // `started_from_request` is false
+    // (`verification/sas/inner_sas.rs:243-258`); every flow this library
+    // runs comes from a request, so this call always leaves the comparison
+    // in `WaitingForDone` -- which reads as `Confirmed`, not `Done`. The
+    // trust change therefore always arrives with the peer's own
+    // acknowledgement, through `receive_sync_changes`, and putting a
+    // producer here as well would add a branch nothing can reach.
     Ok(())
 }
 
@@ -626,6 +676,176 @@ pub async fn cancel_flow(flow: &FlowId) -> Result<(), MachineError> {
     .ok_or(MachineError::WrongStage)?;
     queue(outgoing);
     Ok(())
+}
+
+// ------------------------------------------------- the crypto signal channel
+
+/// Every device a completed comparison verified, for flows whose completion
+/// has not been announced yet, marking them announced on the way out.
+///
+/// Read from `SasState::Done`'s own `verified_devices` rather than from the
+/// flow merely having finished. Upstream sets local trust only for the
+/// devices that list names (`verification/mod.rs:710-719`), so a flow that
+/// reached `Done` is not by itself a claim that anything became verified,
+/// and a signal saying otherwise would be a false one.
+///
+/// Marks inside the same critical section that collects, so two callers
+/// cannot both take the same completion. The cost is that a caller which
+/// then fails to reach the machine loses the announcement -- acceptable,
+/// because the only way to fail there is `NotInitialised`, and a process
+/// with no machine has nothing to announce a trust change about.
+fn take_pending_completions() -> Vec<(OwnedUserId, OwnedDeviceId)> {
+    let mut flows = FLOWS.lock().expect("verification registry poisoned");
+    let mut completions = Vec::new();
+
+    for record in flows.values_mut() {
+        if record.completion_announced {
+            continue;
+        }
+        // `state()` returns by value, which ends the borrow on `record`
+        // before its `completion_announced` is written below.
+        let state = comparison_of(record).map(|comparison| comparison.state());
+        let Some(SasState::Done {
+            verified_devices, ..
+        }) = state
+        else {
+            continue;
+        };
+        record.completion_announced = true;
+        for device in verified_devices {
+            completions.push((device.user_id().to_owned(), device.device_id().to_owned()));
+        }
+    }
+
+    completions
+}
+
+/// Emits everything the crypto signal channel owes its subscribers, and
+/// returns having emitted nothing when there are none.
+///
+/// Called from [`crate::receive_sync_changes`], and from nowhere else,
+/// because that is the only moment either kind of change can happen: an
+/// invitation exists once the event that carries it has been fed in, and a
+/// comparison reaches `Done` only when the peer's acknowledgement arrives
+/// (see [`confirm_flow`] for why confirming cannot finish one here).
+///
+/// # It asks what has changed rather than being told
+///
+/// Nothing on this path is driven by a particular event. It compares the
+/// registry against what has already been announced, which is what makes it
+/// correct under interleavings nobody enumerated: two transitions in one
+/// sync are both announced, a transition that happens for a reason this
+/// file did not predict is still announced, and calling it twice announces
+/// nothing twice.
+///
+/// # Nothing is emitted from under the machine lock
+///
+/// The whole collection runs inside one `with_machine` closure and every
+/// signal is emitted after it returns. `observer::emit_crypto` detaches
+/// delivery anyway, so this is not what makes it safe -- but a listener
+/// must never observe a signal before the operation that produced it has
+/// visibly completed, and that is what the ordering here buys.
+///
+/// # What it costs when nobody is listening
+///
+/// Nothing. The observer is read first, and with none registered this
+/// returns before it takes the registry lock or reaches the crypto store.
+/// That matters because the sync path calls this on every sync a product
+/// performs, which is the highest-frequency call this library has.
+pub(crate) async fn announce_state_changes() {
+    // Silent by default, and free by default. See the doc comment above.
+    if crate::observer::crypto_observer().is_none() {
+        return;
+    }
+
+    let completions = take_pending_completions();
+
+    let collected = with_machine(move |machine| {
+        Box::pin(async move {
+            let mut signals: Vec<CryptoSignal> = Vec::new();
+
+            // Read the devices back rather than trusting that the
+            // comparison naming them made them verified. `device_statuses`
+            // asks upstream exactly this question, and asking it the same
+            // way here is what stops the channel and the call from ever
+            // disagreeing about a device.
+            let mut changed: BTreeSet<String> = BTreeSet::new();
+            for (user, device) in completions {
+                let verified = machine
+                    .get_device(&user, &device, None)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|device| device.is_verified());
+                if verified {
+                    changed.insert(user.to_string());
+                }
+            }
+            for user in changed {
+                signals.push(CryptoSignal::TrustChanged {
+                    user,
+                    state: TrustState::Verified,
+                });
+            }
+
+            // Inbound invitations. Enumerated from upstream rather than by
+            // parsing the to-device events a sync carried, and the
+            // difference is the point of the variant: upstream builds a
+            // flow only when it can, so an invitation from a device this
+            // machine has never met produces no flow and is therefore not
+            // announced. Announcing on the wire event instead would hand a
+            // product an identifier that no call of this library answers
+            // to. The same rule is what makes a *re-fed* invitation
+            // announce itself: the second arrival is when the flow first
+            // exists.
+            //
+            // `tracked_users` is the same set `handles` searches, for the
+            // same reason: a device has to have been queried before it can
+            // be verified, so a counterparty is necessarily in it.
+            let tracked = machine.tracked_users().await.unwrap_or_default();
+            for user in &tracked {
+                for request in machine.get_verification_requests(user) {
+                    // `Requested` and nothing else: `Created` is a flow this
+                    // device asked for and whose identifier the caller
+                    // already holds, and a request another of our own
+                    // devices answered presents as `Cancelled`.
+                    let VerificationRequestState::Requested {
+                        other_device_data, ..
+                    } = request.state()
+                    else {
+                        continue;
+                    };
+                    let flow_id = request.flow_id().as_str().to_string();
+                    let announcement = CryptoSignal::VerificationRequested {
+                        user: request.other_user().to_string(),
+                        device_id: other_device_data.device_id().to_string(),
+                        flow_id: flow_id.clone(),
+                    };
+                    // Registering is the deduplication: a flow this
+                    // registry already holds has been announced, or was
+                    // started here and needs no announcement.
+                    if register_if_absent(&flow_id, request) {
+                        signals.push(announcement);
+                    }
+                }
+            }
+
+            signals
+        })
+    })
+    .await;
+
+    // A machine that has gone away has nothing to announce. Swallowed
+    // rather than reported: this is a notification path with no caller to
+    // return an error to, and it must never turn a successful sync into a
+    // failed one.
+    let Ok(signals) = collected else {
+        return;
+    };
+
+    for signal in signals {
+        crate::observer::emit_crypto(signal);
+    }
 }
 
 #[cfg(test)]
