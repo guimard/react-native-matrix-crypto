@@ -175,8 +175,11 @@ SUMMARY_PATTERN = re.compile(r"^LEVEL2_(MUTATED_)?SUMMARY \d+/\d+")
 #
 # Without this line the runner checks only that everything reported passed,
 # and the denominator is whatever the artifact under test says it is: drop a
-# step from `LEVEL_TWO_STEPS` and the run prints `LEVEL2_SUMMARY 12/12` and
-# this program calls it a pass. That is exactly the "a summary that counts
+# step from `LEVEL_TWO_STEPS` and the run prints `LEVEL2_SUMMARY 12/12` --
+# one fewer than the thirteen pinned below, which is the whole point of the
+# example -- and this program calls it a pass. A reviewer read the 12 as a
+# stale count contradicting the 13; it is the counterfactual, and the two
+# extra words are here so the next reader does not have to work that out. That is exactly the "a summary that counts
 # fewer steps than it should is indistinguishable from a pass" failure the
 # suite's own header says this milestone has hit under several names, one
 # level up: the thing being measured was declaring its own denominator.

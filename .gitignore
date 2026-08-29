@@ -28,11 +28,18 @@ __pycache__/
 # owner's decision.
 #
 # Two consequences worth knowing before relying on this. Tracked files still
-# point here -- README.md, rust/matrix-crypto-core/src/observer.rs,
+# point here -- rust/matrix-crypto-core/src/observer.rs,
 # scripts/measure-signal-latency.sh, scripts/assert-measure-guards.sh,
 # packages/example-app/src/ProbeHarness.tsx and
 # packages/react-native-matrix-crypto/interop/suite.ts all cite a path under
 # docs/ -- so those references are now dangling for anyone reading the
 # repository alone. And ignoring a directory does not unpublish it: every
 # version already committed remains in this repository's history.
+#
+# The list is five files. It named README.md as a sixth from the day it was
+# written and that was never true: `grep -n 'docs/' README.md` is empty now
+# and was empty at 495a4bb, the commit that wrote this paragraph. A
+# disclosure is worth having right, so it is corrected rather than trimmed
+# to something vaguer that could not be wrong. The check is that grep, run
+# against each file named above.
 docs/

@@ -20,6 +20,15 @@ trap 'rm -rf "$OUT"' EXIT
 #   the default is ES3, and signals.ts's `for...of` over a Set fails to
 #   compile. The flags below mirror packages/react-native-matrix-crypto/
 #   tsconfig.json's compilerOptions; keep them in sync if that file changes.
+#   That instruction was not followed once already: ecfd293 added
+#   `noImplicitReturns` to that tsconfig and not here, and it is the flag
+#   that makes facade.ts's exhaustive `switch`es a compile error rather than
+#   an intention. It changes no declaration output, so nothing failed --
+#   which is why an unfollowed sync instruction is worth naming rather than
+#   just fixing. `declaration`, `emitDeclarationOnly`, `noEmit` and
+#   `removeComments` deliberately differ: this run emits, the typecheck does
+#   not. `noUnusedLocals` is false in both, by default here and explicitly
+#   there.
 # --removeComments strips JSDoc prose from the emitted declarations. Without
 # it, types.ts's legitimate comment "Today this wraps a Matrix room id."
 # would survive into the .d.ts and false-positive against the room check
@@ -28,7 +37,8 @@ trap 'rm -rf "$OUT"' EXIT
 (
   cd "$PKG"
   yarn exec -- tsc \
-    --target ES2022 --module ESNext --moduleResolution bundler --strict --skipLibCheck \
+    --target ES2022 --module ESNext --moduleResolution bundler --strict \
+    --noImplicitReturns --skipLibCheck \
     --declaration --emitDeclarationOnly --noEmit false --removeComments \
     --outDir "$OUT" src/index.ts
 ) 2>/dev/null
@@ -81,6 +91,17 @@ if ! printf '%s' "$IDENTIFIERS" | grep -q ':'; then
   exit 1
 fi
 
+# Four words, not three. `megolm`, `olm` and `room` are the algorithm and the
+# scope concept spec section 6 requires the facade to stay clear of; `matrix`
+# is the fourth, and it was named by the milestone plan's Global Constraints
+# and enforced by nothing. The disagreement is now closed in the direction
+# that strengthens rather than weakens: enforcing it was measured against the
+# real surface before it was adopted and costs nothing today, because every
+# public name here is already protocol-neutral (`CryptoScopeId`, `sender`,
+# `eventType`, `algorithm`) and the one place `matrix` appears -- the
+# `./generated/matrix_crypto` import path -- is a string literal, stripped
+# above and caught separately by the generated-reference check.
+#
 # Component-splitting, not a letter-pattern match. \b never fires inside
 # camelCase, so a plain `\bmegolm\b` grep misses `MegolmSession` and
 # `encryptMegolmEvent` entirely -- the normal way TypeScript names things,
@@ -90,7 +111,7 @@ fi
 # component, and must not trip the gate.
 VIOLATIONS=$(printf '%s' "$IDENTIFIERS" | python3 -c '
 import re, sys
-FORBIDDEN = {"megolm", "olm", "room"}
+FORBIDDEN = {"megolm", "olm", "room", "matrix"}
 bad = []
 for ident in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", sys.stdin.read()):
     parts = re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+", ident)
@@ -100,7 +121,7 @@ print("\n".join(sorted(set(bad))))
 ')
 
 if [ -n "$VIOLATIONS" ]; then
-  echo "FAIL: a Megolm-, Olm-, or room-specific identifier reached the public API."
+  echo "FAIL: a Megolm-, Olm-, room- or Matrix-specific identifier reached the public API."
   echo "$VIOLATIONS"
   echo "      Spec section 6 requires the facade stay algorithm-agnostic."
   exit 1
