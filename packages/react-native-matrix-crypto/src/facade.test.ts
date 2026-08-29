@@ -293,6 +293,59 @@ describe('encryptionSlice', () => {
     expect(Object.keys(encryptionSlice({ next_batch: 'x' }))).toEqual(['next_batch_token'])
   })
 
+  // The two tests below pin the behaviour that separates this helper from the
+  // hand-written copies it replaces. Those tested each field for truthiness;
+  // this one tests for presence, matching `encryption_slice` in
+  // `rust/matrix-crypto-core/tests/level_two_interop.rs`, which is the version
+  // exercised against a real homeserver.
+  //
+  // The difference is not cosmetic. A truthiness test silently drops a field a
+  // homeserver did send, which is indistinguishable downstream from a field it
+  // never sent -- and this is the one call whose failure mode is a library that
+  // appears to work and encrypts to nobody. The correction arrived untested;
+  // these are what stop it regressing back to `if (sync.device_lists)`.
+  //
+  // Both were verified by reverting the two presence checks to truthiness
+  // checks and watching each test go red for its own field, then reverting.
+  // Doing that is also what caught the first draft's overclaim, recorded in
+  // the comment inside the first test.
+
+  it('forwards a field that is present but empty', () => {
+    // A first draft of this test claimed every value here was dropped by a
+    // truthiness test. That was false and the sabotage run proved it: `{}` and
+    // `[]` are truthy in JavaScript, so those three fields were never at risk
+    // from the old form. Only `next_batch: ''` is, and it is what makes this
+    // test fail against `if (sync.next_batch)` -- verified by making exactly
+    // that change and watching it go red.
+    //
+    // The other four stay because they pin the semantics rather than the
+    // divergence: an empty payload from the homeserver is forwarded as an
+    // empty payload, not silently turned into an absent one.
+    expect(
+      encryptionSlice({
+        to_device: { events: [] },
+        device_lists: {},
+        device_one_time_keys_count: {},
+        device_unused_fallback_key_types: [],
+        next_batch: '',
+      }),
+    ).toEqual({
+      to_device_events: [],
+      changed_devices: {},
+      one_time_keys_counts: {},
+      unused_fallback_keys: [],
+      next_batch_token: '',
+    })
+  })
+
+  it('forwards a field explicitly set to null rather than dropping it', () => {
+    // `null` is present. Whether native then rejects it is native's business;
+    // silently deciding here that the homeserver meant to omit it is not.
+    const slice = encryptionSlice({ device_lists: null, next_batch: null })
+    expect(Object.keys(slice).sort()).toEqual(['changed_devices', 'next_batch_token'])
+    expect(slice.changed_devices).toBeNull()
+  })
+
   it('produces something the guard accepts, for an uneventful sync', async () => {
     // The point of this test: the helper and the guard must agree. An empty
     // sync is the shape most syncs have, and a helper that produced a payload
