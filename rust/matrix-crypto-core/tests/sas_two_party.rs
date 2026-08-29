@@ -21,15 +21,21 @@
 //! reporting the other's device as verified** -- asserted on both sides,
 //! because a one-sided assertion passes when only one side transitioned.
 //!
-//! # Four tests, one process, one machine
+//! # Every test here, one process, one machine
 //!
 //! Both registries this file exercises -- the machine registry in
 //! `machine.rs` and the outbound pump's in `session.rs` -- are process-wide,
 //! and an integration test cannot reach the `#[cfg(test)]` reset helpers
 //! that let this crate's unit tests start clean. Cargo gives each file under
 //! `tests/` its own process, so this file owns one machine for its whole
-//! lifetime; the four tests in it share that machine and serialise on
+//! lifetime; every test in it shares that machine and serialises on
 //! `SERIAL` so they cannot race each other for it.
+//!
+//! Deliberately not counted. These three sentences said "four tests" while
+//! the file held five, from the commit that added the fifth until a review
+//! caught it, because a number in prose has no way to be wrong out loud --
+//! the same reason the README enumerates `gate:logger`'s reach instead of
+//! counting it.
 //!
 //! Each test brings its own counterparty under its own **user** id, not
 //! merely its own device id. A second device under a user this machine has
@@ -77,7 +83,7 @@ const ALICE_DEVICE: &str = "ALICEDEVICE";
 /// library deliberately exposes no other way to ask for one.
 const SCOPE: &str = "!verification:example.org";
 
-/// Serialises the four tests over the one machine and the one pump this
+/// Serialises this file's tests over the one machine and the one pump this
 /// process has. `into_inner` on a poisoned lock deliberately: a test that
 /// panicked has already failed, and the remaining ones should report their
 /// own outcome rather than a poisoning inherited from it.
@@ -996,6 +1002,198 @@ fn a_flow_that_never_marks_requests_sent_reports_it() {
         read_material(&flow)
             .await
             .expect("the string is available once the report is made");
+    }));
+}
+
+/// Where the receiving side's flow identifier comes from, and what happens
+/// when the invitation names a device this machine has never met.
+///
+/// Both halves are documented on `acceptVerification` and in the README,
+/// and neither was observed until this test. The first is a claim about a
+/// wire field a product is being told to read; the second is a claim about
+/// a silent discard, which is the one kind of claim this repository will
+/// not take on a reading of upstream alone -- and rightly so, because the
+/// reading was wrong. Upstream logs "ignoring it" and returns, which reads
+/// as though the invitation is gone for good; what is actually gone is
+/// that *arrival*. Feeding the same event again, once the device is known,
+/// recovers the flow. The documentation was corrected to match this test
+/// rather than the other way round.
+///
+/// The counterparty here is built by hand rather than through
+/// `counterparty` above, because that helper's whole job is to teach both
+/// sides about each other and this test needs exactly one side taught.
+#[test]
+fn an_invitation_from_an_unmet_device_needs_its_event_fed_again() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    futures::executor::block_on(in_runtime(async move {
+        let bob_user = "@unmet:example.org";
+        let bob_device = "COUNTERPARTYFOUR";
+        let alice_device_keys = library_device_keys().await;
+
+        let bob_user_id: OwnedUserId = bob_user.parse().expect("a literal user id parses");
+        let bob_device_id: OwnedDeviceId = bob_device.into();
+        let bob = OlmMachine::new(&bob_user_id, &bob_device_id).await;
+
+        // Bob's own keys, captured before they are consumed, so the library
+        // can be taught about him later in this test rather than now.
+        let bob_batch = bob
+            .outgoing_requests()
+            .await
+            .expect("a fresh bare machine has keys to publish");
+        let bob_device_keys = bob_batch
+            .iter()
+            .find_map(|request| match request.request() {
+                AnyOutgoingRequest::KeysUpload(upload) => upload.device_keys.clone(),
+                _ => None,
+            })
+            .expect("a fresh machine always has device keys to upload");
+        let bob_upload_id = bob_batch
+            .iter()
+            .find(|request| matches!(request.request(), AnyOutgoingRequest::KeysUpload(_)))
+            .expect("a fresh bare machine has a key upload")
+            .request_id()
+            .to_owned();
+        bob.mark_request_as_sent(
+            &bob_upload_id,
+            &keys_upload_response(r#"{"one_time_key_counts":{}}"#),
+        )
+        .await
+        .expect("the bare machine must accept its own upload response");
+        let bob_device_keys =
+            serde_json::to_value(&bob_device_keys).expect("upstream device keys serialise");
+
+        // Bob learns the library's device. The library is deliberately not
+        // told about Bob, which is the whole condition under test.
+        bob.mark_request_as_sent(
+            &TransactionId::new(),
+            &keys_query_response(&query_body(ALICE_USER, ALICE_DEVICE, &alice_device_keys)),
+        )
+        .await
+        .expect("the bare machine must accept a keys-query response");
+
+        // ---- Bob invites a device whose owner has never heard of him ----
+        let alice: OwnedUserId = ALICE_USER.parse().expect("a literal user id parses");
+        let alice_device: OwnedDeviceId = ALICE_DEVICE.into();
+        let library_device = bob
+            .get_device(&alice, &alice_device, None)
+            .await
+            .expect("the bare machine's store must be readable")
+            .expect("the bare machine knows the library's device");
+        let (bob_request, asking) =
+            library_device.request_verification_with_methods(vec![VerificationMethod::SasV1]);
+
+        let event = relay_to(
+            &verification_body(&asking),
+            bob_user,
+            ALICE_USER,
+            ALICE_DEVICE,
+        )
+        .expect("the counterparty addresses the library's own device");
+
+        // ---- The identifier a receiving product is told to read ---------
+        // `content.transaction_id` of the `m.key.verification.request`
+        // to-device event, which is what `acceptVerification`'s own doc
+        // comment and the README both instruct a product to pick up. If
+        // that field ever stops being the flow's name, both documents are
+        // wrong and this fails rather than the product.
+        assert_eq!(
+            event
+                .get("type")
+                .and_then(|value| value.as_str())
+                .expect("a relayed to-device event declares its type"),
+            "m.key.verification.request",
+            "an invitation arrives under the type the documentation tells a product to filter on"
+        );
+        let on_the_wire = event
+            .get("content")
+            .and_then(|content| content.get("transaction_id"))
+            .and_then(|value| value.as_str())
+            .expect("an invitation carries a transaction id")
+            .to_string();
+        assert_eq!(
+            on_the_wire,
+            bob_request.flow_id().as_str(),
+            "the transaction id on the wire must be the identifier this library answers to"
+        );
+
+        // ---- Delivered, and silently discarded --------------------------
+        deliver_to_library(vec![event.clone()]).await;
+        assert_eq!(
+            accept_flow(&FlowId(on_the_wire.clone()))
+                .await
+                .expect_err("the invitation was dropped as it arrived"),
+            MachineError::UnknownFlow,
+            "an invitation from a device this machine has never met leaves no flow behind,              and the sync that carried it reported success"
+        );
+
+        // ---- Learning about the device, and feeding the event again ----
+        // The recovery path, and the reason this test exists in the shape
+        // it does: the first version of it asserted that re-delivery could
+        // NOT recover a discarded invitation, which is what upstream's
+        // "ignoring it" warning reads like from the source. That assertion
+        // failed. The discard is of the *arrival*, not of the invitation:
+        // nothing inside this library remembers the event, but nothing
+        // refuses it a second time either, so a product that kept the event
+        // can feed it again once it knows the device.
+        share_scope_key(SCOPE, &[bob_user.to_string()])
+            .await
+            .expect("sharing a scope key must not fail");
+        let query = take_outgoing_requests()
+            .await
+            .expect("the pump must be drainable")
+            .into_iter()
+            .find(|request| request.kind == "keys_query")
+            .expect("tracking a new user queues a query about them");
+        mark_request_sent(
+            &query.id,
+            &query_body(bob_user, bob_device, &bob_device_keys),
+        )
+        .await
+        .expect("a keys-query response must be accepted");
+        take_outgoing_requests()
+            .await
+            .expect("the pump must be drainable");
+        assert_eq!(
+            library_device_status(bob_user, bob_device).await,
+            TrustState::Unverified,
+            "this test proves nothing past here unless the device is now actually known"
+        );
+
+        deliver_to_library(vec![event]).await;
+        let recovered = FlowId(on_the_wire);
+        assert_eq!(
+            flow_stage(&recovered)
+                .await
+                .expect("the same event, re-delivered, now names a flow"),
+            FlowStage::Requested,
+            "re-feeding a retained invitation once its sender's device is known is what \
+             recovers it -- there is no other route, because nothing in this library kept \
+             the event"
+        );
+
+        // Accepted for real, not merely findable: the acceptance has to
+        // reach the pump, or a product would be told the recovery worked
+        // and the far side would still be waiting.
+        accept_flow(&recovered)
+            .await
+            .expect("a recovered invitation can be accepted");
+        assert_eq!(
+            flow_stage(&recovered).await.expect("the flow exists"),
+            FlowStage::Ready
+        );
+        let crossed = take_outgoing_requests()
+            .await
+            .expect("the pump must be drainable")
+            .iter()
+            .map(|request| declared_event_type(&request.body))
+            .collect::<Vec<_>>();
+        assert!(
+            crossed.contains(&"m.key.verification.ready".to_string()),
+            "the acceptance of a recovered invitation must reach the pump: {crossed:?}"
+        );
     }));
 }
 
