@@ -512,6 +512,21 @@ fn register_if_absent(flow_id: &str, record: FlowRecord) -> bool {
     true
 }
 
+/// Releases a flow the announcement pass registered and could not
+/// announce, so the next pass can find it again.
+///
+/// The exact undo of [`register_if_absent`]'s insertion, and only legal
+/// against a flow this same pass inserted -- see [`announce`], which is the
+/// only caller and the only place that knows which those are. Nothing else
+/// may call it: releasing a flow whose identifier a caller already holds
+/// would take away a live verification and report nothing.
+fn forget_flow(flow_id: &str) {
+    FLOWS
+        .lock()
+        .expect("verification registry poisoned")
+        .remove(flow_id);
+}
+
 /// Records a comparison handle against a flow already in the registry.
 ///
 /// Only ever called with the handle upstream just produced for that flow.
@@ -1090,7 +1105,10 @@ const START_EVENT_TYPE: &str = "m.key.verification.start";
 ///
 /// A request-shaped invitation that arrives while nobody is subscribed is
 /// announced on the first sync after somebody subscribes, because it is
-/// re-enumerated from upstream every time. **A bare start is not.** Its
+/// re-enumerated from upstream every time -- and, since [`announce`]
+/// releases what it could not deliver, that holds for an unsubscribe
+/// landing *inside* this function too, not only for one that beat it here.
+/// **A bare start is not.** Its
 /// only witness is the sync that carried it, and this function returns
 /// before looking at `processed` when there is no observer. Nothing cheaper
 /// closes that: upstream has no enumerator to ask later, and the event is
@@ -1246,8 +1264,82 @@ pub(crate) async fn announce_state_changes(processed: &[ProcessedToDeviceEvent])
         return;
     };
 
+    announce(signals);
+}
+
+/// Hands this pass's signals to the channel, and puts back what announcing
+/// an invitation to nobody consumed.
+///
+/// # The window this exists for
+///
+/// [`announce_state_changes`] reads the observer registry **once**, at
+/// entry, and everything after that reads is consumption:
+/// [`register_if_absent`] inserts the inbound flow, and that insertion *is*
+/// the deduplication which stops the same invitation being announced twice.
+/// Delivery happens here, last. An unsubscribe arriving in between --
+/// which the ordinary `useEffect(() => onCryptoSignal(h), [])` produces,
+/// because the JavaScript thread is free while `await
+/// receiveSyncChanges(..)` is in flight -- therefore used to leave the
+/// invitation registered and undelivered: refused by `register_if_absent`
+/// for the rest of its life, listed by no call, expiring silently ten
+/// minutes later. That is exactly the consequence
+/// [`crate::observer::clear_crypto_observer`] was written to prevent, and
+/// it survived inside it through a narrower window: one sync call rather
+/// than the whole time a product is unsubscribed.
+///
+/// So a signal that reaches nobody releases the registration that producing
+/// it made, and the flow is enumerated and announced afresh by the next
+/// pass that has somebody to announce it to.
+///
+/// # Why the flow identifier can be read off the signal
+///
+/// `forget_flow` is destructive and must never touch a flow a caller
+/// already holds. It cannot here: [`announce_state_changes`] pushes a
+/// `VerificationRequested` only where `register_if_absent` returned
+/// `true`, and a flow this process started, or was already told about, is
+/// in the registry and makes it return `false`. So every
+/// `VerificationRequested` this function sees names a flow the same pass
+/// inserted, and nothing else does. That is the contract: **only ever
+/// called with the signals one announcement pass just produced.**
+///
+/// # What is deliberately not put back
+///
+/// A `TrustChanged` whose delivery finds nobody stays consumed --
+/// [`take_pending_completions`] has already marked the record, and
+/// un-marking it would re-exempt the record from eviction. It is not the
+/// same loss: which devices are verified is `device_statuses`' durable
+/// answer and always was, so a missed trust change is re-askable and a
+/// missed invitation is not. `signals.ts` says the same thing to a product
+/// in the same words.
+///
+/// # What it still does not close
+///
+/// [`crate::observer::emit_crypto`] reports whether an observer was
+/// registered when it read the registry, not whether the listener behind it
+/// still existed when the detached delivery thread ran. An unsubscribe
+/// landing in *that* gap is indistinguishable from a delivery here, and
+/// closing it would mean holding the observer registry's lock across a
+/// foreign call from inside the sync path. `clear_crypto_observer` records
+/// that residue with its measured bound.
+fn announce(signals: Vec<CryptoSignal>) {
     for signal in signals {
-        crate::observer::emit_crypto(signal);
+        // Read before the move, not after: `emit_crypto` takes the signal
+        // by value, and the identifier is needed only on the arm where it
+        // did not go anywhere.
+        let registered = match &signal {
+            CryptoSignal::VerificationRequested { flow_id, .. } => Some(flow_id.clone()),
+            // The only other variant, and the one whose consumption is
+            // recoverable; see this function's header. Matched by name
+            // rather than by `_` so a variant added later has to be ruled
+            // on here instead of silently joining it.
+            CryptoSignal::TrustChanged { .. } => None,
+        };
+        if crate::observer::emit_crypto(signal) {
+            continue;
+        }
+        if let Some(flow_id) = registered {
+            forget_flow(&flow_id);
+        }
     }
 }
 
@@ -1461,6 +1553,118 @@ mod tests {
             MachineError::MalformedIdentifier {
                 detail: "user id".to_string()
             }
+        );
+
+        crate::machine::reset_for_test();
+    }
+
+    /// A listener that does nothing, so a test can put an observer in the
+    /// registry without also building a channel to read.
+    struct Silent;
+
+    impl crate::observer::CryptoObserver for Silent {
+        fn on_signal(&self, _signal: CryptoSignal) {}
+    }
+
+    /// An announcement that reaches nobody must put back the registration
+    /// that producing it made.
+    ///
+    /// # What it is protecting
+    ///
+    /// [`announce_state_changes`] reads the observer registry once, at
+    /// entry, and consumes afterwards: `register_if_absent` inserts the
+    /// inbound flow, and that insertion is the deduplication. So an
+    /// unsubscribe landing between the entry read and the delivery left the
+    /// invitation registered and undelivered -- announced to nobody, then
+    /// refused to everybody, and gone when it expired ten minutes later.
+    /// The same consequence `clear_crypto_observer` exists to prevent,
+    /// surviving inside it through a one-sync window.
+    ///
+    /// # Why this is a unit test and not a race
+    ///
+    /// The window was reproduced through the public surface before it was
+    /// closed, by racing `clear_crypto_observer` against
+    /// `receive_sync_changes` on the `tests/sas_two_party.rs` arrangement,
+    /// sweeping the unsubscribe across the sync in five-microsecond steps:
+    /// an unsubscribe 76us before a 5.0ms sync returned consumed the
+    /// invitation, and the next subscriber was never told about it. That
+    /// reproduction is not kept, because it cannot be kept honestly. The
+    /// announcing pass is the last few tens of microseconds of that five
+    /// milliseconds, so a timing sweep lands in it on this machine and need
+    /// not on another -- and once the loss is fixed, an unsubscribe before
+    /// the entry guard and one after it are indistinguishable from outside,
+    /// so nothing in such a test could assert that it had reached the state
+    /// it is about. A check that reports success without examining its
+    /// target is the failure this repository keeps finding; this one drives
+    /// the seam instead, where the interleaving is decided rather than
+    /// hoped for.
+    ///
+    /// The flow here is one this process started, which
+    /// [`announce_state_changes`] would never announce -- it is in the
+    /// registry, so `register_if_absent` returns `false` for it. That is
+    /// the point: it stands in for "a flow the registry holds", and what is
+    /// under test is what [`announce`] does with the pairing its caller
+    /// hands it, which is the half a race cannot pin down.
+    #[tokio::test]
+    async fn an_invitation_announced_to_nobody_is_released_rather_than_left_registered() {
+        let _guard = crate::machine::lock_for_test().await;
+        crate::machine::reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        crate::machine::create_machine(config(dir.path()))
+            .await
+            .unwrap();
+        teach_the_machine_about_a_device().await;
+
+        let flow = request_flow(OTHER_USER, OTHER_DEVICE)
+            .await
+            .expect("a device the machine has been told about can be asked to verify");
+        assert_eq!(
+            flow_count(),
+            1,
+            "this test proves nothing unless the registry is actually holding the flow"
+        );
+        let invitation = || CryptoSignal::VerificationRequested {
+            user: OTHER_USER.to_string(),
+            device_id: OTHER_DEVICE.to_string(),
+            flow_id: flow.0.clone(),
+        };
+
+        // Somebody is listening: the signal is taken, and the registration
+        // that produced it stands. Asserted first, because a `forget_flow`
+        // that fired unconditionally would pass every assertion below.
+        crate::observer::set_crypto_observer(std::sync::Arc::new(Silent));
+        announce(vec![invitation()]);
+        assert_eq!(
+            flow_count(),
+            1,
+            "an invitation that reached a subscriber must stay registered, or the next sync \
+             announces it a second time"
+        );
+
+        // Nobody is listening, and the consumption is not the same in both
+        // directions. A trust change is re-askable through `device_statuses`
+        // and its record must not be released with it -- `release_finished`
+        // is what evicts a finished flow, on its own rule.
+        crate::observer::clear_crypto_observer();
+        announce(vec![CryptoSignal::TrustChanged {
+            user: OTHER_USER.to_string(),
+            state: TrustState::Verified,
+        }]);
+        assert_eq!(
+            flow_count(),
+            1,
+            "a trust change nobody heard must not take a live flow with it"
+        );
+
+        // The invitation is the one that cannot be re-asked for, so it is
+        // the one that has to be put back.
+        announce(vec![invitation()]);
+        assert_eq!(
+            flow_count(),
+            0,
+            "an invitation announced to nobody must release its registration: leaving it is \
+             what makes `register_if_absent` refuse the flow for the rest of its life, with no \
+             call that lists inbound flows to recover it from"
         );
 
         crate::machine::reset_for_test();

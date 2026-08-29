@@ -300,6 +300,39 @@ pub fn set_crypto_observer(observer: Arc<dyn CryptoObserver>) {
 /// subscribe on mount, unsubscribe on unmount -- which is the ordinary
 /// React Native idiom and therefore the default integration, not an edge
 /// case.
+///
+/// # The property is restored *between* syncs, and two windows are left
+///
+/// This call is the whole answer for an unsubscribe that lands between one
+/// `receive_sync_changes` and the next. It is not the whole answer for one
+/// that lands *inside* one, and that case is real: the JavaScript thread is
+/// free while `await receiveSyncChanges(..)` is in flight, so a
+/// navigation-driven unmount runs its cleanup there.
+///
+/// **The wide half is closed elsewhere.** `verification::announce_state_changes`
+/// reads this registry once, at entry, and everything after that point
+/// consumes -- registering an inbound flow *is* the producer's
+/// deduplication. So an unsubscribe arriving after that read used to leave
+/// the invitation registered and undelivered, which is this function's own
+/// failure through a narrower window. It is closed by
+/// `verification::announce`, which puts the registration back whenever
+/// [`emit_crypto`] reports that nobody took the signal.
+///
+/// **The narrow half is inherent and is not closed.** `emit_crypto` reads
+/// the observer, hands the signal to a thread of the library's own, and
+/// returns; an unsubscribe landing between that read and the listener
+/// actually running is indistinguishable here from a delivery. Closing it
+/// would mean holding this registry's lock across a foreign call made from
+/// inside the sync path, which is the deadlock `emit_crypto`'s own doc
+/// comment exists to refuse. Measured rather than guessed at, on the
+/// arrangement `tests/sas_two_party.rs` drives: the announcing pass is the
+/// last few tens of microseconds of a `receive_sync_changes` that takes
+/// roughly five milliseconds, and the handoff is the tail of that. What
+/// makes the residue smaller than it looks is that the listener set the
+/// stale handle points at is the *same* set a remount fills, so a
+/// subscriber returning before the detached thread runs still receives the
+/// signal; the loss needs the set to be empty at that instant and to stay
+/// empty until the flow expires.
 pub fn clear_crypto_observer() {
     *CRYPTO_OBSERVER
         .write()
@@ -357,13 +390,31 @@ pub(crate) fn crypto_observer() -> Option<Arc<dyn CryptoObserver>> {
 /// this one. A reader should treat the paragraph above as what it is -- an
 /// argument that removes one candidate -- rather than as a statement that
 /// this path is free of the effect B2 found.
-pub(crate) fn emit_crypto(signal: CryptoSignal) {
-    // No observer, no thread, no work. A dropped signal is the correct
-    // outcome rather than a lost one: nobody asked to be told.
+///
+/// # Why this reports back
+///
+/// Returns whether an observer was there to take the signal. **Not for
+/// diagnostics.** A producer that consumed something in order to produce a
+/// signal -- registering an inbound flow, which is the announcement path's
+/// own deduplication -- has to be able to put it back when the signal
+/// reaches nobody, or the thing it announced is consumed and undelivered at
+/// once. `verification::announce` is the caller that does that, and the one
+/// this return value exists for.
+///
+/// A `true` is not a delivery receipt. It says an observer was registered
+/// at the instant this read the registry, nothing about whether the
+/// listener behind it still exists when the detached thread runs it. That
+/// residue is [`clear_crypto_observer`]'s to describe.
+pub(crate) fn emit_crypto(signal: CryptoSignal) -> bool {
+    // No observer, no thread, no work. With nobody subscribed a dropped
+    // signal is the correct outcome rather than a lost one -- but only if
+    // producing it consumed nothing, which is what the caller uses this
+    // answer to make true.
     let Some(observer) = crypto_observer() else {
-        return;
+        return false;
     };
     crate::runtime::spawn_blocking_detached(move || observer.on_signal(signal));
+    true
 }
 
 /// Forgets the registered observer, so one test's recorder does not receive
