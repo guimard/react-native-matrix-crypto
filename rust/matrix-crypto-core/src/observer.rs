@@ -115,6 +115,59 @@ pub(crate) fn emit(observer: &Arc<dyn ProbeObserver>, signal: ProbeSignal) {
     crate::runtime::spawn_blocking_detached(move || observer.on_signal(signal));
 }
 
+/// Identifies the emission path in the **built artifact**, not in the source
+/// tree someone happens to be reading.
+///
+/// B2's measurement compared two APKs that differed in one function body,
+/// and nothing in either APK -- nor in anything either one printed -- said
+/// which body it carried. Android imports the Rust library as a prebuilt
+/// (`android/CMakeLists.txt`) from a gitignored `jniLibs/`, with no Gradle
+/// dependency edge back to this crate, so `:app:assembleRelease` will
+/// happily repackage a stale `.so`. `probe`'s `core_version` was the only
+/// build identifier crossing the bridge and it is the crate version,
+/// identical on both arms. "Both arms ran the same `.so`" therefore could
+/// not be excluded from the measurement's own output; it had to be taken on
+/// trust from the build procedure. That is exactly the shape spec section
+/// 3.2 rejects everywhere else here: a check that reports success without
+/// having examined its target.
+///
+/// So the artifact identifies itself. This is a compile-time FNV-1a hash of
+/// the source text of the two files that decide how a signal is delivered --
+/// this one and `runtime.rs` -- read with `include_str!`, which reads what
+/// the compiler read. `probe` appends it to `core_version`, so every probe
+/// run says which emission path produced it, including runs nobody planned
+/// as an experiment.
+///
+/// What it does not claim: it covers source text only, and says nothing
+/// about the compiler, the target, the optimisation level or the rest of the
+/// crate. Any edit to either file changes it, a comment included. Both are
+/// the right way round for the job -- it can report a difference where the
+/// behaviour is identical, and it cannot report sameness where the emission
+/// source differs, which is the direction the measurement needed.
+pub(crate) const EMIT_BUILD: u32 = fnv1a(
+    fnv1a(FNV_OFFSET_BASIS, include_str!("observer.rs").as_bytes()),
+    include_str!("runtime.rs").as_bytes(),
+);
+
+const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
+
+/// FNV-1a, 32 bit, seeded so several files can be chained into one value.
+///
+/// `const fn` on purpose: the hash must be fixed when the artifact is built,
+/// not recomputed at run time from whatever source happens to be on the
+/// machine running it -- a run-time hash of a file the binary does not carry
+/// would identify the checkout, which is the thing already known.
+const fn fnv1a(seed: u32, bytes: &[u8]) -> u32 {
+    let mut hash = seed;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+        i += 1;
+    }
+    hash
+}
+
 /// Runs the probe, emitting one signal on the way through.
 pub async fn probe_with_observer(
     input: String,

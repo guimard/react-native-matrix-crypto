@@ -35,7 +35,7 @@ import { DEMO_DEVICE_ID, DEMO_SCOPE, DEMO_USER_ID, demoMachineConfig } from './c
  * in App.tsx and both call `runProbe`; before this, the shared global
  * channel meant one's probe call showed up in the other's check too.
  *
- * TWO TIMING LINES, AND WHY THEY ARE HERE RATHER THAN IN THE SUITE
+ * THREE PROBE LINES, AND WHY THEY ARE HERE RATHER THAN IN THE SUITE
  *
  * `interop/suite.ts`'s `signal` check answers "did the callback arrive at
  * all", bounded by `SIGNAL_WAIT_MS`. That constant is a measured number, and
@@ -53,6 +53,17 @@ import { DEMO_DEVICE_ID, DEMO_SCOPE, DEMO_USER_ID, demoMachineConfig } from './c
  * - `PROBE_PROMISE_MS n` -- the same clock, stopped when `runProbe`'s
  *   promise resolves. The two together say which won, which is the race
  *   itself rather than a proxy for it.
+ * - `PROBE_EMIT_BUILD v` -- `coreVersion`, which now carries a fingerprint
+ *   of the emission path compiled into the `.so` this launch is running
+ *   (`observer.rs`'s `EMIT_BUILD`). A latency number is worth nothing
+ *   without it. Android imports the Rust library as a prebuilt from a
+ *   gitignored `jniLibs/` with no Gradle edge back to the crate, so a build
+ *   that forgot to re-run `ubrn build android` produces an APK that looks
+ *   new and runs the old `emit` -- and the first measurement of this path
+ *   reported two indistinguishable distributions, which is exactly what
+ *   that mistake would have produced. This line is how a reader of a probe
+ *   log decides which emission path produced the numbers above it, instead
+ *   of trusting whoever ran the build.
  *
  * They are not checks: nothing passes or fails on them, the summary's
  * denominator does not move, and `scripts/run-probe-on-emulator.sh` prints
@@ -60,8 +71,8 @@ import { DEMO_DEVICE_ID, DEMO_SCOPE, DEMO_USER_ID, demoMachineConfig } from './c
  * suite stays free of them deliberately -- it is the shipped contract every
  * binding must satisfy, and a latency number is a measurement of one
  * binding on one machine, not a property a binding must have. The example
- * app is not the bridge and may log; these carry two integers and no
- * identifier, no payload and no key material.
+ * app is not the bridge and may log; these carry two integers and a build
+ * identifier -- no user identifier, no payload and no key material.
  */
 function jsiBinding(): BridgeBinding {
   return {
@@ -84,10 +95,13 @@ function jsiBinding(): BridgeBinding {
       // this same promise and reports whatever it does; this `then` is a
       // second, independent consumer, and without an `onRejected` a
       // rejection here would surface as an unhandled promise rejection from
-      // a branch that exists only to print a number.
+      // a branch that exists only to print diagnostics.
       if (onSignal) {
         void call.then(
-          () => console.log(`PROBE_PROMISE_MS ${Date.now() - calledAt}`),
+          (report) => {
+            console.log(`PROBE_PROMISE_MS ${Date.now() - calledAt}`)
+            console.log(`PROBE_EMIT_BUILD ${report.coreVersion}`)
+          },
           () => {},
         )
       }
