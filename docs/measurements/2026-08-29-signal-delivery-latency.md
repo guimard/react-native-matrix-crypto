@@ -205,9 +205,8 @@ It asserts the exit status **and** a distinctive substring of each diagnostic, a
 needed. Reintroducing each of the three historical defects one at a time shows why: the trap
 defect is caught by the status (127 where 1 was expected, message already printed); the
 `set -e` defect is caught only by the substring (exit 1, which is correct, and nothing
-said); and the stdout-capture defect is caught only by the accepting case (a run that should
-have been accepted is refused, and writes 2 rows instead of 4). Each of the three is caught
-by a different assertion, and none of the three by all of them.
+said); and the stdout-capture defect is caught by the status and by the row the accepting
+case writes. Each is caught by a different assertion, and none by all of them.
 
 ---
 
@@ -264,10 +263,20 @@ not move" is the wrong summary: it moved, in the direction this item did not pre
 ## 6. The second-signal experiment
 
 The question the 40 launches above cannot answer: is the new path's excess a cost paid once
-per process, or one paid on every signal? Every one of those samples is the first observer
-callback its process delivered -- established in section 7, by measurement, after three
-rounds of asserting it from a fact that did not establish it -- so a once-per-process cost
-lands in every sample and a shifted median is what either hypothesis predicts.
+per process, or one paid on every signal? It matters that these samples are each their
+process's first delivered signal, because that is what makes a once-per-process cost land in
+every sample, so that a shifted median is what either hypothesis predicts.
+
+**How well that is known, exactly.** Section 7 measures it, and measures it on 8 idle
+launches of the branch tip's build pair. The launches in sections 5 and 6 predate the
+`PROBE_SIGNAL_NTH` column -- section 9.1's rows carry seven fields and section 9.2's carry
+eight, neither of them the ordinal -- so for those 62 launches the first-signal status is
+*inferred*, not recorded. The inference is a reasonable one: the two racing call sites are
+unchanged between the two build pairs, and nothing else in the app emits. It is still an
+inference, and section 7 supplies the fact that limits it -- a slower mount could plausibly
+go the other way, and 30 of those 62 launches ran under deliberate saturation, which is a
+slower mount. The +22 ms figure below is the CPU-saturated condition, and there is no
+ordinal data under load at all.
 
 One extra `emit` separates them. `ProbeHarness.tsx` now times a second observed signal after
 both suites have run and reports it as `PROBE_SIGNAL2_MS`; the harness records it alongside
@@ -373,7 +382,10 @@ way. What has changed is that a row now carries the answer instead of a comment 
 it, so a future run that goes the other way will say so rather than being silently
 misdescribed.
 
-Section 6's conclusion is unaffected: the launches it reports were first-signal launches.
+Section 6's conclusion is unaffected, with the scope said plainly: what is measured here is
+8 idle launches at the tip, and section 6's 22 launches predate the column, so their
+first-signal status is inferred from the unchanged call sites rather than recorded. That
+inference is what section 6's reading rests on, and it is an inference.
 The two arms here carry `EMIT_BUILD` `2cac498d` and `1920fc10` -- the emission source at the
 tip of this branch rather than at `3e07bbb`, since the ordinal instrument was added after
 section 6 ran. The `emit` statement is identical between them; only the comments around it
