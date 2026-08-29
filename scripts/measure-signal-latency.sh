@@ -112,7 +112,7 @@ trap 'rm -rf "$WORK"; stop_load' EXIT
 # arms differ in more than the thing under test and the comparison says nothing
 # about emission.
 # ---------------------------------------------------------------------------
-ABI=$(adb shell getprop ro.product.cpu.abi 2>/dev/null | tr -d '\r')
+ABI=$(adb shell getprop ro.product.cpu.abi 2>/dev/null | tr -d '\r') || ABI=""
 [ -n "$ABI" ] || fail "no device: adb reported no ro.product.cpu.abi."
 
 # $1 apk, $2 member path. Prints the digest, or returns 1 if the member is
@@ -231,14 +231,28 @@ launch_once() {
   # than immediately.
   sleep "$LATE_GRACE_SECONDS"
 
+  # EVERY ONE OF THESE NEEDS ITS `|| VAR=""`, FOR THE REASON AT `digest_member`
+  #
+  # `grep` exits 1 when it matches nothing, `pipefail` promotes that to the
+  # pipeline, and `set -e` then aborts the assignment -- so without the
+  # fallback a launch that printed no `PROBE_SIGNAL_MS` killed the whole run
+  # at this line: no diagnostic, no row, exit 1. The `${sig:-NONE}` defaults
+  # below and the `if [ -z "$build" ]` guard were both unreachable.
+  #
+  # That is exactly the defect fixed a hundred lines up for `digest_member`'s
+  # callers, in the same commit that rewrote this function, and `shellcheck`
+  # sees neither. It matters most for the one line that is *supposed* to be
+  # missing sometimes: a lost callback is the event this harness is kept for
+  # (spec section 5.1, B2), and it used to abort the run rather than record a
+  # `NONE`.
   local log sig sig2 prom build
-  log=$(probe_lines)
-  sig=$(printf '%s\n' "$log" | grep -E '^PROBE_SIGNAL_MS ' | head -1 | awk '{print $2}')
-  # The second signal of the same process, which is what tells a one-off
-  # start-up cost apart from a per-signal one. See ProbeHarness.tsx.
-  sig2=$(printf '%s\n' "$log" | grep -E '^PROBE_SIGNAL2_MS ' | head -1 | awk '{print $2}')
-  prom=$(printf '%s\n' "$log" | grep -E '^PROBE_PROMISE_MS ' | head -1 | awk '{print $2}')
-  build=$(printf '%s\n' "$log" | grep -E '^PROBE_EMIT_BUILD ' | head -1 | awk '{print $2}')
+  log=$(probe_lines) || log=""
+  sig=$(printf '%s\n' "$log" | grep -E '^PROBE_SIGNAL_MS ' | head -1 | awk '{print $2}') || sig=""
+  # The second signal of the same process, which is what tells a start-up cost
+  # apart from a per-signal one. See ProbeHarness.tsx.
+  sig2=$(printf '%s\n' "$log" | grep -E '^PROBE_SIGNAL2_MS ' | head -1 | awk '{print $2}') || sig2=""
+  prom=$(printf '%s\n' "$log" | grep -E '^PROBE_PROMISE_MS ' | head -1 | awk '{print $2}') || prom=""
+  build=$(printf '%s\n' "$log" | grep -E '^PROBE_EMIT_BUILD ' | head -1 | awk '{print $2}') || build=""
 
   if [ -z "$build" ]; then
     fail "launch $round of '$label' printed no PROBE_EMIT_BUILD line.
