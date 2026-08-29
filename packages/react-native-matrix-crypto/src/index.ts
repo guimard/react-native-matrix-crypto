@@ -19,7 +19,7 @@
 // it because there is no native module to install in Node either way.
 import './index.tsx'
 
-export type { CryptoAlgorithm, CryptoScopeId, EventEnvelope, TrustState } from './types'
+export type { CryptoAlgorithm, CryptoScopeId, EventEnvelope, SyncDelta, TrustState } from './types'
 export { asCryptoScopeId } from './types'
 
 export type { CryptoError, CryptoErrorKind } from './errors'
@@ -37,6 +37,7 @@ export {
   createCryptoMachine,
   decryptEvent,
   encryptEvent,
+  encryptionSlice,
   exportSecrets,
   getDeviceIdentityKeys,
   getDeviceStatuses,

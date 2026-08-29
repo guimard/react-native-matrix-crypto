@@ -52,6 +52,7 @@ import {
   createCryptoMachine,
   decryptEvent,
   encryptEvent,
+  encryptionSlice,
   isCryptoError,
   markRequestSent,
   receiveSyncChanges,
@@ -64,7 +65,6 @@ import type { InteropCheck } from 'react-native-matrix-crypto/interop/suite'
 import {
   corruptOneCharacter,
   counterpartyOp,
-  encryptionSlice,
   httpJson,
   sendOutgoing,
   syncOnce,
@@ -285,7 +285,9 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
     const body = await syncOnce(plan, since, timeoutMs)
     since = typeof body.next_batch === 'string' ? body.next_batch : since
     const slice = encryptionSlice(body)
-    const toDevice = slice.to_device_events as unknown[] | undefined
+    // No cast needed: `slice` is now `SyncDelta`, so this field is already
+    // typed `unknown[] | undefined`.
+    const toDevice = slice.to_device_events
     toDeviceEventsIngested += toDevice === undefined ? 0 : toDevice.length
     // Fed on every sync, including the empty ones. That is what a product's
     // sync loop does, and a to-device event a run declined to forward is a
@@ -555,7 +557,9 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
           changedCount = changed.length
           reported = changed.indexOf(plan.nioUserId) !== -1
           const slice = encryptionSlice(body)
-          const toDevice = slice.to_device_events as unknown[] | undefined
+          // No cast needed: `slice` is now `SyncDelta`, so this field is
+          // already typed `unknown[] | undefined`.
+          const toDevice = slice.to_device_events
           toDeviceEventsIngested += toDevice === undefined ? 0 : toDevice.length
           // The mutation feeds the raw response where the mapping belongs:
           // the shape the facade's documentation used to recommend. The

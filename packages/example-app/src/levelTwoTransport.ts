@@ -1,7 +1,9 @@
 /**
  * Transport for the level 2 facade run: HTTP the app performs itself, the
- * run plan it is handed, and the two mappings a product has to write for
- * itself.
+ * run plan it is handed, and the one mapping a product still has to write
+ * for itself -- `receiveSyncChanges`'s own five-field rename moved into
+ * `react-native-matrix-crypto` as `encryptionSlice` in Task 1 (M3); see the
+ * "one mapping" section below for what remains here.
  *
  * # Why this file exists at all
  *
@@ -211,43 +213,17 @@ export async function counterpartyOp(
 }
 
 // ---------------------------------------------------------------------------
-// The two mappings a product writes for itself
+// The one mapping a product still writes for itself
 // ---------------------------------------------------------------------------
-
-/**
- * The five fields `receiveSyncChanges` reads, lifted out of a real `/sync`
- * body.
- *
- * **This is the mapping the facade's own documentation got wrong**, and it
- * is the reason this run exists in this layer at all. The accepted shape
- * mirrors `matrix-sdk-crypto`'s `EncryptionSyncChanges`, not the `/sync`
- * response, and the two sets of names have no member in common -- so a
- * product that forwards the response verbatim gets `malformed_payload`, and
- * a product that renames nothing teaches the machine nothing. The suite
- * asserts both halves of that: that the raw body is rejected, and that the
- * mapped body is learned from.
- *
- * A transcription of `encryption_slice` in
- * `rust/matrix-crypto-core/tests/level_two_interop.rs`, kept in the same
- * shape on purpose: the same mapping is now exercised against a real
- * homeserver from both languages.
- */
-export function encryptionSlice(sync: Record<string, unknown>): Record<string, unknown> {
-  const slice: Record<string, unknown> = {}
-  const toDevice = sync.to_device as Record<string, unknown> | undefined
-  if (toDevice?.events !== undefined) slice.to_device_events = toDevice.events
-  if (sync.device_lists !== undefined && sync.device_lists !== null) {
-    slice.changed_devices = sync.device_lists
-  }
-  if (sync.device_one_time_keys_count !== undefined) {
-    slice.one_time_keys_counts = sync.device_one_time_keys_count
-  }
-  if (sync.device_unused_fallback_key_types !== undefined) {
-    slice.unused_fallback_keys = sync.device_unused_fallback_key_types
-  }
-  if (sync.next_batch !== undefined) slice.next_batch_token = sync.next_batch
-  return slice
-}
+//
+// `encryptionSlice` used to live here too -- the mapping the facade's own
+// documentation got wrong, and the reason this run exists in this layer at
+// all. It is now `react-native-matrix-crypto`'s own `encryptionSlice`
+// (Task 1, M3): callers (`levelTwoSuite.ts`) import it from the library
+// directly rather than from this file, so it is not re-exported here as a
+// second hand-written copy. `sendOutgoing` below is what remains: the
+// `kind` -> endpoint mapping `OutgoingRequest`'s own doc comment tables,
+// which nothing generates.
 
 /**
  * Sends one request the pump handed out to the endpoint its `kind` names,
