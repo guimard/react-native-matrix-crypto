@@ -440,9 +440,7 @@ pub async fn request_flow(user_id: &str, device_id: &str) -> Result<FlowId, Mach
                 .get_device(&user, &device, None)
                 .await
                 .map_err(|_upstream| store_failed())?
-                .ok_or(MachineError::MalformedIdentifier {
-                    detail: "no such device".to_string(),
-                })?;
+                .ok_or(MachineError::UnknownDevice)?;
 
             let (request, outgoing) =
                 device.request_verification_with_methods(vec![VerificationMethod::SasV1]);
@@ -665,6 +663,51 @@ mod tests {
             !one.contains('\u{1f436}') && !one.contains("Dog"),
             "one symbol is a seventh of the answer and must not be printable: {one}"
         );
+    }
+
+    fn config(dir: &std::path::Path) -> crate::machine::MachineConfig {
+        crate::machine::MachineConfig {
+            user_id: "@self:example.org".to_string(),
+            device_id: "SELFDEVICE".to_string(),
+            store_path: dir.join("store").to_string_lossy().into_owned(),
+            store_passphrase: Some("test-passphrase".to_string()),
+        }
+    }
+
+    /// A device this machine has never been told about is not the same
+    /// condition as an identifier that does not parse, and the two must not
+    /// arrive as one error.
+    ///
+    /// They were one error until a review pointed out that they call for
+    /// different things: the first is fixed by querying that user's devices
+    /// through the pump and trying again, the second by passing something
+    /// else. Both assertions are here because the pair is the point; either
+    /// one alone would keep passing if the fold came back.
+    #[tokio::test]
+    async fn an_unknown_device_is_not_reported_as_a_malformed_identifier() {
+        let _guard = crate::machine::lock_for_test().await;
+        crate::machine::reset_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        crate::machine::create_machine(config(dir.path()))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            request_flow("@nobody:example.org", "NOSUCHDEVICE")
+                .await
+                .expect_err("this machine has never queried that user"),
+            MachineError::UnknownDevice
+        );
+        assert_eq!(
+            request_flow("not-a-user-id", "NOSUCHDEVICE")
+                .await
+                .expect_err("that identifier does not parse"),
+            MachineError::MalformedIdentifier {
+                detail: "user id".to_string()
+            }
+        );
+
+        crate::machine::reset_for_test();
     }
 
     /// A flow nothing ever registered, on a process with no machine at all:

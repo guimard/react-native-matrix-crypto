@@ -146,6 +146,8 @@ pub enum MachineFfiError {
     WrongStage,
     #[error("the short authentication string is not available yet")]
     MaterialNotReady,
+    #[error("no such device")]
+    UnknownDevice,
 }
 
 impl From<matrix_crypto_core::MachineError> for MachineFfiError {
@@ -162,6 +164,7 @@ impl From<matrix_crypto_core::MachineError> for MachineFfiError {
             matrix_crypto_core::MachineError::UnknownFlow => Self::UnknownFlow,
             matrix_crypto_core::MachineError::WrongStage => Self::WrongStage,
             matrix_crypto_core::MachineError::MaterialNotReady => Self::MaterialNotReady,
+            matrix_crypto_core::MachineError::UnknownDevice => Self::UnknownDevice,
         }
     }
 }

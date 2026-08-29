@@ -126,6 +126,21 @@ pub enum MachineError {
     /// told which of the two it is.
     #[error("the short authentication string is not available yet")]
     MaterialNotReady,
+    /// The identifiers this call named are well-formed, but no such device
+    /// is in the store.
+    ///
+    /// Kept distinct from `MalformedIdentifier`, which it was folded into
+    /// first: the two call for different things from a caller. A malformed
+    /// identifier is a mistake in what was passed and no retry helps; an
+    /// unknown device is a device this machine has not been told about yet,
+    /// and querying that user's devices through the outbound pump and
+    /// trying again is exactly what resolves it. The session taxonomy
+    /// already draws this line (`SessionError::UnknownDevice`), and
+    /// rendering "malformed identifier: no such device" drew it nowhere.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("no such device")]
+    UnknownDevice,
 }
 
 struct Held {

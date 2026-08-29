@@ -245,6 +245,11 @@ impl From<MachineError> for SessionError {
             // as everything above: they are unreachable here today, and a
             // future variant must still fail this build rather than land on
             // `Failed` unnoticed.
+            // Carried across by name, like `MalformedIdentifier` above and
+            // for the same reason: this enum has the matching kind, so
+            // mapping it truthfully costs nothing. Still unreachable here --
+            // `with_machine` only ever produces `NotInitialised`.
+            MachineError::UnknownDevice => SessionError::UnknownDevice,
             MachineError::AlreadyInitialised
             | MachineError::Store { .. }
             | MachineError::MismatchedAccount

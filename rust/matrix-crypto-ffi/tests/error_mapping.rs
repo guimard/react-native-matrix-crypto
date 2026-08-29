@@ -127,7 +127,7 @@ fn every_session_error_maps_to_the_matching_ffi_variant() {
     );
 }
 
-/// All eight `MachineError` variants, each to its own kind, and both
+/// All nine `MachineError` variants, each to its own kind, and both
 /// `detail`-carrying variants checked for the payload as well as the kind.
 ///
 /// The two field-carrying variants are the ones a swap could hide behind a
@@ -222,5 +222,14 @@ fn every_machine_error_maps_to_the_matching_ffi_variant() {
          is the one that names a caller's own omission, and a product told \
          WrongStage instead would abandon a flow that is still live and one \
          report away from completing"
+    );
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::UnknownDevice),
+            MachineFfiError::UnknownDevice
+        ),
+        "MachineError::UnknownDevice must not arrive as another kind -- it is \
+         fixed by querying that user's devices and trying again, which is not \
+         what any of the other eight asks for"
     );
 }

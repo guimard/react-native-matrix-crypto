@@ -1102,6 +1102,7 @@ export enum MachineFfiError_Tags {
   UnknownFlow = "UnknownFlow",
   WrongStage = "WrongStage",
   MaterialNotReady = "MaterialNotReady",
+  UnknownDevice = "UnknownDevice",
 }
 /**
  * Mirror of the core's machine error, carrying the UniFFI error derive.
@@ -1348,6 +1349,32 @@ export const MachineFfiError = (() => {
     }
   }
 
+  type UnknownDevice__interface = {
+    tag: MachineFfiError_Tags.UnknownDevice;
+  };
+  class UnknownDevice_ extends UniffiError implements UnknownDevice__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.UnknownDevice;
+    constructor() {
+      super("MachineFfiError", "UnknownDevice");
+    }
+
+    static new(): UnknownDevice_ {
+      return new UnknownDevice_();
+    }
+
+    static instanceOf(obj: any): obj is UnknownDevice_ {
+      return obj.tag === MachineFfiError_Tags.UnknownDevice;
+    }
+    static hasInner(obj: any): obj is UnknownDevice_ {
+      return false;
+    }
+  }
+
   function instanceOf(obj: any): obj is MachineFfiError {
     return obj[uniffiTypeNameSymbol] === "MachineFfiError";
   }
@@ -1362,6 +1389,7 @@ export const MachineFfiError = (() => {
     UnknownFlow: UnknownFlow_,
     WrongStage: WrongStage_,
     MaterialNotReady: MaterialNotReady_,
+    UnknownDevice: UnknownDevice_,
   });
 })();
 /**
@@ -1380,7 +1408,8 @@ export type MachineFfiError = InstanceType<
     | "MismatchedAccount"
     | "UnknownFlow"
     | "WrongStage"
-    | "MaterialNotReady"]
+    | "MaterialNotReady"
+    | "UnknownDevice"]
 >;
 
 // FfiConverter for enum MachineFfiError
@@ -1409,6 +1438,8 @@ const FfiConverterTypeMachineFfiError = (() => {
           return new MachineFfiError.WrongStage();
         case 8:
           return new MachineFfiError.MaterialNotReady();
+        case 9:
+          return new MachineFfiError.UnknownDevice();
         default:
           throw new UniffiInternalError.UnexpectedEnumCase();
       }
@@ -1451,6 +1482,10 @@ const FfiConverterTypeMachineFfiError = (() => {
           c.writeI32(8);
           return;
         }
+        case MachineFfiError_Tags.UnknownDevice: {
+          c.writeI32(9);
+          return;
+        }
         default:
           // Throwing from here means that MachineFfiError_Tags hasn't matched an ordinal.
           throw new UniffiInternalError.UnexpectedEnumCase();
@@ -1486,6 +1521,9 @@ const FfiConverterTypeMachineFfiError = (() => {
           return 4;
         }
         case MachineFfiError_Tags.MaterialNotReady: {
+          return 4;
+        }
+        case MachineFfiError_Tags.UnknownDevice: {
           return 4;
         }
         default:
