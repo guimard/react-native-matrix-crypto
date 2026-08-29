@@ -194,6 +194,9 @@ interface NativeModuleInterface {
   ubrn_uniffi_matrix_crypto_ffi_fn_func_cancel_verification(
     verificationId: Uint8Array
   ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_clear_crypto_observer(
+    uniffi_out_err: UniffiRustCallStatus
+  ): void;
   ubrn_uniffi_matrix_crypto_ffi_fn_func_confirm_verification(
     verificationId: Uint8Array
   ): bigint;
@@ -270,6 +273,7 @@ interface NativeModuleInterface {
   ubrn_ffi_matrix_crypto_ffi_uniffi_contract_version(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_accept_verification(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_cancel_verification(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_clear_crypto_observer(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_confirm_verification(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_create_crypto_machine(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_decrypt_event(): number;

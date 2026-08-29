@@ -32,6 +32,7 @@ class NativeMatrixCrypto : public jsi::HostObject {
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_method_probeobserver_on_signal(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_accept_verification(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_cancel_verification(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_clear_crypto_observer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_confirm_verification(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_create_crypto_machine(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_decrypt_event(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
@@ -100,6 +101,7 @@ class NativeMatrixCrypto : public jsi::HostObject {
     jsi::Value cpp_ffi_matrix_crypto_ffi_rust_future_complete_void(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_accept_verification(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_cancel_verification(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_clear_crypto_observer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_confirm_verification(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_create_crypto_machine(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_decrypt_event(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);

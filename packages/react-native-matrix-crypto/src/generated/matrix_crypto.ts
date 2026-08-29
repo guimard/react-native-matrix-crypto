@@ -142,6 +142,29 @@ export async function cancelVerification(
 }
 
 /**
+ * Forgets the registered crypto signal observer. Mirrors
+ * `clear_crypto_observer`; see its own doc comment in
+ * `matrix-crypto-core::observer` for why the last unsubscribe must call
+ * this rather than merely dropping its listener.
+ *
+ * Appended after `set_crypto_observer`, which is after everything else in
+ * this file, for the ordinal reason `CryptoSignal`'s own comment gives.
+ * Synchronous for the same reason its counterpart is: the TypeScript
+ * unsubscribe is a synchronous closure and must not leave a promise
+ * unawaited on the one path that must not fail quietly.
+ */
+export function clearCryptoObserver(): void {
+  uniffiCaller.rustCall(
+    /*caller:*/ (callStatus) => {
+      nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_clear_crypto_observer(
+        callStatus
+      );
+    },
+    /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString)
+  );
+}
+
+/**
  * Says the strings matched. Mirrors `confirm_flow`.
  */
 export async function confirmVerification(
@@ -3573,6 +3596,14 @@ function uniffiEnsureInitialized() {
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       "uniffi_matrix_crypto_ffi_checksum_func_cancel_verification"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_clear_crypto_observer() !==
+    11772
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_clear_crypto_observer"
     );
   }
   if (

@@ -55,10 +55,11 @@ use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
 use matrix_crypto_core::{
-    accept_flow, begin_comparison, cancel_flow, confirm_flow, create_machine, device_statuses,
-    flow_stage, in_runtime, mark_request_sent, read_material, receive_sync_changes, request_flow,
-    set_crypto_observer, share_scope_key, take_outgoing_requests, with_machine, CryptoObserver,
-    CryptoSignal, FlowId, FlowStage, MachineConfig, MachineError, TrustState,
+    accept_flow, begin_comparison, cancel_flow, clear_crypto_observer, confirm_flow,
+    create_machine, device_statuses, flow_stage, in_runtime, mark_request_sent, read_material,
+    receive_sync_changes, request_flow, set_crypto_observer, share_scope_key,
+    take_outgoing_requests, with_machine, CryptoObserver, CryptoSignal, FlowId, FlowStage,
+    MachineConfig, MachineError, TrustState,
 };
 use matrix_sdk_common::ruma::api::client::keys::get_keys::v3::Response as KeysQueryResponse;
 use matrix_sdk_common::ruma::api::client::keys::upload_keys::v3::Response as KeysUploadResponse;
@@ -106,7 +107,17 @@ static LIBRARY_DEVICE_KEYS: StdMutex<Option<String>> = StdMutex::new(None);
 /// checked at the wrong instant report an absence that was really a
 /// not-yet. A channel lets a test *wait*, bounded, which is the only shape
 /// that can distinguish the two.
-static SIGNALS: StdMutex<Option<mpsc::Receiver<CryptoSignal>>> = StdMutex::new(None);
+///
+/// The sender is kept alongside the receiver so a test can put the observer
+/// back after clearing it and go on reading the same channel -- which is
+/// what `an_invitation_that_arrives_while_nobody_listens_is_announced_on_resubscribe`
+/// needs, and the reason this is not just a `Receiver`.
+struct SignalChannel {
+    tx: mpsc::Sender<CryptoSignal>,
+    rx: mpsc::Receiver<CryptoSignal>,
+}
+
+static SIGNALS: StdMutex<Option<SignalChannel>> = StdMutex::new(None);
 
 /// How long a signal that is coming gets to arrive.
 ///
@@ -153,16 +164,43 @@ impl CryptoObserver for Recorder {
 /// `--test-threads=1`, which is an ordering the default parallel run does
 /// not produce.
 fn subscribe_and_drain() {
+    subscribe();
+    let held = SIGNALS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let received = &held.as_ref().expect("the recorder was just installed").rx;
+    while received.recv_timeout(QUIET_BOUND).is_ok() {}
+}
+
+/// Installs this file's recorder, creating its channel the first time.
+///
+/// Idempotent in what it observes and deliberately *not* idempotent in what
+/// it does: called again after [`unsubscribe`], it puts the same channel
+/// back, which is what makes a resubscribe testable at all.
+fn subscribe() {
     let mut held = SIGNALS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if held.is_none() {
         let (tx, rx) = mpsc::channel();
-        *held = Some(rx);
-        set_crypto_observer(Arc::new(Recorder { tx }));
+        *held = Some(SignalChannel { tx, rx });
     }
-    let received = held.as_ref().expect("the recorder was just installed");
-    while received.recv_timeout(QUIET_BOUND).is_ok() {}
+    let tx = held
+        .as_ref()
+        .expect("the channel was just created")
+        .tx
+        .clone();
+    set_crypto_observer(Arc::new(Recorder { tx }));
+}
+
+/// The last unsubscribe, from the core's point of view.
+///
+/// This is what `signals.ts`' unsubscribe closure calls once its listener
+/// set empties. Nothing else in this file's helpers touches the observer
+/// registry, so a test that calls this is in exactly the state a product is
+/// in between unmounting a subscribing component and mounting the next one.
+fn unsubscribe() {
+    clear_crypto_observer();
 }
 
 /// The next signal, or a panic naming what was expected.
@@ -172,6 +210,7 @@ fn next_signal(expected: &str) -> CryptoSignal {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     held.as_ref()
         .expect("subscribe_and_drain must run first")
+        .rx
         .recv_timeout(DELIVERY_BOUND)
         .unwrap_or_else(|e| panic!("{expected}: nothing reached the signal channel ({e})"))
 }
@@ -184,6 +223,7 @@ fn no_signal(why: &str) {
     if let Ok(signal) = held
         .as_ref()
         .expect("subscribe_and_drain must run first")
+        .rx
         .recv_timeout(QUIET_BOUND)
     {
         panic!("{why}, and yet {signal:?} was delivered");
@@ -872,7 +912,140 @@ fn two_parties_complete_a_comparison() {
             },
             "the channel must name the user whose device changed, and the state it changed to"
         );
+
+        // Synced three more times before asserting silence, and without
+        // this the assertion below is free: nothing on this channel is
+        // emitted except from a sync, so "no more arrived" proves nothing
+        // unless the producer has since run against a flow that is still
+        // `Done` in the registry. Written without it twice, on both
+        // completion tests, and deleting `completion_announced` failed
+        // neither -- the same vacuity this file had already found and fixed
+        // twice on the inbound side. Three rather than one, so an
+        // implementation that repeated on alternate syncs fails too.
+        for _ in 0..3 {
+            deliver_to_library(vec![]).await;
+        }
         no_signal("a completed comparison announces one trust change and no more");
+    }));
+}
+
+/// An invitation that arrives while nobody is listening must still reach
+/// whoever subscribes next.
+///
+/// # The shape this exists for
+///
+/// `useEffect(() => onCryptoSignal(handler), [])` -- subscribe on mount,
+/// unsubscribe on unmount -- is the ordinary React Native idiom, so a
+/// product that subscribes at all will spend time unsubscribed. A hot
+/// reload produces the same window. This is therefore the default
+/// integration pattern rather than an edge case, and what happens in that
+/// window decides whether the channel is usable.
+///
+/// # Why silence in the window is the property, not the announcement
+///
+/// The producer's dedup key is membership in the flow registry, and the
+/// registry is only written when an observer exists. So "announce nothing
+/// while nobody is listening" and "announce it to whoever subscribes next"
+/// are the same statement: an invitation not consumed in the window is
+/// still `Requested`, still unregistered, and the next sync after a
+/// resubscribe enumerates it afresh.
+///
+/// Which is why the negative assertion below comes first and the positive
+/// one second. Before `clear_crypto_observer` existed, an unsubscribe left
+/// the observer installed with nothing behind it: the invitation was
+/// registered, marked announced and delivered into an empty listener set,
+/// and `register_if_absent` refused it for the rest of its life. Nothing
+/// listed inbound flows, so there was no way back, and the invitation
+/// expired ten minutes later. That failure was silent, permanent, and
+/// reached through the most common code a consumer will write.
+#[test]
+fn an_invitation_that_arrives_while_nobody_listens_is_announced_on_resubscribe() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    futures::executor::block_on(in_runtime(async move {
+        let bob_user = "@remounting:example.org";
+        let bob_device = "COUNTERPARTYSIX";
+        let bob = counterparty(bob_user, bob_device).await;
+
+        // ---- Mounted, then unmounted ------------------------------------
+        subscribe_and_drain();
+        unsubscribe();
+
+        // ---- The counterparty asks into the silence ---------------------
+        let alice: OwnedUserId = ALICE_USER.parse().expect("a literal user id parses");
+        let alice_device: OwnedDeviceId = ALICE_DEVICE.into();
+        let library_device = bob
+            .get_device(&alice, &alice_device, None)
+            .await
+            .expect("the bare machine's store must be readable")
+            .expect("the bare machine knows the library's device");
+        let (bob_request, asking) =
+            library_device.request_verification_with_methods(vec![VerificationMethod::SasV1]);
+        deliver_verification_request(&asking, bob_user).await;
+
+        // The sync that would have announced it has run. Nothing may have
+        // been consumed by it, because there is nobody to consume it for.
+        no_signal(
+            "an invitation must not be announced while nobody is subscribed: consuming it \
+             there is what made it unrecoverable, since the registry then refuses to \
+             announce it ever again",
+        );
+
+        // ---- Remounted --------------------------------------------------
+        subscribe();
+        deliver_to_library(vec![]).await;
+
+        let announced = next_signal(
+            "an invitation still live when a subscriber returns must be announced to it",
+        );
+        let CryptoSignal::VerificationRequested {
+            user,
+            device_id,
+            flow_id,
+        } = announced.clone()
+        else {
+            panic!("a recovered invitation must announce itself as one, not as {announced:?}");
+        };
+        assert_eq!(user, bob_user, "the announcement must name who is asking");
+        assert_eq!(
+            device_id, bob_device,
+            "the announcement must name which device is asking"
+        );
+        assert_eq!(
+            flow_id,
+            bob_request.flow_id().as_str(),
+            "and it must name the flow, or the product has been told something happened \
+             without being told what to do about it"
+        );
+        no_signal("one invitation is one announcement, on whichever sync delivers it");
+
+        // ---- And it is a live flow, not a notification ------------------
+        // Driven from the announced identifier, never from `bob_request`:
+        // the point of the recovery is that a product which was not
+        // listening when the invitation arrived can still act on it, and it
+        // has no other source for the name.
+        let recovered = FlowId(flow_id);
+        assert_eq!(
+            flow_stage(&recovered)
+                .await
+                .expect("the announced identifier names a live flow"),
+            FlowStage::Requested
+        );
+        accept_flow(&recovered)
+            .await
+            .expect("an invitation announced after a resubscribe can be accepted");
+        let crossed = take_outgoing_requests()
+            .await
+            .expect("the pump must be drainable")
+            .iter()
+            .map(|request| declared_event_type(&request.body))
+            .collect::<Vec<_>>();
+        assert!(
+            crossed.contains(&"m.key.verification.ready".to_string()),
+            "the acceptance must reach the pump: {crossed:?}"
+        );
     }));
 }
 
@@ -1649,6 +1822,19 @@ fn a_comparison_confirmed_before_the_peer_completes_on_both_sides() {
                 state: TrustState::Verified,
             },
         );
+
+        // Synced three more times before asserting silence, and without
+        // this the assertion below is free: nothing on this channel is
+        // emitted except from a sync, so "no more arrived" proves nothing
+        // unless the producer has since run against a flow that is still
+        // `Done` in the registry. Written without it twice, on both
+        // completion tests, and deleting `completion_announced` failed
+        // neither -- the same vacuity this file had already found and fixed
+        // twice on the inbound side. Three rather than one, so an
+        // implementation that repeated on alternate syncs fails too.
+        for _ in 0..3 {
+            deliver_to_library(vec![]).await;
+        }
         no_signal("one completed comparison is one trust change, whichever side confirmed first");
     }));
 }

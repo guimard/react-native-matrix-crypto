@@ -315,14 +315,48 @@ fn is_finished(stage: FlowStage) -> bool {
     matches!(stage, FlowStage::Done | FlowStage::Cancelled)
 }
 
-/// Drops every flow that has finished.
+/// Drops every flow that has finished, except one whose completion nobody
+/// has collected yet.
 ///
 /// Upstream's own rule, `retain(|_, v| !(v.is_done() || v.is_cancelled()))`
 /// from `VerificationMachine::garbage_collect`, run here at the one moment
 /// this registry can grow rather than on every sync. See the module's own
 /// header for what that costs a caller and why it is bounded.
+///
+/// # The one exception, and why it does not reopen the growth question
+///
+/// Sweeping is not serialised against announcing. A comparison reaches
+/// `Done` inside `receive_sync_changes`, and `announce_state_changes` runs
+/// after that call has released the machine lock; any concurrent call that
+/// reaches [`handles`] -> [`register`] in that window sweeps, and an
+/// unconditional sweep would drop the record before
+/// [`take_pending_completions`] had ever seen it. The `TrustChanged` would
+/// be lost with nothing reporting it.
+///
+/// So a `Done` record whose completion has not been taken survives one more
+/// pass. Three properties keep that from becoming unbounded retention:
+///
+/// * only `Done` is exempt. A `Cancelled` flow has no completion to
+///   announce and is always swept, which is what
+///   `a_finished_flow_is_not_retained_forever` measures.
+/// * the exemption ends at the next sync. `take_pending_completions` marks
+///   every `Done` record it inspects, whether or not it produced a signal,
+///   so the record is sweepable from then on.
+/// * with no observer registered, nothing will ever announce, so nothing is
+///   exempt. That is also what keeps a process that never subscribes on
+///   exactly the retention behaviour it had before this existed.
 fn release_finished(flows: &mut BTreeMap<String, FlowRecord>) {
-    flows.retain(|_, record| !is_finished(stage_of(record)));
+    // Read once, outside the loop: it takes the observer registry's read
+    // lock, and this already holds the flow registry's. Nothing anywhere
+    // takes those two in the other order.
+    let something_will_announce = crate::observer::crypto_observer().is_some();
+    flows.retain(|_, record| {
+        let stage = stage_of(record);
+        if !is_finished(stage) {
+            return true;
+        }
+        stage == FlowStage::Done && !record.completion_announced && something_will_announce
+    });
 }
 
 fn cached(flow_id: &str) -> Option<Handles> {
@@ -357,12 +391,20 @@ fn register(flow_id: &str, request: VerificationRequest) -> Handles {
 /// insertion and the "was it new?" question answered under one lock. Split
 /// into a `contains_key` and a `register`, an inbound flow could be
 /// announced twice by two syncs that interleaved between them.
+///
+/// Sweeps before it asks, which is [`register`]'s order rather than the
+/// reverse. The two disagreed until a review noticed: asking first meant a
+/// finished record still sitting in the registry would refuse an identifier
+/// that reused its name. Matrix transaction ids are not reused, so nothing
+/// observable changes -- but two functions doing the same two things in
+/// opposite orders is a question a reader has to answer, and it costs
+/// nothing not to ask it.
 fn register_if_absent(flow_id: &str, request: VerificationRequest) -> bool {
     let mut flows = FLOWS.lock().expect("verification registry poisoned");
+    release_finished(&mut flows);
     if flows.contains_key(flow_id) {
         return false;
     }
-    release_finished(&mut flows);
     flows.insert(
         flow_id.to_string(),
         FlowRecord {
@@ -694,6 +736,12 @@ pub async fn cancel_flow(flow: &FlowId) -> Result<(), MachineError> {
 /// then fails to reach the machine loses the announcement -- acceptable,
 /// because the only way to fail there is `NotInitialised`, and a process
 /// with no machine has nothing to announce a trust change about.
+///
+/// Marks **every** `Done` record it inspects, not only the ones that
+/// produced a completion. [`release_finished`] holds back a `Done` record
+/// whose completion has not been taken, so a record this function looked at
+/// and found nothing in must still come away marked, or it would be exempt
+/// from eviction for the life of the process.
 fn take_pending_completions() -> Vec<(OwnedUserId, OwnedDeviceId)> {
     let mut flows = FLOWS.lock().expect("verification registry poisoned");
     let mut completions = Vec::new();
@@ -702,8 +750,21 @@ fn take_pending_completions() -> Vec<(OwnedUserId, OwnedDeviceId)> {
         if record.completion_announced {
             continue;
         }
-        // `state()` returns by value, which ends the borrow on `record`
-        // before its `completion_announced` is written below.
+        if stage_of(record) != FlowStage::Done {
+            continue;
+        }
+
+        // Marked on the *stage*, before anything is read out of it, and
+        // that is what `release_finished`'s exemption depends on: a record
+        // it holds back must become sweepable on the next pass whether or
+        // not it turned out to have anything to announce. A flow can reach
+        // `Done` through `VerificationRequestState::Done` with no
+        // comparison behind it at all, and marking only the ones that
+        // produced a signal would exempt those from eviction for the life
+        // of the process.
+        record.completion_announced = true;
+
+        // `state()` returns by value, which ends the borrow on `record`.
         let state = comparison_of(record).map(|comparison| comparison.state());
         let Some(SasState::Done {
             verified_devices, ..
@@ -711,7 +772,6 @@ fn take_pending_completions() -> Vec<(OwnedUserId, OwnedDeviceId)> {
         else {
             continue;
         };
-        record.completion_announced = true;
         for device in verified_devices {
             completions.push((device.user_id().to_owned(), device.device_id().to_owned()));
         }
@@ -746,12 +806,46 @@ fn take_pending_completions() -> Vec<(OwnedUserId, OwnedDeviceId)> {
 /// must never observe a signal before the operation that produced it has
 /// visibly completed, and that is what the ordering here buys.
 ///
-/// # What it costs when nobody is listening
+/// # What it costs
 ///
-/// Nothing. The observer is read first, and with none registered this
-/// returns before it takes the registry lock or reaches the crypto store.
-/// That matters because the sync path calls this on every sync a product
-/// performs, which is the highest-frequency call this library has.
+/// **With nobody listening, nothing.** The observer is read first, and with
+/// none registered this returns before it takes the registry lock or
+/// reaches the crypto store. That matters because the sync path calls this
+/// on every sync a product performs, which is the highest-frequency call
+/// this library has -- and it is why the TypeScript side uninstalls the
+/// observer on the last unsubscribe rather than leaving it latched.
+///
+/// **With somebody listening, one `tracked_users()` and one
+/// `get_verification_requests` per tracked user, per sync.** Measured
+/// against an empty sync on an account with one tracked user, the
+/// difference was below the resolution of the measurement -- but
+/// `tracked_users` clones the whole tracked-user set into a fresh
+/// `HashSet<OwnedUserId>` (`machine/mod.rs:482`), so on an account tracking
+/// thousands that is an allocation proportional to the account on this
+/// library's most frequent call. Nothing here has measured that case, and
+/// the small-account figure must not be read as covering it.
+///
+/// # What it does not see: a verification begun without a request
+///
+/// The enumeration below reads `VerificationMachine::requests`. A peer that
+/// starts a comparison the deprecated way -- an `m.key.verification.start`
+/// with no `m.key.verification.request` before it -- takes upstream's other
+/// branch (`verification/machine.rs:430-450`): `Sas::from_start_event`
+/// followed by `verifications.insert_sas`, which writes to the comparison
+/// cache and *nothing* to `requests`. So no `VerificationRequested` is
+/// announced for it, silently, and no `TrustChanged` either, because such a
+/// flow never enters this registry.
+///
+/// **This is Task 6's, and it is a stated acceptance criterion there**, not
+/// a defect left here: no counterparty this milestone drives starts that
+/// way. Whoever adds it must not close it by announcing off the wire.
+/// `VerificationCache` has no per-user enumerator at all, so the cheapest
+/// shape that keeps this function's invariant is to read the candidate
+/// transaction id off the `m.key.verification.start` event and then confirm
+/// through `OlmMachine::get_verification` (`machine/mod.rs:1444`) that a
+/// flow actually exists before announcing. The invariant being kept is the
+/// one this whole task rests on: never hand a product an identifier that no
+/// call in this module answers to.
 pub(crate) async fn announce_state_changes() {
     // Silent by default, and free by default. See the doc comment above.
     if crate::observer::crypto_observer().is_none() {

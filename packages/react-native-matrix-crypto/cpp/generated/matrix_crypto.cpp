@@ -187,6 +187,8 @@ extern "C" {
     /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_func_cancel_verification(
         RustBuffer verification_id
     );
+    void uniffi_matrix_crypto_ffi_fn_func_clear_crypto_observer(RustCallStatus *uniffi_out_err
+    );
     /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_func_confirm_verification(
         RustBuffer verification_id
     );
@@ -451,6 +453,8 @@ extern "C" {
     uint16_t uniffi_matrix_crypto_ffi_checksum_func_accept_verification(
     );
     uint16_t uniffi_matrix_crypto_ffi_checksum_func_cancel_verification(
+    );
+    uint16_t uniffi_matrix_crypto_ffi_checksum_func_clear_crypto_observer(
     );
     uint16_t uniffi_matrix_crypto_ffi_checksum_func_confirm_verification(
     );
@@ -2888,6 +2892,14 @@ NativeMatrixCrypto::NativeMatrixCrypto(
             return this->cpp_uniffi_matrix_crypto_ffi_fn_func_cancel_verification(rt, thisVal, args, count);
         }
     );
+    props["ubrn_uniffi_matrix_crypto_ffi_fn_func_clear_crypto_observer"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_fn_func_clear_crypto_observer"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_fn_func_clear_crypto_observer(rt, thisVal, args, count);
+        }
+    );
     props["ubrn_uniffi_matrix_crypto_ffi_fn_func_confirm_verification"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_fn_func_confirm_verification"),
@@ -3432,6 +3444,14 @@ NativeMatrixCrypto::NativeMatrixCrypto(
             return this->cpp_uniffi_matrix_crypto_ffi_checksum_func_cancel_verification(rt, thisVal, args, count);
         }
     );
+    props["ubrn_uniffi_matrix_crypto_ffi_checksum_func_clear_crypto_observer"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_checksum_func_clear_crypto_observer"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_checksum_func_clear_crypto_observer(rt, thisVal, args, count);
+        }
+    );
     props["ubrn_uniffi_matrix_crypto_ffi_checksum_func_confirm_verification"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_checksum_func_confirm_verification"),
@@ -3901,6 +3921,15 @@ jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_cancel_verif
 
         
         return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_clear_crypto_observer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        RustCallStatus status = uniffi::matrix_crypto::Bridging<RustCallStatus>::rustSuccess(rt);
+        uniffi_matrix_crypto_ffi_fn_func_clear_crypto_observer(&status
+        );
+        uniffi::matrix_crypto::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
+
+        
+        return jsi::Value::undefined();
 }
 jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_confirm_verification(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_matrix_crypto_ffi_fn_func_confirm_verification(uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0])
@@ -4412,6 +4441,13 @@ jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_accept
 }
 jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_cancel_verification(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_matrix_crypto_ffi_checksum_func_cancel_verification(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_clear_crypto_observer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_matrix_crypto_ffi_checksum_func_clear_crypto_observer(
         );
 
         

@@ -17,8 +17,8 @@ pub use error::ProbeError;
 pub use identity::{device_identity_keys, device_statuses, DeviceStatus, IdentityKeys, TrustState};
 pub use machine::{create_machine, open_store, with_machine, MachineConfig, MachineError};
 pub use observer::{
-    probe_with_observer, set_crypto_observer, CryptoObserver, CryptoSignal, ProbeObserver,
-    ProbeSignal,
+    clear_crypto_observer, probe_with_observer, set_crypto_observer, CryptoObserver, CryptoSignal,
+    ProbeObserver, ProbeSignal,
 };
 pub use probe::{probe, ProbeReport};
 pub use runtime::in_runtime;

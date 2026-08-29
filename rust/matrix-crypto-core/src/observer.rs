@@ -282,6 +282,30 @@ pub fn set_crypto_observer(observer: Arc<dyn CryptoObserver>) {
         .expect("the crypto observer registry is never held across a panic") = Some(observer);
 }
 
+/// Forgets the registered observer, so this process is once again one that
+/// nobody is listening to.
+///
+/// **The counterpart to `set_crypto_observer`, and it is not optional.**
+/// Without it, the last unsubscribe on the TypeScript side leaves an
+/// observer installed with nothing behind it, and the producers keep doing
+/// their full pass: an inbound invitation is registered, marked announced,
+/// and delivered into an empty listener set. `register_if_absent` then
+/// refuses it for the rest of the flow's life, so a later subscriber is
+/// never told about an invitation that is still live -- and there is no
+/// call that lists inbound flows, so there is no way back before it
+/// expires. Clearing restores the property the whole channel rests on:
+/// with nobody listening, nothing is consumed.
+///
+/// The shape this protects is `useEffect(() => onCryptoSignal(h), [])` --
+/// subscribe on mount, unsubscribe on unmount -- which is the ordinary
+/// React Native idiom and therefore the default integration, not an edge
+/// case.
+pub fn clear_crypto_observer() {
+    *CRYPTO_OBSERVER
+        .write()
+        .expect("the crypto observer registry is never held across a panic") = None;
+}
+
 /// The registered observer, if there is one.
 ///
 /// Read by the producers *before* they do any work, which is what makes
@@ -305,11 +329,34 @@ pub(crate) fn crypto_observer() -> Option<Arc<dyn CryptoObserver>> {
 /// listener that called back into this library from there would self-
 /// deadlock exactly as `emit`'s own test demonstrates.
 ///
-/// The one-off cost `emit` records -- that the first emission in a process
-/// may be what constructs the runtime -- does not arise here. Every
-/// producer on this path has already been through `machine::with_machine`,
-/// which enters the runtime itself, so the runtime exists before the first
-/// crypto signal is ever handed off.
+/// # What this path does and does not inherit from B2's cost line
+///
+/// `emit` names three candidates for the excess it measured on a process's
+/// first signal, and says none of them is separated by anything measured
+/// there: building the runtime, creating the first blocking-pool thread,
+/// or simply having more handoffs to be descheduled between.
+///
+/// **This path eliminates the first of the three, and only the first.**
+/// Not by measurement but by reading, which is enough for this one:
+/// `announce_state_changes` is reached only from `receive_sync_changes`,
+/// which has already been through `machine::with_machine`, which enters
+/// `runtime::in_runtime`, which is what builds the runtime. So
+/// `OnceLock::get_or_init` has fired long before anything here reaches
+/// `spawn_blocking_detached`, and runtime construction cannot be inside a
+/// crypto signal's latency. That is checkable statically and does not
+/// depend on a measurement.
+///
+/// **The other two are untouched**, and this comment claims nothing about
+/// them. The first crypto signal of a process still creates the first
+/// blocking-pool thread, and still crosses however many handoffs the
+/// arrangement costs.
+///
+/// **The crypto channel's own first-signal latency has never been
+/// measured.** B2's harness times `PROBE_SIGNAL_MS` on the probe path,
+/// through a release build on a device, and nothing equivalent exists for
+/// this one. A reader should treat the paragraph above as what it is -- an
+/// argument that removes one candidate -- rather than as a statement that
+/// this path is free of the effect B2 found.
 pub(crate) fn emit_crypto(signal: CryptoSignal) {
     // No observer, no thread, no work. A dropped signal is the correct
     // outcome rather than a lost one: nobody asked to be told.

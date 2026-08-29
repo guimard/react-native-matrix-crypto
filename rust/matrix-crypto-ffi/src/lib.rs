@@ -899,3 +899,18 @@ impl matrix_crypto_core::CryptoObserver for CryptoObserverAdapter {
 pub fn set_crypto_observer(observer: Arc<dyn CryptoObserver>) {
     matrix_crypto_core::set_crypto_observer(Arc::new(CryptoObserverAdapter(observer)));
 }
+
+/// Forgets the registered crypto signal observer. Mirrors
+/// `clear_crypto_observer`; see its own doc comment in
+/// `matrix-crypto-core::observer` for why the last unsubscribe must call
+/// this rather than merely dropping its listener.
+///
+/// Appended after `set_crypto_observer`, which is after everything else in
+/// this file, for the ordinal reason `CryptoSignal`'s own comment gives.
+/// Synchronous for the same reason its counterpart is: the TypeScript
+/// unsubscribe is a synchronous closure and must not leave a promise
+/// unawaited on the one path that must not fail quietly.
+#[uniffi::export]
+pub fn clear_crypto_observer() {
+    matrix_crypto_core::clear_crypto_observer();
+}
