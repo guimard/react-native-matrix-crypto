@@ -593,7 +593,25 @@ whatever B2's re-measurement concludes.
 
 **Do not start this task until `m3-signal-latency` has merged.** It changes the same
 delivery mechanism, and the spec requires B2's before-and-after to be measured on today's
-arrangement rather than on the one verification introduces.
+arrangement rather than on the one verification introduces. *(Merged 2026-08-29; the
+precondition is discharged, and B2's outcome is "slower on a process's first signal, cause
+unestablished", which the Q8 ruling inherits.)*
+
+**Carried forward from Task 3, and this is the point of the task rather than an extra.**
+Task 3 had to document, in prose, how a *receiving* product obtains a flow id: it reads
+`transaction_id` off the incoming to-device event, and if the sending device is not yet
+known the arrival is dropped, so the product must retain the raw event and feed it again
+after querying that user's devices — promptly, because invitations expire after ten
+minutes. That is a seam this library otherwise hides, and it exists only because **inbound
+flows are never announced**.
+
+So: **the signal that announces an inbound verification must carry the transaction id**,
+including for a flow recovered by re-feeding a retained event. That retires the prose
+entirely, and it is the difference between a channel that tells a product something
+actionable and one that tells it something happened. A `trust_changed` variant alone does
+not do this — an inbound *request* is not a trust change, and the existing union has no
+variant for it. Adding one is an addition to the signal union, which §4bis.4 makes a minor
+version bump, not a break.
 
 **Files:** the core's observer/signal path, the FFI, `packages/react-native-matrix-crypto/src/signals.ts`.
 
