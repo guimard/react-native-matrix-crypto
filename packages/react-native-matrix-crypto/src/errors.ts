@@ -67,9 +67,11 @@ export type CryptoErrorKind =
   // same call changes nothing at all, and pumping is what fixes it.
   | 'material_not_ready'
   // `startVerificationComparison` on a flow the *other* side already
-  // started. Not a failure of the verification -- carry on, wait for the
-  // string. Split out from 'wrong_stage' because the sentence a product
-  // shows for it is the opposite of the one below.
+  // started. Not a failure of the verification -- but not nothing to do
+  // either: their start is a question, so answer it with a second
+  // `acceptVerification` and then wait for the string. Split out from
+  // 'wrong_stage' because the sentence a product shows for it is the
+  // opposite of the one below.
   | 'comparison_already_started'
   // `startVerificationComparison` on a flow that is over, whether finished
   // or refused. Nothing to carry on with; start a new one.

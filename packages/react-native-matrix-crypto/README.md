@@ -74,13 +74,13 @@ Being precise about that, because a cryptographic library that oversells itself 
 | Interoperability with a third-party Matrix client | proven both directions against `matrix-nio`, over a real homeserver |
 | Crypto signal channel (`onCryptoSignal`) | working for verification: inbound invitations and completed comparisons emit; the other two variants still have no producer, see below |
 | Sender authenticity, per event | **not provided, and not coming in M3**, see below |
-| Device verification by short string comparison (SAS) | working, proven against a bare `matrix-sdk-crypto` machine driven directly -- upstream's own, not a third-party implementation; a third-party proof is still to come |
+| Device verification by short string comparison (SAS) | working, in both flow shapes and whichever side opens the comparison, proven against a bare `matrix-sdk-crypto` machine driven directly -- an agreement completing and a genuine disagreement refusing. A third-party client takes part in one too, over a real homeserver, and stops short of completing it for a reason in the counterparty; see below |
 | Device verification by QR code | **deferred**, see the roadmap |
 | Secret export and import | **not implemented**, see the roadmap |
 
 The unimplemented functions exist today as final types that compile, and reject at runtime with a typed `not_implemented` error. That is intentional: a consuming team can build against the real shape while the cryptography underneath is written.
 
-`onCryptoSignal` had no producer for the whole of M1 and M2, and now has two, both belonging to device verification. `verification_requested` says another device has asked to verify itself against this one, and carries the `verificationId` that `acceptVerification` takes -- it is the only way *this library* hands a receiving side that identifier, since no call lists inbound flows. `trust_changed` says a comparison finished and a device belonging to that user moved; `getDeviceStatuses` for that user says which. The other two variants, `unexpected_device` and `key_missing`, still have no producer, and the conditions they name reach you elsewhere: a missing key arrives as a rejected `decryptEvent` with kind `missing_key`, not as a `key_missing` signal. **Subscribe before your first sync**, and keep the subscription. Both producers run inside `receiveSyncChanges`, and nothing is consumed while nobody is subscribed -- so an invitation that arrives while you are away is announced on the first sync after you come back, and the ordinary `useEffect(() => onCryptoSignal(h), [])` does not lose invitations.
+`onCryptoSignal` had no producer for the whole of M1 and M2, and now has two, both belonging to device verification. `verification_requested` says another device has asked to verify itself against this one, and carries the `verificationId` that `acceptVerification` takes -- it is the only way *this library* hands a receiving side that identifier, since no call lists inbound flows. `trust_changed` says a comparison finished and a device belonging to that user moved; `getDeviceStatuses` for that user says which. The other two variants, `unexpected_device` and `key_missing`, still have no producer, and the conditions they name reach you elsewhere: a missing key arrives as a rejected `decryptEvent` with kind `missing_key`, not as a `key_missing` signal. **Subscribe before your first sync**, and keep the subscription. Both producers run inside `receiveSyncChanges`, and nothing is consumed while nobody is subscribed -- so an invitation that arrives while you are away is announced on the first sync after you come back, and the ordinary `useEffect(() => onCryptoSignal(h), [])` does not lose invitations. **One shape of invitation is the exception**: a peer that opens the comparison directly, with no invitation before it -- which is what `matrix-nio` does, and all it does -- leaves nothing behind that a later sync can enumerate, so that one is announced only on the sync that carried it.
 
 **Two limits worth knowing before you build on this.**
 
@@ -240,6 +240,8 @@ const id = await requestVerification('@bob:example.org', 'BOBDEVICE')
 await getVerificationStage(id)
 
 await startVerificationComparison(id) // either side may; pump again
+// If it rejects with comparison_already_started, the other side got there
+// first: call acceptVerification(id) once more to answer their comparison.
 // Keep pumping until the stage reads 'keys-exchanged'.
 
 const material = await getVerificationMaterial(id)
@@ -273,7 +275,24 @@ does no work at all with nobody subscribed. An invitation that arrives while you
 unsubscribed is still `requested` when you come back, and the first `receiveSyncChanges`
 after you resubscribe announces it, so subscribing on mount and unsubscribing on unmount
 does not lose invitations. A completed comparison's `trust_changed` is not re-offered that
-way; `getDeviceStatuses` is the durable answer to that question and always was.
+way; `getDeviceStatuses` is the durable answer to that question and always was. Nor is the
+shape described next, which is the one case where "before your first sync" is load-bearing
+rather than advisory.
+
+**Some clients do not ask first, and it makes no difference to your code.** The protocol
+still carries an older shape in which a peer opens the comparison directly, with no
+invitation before it. It is not a curiosity: it is what `matrix-nio` implements, and all it
+implements. Such a flow is announced on the same channel, under the same
+`verification_requested` signal, and `acceptVerification` is still what agrees to it. Two
+things differ afterwards, neither needing a branch in your code. The stage never reads
+`ready` -- the flow is a comparison from the moment it exists, so
+`startVerificationComparison` answers `comparison_already_started`, which already means
+"carry on and wait for the string". And `confirmVerification` can finish the flow outright
+rather than leaving it `confirmed`: the device is verified when that call resolves, though
+its `trust_changed` still waits for your next `receiveSyncChanges`, because that is where
+the channel's producers run. The one cost is the one named above: this shape cannot be
+re-offered after an unsubscribe, because nothing left behind by it can be enumerated on a
+later sync.
 
 This section used to tell you to filter your own `to_device_events` for
 `m.key.verification.request` and read `content.transaction_id` out of one. That was a seam --
@@ -320,8 +339,10 @@ keys -- so "some device in this list reads verified" says nothing. What carries 
 another user's device changing.
 
 **`startVerificationComparison` reports three different things.** `comparison_already_started`
-means the other side got there first, which is not a failure: carry on and wait for the
-string. `verification_ended` means the flow is over and you need a new one.
+means the other side got there first, which is not a failure -- but it does leave you
+something to do: call `acceptVerification` again, because their start is a question and the
+flow waits at `started` until you answer it. `verification_ended` means the flow is over and
+you need a new one.
 `wrong_stage` means it has not been agreed to yet. `getVerificationStage` is free to call and
 tells you which at any point.
 
@@ -380,6 +401,8 @@ Both obstacles named when this milestone was planned turned out real, and both w
 
 What those proofs still cannot reach is stated under Status: `matrix-nio` and this library both call `vodozemac`, so the ratchet is the floor, and sender authenticity waits on cross-signing -- not on device verification, which has now landed and does not provide it.
 
+The same script runs the third-party **verification** proof. A third-party client does take part in a verification with this library over a real homeserver -- it opens one, this library announces and agrees to it, and this library reaches a short authentication string. What it stops short of is a *completed* verification, because of a defect in the counterparty: matrix-nio 0.26.0 writes the SAS commitment as hexadecimal where the specification requires unpadded base64, which no spec-compliant client can accept in either direction. It was compliant in 0.25.2, which computed the value with libolm; the port to `vodozemac` replaced `olm.sha256` with Python's `hexdigest()`, and nio's own tests pair two nio objects, so nothing there could notice. What the proof does establish is in the roadmap row below and in the test's own header. A corrected nio makes that test fail rather than pass silently -- it waits for a refusal that no longer comes, and says so in the message it times out with.
+
 ### M3, device verification, in progress
 
 Four items, scoped against one test: verification, plus whatever would obstruct a team building on `0.1.0`.
@@ -391,7 +414,7 @@ Four items, scoped against one test: verification, plus whatever would obstruct 
 | The same, reachable from TypeScript, with `getDeviceStatuses` reporting a verified device | done |
 | `verification_state` on a decrypted event | done, as `EventEnvelope.senderVerification`; it cannot read `verified` before cross-signing, which is stated at the type |
 | Trust changes emitted on the signal channel, and inbound invitations announced with their identifier | done |
-| A third-party client participating in a verification | not started |
+| A third-party client participating in a verification | done. `matrix-nio` opens a verification, this library announces it with a usable identifier and agrees to it, and this library carries its own half of the key exchange to a short authentication string, over a real homeserver. It is *participation*, which is what this row asks for, and not completion: matrix-nio 0.26.0 writes the SAS commitment as hexadecimal where the specification requires unpadded base64, so each side rejects the other's and neither can be driven to `verified`. Attributed from inside nio's own process rather than inferred -- see `rust/matrix-crypto-core/tests/level_two_verification.rs` |
 | Signal delivery no longer costing one operating system thread per signal | done |
 
 QR verification is **deferred, not rejected**. It would add a dependency absent from `rust/Cargo.lock`, an off-by-default Cargo feature, and pressure on a size budget that has already been tripped once.

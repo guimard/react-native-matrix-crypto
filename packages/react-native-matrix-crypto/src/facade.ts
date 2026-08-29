@@ -707,9 +707,10 @@ export async function getDeviceStatuses(userId: string): Promise<DeviceStatus[]>
  * {@link acceptVerification} first. Its `verificationId` is handed to it by
  * `onCryptoSignal` -- exported from this package's root alongside these,
  * and the thing that announces inbound invitations. See
- * `acceptVerification`'s own comment. Either side may
- * call {@link startVerificationComparison}; the other gets
- * `'comparison_already_started'` and carries on from step 4.
+ * `acceptVerification`'s own comment. Either side may call
+ * {@link startVerificationComparison}; the other gets
+ * `'comparison_already_started'`, answers the comparison with a second
+ * {@link acceptVerification}, and carries on from step 4.
  */
 export async function requestVerification(userId: string, deviceId: string): Promise<string> {
   try {
@@ -745,15 +746,31 @@ export async function requestVerification(userId: string, deviceId: string): Pro
  * From there the flow is the one {@link requestVerification} documents,
  * from its step 2 onward.
  *
+ * # You may need to call this twice, and it is not a retry
+ *
+ * There are two things the other side can ask you, and this answers both.
+ * The invitation asks *may we verify?*. The comparison -- which either side
+ * may open once both are ready -- asks *here it is, will you take part?*.
+ * If the other side opens it before you do, that second question is
+ * outstanding and only this call answers it: they are waiting for your
+ * answer and {@link getVerificationStage} sits at `'started'` until you
+ * give it.
+ *
+ * You do not have to work out which is which. Call this whenever the stage
+ * reads `'requested'` or `'started'` and the flow is waiting on you; it
+ * rejects with `'wrong_stage'` when nothing is.
+ *
  * **Subscribe before your first sync**, and prefer keeping the
  * subscription for the process's life. Nothing is queued for a subscriber
- * that is not there -- but nothing is consumed either, because the layer
- * underneath does no work at all with nobody subscribed. So an invitation
- * that arrives while you are unsubscribed is still `'requested'` when you
- * come back, and the first {@link receiveSyncChanges} after you resubscribe
- * announces it. `useEffect(() => onCryptoSignal(h), [])` does not lose
- * invitations. What you cannot get back is an invitation that arrived
- * before this process existed at all; see the restart note below.
+ * that is not there -- but for an ordinary invitation nothing is consumed
+ * either, because the layer underneath does no work at all with nobody
+ * subscribed. So one that arrives while you are unsubscribed is still
+ * `'requested'` when you come back, and the first
+ * {@link receiveSyncChanges} after you resubscribe announces it.
+ * `useEffect(() => onCryptoSignal(h), [])` does not lose those. What you
+ * cannot get back is an invitation that arrived before this process existed
+ * at all; see the restart note below. **The one exception is the shape
+ * described two sections down**, which cannot be re-offered.
  *
  * This used to be a listing of the `m.key.verification.request` to-device
  * event's JSON, with an instruction to filter your own `to_device_events`
@@ -761,6 +778,36 @@ export async function requestVerification(userId: string, deviceId: string): Pro
  * -- one field of protocol JSON this library otherwise keeps to itself --
  * and the announcement is what closes it. The identifier still *is* that
  * transaction id on the wire; you no longer have to know that.
+ *
+ * # The other shape an invitation arrives in, and the one thing it costs
+ *
+ * Some clients -- `matrix-nio` among them, and it is the whole of what it
+ * implements -- do not send an invitation at all. They open the comparison
+ * directly, with the older message the specification deprecated but did not
+ * remove. **Nothing about this call changes**: such a flow is announced on
+ * the same channel, under the same `'verification_requested'` signal, and
+ * this is still what you call to agree to it.
+ *
+ * Two differences are visible afterwards, and neither needs a branch in
+ * your code:
+ *
+ * - the flow never reads `'ready'`. It is a comparison from the moment it
+ *   exists, so it goes straight to `'started'` and
+ *   {@link startVerificationComparison} on it rejects with
+ *   `'comparison_already_started'` -- which already means "the other side
+ *   started it, carry on and wait for the string";
+ * - {@link confirmVerification} can finish it outright, rather than leaving
+ *   it `'confirmed'` until the other side acknowledges. The device is
+ *   verified when that call resolves; the `'trust_changed'` signal for it
+ *   still arrives on your next {@link receiveSyncChanges}, because that is
+ *   where the channel's producers run. Read {@link getDeviceStatuses} if
+ *   you need the answer without waiting for a sync.
+ *
+ * **What it costs: this shape is not re-offered across an unsubscribe.** An
+ * ordinary invitation is re-announced after you resubscribe because it can
+ * be enumerated afresh on every sync; this one cannot -- the sync that
+ * carried it is its only witness. Subscribing before your first sync is
+ * therefore load-bearing for it rather than merely advisable.
  *
  * # An unmet sender's invitation is dropped on arrival, and not announced
  *
@@ -852,8 +899,12 @@ export async function acceptVerification(verificationId: string): Promise<void> 
  * showing the wrong one most of the time:
  *
  * - `'comparison_already_started'` -- the *other* side started it first.
- *   Nothing is wrong. Carry on from the stage the flow is at: wait for
- *   `'keys-exchanged'` and call {@link getVerificationMaterial}.
+ *   Nothing is wrong, but there **is** something left for you to do:
+ *   call {@link acceptVerification} again. Their start is a question, and
+ *   until you answer it they are waiting and the flow does not move. This
+ *   used to say "wait for `'keys-exchanged'`", which was wrong: waiting
+ *   alone never produced one. Then read
+ *   {@link getVerificationMaterial} as usual.
  * - `'verification_ended'` -- the flow is over, whether it finished or was
  *   refused. There is nothing to carry on with; ask again with
  *   {@link requestVerification} if you still want to.
