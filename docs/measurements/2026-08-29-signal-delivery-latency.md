@@ -54,7 +54,7 @@ the arm's label, which is forced to differ, and was therefore false in every run
 the one it exists to reject. Three tracked files said it worked. That is the same shape as
 the finding this whole mechanism was built to close -- a check reporting success without
 having examined its target -- one level further in. It now returns through a variable, and
-section 4 below records each guard being made to face its case.
+section 4 below records the four that have broken being made to face their cases.
 
 For the record, the first run's two APKs were checked afterwards and *did* differ in
 `libmatrix_crypto_ffi.so` while carrying an identical JavaScript bundle, so the mistake had
@@ -146,9 +146,10 @@ the arm it was launched from.
 
 ## 4. The guards, watched refusing
 
-A guard nobody has seen reject anything is decoration, and one of these was exactly that for
-a whole review cycle. Each is recorded here facing the case it exists to reject, and the real
-pair being accepted. `adb` is stubbed for these runs (the stub answers only the calls this
+A guard nobody has seen reject anything is decoration, and two of these were exactly that,
+one of them for two review cycles. Each of the four that have broken is recorded here facing
+the case it exists to reject, and the real pair being accepted. `adb` is stubbed for
+these runs (the stub answers only the calls this
 harness makes, and lets each arm's reported `PROBE_EMIT_BUILD` be chosen) because the third
 case cannot *cheaply* be manufactured. The only honest route to it is a real code change
 outside the two fingerprinted files followed by a full rebuild -- a comment will not do it,
@@ -159,10 +160,13 @@ exactly that: the extraction, the return and the comparison are all the shipped 
 
 | case | what it is | outcome |
 |---|---|---|
-| an APK carrying no `libmatrix_crypto_ffi.so` | wrong ABI, or a stub build | refused, exit 1 |
+| an APK carrying no `libmatrix_crypto_ffi.so`, position A | wrong ABI, or a stub build | refused, exit 1 |
+| the same, position B | the copy of that guard the gate first left unfaced | refused, exit 1 |
 | two identical APKs | the arm swap that skipped `ubrn build android` | refused, exit 1 |
 | different `.so`, same reported build | what the on-disk digest cannot see | refused, exit 1 |
-| different `.so`, different builds | the real pair | **accepted**, 4 rows written |
+| a launch with no `PROBE_EMIT_BUILD` line | the diagnostic `set -e` had made unreachable | refused, exit 1 |
+| a launch whose first callback never arrived | the event this harness is kept for | **accepted**, `NONE` recorded |
+| different `.so`, different builds | the real pair | **accepted**, 4 rows, every field asserted |
 
 Verbatim, with paths shortened:
 
@@ -180,10 +184,17 @@ FAIL: round 1: both arms reported the same emission build (0.1.0+emit.cafef00d).
       distinguish themselves, so nothing measured here is an A/B.
 ```
 
-Facing them also turned up a fourth defect that no amount of reading would have: the `EXIT`
-trap called `stop_load` seventy lines before that function was defined, so every one of the
-refusals above exited 127 with `stop_load: command not found` instead of the 1 its diagnostic
-had just earned. Fixed, and the table above is from the re-run.
+Facing them also turned up a defect no amount of reading would have: the `EXIT` trap called
+`stop_load` seventy lines before that function was defined, so every one of the refusals
+above exited 127 with `stop_load: command not found` instead of the 1 its diagnostic had
+just earned. Fixed, and the table above is from the re-run.
+
+The last two rows arrived a round later, with the field assertions, and are the reason this
+table is longer than the prose that used to sit under it. Four ways of corrupting a row
+without changing how many there are -- the first-signal column reading the second signal's
+line, two columns transposed, a column dropped, and the position-B `.so` guard deleted --
+were all invisible to this gate until then, and are each now refused with the offending row
+printed beside the row that was expected.
 
 **This is no longer a manual procedure, and the reason is the fifth guard.** The table above
 was produced by hand and was published as a named limitation: nothing ran it, and a manual
@@ -193,20 +204,40 @@ found that guard dead too, killed by `set -e` a hundred lines below the comment 
 explains that exact mechanism and fixes it for a neighbour. Two dead guards in one file,
 the second one surviving the review that fixed the first.
 
-`yarn gate:measure-guards` (`scripts/assert-measure-guards.sh`) now faces every refusal in
-this harness with the case it refuses, on every commit, in a few hundred milliseconds. It
-builds its own fixture APKs with `python3 -m zipfile` and runs against
-`scripts/testdata/fake-adb`: no device, no emulator, no Android SDK, no Rust. Six cases --
-the four above, plus the missing-`PROBE_EMIT_BUILD` diagnostic and a launch whose callback
-never arrived, which must be *recorded* as a `NONE` row rather than refused, because a lost
-callback is the event this harness is kept to observe.
+`yarn gate:measure-guards` (`scripts/assert-measure-guards.sh`) faces **four of this
+harness's thirteen refusals** with the case each exists to reject, on every commit, in a few
+hundred milliseconds. It builds its own fixture APKs with `python3 -m zipfile` and runs
+against `scripts/testdata/fake-adb`: no device, no emulator, no Android SDK, no Rust.
 
-It asserts the exit status **and** a distinctive substring of each diagnostic, and both are
-needed. Reintroducing each of the three historical defects one at a time shows why: the trap
-defect is caught by the status (127 where 1 was expected, message already printed); the
-`set -e` defect is caught only by the substring (exit 1, which is correct, and nothing
-said); and the stdout-capture defect is caught by the status and by the row the accepting
-case writes. Each is caught by a different assertion, and none by all of them.
+The four are the ones that have actually broken: the on-disk digest comparison, the run-time
+emission-build comparison, the missing-`PROBE_EMIT_BUILD` diagnostic, and the "carries no
+`.so`" guard -- that one in both argument positions, because it was faced only in position A
+at first and its position-B copy could be deleted outright with the gate green. Alongside
+them: a launch whose first callback never arrived, which must be *recorded* as a `NONE` row
+rather than refused, because a lost callback is the event this harness is kept to observe;
+and the accepting case.
+
+The nine not faced are argument and environment checks -- usage, `adb` or `unzip` absent, a
+missing APK file, two APKs sharing a basename, no device, an unknown load name. None has
+ever been wrong, and none can produce a *bad* measurement, only no measurement. That is the
+reason, not an excuse, and the day one of them breaks it belongs in the gate.
+
+**Three layers of assertion, each of which exists because the others missed something.** The
+exit status, a distinctive substring of the diagnostic, and -- added a round later -- every
+field of every row an accepted run writes.
+
+Reintroducing the historical defects one at a time shows why no two of the three suffice.
+The trap defect is caught by the status alone: 127 where 1 was expected, with the diagnostic
+already correctly printed. The `set -e` defect is caught by the substring alone: exit 1,
+which is the right status, and nothing said. The stdout-capture defect is caught by both the
+status and the row assertions, in more than one case. And the fourth class -- a one-token
+edit making the first-signal column carry the *second* signal's latency, two columns
+transposed, or a column dropped -- is caught only by the field assertions: every guard still
+fires, every refusal still refuses, four rows are still written, and `shellcheck` is clean.
+That class went unnoticed for a review cycle, and the proof needed no experiment: this gate
+was byte-identical at the commit that introduced it and at the tip of the round after,
+passing at both, while the harness's row went from eight fields to nine with the new column
+inserted in the middle.
 
 ---
 

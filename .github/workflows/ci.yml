@@ -34,7 +34,9 @@ jobs:
       # is an A/B at all, and two of its guards shipped unable to fire -- one
       # of them through two review cycles. Both were found by running the case,
       # not by reading and not by shellcheck, which passes on both. This faces
-      # each guard with what it refuses, on fixtures it builds itself: no
+      # four of that script's thirteen refusals -- the four that have broken --
+      # with what each refuses, plus the accepting case, and asserts every field
+      # of every row the accepted run writes. On fixtures it builds itself: no
       # device, no emulator, no SDK, a few hundred milliseconds.
       - run: yarn gate:measure-guards
       # gate:readme was written on 2026-08-28, added to package.json, and
