@@ -430,11 +430,20 @@ FORBIDDEN_NATIVE='std::(cout|cerr|clog|wcout|wcerr|wclog)|(^|[^_[:alnum:]])(prin
 # scripts/run-probe-on-emulator.sh hardcode `PROBE_SUMMARY 12/12` and say why:
 # "CI failing until you do is the point". Same rule here.
 #
-# Five sites, all in cpp/generated/matrix_crypto.cpp, one per UniFFI callback
+# Eight sites, all in cpp/generated/matrix_crypto.cpp, one per UniFFI callback
 # trampoline. If you add a callback interface to the Rust surface this number
 # goes up, and CI fails until you come here, read the new site, and change it
 # on purpose. That is the whole mechanism.
-EXPECTED_NATIVE_ALLOWED=5
+#
+# It went from five to eight on 2026-08-29, when `CryptoObserver` was added
+# alongside `ProbeObserver` so the crypto signal channel could have a native
+# producer. A second callback interface costs three trampolines, not one: its
+# own `on_signal`, plus the `UniffiCallbackInterfaceFree` and
+# `UniffiCallbackInterfaceClone` that every vtable carries. All three were
+# read before this number was raised, and all three have the shape the
+# paragraph above requires -- a fixed literal, then `jsi::JSError::what()`,
+# then a rethrow, with nothing else interpolated.
+EXPECTED_NATIVE_ALLOWED=8
 
 NATIVE_FILES=$(find $SHIPPED_ROOTS -type f \( \
   -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \

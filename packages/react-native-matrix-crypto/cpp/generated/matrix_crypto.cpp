@@ -130,15 +130,41 @@ extern "C" {
     UniffiForeignFutureResultVoid result
     );
     typedef void
+    (*UniffiCallbackInterfaceCryptoObserverMethod0)(
+    uint64_t uniffi_handle, 
+    RustBuffer signal, 
+    void * uniffi_out_return, RustCallStatus* rust_call_status
+    );
+    typedef void
     (*UniffiCallbackInterfaceProbeObserverMethod0)(
     uint64_t uniffi_handle, 
     RustBuffer signal, 
     void * uniffi_out_return, RustCallStatus* rust_call_status
-    );typedef struct UniffiVTableCallbackInterfaceProbeObserver {
+    );typedef struct UniffiVTableCallbackInterfaceCryptoObserver {
+        UniffiCallbackInterfaceFree uniffi_free;
+        UniffiCallbackInterfaceClone uniffi_clone;
+        UniffiCallbackInterfaceCryptoObserverMethod0 on_signal;
+    } UniffiVTableCallbackInterfaceCryptoObserver;typedef struct UniffiVTableCallbackInterfaceProbeObserver {
         UniffiCallbackInterfaceFree uniffi_free;
         UniffiCallbackInterfaceClone uniffi_clone;
         UniffiCallbackInterfaceProbeObserverMethod0 on_signal;
     } UniffiVTableCallbackInterfaceProbeObserver;
+    /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_clone_cryptoobserver(
+        /*handle*/ uint64_t handle, 
+        RustCallStatus *uniffi_out_err
+    );
+    void uniffi_matrix_crypto_ffi_fn_free_cryptoobserver(
+        /*handle*/ uint64_t handle, 
+        RustCallStatus *uniffi_out_err
+    );
+    void uniffi_matrix_crypto_ffi_fn_init_callback_vtable_cryptoobserver(
+        UniffiVTableCallbackInterfaceCryptoObserver * vtable
+    );
+    void uniffi_matrix_crypto_ffi_fn_method_cryptoobserver_on_signal(
+        /*handle*/ uint64_t ptr, 
+        RustBuffer signal, 
+        RustCallStatus *uniffi_out_err
+    );
     /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_clone_probeobserver(
         /*handle*/ uint64_t handle, 
         RustCallStatus *uniffi_out_err
@@ -205,6 +231,10 @@ extern "C" {
     /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_func_request_verification(
         RustBuffer user_id, 
         RustBuffer device_id
+    );
+    void uniffi_matrix_crypto_ffi_fn_func_set_crypto_observer(
+        /*handle*/ uint64_t observer, 
+        RustCallStatus *uniffi_out_err
     );
     /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_func_share_scope_key(
         RustBuffer scope, 
@@ -446,6 +476,8 @@ extern "C" {
     );
     uint16_t uniffi_matrix_crypto_ffi_checksum_func_request_verification(
     );
+    uint16_t uniffi_matrix_crypto_ffi_checksum_func_set_crypto_observer(
+    );
     uint16_t uniffi_matrix_crypto_ffi_checksum_func_share_scope_key(
     );
     uint16_t uniffi_matrix_crypto_ffi_checksum_func_start_verification_comparison(
@@ -455,6 +487,8 @@ extern "C" {
     uint16_t uniffi_matrix_crypto_ffi_checksum_func_verification_material(
     );
     uint16_t uniffi_matrix_crypto_ffi_checksum_func_verification_stage(
+    );
+    uint16_t uniffi_matrix_crypto_ffi_checksum_method_cryptoobserver_on_signal(
     );
     uint16_t uniffi_matrix_crypto_ffi_checksum_method_probeobserver_on_signal(
     );
@@ -977,6 +1011,121 @@ namespace uniffi::matrix_crypto::cb::foreignfuturedroppedcallback {
 } // namespace uniffi::matrix_crypto::cb::foreignfuturedroppedcallback
     // Implementation of free callback function CallbackInterfaceFree
 
+
+// Callback function: uniffi::matrix_crypto::st::vtablecallbackinterfacecryptoobserver::vtablecallbackinterfacecryptoobserver::free::UniffiCallbackInterfaceFree
+//
+// We have the following constraints:
+// - we need to pass a function pointer to Rust.
+// - we need a jsi::Runtime and jsi::Function to call into JS.
+// - function pointers can't store state, so we can't use a lamda.
+//
+// For this, we store a lambda as a global, as `rsLambda`. The `callback` function calls
+// the lambda, which itself calls the `body` which then calls into JS.
+//
+// We then give the `callback` function pointer to Rust which will call the lambda sometime in the
+// future.
+namespace uniffi::matrix_crypto::st::vtablecallbackinterfacecryptoobserver::vtablecallbackinterfacecryptoobserver::free {
+    using namespace facebook;
+
+    // We need to store a lambda in a global so we can call it from
+    // a function pointer. The function pointer is passed to Rust.
+    static std::function<void(uint64_t)> rsLambda = nullptr;
+
+    // This is the main body of the callback. It's called from the lambda,
+    // which itself is called from the callback function which is passed to Rust.
+    static void body(jsi::Runtime &rt,
+                     std::shared_ptr<uniffi_runtime::UniffiCallInvoker> callInvoker,
+                     std::shared_ptr<jsi::Value> callbackValue
+            ,uint64_t rs_handle) {
+
+        // Convert the arguments from Rust, into jsi::Values.
+        // We'll use the Bridging class to do this…
+        auto js_handle = uniffi_jsi::Bridging<uint64_t>::toJs(rt, callInvoker, rs_handle);
+
+        // Now we are ready to call the callback.
+        // We are already on the JS thread, because this `body` function was
+        // invoked from the CallInvoker.
+        try {
+            // Getting the callback function
+            auto cb = callbackValue->asObject(rt).asFunction(rt);
+            auto uniffiResult = cb.call(rt, js_handle
+            );
+
+            
+
+            
+        } catch (const jsi::JSError &error) {
+            std::cout << "Error in callback UniffiCallbackInterfaceFree: "
+                    << error.what() << std::endl;
+            throw error;
+        }
+    }
+
+    static void callback(uint64_t rs_handle) {
+        // If the runtime has shutdown, then there is no point in trying to
+        // call into Javascript. BUT how do we tell if the runtime has shutdown?
+        //
+        // Answer: the module destructor calls into callback `cleanup` method,
+        // which nulls out the rsLamda.
+        //
+        // If rsLamda is null, then there is no runtime to call into.
+        if (rsLambda == nullptr) {
+            // This only occurs when destructors are calling into Rust free/drop,
+            // which causes the JS callback to be dropped.
+            return;
+        }
+
+        // The runtime, the actual callback jsi::funtion, and the callInvoker
+        // are all in the lambda.
+        rsLambda(
+            rs_handle);
+    }
+
+    [[maybe_unused]] static UniffiCallbackInterfaceFree
+    makeCallbackFunction( // uniffi::matrix_crypto::st::vtablecallbackinterfacecryptoobserver::vtablecallbackinterfacecryptoobserver::free
+                    jsi::Runtime &rt,
+                     std::shared_ptr<uniffi_runtime::UniffiCallInvoker> callInvoker,
+                     const jsi::Value &value) {
+        if (rsLambda != nullptr) {
+            // `makeCallbackFunction` is called in two circumstances:
+            //
+            // 1. at startup, when initializing callback interface vtables.
+            // 2. when polling futures. This happens at least once per future that is
+            //    exposed to Javascript. We know that this is always the same function,
+            //    `uniffiFutureContinuationCallback` in `async-rust-calls.ts`.
+            //
+            // We can therefore return the callback function without making anything
+            // new if we've been initialized already.
+            return callback;
+        }
+        auto callbackFunction = value.asObject(rt).asFunction(rt);
+        auto callbackValue = std::make_shared<jsi::Value>(rt, callbackFunction);
+        rsLambda = [&rt, callInvoker, callbackValue](uint64_t rs_handle) {
+                // We immediately make a lambda which will do the work of transforming the
+                // arguments into JSI values and calling the callback.
+                uniffi_runtime::UniffiCallFunc jsLambda = [
+                    callInvoker,
+                    callbackValue
+                    , rs_handle](jsi::Runtime &rt) mutable {
+                    body(rt, callInvoker, callbackValue
+                        , rs_handle);
+                };
+                // We'll then call that lambda from the callInvoker which will
+                // look after calling it on the correct thread.
+                
+                callInvoker->invokeNonBlocking(rt, jsLambda);
+        };
+        return callback;
+    }
+
+    // This method is called from the destructor of NativeMatrixCrypto, which only happens
+    // when the jsi::Runtime is being destroyed.
+    static void cleanup() {
+        // The lambda holds a reference to the the Runtime, so when this is nulled out,
+        // then the pointer will no longer be left dangling.
+        rsLambda = nullptr;
+    }
+} // namespace uniffi::matrix_crypto::st::vtablecallbackinterfacecryptoobserver::vtablecallbackinterfacecryptoobserver::free
 
 // Callback function: uniffi::matrix_crypto::st::vtablecallbackinterfaceprobeobserver::vtablecallbackinterfaceprobeobserver::free::UniffiCallbackInterfaceFree
 //
@@ -2010,6 +2159,299 @@ template <> struct Bridging<UniffiForeignFutureCompleteVoid> {
   }
 };
 } // namespace uniffi::matrix_crypto
+    // Implementation of CallbackInterfaceClone for vtable field uniffi_clone in VTableCallbackInterfaceCryptoObserver
+
+
+// Callback function: uniffi::matrix_crypto::cb::callbackinterfaceclone::vtablecallbackinterfacecryptoobserver::UniffiCallbackInterfaceClone
+//
+// We have the following constraints:
+// - we need to pass a function pointer to Rust.
+// - we need a jsi::Runtime and jsi::Function to call into JS.
+// - function pointers can't store state, so we can't use a lamda.
+//
+// For this, we store a lambda as a global, as `rsLambda`. The `callback` function calls
+// the lambda, which itself calls the `body` which then calls into JS.
+//
+// We then give the `callback` function pointer to Rust which will call the lambda sometime in the
+// future.
+namespace uniffi::matrix_crypto::cb::callbackinterfaceclone::vtablecallbackinterfacecryptoobserver {
+    using namespace facebook;
+
+    // We need to store a lambda in a global so we can call it from
+    // a function pointer. The function pointer is passed to Rust.
+    static std::function<void(uint64_t, uint64_t*)> rsLambda = nullptr;
+
+    // This is the main body of the callback. It's called from the lambda,
+    // which itself is called from the callback function which is passed to Rust.
+    static void body(jsi::Runtime &rt,
+                     std::shared_ptr<uniffi_runtime::UniffiCallInvoker> callInvoker,
+                     std::shared_ptr<jsi::Value> callbackValue
+            ,uint64_t rs_handle
+            , uint64_t* uniffi_direct_return) {
+
+        // Convert the arguments from Rust, into jsi::Values.
+        // We'll use the Bridging class to do this…
+        auto js_handle = uniffi_jsi::Bridging<uint64_t>::toJs(rt, callInvoker, rs_handle);
+
+        // Now we are ready to call the callback.
+        // We are already on the JS thread, because this `body` function was
+        // invoked from the CallInvoker.
+        try {
+            // Getting the callback function
+            auto cb = callbackValue->asObject(rt).asFunction(rt);
+            auto uniffiResult = cb.call(rt, js_handle
+            );
+
+            
+
+            
+            // Write the direct return value back to the caller.
+            if (uniffi_direct_return != nullptr) {
+                *uniffi_direct_return = uniffi_jsi::Bridging<uint64_t>::fromJs(
+                    rt, callInvoker, uniffiResult
+                );
+            }
+        } catch (const jsi::JSError &error) {
+            std::cout << "Error in callback UniffiCallbackInterfaceClone: "
+                    << error.what() << std::endl;
+            throw error;
+        }
+    }
+
+    static uint64_t callback(uint64_t rs_handle) {
+        // If the runtime has shutdown, then there is no point in trying to
+        // call into Javascript. BUT how do we tell if the runtime has shutdown?
+        //
+        // Answer: the module destructor calls into callback `cleanup` method,
+        // which nulls out the rsLamda.
+        //
+        // If rsLamda is null, then there is no runtime to call into.
+        if (rsLambda == nullptr) {
+            // This only occurs when destructors are calling into Rust free/drop,
+            // which causes the JS callback to be dropped.
+            return 0;
+        }
+        uint64_t uniffi_result = 0;
+
+        // The runtime, the actual callback jsi::funtion, and the callInvoker
+        // are all in the lambda.
+        rsLambda(
+            rs_handle, 
+            &uniffi_result);
+        return uniffi_result;
+    }
+
+    [[maybe_unused]] static UniffiCallbackInterfaceClone
+    makeCallbackFunction( // uniffi::matrix_crypto::cb::callbackinterfaceclone::vtablecallbackinterfacecryptoobserver
+                    jsi::Runtime &rt,
+                     std::shared_ptr<uniffi_runtime::UniffiCallInvoker> callInvoker,
+                     const jsi::Value &value) {
+        if (rsLambda != nullptr) {
+            // `makeCallbackFunction` is called in two circumstances:
+            //
+            // 1. at startup, when initializing callback interface vtables.
+            // 2. when polling futures. This happens at least once per future that is
+            //    exposed to Javascript. We know that this is always the same function,
+            //    `uniffiFutureContinuationCallback` in `async-rust-calls.ts`.
+            //
+            // We can therefore return the callback function without making anything
+            // new if we've been initialized already.
+            return callback;
+        }
+        auto callbackFunction = value.asObject(rt).asFunction(rt);
+        auto callbackValue = std::make_shared<jsi::Value>(rt, callbackFunction);
+        rsLambda = [&rt, callInvoker, callbackValue](uint64_t rs_handle, uint64_t* uniffi_direct_return) {
+                // We immediately make a lambda which will do the work of transforming the
+                // arguments into JSI values and calling the callback.
+                uniffi_runtime::UniffiCallFunc jsLambda = [
+                    callInvoker,
+                    callbackValue
+                    , rs_handle, uniffi_direct_return](jsi::Runtime &rt) mutable {
+                    body(rt, callInvoker, callbackValue
+                        , rs_handle, uniffi_direct_return);
+                };
+                // We'll then call that lambda from the callInvoker which will
+                // look after calling it on the correct thread.
+                callInvoker->invokeBlocking(rt, jsLambda);
+        };
+        return callback;
+    }
+
+    // This method is called from the destructor of NativeMatrixCrypto, which only happens
+    // when the jsi::Runtime is being destroyed.
+    static void cleanup() {
+        // The lambda holds a reference to the the Runtime, so when this is nulled out,
+        // then the pointer will no longer be left dangling.
+        rsLambda = nullptr;
+    }
+} // namespace uniffi::matrix_crypto::cb::callbackinterfaceclone::vtablecallbackinterfacecryptoobserver
+    // Implementation of CallbackInterfaceCryptoObserverMethod0 for vtable field on_signal in VTableCallbackInterfaceCryptoObserver
+
+
+// Callback function: uniffi::matrix_crypto::cb::callbackinterfacecryptoobservermethod0::vtablecallbackinterfacecryptoobserver::UniffiCallbackInterfaceCryptoObserverMethod0
+//
+// We have the following constraints:
+// - we need to pass a function pointer to Rust.
+// - we need a jsi::Runtime and jsi::Function to call into JS.
+// - function pointers can't store state, so we can't use a lamda.
+//
+// For this, we store a lambda as a global, as `rsLambda`. The `callback` function calls
+// the lambda, which itself calls the `body` which then calls into JS.
+//
+// We then give the `callback` function pointer to Rust which will call the lambda sometime in the
+// future.
+namespace uniffi::matrix_crypto::cb::callbackinterfacecryptoobservermethod0::vtablecallbackinterfacecryptoobserver {
+    using namespace facebook;
+
+    // We need to store a lambda in a global so we can call it from
+    // a function pointer. The function pointer is passed to Rust.
+    static std::function<void(uint64_t, RustBuffer, void *, RustCallStatus*)> rsLambda = nullptr;
+
+    // This is the main body of the callback. It's called from the lambda,
+    // which itself is called from the callback function which is passed to Rust.
+    static void body(jsi::Runtime &rt,
+                     std::shared_ptr<uniffi_runtime::UniffiCallInvoker> callInvoker,
+                     std::shared_ptr<jsi::Value> callbackValue
+            ,uint64_t rs_uniffiHandle
+            ,RustBuffer rs_signal
+            ,void * rs_uniffiOutReturn, RustCallStatus* uniffi_call_status) {
+
+        // Convert the arguments from Rust, into jsi::Values.
+        // We'll use the Bridging class to do this…
+        auto js_uniffiHandle = uniffi_jsi::Bridging<uint64_t>::toJs(rt, callInvoker, rs_uniffiHandle);
+        auto js_signal = uniffi::matrix_crypto::Bridging<RustBuffer>::toJs(rt, callInvoker, rs_signal);
+
+        // Now we are ready to call the callback.
+        // We are already on the JS thread, because this `body` function was
+        // invoked from the CallInvoker.
+        try {
+            // Getting the callback function
+            auto cb = callbackValue->asObject(rt).asFunction(rt);
+            auto uniffiResult = cb.call(rt, js_uniffiHandle, js_signal
+            );
+
+            // Now copy the result back from JS into the RustCallStatus object.
+            uniffi::matrix_crypto::Bridging<RustCallStatus>::copyFromJs(rt, callInvoker, uniffiResult, uniffi_call_status);
+
+            if (uniffi_call_status->code != UNIFFI_CALL_STATUS_OK) {
+                // The JS callback finished abnormally, so we cannot retrieve the return value.
+                return;
+            }
+
+            
+        } catch (const jsi::JSError &error) {
+            std::cout << "Error in callback UniffiCallbackInterfaceCryptoObserverMethod0: "
+                    << error.what() << std::endl;
+            throw error;
+        }
+    }
+
+    static void callback(uint64_t rs_uniffiHandle, RustBuffer rs_signal, void * rs_uniffiOutReturn, RustCallStatus* uniffi_call_status) {
+        // If the runtime has shutdown, then there is no point in trying to
+        // call into Javascript. BUT how do we tell if the runtime has shutdown?
+        //
+        // Answer: the module destructor calls into callback `cleanup` method,
+        // which nulls out the rsLamda.
+        //
+        // If rsLamda is null, then there is no runtime to call into.
+        if (rsLambda == nullptr) {
+            // This only occurs when destructors are calling into Rust free/drop,
+            // which causes the JS callback to be dropped.
+            return;
+        }
+
+        // The runtime, the actual callback jsi::funtion, and the callInvoker
+        // are all in the lambda.
+        rsLambda(
+            rs_uniffiHandle, 
+            rs_signal, 
+            rs_uniffiOutReturn, uniffi_call_status);
+    }
+
+    [[maybe_unused]] static UniffiCallbackInterfaceCryptoObserverMethod0
+    makeCallbackFunction( // uniffi::matrix_crypto::cb::callbackinterfacecryptoobservermethod0::vtablecallbackinterfacecryptoobserver
+                    jsi::Runtime &rt,
+                     std::shared_ptr<uniffi_runtime::UniffiCallInvoker> callInvoker,
+                     const jsi::Value &value) {
+        if (rsLambda != nullptr) {
+            // `makeCallbackFunction` is called in two circumstances:
+            //
+            // 1. at startup, when initializing callback interface vtables.
+            // 2. when polling futures. This happens at least once per future that is
+            //    exposed to Javascript. We know that this is always the same function,
+            //    `uniffiFutureContinuationCallback` in `async-rust-calls.ts`.
+            //
+            // We can therefore return the callback function without making anything
+            // new if we've been initialized already.
+            return callback;
+        }
+        auto callbackFunction = value.asObject(rt).asFunction(rt);
+        auto callbackValue = std::make_shared<jsi::Value>(rt, callbackFunction);
+        rsLambda = [&rt, callInvoker, callbackValue](uint64_t rs_uniffiHandle, RustBuffer rs_signal, void * rs_uniffiOutReturn, RustCallStatus* uniffi_call_status) {
+                // We immediately make a lambda which will do the work of transforming the
+                // arguments into JSI values and calling the callback.
+                uniffi_runtime::UniffiCallFunc jsLambda = [
+                    callInvoker,
+                    callbackValue
+                    , rs_uniffiHandle
+                    , rs_signal
+                    , rs_uniffiOutReturn, uniffi_call_status](jsi::Runtime &rt) mutable {
+                    body(rt, callInvoker, callbackValue
+                        , rs_uniffiHandle
+                        , rs_signal
+                        , rs_uniffiOutReturn, uniffi_call_status);
+                };
+                // We'll then call that lambda from the callInvoker which will
+                // look after calling it on the correct thread.
+                callInvoker->invokeBlocking(rt, jsLambda);
+        };
+        return callback;
+    }
+
+    // This method is called from the destructor of NativeMatrixCrypto, which only happens
+    // when the jsi::Runtime is being destroyed.
+    static void cleanup() {
+        // The lambda holds a reference to the the Runtime, so when this is nulled out,
+        // then the pointer will no longer be left dangling.
+        rsLambda = nullptr;
+    }
+} // namespace uniffi::matrix_crypto::cb::callbackinterfacecryptoobservermethod0::vtablecallbackinterfacecryptoobserver
+namespace uniffi::matrix_crypto {
+using namespace facebook;
+using CallInvoker = uniffi_runtime::UniffiCallInvoker;
+
+template <> struct Bridging<UniffiVTableCallbackInterfaceCryptoObserver> {
+  static UniffiVTableCallbackInterfaceCryptoObserver fromJs(jsi::Runtime &rt,
+    std::shared_ptr<CallInvoker> callInvoker,
+    const jsi::Value &jsValue
+  ) {
+    // Check if the input is an object
+    if (!jsValue.isObject()) {
+      throw jsi::JSError(rt, "Expected an object for UniffiVTableCallbackInterfaceCryptoObserver");
+    }
+
+    // Get the object from the jsi::Value
+    auto jsObject = jsValue.getObject(rt);
+
+    // Create the vtable struct
+    UniffiVTableCallbackInterfaceCryptoObserver rsObject;
+
+    // Create the vtable from the js callbacks.
+    rsObject.uniffi_free = uniffi::matrix_crypto::st::vtablecallbackinterfacecryptoobserver::vtablecallbackinterfacecryptoobserver::free::makeCallbackFunction(
+          rt, callInvoker, jsObject.getProperty(rt, "uniffi_free")
+        );
+    rsObject.uniffi_clone = uniffi::matrix_crypto::cb::callbackinterfaceclone::vtablecallbackinterfacecryptoobserver::makeCallbackFunction(
+          rt, callInvoker, jsObject.getProperty(rt, "uniffi_clone")
+        );
+    rsObject.on_signal = uniffi::matrix_crypto::cb::callbackinterfacecryptoobservermethod0::vtablecallbackinterfacecryptoobserver::makeCallbackFunction(
+          rt, callInvoker, jsObject.getProperty(rt, "on_signal")
+        );
+
+    return rsObject;
+  }
+};
+
+} // namespace uniffi::matrix_crypto
     // Implementation of CallbackInterfaceClone for vtable field uniffi_clone in VTableCallbackInterfaceProbeObserver
 
 
@@ -2366,6 +2808,38 @@ NativeMatrixCrypto::NativeMatrixCrypto(
             return this->cpp_uniffi_internal_fn_func_ffi__read_string_from_buffer(rt, thisVal, args, count);
         }
     );
+    props["ubrn_uniffi_matrix_crypto_ffi_fn_clone_cryptoobserver"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_fn_clone_cryptoobserver"),
+        1,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_fn_clone_cryptoobserver(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_matrix_crypto_ffi_fn_free_cryptoobserver"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_fn_free_cryptoobserver"),
+        1,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_fn_free_cryptoobserver(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_matrix_crypto_ffi_fn_init_callback_vtable_cryptoobserver"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_fn_init_callback_vtable_cryptoobserver"),
+        1,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_fn_init_callback_vtable_cryptoobserver(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_matrix_crypto_ffi_fn_method_cryptoobserver_on_signal"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_fn_method_cryptoobserver_on_signal"),
+        2,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_fn_method_cryptoobserver_on_signal(rt, thisVal, args, count);
+        }
+    );
     props["ubrn_uniffi_matrix_crypto_ffi_fn_clone_probeobserver"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_fn_clone_probeobserver"),
@@ -2508,6 +2982,14 @@ NativeMatrixCrypto::NativeMatrixCrypto(
         2,
         [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_uniffi_matrix_crypto_ffi_fn_func_request_verification(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_matrix_crypto_ffi_fn_func_set_crypto_observer"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_fn_func_set_crypto_observer"),
+        1,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_fn_func_set_crypto_observer(rt, thisVal, args, count);
         }
     );
     props["ubrn_uniffi_matrix_crypto_ffi_fn_func_share_scope_key"] = jsi::Function::createFromHostFunction(
@@ -3046,6 +3528,14 @@ NativeMatrixCrypto::NativeMatrixCrypto(
             return this->cpp_uniffi_matrix_crypto_ffi_checksum_func_request_verification(rt, thisVal, args, count);
         }
     );
+    props["ubrn_uniffi_matrix_crypto_ffi_checksum_func_set_crypto_observer"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_checksum_func_set_crypto_observer"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_checksum_func_set_crypto_observer(rt, thisVal, args, count);
+        }
+    );
     props["ubrn_uniffi_matrix_crypto_ffi_checksum_func_share_scope_key"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_checksum_func_share_scope_key"),
@@ -3086,6 +3576,14 @@ NativeMatrixCrypto::NativeMatrixCrypto(
             return this->cpp_uniffi_matrix_crypto_ffi_checksum_func_verification_stage(rt, thisVal, args, count);
         }
     );
+    props["ubrn_uniffi_matrix_crypto_ffi_checksum_method_cryptoobserver_on_signal"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_checksum_method_cryptoobserver_on_signal"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_checksum_method_cryptoobserver_on_signal(rt, thisVal, args, count);
+        }
+    );
     props["ubrn_uniffi_matrix_crypto_ffi_checksum_method_probeobserver_on_signal"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_checksum_method_probeobserver_on_signal"),
@@ -3100,6 +3598,14 @@ NativeMatrixCrypto::NativeMatrixCrypto(
         0,
         [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_ffi_matrix_crypto_ffi_uniffi_contract_version(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_internal_fn_method_cryptoobserver_ffi__bless_pointer"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_internal_fn_method_cryptoobserver_ffi__bless_pointer"),
+        1,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_internal_fn_method_cryptoobserver_ffi__bless_pointer(rt, thisVal, args, count);
         }
     );
     props["ubrn_uniffi_internal_fn_method_probeobserver_ffi__bless_pointer"] = jsi::Function::createFromHostFunction(
@@ -3245,7 +3751,9 @@ uniffi::matrix_crypto::cb::rustfuturecontinuationcallback::cleanup();
     // Cleanup for callback function ForeignFutureDroppedCallback
 uniffi::matrix_crypto::cb::foreignfuturedroppedcallback::cleanup();
     // Cleanup for "free" callback function CallbackInterfaceFree
-uniffi::matrix_crypto::st::vtablecallbackinterfaceprobeobserver::vtablecallbackinterfaceprobeobserver::free::cleanup();
+uniffi::matrix_crypto::st::vtablecallbackinterfacecryptoobserver::vtablecallbackinterfacecryptoobserver::free::cleanup();uniffi::matrix_crypto::st::vtablecallbackinterfaceprobeobserver::vtablecallbackinterfaceprobeobserver::free::cleanup();
+uniffi::matrix_crypto::cb::callbackinterfaceclone::vtablecallbackinterfacecryptoobserver::cleanup();
+uniffi::matrix_crypto::cb::callbackinterfacecryptoobservermethod0::vtablecallbackinterfacecryptoobserver::cleanup();
 uniffi::matrix_crypto::cb::callbackinterfaceclone::vtablecallbackinterfaceprobeobserver::cleanup();
 uniffi::matrix_crypto::cb::callbackinterfaceprobeobservermethod0::vtablecallbackinterfaceprobeobserver::cleanup();
 }
@@ -3265,6 +3773,15 @@ jsi::Value NativeMatrixCrypto::cpp_uniffi_internal_fn_func_ffi__string_from_buff
 
 jsi::Value NativeMatrixCrypto::cpp_uniffi_internal_fn_func_ffi__read_string_from_buffer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
     return uniffi_jsi::Bridging<std::string>::read_string_from_buffer(rt, args[0], args[1], args[2]);
+}jsi::Value NativeMatrixCrypto::cpp_uniffi_internal_fn_method_cryptoobserver_ffi__bless_pointer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+    auto pointer = uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[0]);
+    auto static destructor = [](uint64_t p) {
+        RustCallStatus status = {0};
+        uniffi_matrix_crypto_ffi_fn_free_cryptoobserver(p, &status);
+    };
+    auto ptrObj = std::make_shared<uniffi_jsi::DestructibleObject>(pointer, destructor);
+    auto obj = jsi::Object::createFromHostObject(rt, ptrObj);
+    return jsi::Value(rt, obj);
 }jsi::Value NativeMatrixCrypto::cpp_uniffi_internal_fn_method_probeobserver_ffi__bless_pointer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
     auto pointer = uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[0]);
     auto static destructor = [](uint64_t p) {
@@ -3277,6 +3794,53 @@ jsi::Value NativeMatrixCrypto::cpp_uniffi_internal_fn_func_ffi__read_string_from
 }
 
 // Methods calling directly into the uniffi generated C API of the Rust crate.
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_clone_cryptoobserver(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        RustCallStatus status = uniffi::matrix_crypto::Bridging<RustCallStatus>::rustSuccess(rt);
+        auto value = uniffi_matrix_crypto_ffi_fn_clone_cryptoobserver(uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[0]), 
+            &status
+        );
+        uniffi::matrix_crypto::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
+
+        
+        return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_free_cryptoobserver(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        RustCallStatus status = uniffi::matrix_crypto::Bridging<RustCallStatus>::rustSuccess(rt);
+        uniffi_matrix_crypto_ffi_fn_free_cryptoobserver(uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[0]), 
+            &status
+        );
+        uniffi::matrix_crypto::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
+
+        
+        return jsi::Value::undefined();
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_init_callback_vtable_cryptoobserver(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+    auto vtableInstance =
+        uniffi::matrix_crypto::Bridging<UniffiVTableCallbackInterfaceCryptoObserver>::fromJs(
+            rt,
+            callInvoker,
+            args[0]
+        );
+
+    std::lock_guard<std::mutex> lock(uniffi::matrix_crypto::registry::vtableMutex);
+    uniffi_matrix_crypto_ffi_fn_init_callback_vtable_cryptoobserver(
+        uniffi::matrix_crypto::registry::putTable(
+            "UniffiVTableCallbackInterfaceCryptoObserver",
+            vtableInstance
+        )
+    );
+    return jsi::Value::undefined();
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_method_cryptoobserver_on_signal(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        RustCallStatus status = uniffi::matrix_crypto::Bridging<RustCallStatus>::rustSuccess(rt);
+        uniffi_matrix_crypto_ffi_fn_method_cryptoobserver_on_signal(uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[0]), uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1]), 
+            &status
+        );
+        uniffi::matrix_crypto::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
+
+        
+        return jsi::Value::undefined();
+}
 jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_clone_probeobserver(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         RustCallStatus status = uniffi::matrix_crypto::Bridging<RustCallStatus>::rustSuccess(rt);
         auto value = uniffi_matrix_crypto_ffi_fn_clone_probeobserver(uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[0]), 
@@ -3421,6 +3985,16 @@ jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_request_veri
 
         
         return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_set_crypto_observer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        RustCallStatus status = uniffi::matrix_crypto::Bridging<RustCallStatus>::rustSuccess(rt);
+        uniffi_matrix_crypto_ffi_fn_func_set_crypto_observer(uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[0]), 
+            &status
+        );
+        uniffi::matrix_crypto::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
+
+        
+        return jsi::Value::undefined();
 }
 jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_share_scope_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_matrix_crypto_ffi_fn_func_share_scope_key(uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1])
@@ -3927,6 +4501,13 @@ jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_reques
         
         return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
 }
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_set_crypto_observer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_matrix_crypto_ffi_checksum_func_set_crypto_observer(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
 jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_share_scope_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_matrix_crypto_ffi_checksum_func_share_scope_key(
         );
@@ -3957,6 +4538,13 @@ jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_verifi
 }
 jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_verification_stage(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_matrix_crypto_ffi_checksum_func_verification_stage(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_method_cryptoobserver_on_signal(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_matrix_crypto_ffi_checksum_method_cryptoobserver_on_signal(
         );
 
         
