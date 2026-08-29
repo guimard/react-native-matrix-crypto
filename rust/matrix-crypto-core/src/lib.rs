@@ -14,7 +14,7 @@ mod session;
 mod verification;
 
 pub use error::ProbeError;
-pub use identity::{device_identity_keys, IdentityKeys};
+pub use identity::{device_identity_keys, device_statuses, DeviceStatus, IdentityKeys, TrustState};
 pub use machine::{create_machine, open_store, with_machine, MachineConfig, MachineError};
 pub use observer::{probe_with_observer, ProbeObserver, ProbeSignal};
 pub use probe::{probe, ProbeReport};

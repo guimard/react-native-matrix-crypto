@@ -46,10 +46,10 @@ use std::collections::BTreeMap;
 use std::sync::Mutex as StdMutex;
 
 use matrix_crypto_core::{
-    accept_flow, begin_comparison, cancel_flow, confirm_flow, create_machine, flow_stage,
-    in_runtime, mark_request_sent, read_material, receive_sync_changes, request_flow,
+    accept_flow, begin_comparison, cancel_flow, confirm_flow, create_machine, device_statuses,
+    flow_stage, in_runtime, mark_request_sent, read_material, receive_sync_changes, request_flow,
     share_scope_key, take_outgoing_requests, with_machine, FlowId, FlowStage, MachineConfig,
-    MachineError,
+    MachineError, TrustState,
 };
 use matrix_sdk_common::ruma::api::client::keys::get_keys::v3::Response as KeysQueryResponse;
 use matrix_sdk_common::ruma::api::client::keys::upload_keys::v3::Response as KeysUploadResponse;
@@ -280,17 +280,34 @@ async fn deliver_verification_request(request: &OutgoingVerificationRequest, sen
     deliver_to_library(vec![event]).await;
 }
 
+/// What the library's own public surface says about that device.
+///
+/// `device_statuses` is the call a product makes, and the only place in
+/// this milestone where a finished comparison becomes visible as a result.
+/// Every assertion in this file about who is verified goes through it.
+async fn library_device_status(user_id: &str, device_id: &str) -> TrustState {
+    device_statuses(user_id)
+        .await
+        .expect("the library's machine must be live")
+        .into_iter()
+        .find(|status| status.device_id == device_id)
+        .unwrap_or_else(|| panic!("the library must know the device this test is asking about"))
+        .trust
+}
+
 /// Does the library report that device as verified?
 ///
-/// Read through `with_machine`, this crate's own public accessor for the
-/// machine it holds: M3 has no public "is this device verified" call yet
-/// (that is a later task's), and asserting the outcome of a verification
-/// through anything less than the machine's own answer would be asserting
-/// on this test's bookkeeping instead of on the library's state.
+/// Two answers to one question, asserted to agree: the public
+/// `device_statuses` call a product would make, and the machine's own
+/// `is_verified`, read through `with_machine`. Keeping both is what stops
+/// this file proving only that one layer is self-consistent -- a
+/// `device_statuses` that always answered `Unverified` would satisfy every
+/// "nothing is verified yet" assertion here, and the final one alone would
+/// be carrying the whole proof.
 async fn library_reports_verified(user_id: &str, device_id: &str) -> bool {
     let user: OwnedUserId = user_id.parse().expect("a literal user id parses");
     let device: OwnedDeviceId = device_id.into();
-    with_machine(move |machine| {
+    let machine_says = with_machine(move |machine| {
         Box::pin(async move {
             machine
                 .get_device(&user, &device, None)
@@ -301,7 +318,15 @@ async fn library_reports_verified(user_id: &str, device_id: &str) -> bool {
         })
     })
     .await
-    .expect("the library's machine must be live")
+    .expect("the library's machine must be live");
+
+    let surface_says = library_device_status(user_id, device_id).await;
+    assert_eq!(
+        surface_says == TrustState::Verified,
+        machine_says,
+        "the public surface and the machine it reads must not disagree about trust",
+    );
+    machine_says
 }
 
 /// Does the bare machine report the library's device as verified?
@@ -480,6 +505,18 @@ fn two_parties_complete_a_comparison() {
         let bob_device = "COUNTERPARTYONE";
         let bob = counterparty(bob_user, bob_device).await;
 
+        // Read and kept, not merely asserted against a constant: the claim
+        // this test carries for the whole milestone is that this value
+        // *changes*, and the only way to state that is to hold the earlier
+        // one and compare the later one with it. A test that asserted
+        // `Verified` at the end alone would also pass against a surface
+        // that had answered `Verified` from the very beginning.
+        let trust_before = library_device_status(bob_user, bob_device).await;
+        assert_eq!(
+            trust_before,
+            TrustState::Unverified,
+            "a device this machine merely knows the keys of is not verified"
+        );
         assert!(
             !library_reports_verified(bob_user, bob_device).await,
             "nothing may be verified before a comparison has happened"
@@ -681,6 +718,39 @@ fn two_parties_complete_a_comparison() {
         assert!(
             library_reports_verified(bob_user, bob_device).await,
             "the library must report the counterparty's device verified"
+        );
+
+        // The milestone's observable claim, stated as a change rather than
+        // as a value: what a product reads through `device_statuses` for
+        // this device is not what it read before the comparison ran, and
+        // what it now reads is the verified one.
+        let trust_after = library_device_status(bob_user, bob_device).await;
+        assert_ne!(
+            trust_after, trust_before,
+            "a completed comparison must change what this device reports"
+        );
+        assert_eq!(
+            trust_after,
+            TrustState::Verified,
+            "and the value it changed to must be the verified one"
+        );
+
+        // This machine's own device, which read `Verified` before any of
+        // this ran and reads it still. Upstream marks it locally trusted
+        // at creation, because this process holds its private keys.
+        //
+        // Asserted rather than left alone for two reasons. It is the
+        // control on the assertion above -- a `device_statuses` stuck on
+        // `Unverified` would have satisfied every "nothing is verified
+        // yet" line in this test, and the pair of them is what rules that
+        // out. And it is the warning the surface itself carries: "some
+        // device in the list reads verified" is true of a machine that has
+        // never verified anything, so it is the *change* on another user's
+        // device, above, that carries the claim.
+        assert_eq!(
+            library_device_status(ALICE_USER, ALICE_DEVICE).await,
+            TrustState::Verified,
+            "this machine's own device is trusted because it holds its own keys"
         );
     }));
 }
