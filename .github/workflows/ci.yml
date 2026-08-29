@@ -281,7 +281,16 @@ jobs:
       # identical output today -- but "today" is a property of the config and
       # of ubrn's version, not a guarantee.
       - run: yarn gate:stubs
+      # Stamp the commit this framework was built from, then measure with the
+      # identity check REQUIRED rather than merely available. The binary is
+      # built in this job, so this leg would pass either way -- which is the
+      # point: the release path's mechanism is exercised on every pull
+      # request instead of being first tried at release time. Release run
+      # 33261962635 failed on a `pack` step no pull request runs.
+      - run: ./scripts/record-build-provenance.sh ios packages/react-native-matrix-crypto/MatrixCryptoFramework.xcframework
       - run: ./scripts/measure-artifacts.sh ci-ios
+        env:
+          REQUIRE_BUILD_PROVENANCE: '1'
       - uses: actions/upload-artifact@v4
         with: { name: artifact-sizes-ios, path: artifact-sizes.json }
 
@@ -356,7 +365,14 @@ jobs:
       # caught here. Not redundant with `gates` -- that job has its own
       # runner and its own checkout and cannot see this tree.
       - run: yarn gate:stubs
+      # The same stamp-then-measure the iOS leg above runs, for the same
+      # reason: both release legs hand their binary to `pack` through a tar,
+      # so both need the identity check, and neither should meet it for the
+      # first time during a release.
+      - run: ./scripts/record-build-provenance.sh android packages/react-native-matrix-crypto/android/src/main/jniLibs
       - run: ./scripts/measure-artifacts.sh ci-android
+        env:
+          REQUIRE_BUILD_PROVENANCE: '1'
       - uses: actions/upload-artifact@v4
         with: { name: artifact-sizes-android, path: artifact-sizes.json }
 
