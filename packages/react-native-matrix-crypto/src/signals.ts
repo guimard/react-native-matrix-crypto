@@ -6,6 +6,20 @@ import {
   TrustState as NativeTrustState,
 } from './generated/matrix_crypto'
 import type { CryptoScopeId, TrustState } from './types'
+// Imported for the documentation below and used by nothing here.
+// `{@link}` resolves against what is in scope in the file it is written in,
+// so without this the four names the comments below send a reader to are
+// plain text in an editor's hover: a link that promises navigation and does
+// not deliver it. Type-only, so it is erased and adds no runtime edge, and
+// `facade.ts` imports nothing from this module, so it adds no cycle either.
+// `tsconfig.json` sets `noUnusedLocals: false`, which is what lets an import
+// exist for a reader rather than for the compiler.
+import type {
+  acceptVerification,
+  decryptEvent,
+  getDeviceStatuses,
+  receiveSyncChanges,
+} from './facade'
 
 /**
  * Typed, silent by default. Takes no product decision. Spec sections 7, 11.

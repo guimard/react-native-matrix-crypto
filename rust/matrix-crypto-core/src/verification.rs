@@ -53,8 +53,10 @@
 //!
 //! A verification normally opens with an `m.key.verification.request`: one
 //! side invites, the other agrees, and only then does either start the
-//! comparison. That is the shape this library sends and the only one M3
-//! could answer.
+//! comparison. That is the shape this library sends, and it was the only
+//! one this module could answer until `091988f`. It is not the only one now
+//! -- see "Every call on this surface answers both" below, which is the
+//! current statement and which the sentence this replaces contradicted.
 //!
 //! The Matrix protocol also still carries the shape MSC3122 deprecated --
 //! a bare `m.key.verification.start` with no request before it, to-device
@@ -814,10 +816,16 @@ pub async fn flow_stage(flow: &FlowId) -> Result<FlowStage, MachineError> {
 /// The short authentication string, once there is one.
 ///
 /// The two failure kinds are kept apart on purpose. `MaterialNotReady`
-/// means the flow is live and has not got there yet -- and, far more often
-/// in practice, that the key message was never reported sent, which parks
-/// the flow at exactly this stage forever. `WrongStage` means it never
-/// will: the flow is over, or has not become a comparison at all.
+/// means the flow is live and has not got there yet, and it has two causes
+/// that want opposite things done about them. `SasState::Accepted` is the
+/// one this comment used to name alone: the key message was never reported
+/// sent, which parks the flow at that stage forever, and the remedy is the
+/// pump. `SasState::Started` is the other, and it is the receiving side's:
+/// the peer opened the comparison and this side has not answered it, so the
+/// remedy is a second [`accept_flow`] and pumping alone never moves it. The
+/// facade reads [`flow_stage`] to tell a product which it is in.
+/// `WrongStage` means it never will: the flow is over, or has not become a
+/// comparison at all.
 pub async fn read_material(flow: &FlowId) -> Result<SasMaterial, MachineError> {
     let handles = handles(flow).await?;
     let comparison = handles.comparison.ok_or(MachineError::WrongStage)?;
