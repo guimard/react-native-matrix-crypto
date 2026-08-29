@@ -1,8 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Faces every refusal in scripts/measure-signal-latency.sh with the case it
-# exists to reject, and the accepting case with the run it must accept.
+# Faces four of the thirteen refusals in scripts/measure-signal-latency.sh
+# with the case each exists to reject, plus the accepting case with the run it
+# must accept, and asserts the accepted row field by field.
+#
+# WHICH FOUR, AND WHY NOT THIRTEEN
+#
+# The four are the ones that have actually broken: the on-disk digest
+# comparison, the run-time emission-build comparison, the
+# missing-PROBE_EMIT_BUILD diagnostic, and the "carries no .so" guard -- that
+# last one in both argument positions, because the gate used to face it only in
+# position A and the B-position copy could be deleted outright with everything
+# green. The nine not faced are argument and environment checks: usage, adb or
+# unzip absent, a missing APK file, two APKs with the same basename, no device,
+# and an unknown load name. They fail before anything is measured, they have
+# never been wrong, and none of them can produce a bad measurement -- only no
+# measurement. If one of them ever breaks, it belongs here the same day.
 #
 # WHY THIS IS A GATE AND NOT A PARAGRAPH
 #
@@ -19,15 +33,27 @@ set -euo pipefail
 # instances of "a check that reports success without having examined its
 # target"; two of them are in that one file.
 #
-# WHAT IT ASSERTS, AND WHY BOTH HALVES
+# WHAT IT ASSERTS: THREE LAYERS, AND EACH ONE EXISTS BECAUSE THE OTHERS MISSED
+# SOMETHING
 #
-# Each case asserts the exit status AND a distinctive substring of the
-# diagnostic. Neither alone is enough, and both real defects prove it:
-#
-#   - the trap defect exited 127 with the right *message* already printed, so
-#     asserting the message alone would have passed it;
-#   - the `set -e` defect exits 1 -- the correct status -- with no message at
-#     all, so asserting the status alone would have passed it.
+# 1. Exit status. The trap defect exited 127 with the right message already
+#    printed, so the message alone would have passed it.
+# 2. A distinctive substring of the diagnostic. The `set -e` defect exits 1 --
+#    the correct status -- and says nothing at all, so the status alone would
+#    have passed it.
+# 3. The accepted run's rows, field by field, against values chosen to be all
+#    different. This layer was missing for a whole review cycle, and its
+#    absence is the fourth instance of the pattern this file exists to stop:
+#    the gate asserted that four rows existed and never what was in them, so
+#    changing one token to read `PROBE_SIGNAL2_MS` where `PROBE_SIGNAL_MS` was
+#    meant -- publishing the warm second signal under the first signal's column,
+#    which is the exact contrast B2's conclusion rests on -- kept every guard
+#    firing, every refusal refusing, four rows written, shellcheck clean and
+#    this gate green. So could transposing two columns, or dropping one. The
+#    proof needed no experiment: this file was byte-identical at the commit
+#    that introduced it and at the tip of the round after, passing at both,
+#    while the harness's row went from eight fields to nine with the new column
+#    inserted in the middle.
 #
 # WHAT IS FAKED, AND WHAT IS NOT
 #
@@ -45,6 +71,16 @@ set -euo pipefail
 HARNESS=scripts/measure-signal-latency.sh
 STUB_DIR=scripts/testdata
 ABI=arm64-v8a
+
+# The four numbers the stub reports and the harness sorts into four columns.
+# All different, on purpose: with the old 2/1/1/1 a transposition among three
+# of them produced a row identical to the correct one.
+S_MS=41
+S_NTH=42
+S2_MS=43
+P_MS=44
+export FAKE_SIGNAL_MS=$S_MS FAKE_SIGNAL_NTH=$S_NTH
+export FAKE_SIGNAL2_MS=$S2_MS FAKE_PROMISE_MS=$P_MS
 
 [ -x "$HARNESS" ] || { echo "FAIL: $HARNESS is missing or not executable."; exit 1; }
 [ -x "$STUB_DIR/fake-adb" ] || { echo "FAIL: $STUB_DIR/fake-adb is missing or not executable."; exit 1; }
@@ -80,6 +116,33 @@ printf 'ELF-B' > "$WORK/src/lib/$ABI/libmatrix_crypto_ffi.so"
 cp "$WORK/armA.apk" "$WORK/armCopy.apk"
 
 FAILURES=0
+
+# $1 label, $2 file, $3 row number, $4 the row that must be there, verbatim.
+#
+# Compares the whole tab-separated row rather than a field or a count. A count
+# cannot see a value in the wrong column, and a single field cannot see a
+# column that has moved; the row can see both, and it is what a reader of the
+# published samples actually consumes.
+expect_row() {
+  local name=$1 file=$2 n=$3 want=$4 got fields
+  if [ ! -f "$file" ]; then
+    echo "FAIL: $name -- $file was never written."
+    FAILURES=$((FAILURES + 1))
+    return 0
+  fi
+  got=$(sed -n "${n}p" "$file")
+  if [ "$got" != "$want" ]; then
+    fields=$(printf '%s' "$got" | awk -F'\t' '{print NF}')
+    echo "FAIL: $name -- row $n is not the row this harness is documented to write."
+    echo "      want ($(printf '%s' "$want" | awk -F'\t' '{print NF}') fields): $want"
+    echo "      got  (${fields:-0} fields): $got"
+    echo "      A value in the wrong column publishes one measurement under"
+    echo "      another one's name, with every guard still firing."
+    FAILURES=$((FAILURES + 1))
+    return 0
+  fi
+  echo "ok: $name"
+}
 
 # $1 case name, $2 expected exit, $3 substring the output must contain,
 # rest: the harness's arguments. Runs with whatever FAKE_* the caller exported.
@@ -133,26 +196,29 @@ FAKE_OMIT=EMIT_BUILD \
   expect "a launch with no PROBE_EMIT_BUILD line" 1 "printed no PROBE_EMIT_BUILD line" \
     "$WORK/armA.apk" "$WORK/armB.apk" 1 "$WORK/out.tsv" none
 
-# 5. A launch whose callback never arrived. This one must NOT refuse: a lost
-#    callback is the event this harness is kept to observe, so it has to be
-#    recorded as a NONE row rather than aborting the run.
+# 4b. The same guard in the other argument position. It used to be faced only
+#     in position A, so its position-B copy could be deleted outright with this
+#     gate green -- which made the automated check weaker on this one point
+#     than the manual pass it replaced.
+expect "an APK with no library in the B position" 1 "carries no lib/$ABI/libmatrix_crypto_ffi.so" \
+  "$WORK/armA.apk" "$WORK/nolib.apk" 1 "$WORK/out.tsv" none
+
+# 5. A launch whose first callback never arrived. This one must NOT refuse: a
+#    lost callback is the event this harness is kept to observe, so it has to
+#    be recorded as a NONE row rather than aborting the run.
+#
+#    Only PROBE_SIGNAL_MS is omitted, not the second signal with it. Omitting
+#    both let the `sig` extraction read either line and still produce NONE,
+#    which is how a `sig` that reads `PROBE_SIGNAL2_MS` went unnoticed.
 rm -f "$WORK/lost.tsv"
-FAKE_OMIT=SIGNAL_MS,SIGNAL2_MS FAKE_BUILD_armA=aaaaaaaa FAKE_BUILD_armB=bbbbbbbb \
-  expect "a launch whose callback never arrived" 0 "NONE" \
+FAKE_OMIT=SIGNAL_MS FAKE_BUILD_armA=aaaaaaaa FAKE_BUILD_armB=bbbbbbbb \
+  expect "a launch whose first callback never arrived" 0 "NONE" \
     "$WORK/armA.apk" "$WORK/armB.apk" 1 "$WORK/lost.tsv" none
 
-if [ -f "$WORK/lost.tsv" ]; then
-  LOST_ROWS=$(grep -c 'NONE' "$WORK/lost.tsv" || true)
-  if [ "$LOST_ROWS" != "2" ]; then
-    echo "FAIL: a lost callback wrote $LOST_ROWS rows carrying NONE, expected 2."
-    echo "      The row is the record of the event; aborting instead of writing"
-    echo "      it is how this harness stopped being able to see the thing it"
-    echo "      is kept for."
-    FAILURES=$((FAILURES + 1))
-  else
-    echo "ok: a lost callback is recorded rather than fatal"
-  fi
-fi
+expect_row "the lost-callback row records NONE in the first-signal column only" \
+  "$WORK/lost.tsv" 1 \
+  "$(printf 'armA\t1\tnone\tNONE\t%s\t%s\t%s\t0.1.0+emit.aaaaaaaa\tPROBE_SUMMARY 12/12' \
+       "$S_NTH" "$S2_MS" "$P_MS")"
 
 # 6. The accepting case. Without it, a "fix" that refuses everything passes
 #    every check above.
@@ -171,6 +237,21 @@ if [ -f "$WORK/happy.tsv" ]; then
   fi
 fi
 
+# The rows themselves. Both arms, both rounds: the arms alternate, so this also
+# pins the interleaving the whole measurement design rests on.
+happy_row() {
+  printf '%s\t%s\tnone\t%s\t%s\t%s\t%s\t0.1.0+emit.%s\tPROBE_SUMMARY 12/12' \
+    "$1" "$2" "$S_MS" "$S_NTH" "$S2_MS" "$P_MS" "$3"
+}
+expect_row "the accepted run's row 1 (armA, round 1)" "$WORK/happy.tsv" 1 \
+  "$(happy_row armA 1 8e8c3246)"
+expect_row "the accepted run's row 2 (armB, round 1)" "$WORK/happy.tsv" 2 \
+  "$(happy_row armB 1 9c223b45)"
+expect_row "the accepted run's row 3 (armA, round 2)" "$WORK/happy.tsv" 3 \
+  "$(happy_row armA 2 8e8c3246)"
+expect_row "the accepted run's row 4 (armB, round 2)" "$WORK/happy.tsv" 4 \
+  "$(happy_row armB 2 9c223b45)"
+
 echo
 if [ "$FAILURES" -ne 0 ]; then
   echo "FAIL: $FAILURES of the measurement harness's guards did not behave as documented."
@@ -179,5 +260,7 @@ if [ "$FAILURES" -ne 0 ]; then
   exit 1
 fi
 
-echo "PASS: measurement guards (5 refusals faced, 1 acceptance, exit status and"
-echo "      diagnostic asserted on each)"
+echo "PASS: measurement guards -- 4 of the harness's 13 refusals faced (the four"
+echo "      that have broken, one of them in both argument positions), plus the"
+echo "      accepting case, with exit status, diagnostic and every field of"
+echo "      every written row asserted"

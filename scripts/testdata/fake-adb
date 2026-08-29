@@ -17,6 +17,15 @@
 #                       launch that never printed one can be reproduced:
 #                       EMIT_BUILD, SIGNAL_MS, SIGNAL_NTH, SIGNAL2_MS,
 #                       PROMISE_MS, SUMMARY
+#   FAKE_SIGNAL_MS, FAKE_SIGNAL_NTH, FAKE_SIGNAL2_MS, FAKE_PROMISE_MS
+#                       the four numbers the harness extracts into four
+#                       different columns. THE DEFAULTS ARE DELIBERATELY ALL
+#                       DIFFERENT. They used to be 2, 1, 1 and 1, so a row
+#                       could carry any three of them in any order and still
+#                       look right -- and the caller asserted only how many
+#                       rows there were, so a one-token edit publishing the
+#                       warm second signal under the first signal's column
+#                       passed with everything green.
 #   FAKE_STATE          where the last-installed APK label is remembered
 set -u
 STATE=${FAKE_STATE:-/tmp/fake-adb.state}
@@ -47,11 +56,11 @@ case "${1:-}" in
     label=$(cat "$STATE" 2>/dev/null || echo unknown)
     var="FAKE_BUILD_${label}"
     build=$(eval "printf '%s' \"\${$var:-\${FAKE_BUILD:-deadbeef}}\"")
-    omitted PROMISE_MS || echo "PROBE_PROMISE_MS 1"
+    omitted PROMISE_MS || echo "PROBE_PROMISE_MS ${FAKE_PROMISE_MS:-44}"
     omitted EMIT_BUILD || echo "PROBE_EMIT_BUILD 0.1.0+emit.${build}"
-    omitted SIGNAL_MS || echo "PROBE_SIGNAL_MS 2"
-    omitted SIGNAL_NTH || echo "PROBE_SIGNAL_NTH ${FAKE_NTH:-1}"
-    omitted SIGNAL2_MS || echo "PROBE_SIGNAL2_MS 1"
+    omitted SIGNAL_MS || echo "PROBE_SIGNAL_MS ${FAKE_SIGNAL_MS:-41}"
+    omitted SIGNAL_NTH || echo "PROBE_SIGNAL_NTH ${FAKE_SIGNAL_NTH:-42}"
+    omitted SIGNAL2_MS || echo "PROBE_SIGNAL2_MS ${FAKE_SIGNAL2_MS:-43}"
     omitted SUMMARY || echo "PROBE_SUMMARY 12/12"
     exit 0
     ;;
