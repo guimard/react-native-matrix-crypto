@@ -22,3 +22,17 @@ __pycache__/
 # never leave one here, but a hand-run `npm pack` while debugging a release
 # does, and a 70 MB accidental commit is not undone by a revert.
 *.tgz
+
+# The design specs, implementation plans and measurement records that drove
+# this library. Kept on disk and out of the repository for now, by the
+# owner's decision.
+#
+# Two consequences worth knowing before relying on this. Tracked files still
+# point here -- README.md, rust/matrix-crypto-core/src/observer.rs,
+# scripts/measure-signal-latency.sh, scripts/assert-measure-guards.sh,
+# packages/example-app/src/ProbeHarness.tsx and
+# packages/react-native-matrix-crypto/interop/suite.ts all cite a path under
+# docs/ -- so those references are now dangling for anyone reading the
+# repository alone. And ignoring a directory does not unpublish it: every
+# version already committed remains in this repository's history.
+docs/
