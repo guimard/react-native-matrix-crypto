@@ -11,7 +11,7 @@ that a measurement which does not move say **what else the latency is**.
 This file is the measurement. It exists in the tree because the first attempt left its
 harness, its arm swapping and its raw samples in a scratch directory, so re-deriving the
 budget meant rebuilding all three — which is most of the cost of measuring.
-`scripts/measure-signal-latency.sh` is the harness; §5 below is every sample it produced.
+`scripts/measure-signal-latency.sh` is the harness; §8 below is every sample it produced.
 
 ---
 
@@ -46,6 +46,15 @@ logs from runs nobody planned as an experiment.
 `scripts/measure-signal-latency.sh` refuses to produce a measurement whose arms cannot be
 told apart, twice over: it compares the two APKs' `libmatrix_crypto_ffi.so` before it
 launches anything, and it aborts if two arms ever report the same `PROBE_EMIT_BUILD`.
+
+**Both refusals have been watched happening, and the second one did not work when it was
+first written.** `launch_once` wrote its row to stdout and *also* returned the build id on
+stdout, so the caller's `$(...)` captured both; the comparison read a string beginning with
+the arm's label, which is forced to differ, and was therefore false in every run including
+the one it exists to reject. Three tracked files said it worked. That is the same shape as
+the finding this whole mechanism was built to close -- a check reporting success without
+having examined its target -- one level further in. It now returns through a variable, and
+section 4 below records each guard being made to face its case.
 
 For the record, the first run's two APKs were checked afterwards and *did* differ in
 `libmatrix_crypto_ffi.so` while carrying an identical JavaScript bundle, so the mistake had
@@ -117,17 +126,78 @@ tail at all.
 The last row matters as much as the two above it: the arms differ in the Rust library and
 in nothing else, so a difference in the numbers could only have come from emission.
 
-The `after` arm's `EMIT_BUILD` is checkable rather than reported: it is what the committed
-`observer.rs` and `runtime.rs` hash to, so anyone can recompute it from this commit and get
-`9c223b45`. The `before` arm is that same tree with `emit`'s one statement replaced, as in
+The `after` arm's `EMIT_BUILD` is checkable rather than reported: it is what
+`observer.rs` and `runtime.rs` **as of `3e07bbb`** hash to. Recompute it there and you get
+`9c223b45`; the `before` arm is that same tree with `emit`'s one statement replaced, as in
 §2, which is why its value differs.
+
+The commit matters, and naming one is not a hedge -- it is the mechanism working as
+designed. The fingerprint covers those two files' source text, comments included, so the
+doc corrections made after this measurement changed it: at the tip of this branch the same
+computation gives `1920fc10`. A fingerprint that survived an edit to the file it fingerprints
+would be no use for telling two builds apart. What a reader can check is the pair of claims
+above: `3e07bbb` gives `9c223b45`, and `3e07bbb` plus the documented one-statement swap gives
+`8e8c3246`. Those are the two values every launch below reported.
 
 Every launch reported `PROBE_SUMMARY 12/12`, and every launch's `PROBE_EMIT_BUILD` matched
 the arm it was launched from.
 
 ---
 
-## 4. Results
+## 4. The guards, watched refusing
+
+A guard nobody has seen reject anything is decoration, and one of these was exactly that for
+a whole review cycle. Each is recorded here facing the case it exists to reject, and the real
+pair being accepted. `adb` is stubbed for these runs (the stub answers only the calls this
+harness makes, and lets each arm's reported `PROBE_EMIT_BUILD` be chosen) because the third
+case cannot otherwise be manufactured: two builds differing outside the fingerprinted files
+come out byte-identical, this toolchain being deterministic. The guard under test is shell
+logic, and this tests exactly that.
+
+| case | what it is | outcome |
+|---|---|---|
+| an APK carrying no `libmatrix_crypto_ffi.so` | wrong ABI, or a stub build | refused, exit 1 |
+| two identical APKs | the arm swap that skipped `ubrn build android` | refused, exit 1 |
+| different `.so`, same reported build | what the on-disk digest cannot see | refused, exit 1 |
+| different `.so`, different builds | the real pair | **accepted**, 4 rows written |
+
+Verbatim, with paths shortened:
+
+```
+FAIL: 'nolib.apk' carries no lib/arm64-v8a/libmatrix_crypto_ffi.so.
+      This device reports ABI 'arm64-v8a'; an APK built for another one, or a stub
+      build that linked nothing, looks like this.
+
+FAIL: both APKs carry the same lib/arm64-v8a/libmatrix_crypto_ffi.so (bb9b060783e52395).
+      There is no A/B here: the arms would run identical Rust.
+
+arms differ in lib/arm64-v8a/libmatrix_crypto_ffi.so: before=21f37fab... after=bb9b0607...
+FAIL: round 1: both arms reported the same emission build (0.1.0+emit.cafef00d).
+      The two APKs differ on disk but the running processes do not
+      distinguish themselves, so nothing measured here is an A/B.
+```
+
+Facing them also turned up a fourth defect that no amount of reading would have: the `EXIT`
+trap called `stop_load` seventy lines before that function was defined, so every one of the
+refusals above exited 127 with `stop_load: command not found` instead of the 1 its diagnostic
+had just earned. Fixed, and the table above is from the re-run.
+
+**To repeat this.** Cases one and two need only real APKs. Case three needs the stub: a
+script named `adb`, first on `PATH`, that answers `wait-for-device`, `uninstall`, `install`,
+`logcat -c` and `am start`/`am force-stop` with exit 0; answers
+`shell getprop ro.product.cpu.abi` with the ABI the APKs carry; and answers `logcat -d` with
+a `PROBE_EMIT_BUILD`, a `PROBE_SIGNAL_MS`, a `PROBE_SIGNAL2_MS` and a `PROBE_SUMMARY 12/12`
+line, choosing the build id from the APK basename it last saw installed. Point both arms at
+the same id and the run must be refused; point them at different ids and it must be
+accepted.
+
+**Named limitation:** that is a manual procedure, not a test anything runs. Nothing in CI
+would notice this guard breaking again, and it broke silently once. A self-test driving the
+harness against the stub would close it and is not in this branch.
+
+---
+
+## 5. Results
 
 | arm | host load | n | min | median | p90 | max |
 |---|---|---|---|---|---|---|
@@ -149,7 +219,7 @@ between the arms that is consistent across host conditions, and there is one of 
 medians are 2 ms before and 9.5 ms after.
 
 **Nothing was lost.** All 40 launches delivered their callback and reported
-`PROBE_SUMMARY 12/12`. That matters more than the medians do: see section 5.
+`PROBE_SUMMARY 12/12`. That matters more than the medians do: see section 7.
 
 **The race is real, and is why the bounded wait exists.** The callback landed after the
 promise resolved in 20 of the 40 launches. That is the race `interop/suite.ts`'s `waitUntil`
@@ -161,18 +231,77 @@ every host condition separately -- idle 4.5 ms against 1 ms; CPU-saturated 20 ms
 disk-saturated 5 ms against 2 ms. The tails overlap (p90 32.6 ms against 23.1 ms, worst 59 ms
 against 37 ms), so the separation is in the body of the distribution rather than in the tail.
 
-There is a mechanism, and it is documented at `observer::emit` rather than guessed here: what
-this instrument times is the *first* signal of a cold process, and on that path the first `emit`
-is what builds this library's whole tokio runtime -- two workers, a reactor and a timer -- and
-then a blocking-pool thread, where `std::thread::spawn` built one bare thread and nothing else.
-That is a one-off cost per process, not a per-signal one, and it is milliseconds. It does not
-threaten `SIGNAL_WAIT_MS` and it does not change the trade this item made. It does mean "the
-measurement did not move" is the wrong summary: it moved, in the direction this item did not
-predict.
+**How strongly: one star, and the first draft of this file said nothing at all about that.**
+Of the 20 interleaved pairs, 12 favour the new path being slower, 6 run the other way and 2
+tie. A Wilcoxon signed-rank test over the paired differences gives p ~ 0.04; a paired
+sign-flip permutation on the median gives p ~ 0.03; the same permutation on the *mean* gives
+p ~ 0.08, the mean being dominated by two outlying pairs at -35 ms and +58 ms. So: real, and
+not more than real, from n = 20 per arm at millisecond clock granularity.
+
+**The cause is not established, and section 6 is what is known about it.** The first draft
+of this file attributed the gap confidently to the first `emit` building the tokio runtime.
+That construction does happen on this path and it is one-off per process -- `observer::emit`
+says why -- but it does not account for the shape of these numbers, and asserting it was the
+same habit as the round before. What it does mean, either way, is that "the measurement did
+not move" is the wrong summary: it moved, in the direction this item did not predict.
 
 ---
 
-## 5. What this did not settle
+## 6. The second-signal experiment
+
+The question the 40 launches above cannot answer: is the new path's excess a cost paid once
+per process, or one paid on every signal? Every one of those samples is the first signal of
+its own cold process -- `launch_once` uninstalls and reinstalls for each launch and the suite
+issues exactly one observed call -- so a once-per-process cost lands in every sample and a
+shifted median is what either hypothesis predicts.
+
+One extra `emit` separates them. `ProbeHarness.tsx` now times a second observed signal after
+both suites have run and reports it as `PROBE_SIGNAL2_MS`; the harness records it alongside
+the first. Same two APKs, same fingerprints (`8e8c3246` and `9c223b45`), same interleaving:
+22 launches, 11 per arm, 12 idle and 10 CPU-saturated. Every launch reported
+`PROBE_SUMMARY 12/12` and printed both lines.
+
+| arm | host load | signal | n | min | median | max |
+|---|---|---|---|---|---|---|
+| `before` | idle | first | 6 | 0 | 1 | 39 |
+| `before` | idle | second | 6 | 0 | 2.5 | 17 |
+| `before` | CPU-saturated | first | 5 | 2 | 15 | 73 |
+| `before` | CPU-saturated | second | 5 | 0 | 1 | 1 |
+| `after` | idle | first | 6 | 1 | 3 | 5 |
+| `after` | idle | second | 6 | 0 | 1 | 5 |
+| `after` | CPU-saturated | first | 5 | 5 | 24 | 113 |
+| `after` | CPU-saturated | second | 5 | 0 | 1 | 1 |
+
+Paired, arm against arm within each round:
+
+| host load | first-signal gap (median) | second-signal gap (median) |
+|---|---|---|
+| idle | +2 ms | -2 ms |
+| CPU-saturated | **+22 ms** | **0 ms** |
+| both | +3 ms | 0 ms |
+
+**The excess is confined to the first signal of a process.** Under the CPU saturation where
+the first-signal gap is at its widest, the second signal is a median of 1 ms on both arms,
+with a maximum of 1 ms on both -- the two emission paths are not distinguishable there at
+all. No product pays this per signal.
+
+**It is also not fixed work**, which is the part the first draft got wrong. A constant added
+cost `c` would put the new arm's floor at least `c` above the old one's; the floors are 1 ms
+and 0 ms across the 40 launches of section 4, and 1 ms and 0 ms again here. Four of those 40
+`after` launches delivered end to end in 1 ms. A fixed 7.5 ms cannot hide inside them. What
+the gap does instead is grow with contention, from +2 ms idle to +22 ms saturated, which is
+what exposure to scheduling looks like and not what a constant amount of work looks like.
+
+**What is left open**: which first-use step dominates. Building the runtime, creating the
+first blocking-pool thread, and simply having more handoffs to be descheduled between are all
+first-use and all consistent with these numbers, and nothing here separates them. Separating
+them needs an instrument inside the core rather than at the JavaScript boundary -- timing
+`runtime()` and the pool's first task independently -- which is a different experiment from
+this one. It is recorded as open rather than guessed at a third time.
+
+---
+
+## 7. What this did not settle
 
 **The 1-in-8 failure at a 2000 ms budget remains unexplained.** The reasoning lives in the
 spec's §5.1 B2 note and at `SIGNAL_WAIT_MS`, rather than being repeated here; the short of
@@ -192,10 +321,14 @@ exists to absorb.
 
 ---
 
-## 6. Every sample
+## 8. Every sample
 
 `label`, `round`, `host load`, `PROBE_SIGNAL_MS`, `PROBE_PROMISE_MS`, `PROBE_EMIT_BUILD`,
 `PROBE_SUMMARY`.
+
+Seven fields, not the eight the harness writes today: `PROBE_SIGNAL2_MS` became a column when
+section 6 was run, which was after these launches. A row from a current run carries it
+between `PROBE_SIGNAL_MS` and `PROBE_PROMISE_MS`.
 
 ```
 before	1	none	1	1	0.1.0+emit.8e8c3246	PROBE_SUMMARY 12/12
