@@ -436,26 +436,61 @@ fn parse_user(user_id: &str) -> Result<OwnedUserId, SessionError> {
 /// and a sender mismatch, which are three different things for a product to
 /// do about one event.
 ///
-/// # Three of these cannot happen in this build
+/// # Two of these cannot happen in this build, and the line falls in a
+/// surprising place
 ///
-/// [`SenderVerification::Verified`], [`SenderVerification::UnverifiedIdentity`]
-/// and [`SenderVerification::VerificationViolation`] each require the sending
-/// device to be signed by a cross-signing identity its owner has published,
-/// and nothing in this build publishes or follows one. They are declared
-/// anyway, and named as unreachable at each variant, because the set is
-/// closed on both sides of the boundary: widening it later is a breaking
-/// change for every consumer that matched on it exhaustively, and the
-/// alternative to a full type is not a smaller true type but a different
-/// false one -- a four-value type would say that four values is all this
-/// vocabulary has, which is not true of what it models.
+/// The distinction is **whose** cross-signing identity a value depends on.
+/// Upstream's decision function is `SenderData::from_device`, and it has
+/// two gates. The first, `Device::is_cross_signed_by_owner`, asks only
+/// whether the sending device carries a signature from a self-signing key
+/// its own owner published. This machine is not consulted. The second,
+/// `Device::is_cross_signing_trusted`, is where our own identity is read,
+/// and with none it is `false` for every device.
+///
+/// So [`SenderVerification::UnverifiedIdentity`] **is produced by this
+/// build**, on the ordinary path, with no work on our side at all. It is
+/// what the first gate passing and the second failing means. Any peer who
+/// has set cross-signing up already produces it here, which is every
+/// Element user, and `tests/cross_signed_peer.rs` decrypts an event from
+/// one and asserts it. Nothing about that value is a claim of
+/// authenticity: it says the sending device is one its owner vouches for,
+/// and that we have no opinion about the owner.
+///
+/// The two that cannot happen are [`SenderVerification::Verified`] and
+/// [`SenderVerification::VerificationViolation`], and both are blocked on
+/// our side rather than the sender's. `Verified` needs the second gate,
+/// which reads our user-signing key over the sender's master key.
+/// `VerificationViolation` needs the sender's identity to have been marked
+/// previously verified, and the only thing upstream marks it with is our
+/// own verified identity signing theirs. Nothing in this crate calls
+/// `bootstrap_cross_signing`, so this build holds no such key and neither
+/// value can occur until cross-signing lands.
+///
+/// Both are declared anyway, and named as unreachable at each variant,
+/// because the set is closed on both sides of the boundary: widening it
+/// later is a breaking change for every consumer that matched on it
+/// exhaustively, and the alternative to a full type is not a smaller true
+/// type but a different false one. A four-value type would say that four
+/// values is all this vocabulary has, which is not true of what it models.
 ///
 /// **Nothing in this repository's tests produces `Verified`, deliberately.**
 /// A fixture faking it would teach exactly the belief this doc comment
 /// exists to prevent. What the tests do instead is prove the negative:
-/// `tests/two_parties.rs` marks a device locally trusted -- the one state a
-/// completed comparison sets -- confirms `device_statuses` now calls it
-/// verified, and asserts that events from it still read
+/// `tests/two_parties.rs` marks a device locally trusted, which is the one
+/// state a completed comparison sets, confirms `device_statuses` now calls
+/// it verified, and asserts that events from it still read
 /// [`SenderVerification::UnsignedDevice`].
+///
+/// # How this went wrong once, which is why the paragraphs above are long
+///
+/// Until 0.1.0 this comment said all three were unreachable, and every
+/// mirror of it in the tree repeated that. It was never true.
+/// `UnverifiedIdentity` was reachable from the first release; what was
+/// missing was a test with a cross-signed counterparty, because every
+/// fixture in this repository was a bare machine that never bootstrapped.
+/// The sentence sounded like the neighbouring true ones about `Verified`
+/// and stood in for them for a whole milestone. `tests/cross_signed_peer.rs`
+/// exists so that it cannot again.
 ///
 /// # Order
 ///
@@ -475,19 +510,38 @@ pub enum SenderVerification {
     ///
     /// Unreachable until cross-signing lands, and "a comparison will make
     /// it reachable" is the wrong summary of why. The path that produces
-    /// this reads `SenderData::SenderVerified`, which needs the device to
-    /// carry a cross-signature from its owner and that identity to be
-    /// trusted; local trust, which is all a comparison sets, is never
-    /// consulted there. See this type's own doc comment.
+    /// this reads `SenderData::SenderVerified`, which needs **our own**
+    /// user-signing key over the sender's master key; local trust, which is
+    /// all a comparison sets, is never consulted there. This build has no
+    /// such key, so this value cannot arrive however cross-signed the
+    /// sender is. See this type's own doc comment.
     Verified,
-    /// **Not produced by this build.** The device is signed by its owner's
+    /// **Produced by this build.** The device is signed by its owner's
     /// cross-signing identity, and that identity is one this machine has
-    /// not verified. Requires a published master key.
+    /// not verified.
+    ///
+    /// It needs a published master key from **the sender**, and nothing
+    /// from us: upstream's gate for it reads only whether the sender signed
+    /// their own device. So it arrives from any peer whose client has set
+    /// cross-signing up, against a build that has none, and it is the
+    /// ordinary case for a peer running a mainstream Matrix client rather
+    /// than a state a product can defer handling.
+    ///
+    /// It is not a weaker `Verified` and not a stronger `UnsignedDevice`.
+    /// It says the owner of the sending device vouches for that device, and
+    /// that we have no opinion about the owner. Cross-signing landing is
+    /// what would let this become [`SenderVerification::Verified`] for a
+    /// user we have verified; it is not what makes this value occur.
     UnverifiedIdentity,
     /// **Not produced by this build.** The device is signed by its owner's
     /// cross-signing identity, that identity was verified once, and it is
-    /// not the same identity any more. Requires a published master key and
-    /// a previous verification of it.
+    /// not the same identity any more.
+    ///
+    /// Unreachable for the same reason as [`SenderVerification::Verified`]
+    /// rather than for the sender's: upstream reaches it only when the
+    /// sender's identity was previously marked verified, and the only thing
+    /// that marks it is our own verified identity signing theirs. With no
+    /// identity of our own, no peer is ever in that state.
     VerificationViolation,
     /// The sending device is known to this machine and carries no signature
     /// from its owner's cross-signing identity.
@@ -1067,15 +1121,25 @@ pub async fn share_scope_key(scope: &str, users: &[String]) -> Result<(), Sessio
                     // devices signed by their owner. It is named here rather
                     // than inherited silently: it is the outbound mirror of
                     // this milestone's `TrustRequirement::Untrusted`, and it is
-                    // forced by the same absence. The recommended
-                    // identity-based strategy gives room keys to nobody whose
-                    // identity is unpublished, and no identity is published
-                    // until cross-signing exists. Cross-signing is **M4**,
-                    // settled as such by the M3 design's 2026-08-29
-                    // amendment; this said "M3's work", which the same
-                    // document contradicts. So the strategy stays where M2
-                    // put it, and moving it before cross-signing would share
-                    // room keys with nobody.
+                    // forced by the same absence: **ours**, not the
+                    // recipients'. This said "no identity is published until
+                    // cross-signing exists", which reads as a claim about
+                    // everyone and is false about peers -- any recipient
+                    // running a mainstream client has one, which is the same
+                    // misreading `SenderVerification`'s doc comment carried
+                    // into 0.1.0. The mechanism is stronger and simpler than
+                    // that sentence said: upstream's identity-based strategy
+                    // refuses outright when *this* machine has no
+                    // cross-signing identity, returning
+                    // `SessionRecipientCollectionError::CrossSigningNotSetup`
+                    // before it looks at a single recipient
+                    // (`session_manager/group_sessions/share_strategy.rs`).
+                    // Cross-signing is **M4**, settled as such by the M3
+                    // design's 2026-08-29 amendment; this said "M3's work",
+                    // which the same document contradicts. So the strategy
+                    // stays where M2 put it, and moving it before
+                    // cross-signing would not share room keys selectively, it
+                    // would fail every send.
                     EncryptionSettings::default(),
                 )
                 .await;

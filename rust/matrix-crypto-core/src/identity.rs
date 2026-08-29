@@ -63,9 +63,26 @@ pub enum TrustState {
     /// much as this build can honestly say.
     Unverified,
     /// **Not produced by this build.** Reserved for a device this library
-    /// has reason to believe in without a person having compared anything
-    /// -- one signed by its owner's cross-signing identity, which nothing
-    /// publishes or checks until cross-signing lands.
+    /// has reason to believe in without a person having compared anything:
+    /// one signed by its owner's cross-signing identity.
+    ///
+    /// **This library does see such devices today.** An earlier version of
+    /// this comment said the signature was something "nothing publishes or
+    /// checks until cross-signing lands", which was the same misreading
+    /// that made `SenderVerification`'s doc comment wrong in 0.1.0: peers
+    /// running mainstream clients publish that signature, and the decrypt
+    /// path already reads it, which is what
+    /// `SenderVerification::UnverifiedIdentity` reports.
+    ///
+    /// What keeps this value unreachable is the mapping below, not the
+    /// absence of the signature. [`device_statuses`] asks upstream's
+    /// `Device::is_verified`, which is `is_locally_trusted() ||
+    /// is_cross_signing_trusted()`: two inputs, one boolean, no middle
+    /// value to carry a "signed by its owner, owner unverified" answer. So
+    /// this stays unreachable **after** cross-signing lands as well, unless
+    /// a later milestone deliberately changes that mapping. Folding it is
+    /// defensible; folding it silently is not, which is why this paragraph
+    /// is here rather than a milestone name.
     ///
     /// Declared now rather than added later because the set is closed:
     /// widening a closed union is a breaking change for every consumer that
@@ -163,8 +180,14 @@ pub async fn device_statuses(user_id: &str) -> Result<Vec<DeviceStatus>, Machine
                     device_id: device.device_id().to_string(),
                     // `is_verified`, which is local trust OR a cross
                     // signature this machine can follow. Only the first can
-                    // be true today; asking the broader question means this
-                    // answer does not have to change when the second can.
+                    // be true today, and the reason is our own missing
+                    // identity rather than the sender's: upstream's
+                    // `is_cross_signing_trusted` needs our user-signing key
+                    // over the owner's master key, so it is `false` even for
+                    // a device its owner has genuinely signed. Asking the
+                    // broader question means this answer does not have to
+                    // change when the second can. See `TrustState::Recognized`
+                    // for what this two-valued mapping costs.
                     trust: if device.is_verified() {
                         TrustState::Verified
                     } else {

@@ -52,11 +52,17 @@ export type CryptoAlgorithm = 'megolm' | 'olm' | (string & {})
  *   build exposes no call that can set that state, so folding it here says
  *   exactly as much as this build can honestly say.
  * - `'recognized'` — **not produced by this build.** Reserved for a device
- *   believable without a person having compared anything, which needs
- *   cross-signing. Declared now because widening a closed union later
- *   breaks every consumer that switched on it exhaustively, and would do so
- *   precisely when a product had stopped expecting the shape to move. Write
- *   the branch; it will not run yet.
+ *   believable without a person having compared anything: one its owner
+ *   signed with their cross-signing identity. This build does see such
+ *   devices, and reports them at the event level as
+ *   `senderVerification.reason === 'unverified_identity'`. What keeps this
+ *   value unreachable is this call's own mapping, which asks a two-valued
+ *   question with no middle answer, so it stays unreachable after
+ *   cross-signing lands unless a later version changes that deliberately.
+ *   Declared now because widening a closed union later breaks every
+ *   consumer that switched on it exhaustively, and would do so precisely
+ *   when a product had stopped expecting the shape to move. Write the
+ *   branch; it will not run yet.
  * - `'verified'` — a person compared a short authentication string on this
  *   device and on the far one, both said it matched, and the flow
  *   completed. See {@link getDeviceStatuses}, including why your own device
@@ -191,21 +197,47 @@ export interface SyncDelta {
  * `state`, then on `reason`, and the compiler tells you when a later
  * version adds a case.
  *
- * ## Three of these cannot happen yet, and the ones that can
+ * ## Which of these this release produces, and why the line falls where it
+ * does
  *
- * `'verified'`, `'unverified_identity'` and `'verification_violation'` each
- * require the sending device to carry a signature from a cross-signing
- * identity its owner published. Nothing in this release publishes or
- * follows one, so **none of the three can occur**. Write the branches; they
- * will not run yet. They are declared now because the union is closed, and
- * widening a closed union later is a breaking change for every consumer
- * that switched on it exhaustively -- and because the alternative to a
- * complete type is not a smaller true one but a different false one: a
- * four-value type would say that four values is all this vocabulary has,
- * which is not true of what it models.
+ * The distinction is **whose** cross-signing identity a value depends on,
+ * and it is not the distinction you would guess.
  *
- * The three that do occur are `'unsigned_device'` (the ordinary case for
- * every peer), `'no_device'` in both its forms, and `'mismatched_sender'`.
+ * **`'unverified_identity'` is produced by this release.** It depends on
+ * the *sender's* identity, not on ours: the gate underneath asks only
+ * whether the sending device carries a signature from a self-signing key
+ * its own owner published, and this library is not consulted. So a peer
+ * whose client has cross-signing set up already produces it here, against a
+ * release that has none, and that is most peers. Handle this branch. It is
+ * not a rare state and it is not a future one.
+ *
+ * `'verified'` and `'verification_violation'` are the two that cannot
+ * occur, and both are blocked on **our** side. `'verified'` needs this
+ * library to hold a cross-signing identity and to have signed the sender's
+ * with it; `'verification_violation'` needs the sender's identity to have
+ * been verified by us once and to have changed since. Nothing in this
+ * release publishes such an identity, so neither can arrive however
+ * cross-signed the sender is. Write those two branches; they will not run
+ * yet. They are declared now because the union is closed, and widening a
+ * closed union later is a breaking change for every consumer that switched
+ * on it exhaustively, and because the alternative to a complete type is not
+ * a smaller true one but a different false one: a four-value type would say
+ * that four values is all this vocabulary has, which is not true of what it
+ * models.
+ *
+ * So four of the six occur: `'unverified_identity'`, `'unsigned_device'`
+ * (the ordinary case for a peer with no cross-signing identity of their
+ * own), `'no_device'` in both its forms, and `'mismatched_sender'`.
+ *
+ * ### This paragraph was wrong in 0.1.0
+ *
+ * It said all three of `'verified'`, `'unverified_identity'` and
+ * `'verification_violation'` were "NOT PRODUCED BY THIS RELEASE".
+ * `'unverified_identity'` always was produced. The claim survived review
+ * because no test in the repository had a cross-signed counterparty, so
+ * nothing could contradict it, and it sounded like the two true sentences
+ * standing next to it. If you read that sentence and skipped the branch,
+ * that branch is reachable and this is the correction.
  *
  * ## `'verified'` in particular
  *
@@ -228,19 +260,23 @@ export interface SyncDelta {
  */
 export type SenderVerification =
   // NOT PRODUCED BY THIS RELEASE. The event came from a device belonging to
-  // a user this library has verified -- the only state in which authenticity
-  // is guaranteed. Needs a published cross-signing master key; completing a
-  // comparison does not produce it. See the type's doc comment above.
+  // a user this library has verified, the only state in which authenticity
+  // is guaranteed. Needs a cross-signing identity of OUR OWN, signed over
+  // the sender's; completing a comparison does not produce it. See the
+  // type's doc comment above.
   | { state: 'verified' }
   // The sending device is known and carries no cross-signature. The ordinary
-  // case for every peer in this release, before and after a comparison alike.
+  // case for a peer whose client has no cross-signing identity, before and
+  // after a comparison alike.
   | { state: 'unverified'; reason: 'unsigned_device' }
-  // NOT PRODUCED BY THIS RELEASE. The device is cross-signed by its owner and
-  // that identity is unverified. Needs a published master key.
+  // PRODUCED BY THIS RELEASE. The device is cross-signed by its owner and
+  // that identity is one we have not verified. Needs a published master key
+  // from THE SENDER and nothing from us, so it arrives from any peer whose
+  // client has cross-signing set up. Handle this branch.
   | { state: 'unverified'; reason: 'unverified_identity' }
   // NOT PRODUCED BY THIS RELEASE. The device is cross-signed, that identity
-  // was verified once, and it is not the same identity now. Needs a published
-  // master key and a previous verification of it.
+  // was verified once, and it is not the same identity now. Needs a previous
+  // verification by us, which needs a cross-signing identity of our own.
   | { state: 'unverified'; reason: 'verification_violation' }
   // The claimed sender is not the owner of the session that encrypted the
   // event. An impersonation signal; decryption succeeded regardless.

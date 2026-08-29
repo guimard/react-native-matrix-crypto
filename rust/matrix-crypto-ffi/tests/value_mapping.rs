@@ -250,7 +250,7 @@ fn a_device_status_keeps_its_identifier_and_its_trust_together() {
 ///
 /// It is not an oversight and it is not laziness. The M3 design ruling on
 /// this type (spec section 7, question 3) binds the implementation to two
-/// things: document the three unreachable values at the type, and keep the
+/// things: document the unreachable values at the type, and keep the
 /// test suite free of any case that appears to produce `Verified`. A
 /// `From` test taking `SenderVerification::Verified` as a literal is such a
 /// case -- read out of context it says this library produces that value,
@@ -305,14 +305,29 @@ fn every_reachable_sender_verification_maps_to_the_matching_ffi_variant() {
          folding it is the failure the design ruling on this type names"
     );
 
-    // The two declared-but-unreachable levels that are not `Verified`. No
-    // fixture hazard here: neither is a claim of authenticity, and both
-    // become reachable the moment cross-signing lands, at which point this
-    // is the assertion that says the wiring was already right.
-    assert!(matches!(
-        FfiSenderVerification::from(SenderVerification::UnverifiedIdentity),
-        FfiSenderVerification::UnverifiedIdentity
-    ));
+    // `UnverifiedIdentity` **is** produced by this build, and this file said
+    // otherwise until 0.1.0. It depends on the sender's cross-signing
+    // identity rather than on ours, so any peer whose client has
+    // cross-signing set up produces it here.
+    // `matrix-crypto-core/tests/cross_signed_peer.rs` decrypts an event from
+    // one and asserts the value; this assertion is the boundary half of the
+    // same claim, and it belongs in the reachable list for that reason.
+    assert!(
+        matches!(
+            FfiSenderVerification::from(SenderVerification::UnverifiedIdentity),
+            FfiSenderVerification::UnverifiedIdentity
+        ),
+        "a device its owner cross-signed, whose owner we have not verified, \
+         must not arrive as one of its neighbours: `UnsignedDevice` would \
+         understate what is known about the sender and `Verified` would \
+         overstate it"
+    );
+
+    // `VerificationViolation` genuinely is unreachable here, and unlike
+    // `Verified` there is no fixture hazard in naming it: it is not a claim
+    // of authenticity. It needs the sender's identity to have been verified
+    // by us once, which needs a cross-signing identity of our own, which
+    // this build has no way to create.
     assert!(matches!(
         FfiSenderVerification::from(SenderVerification::VerificationViolation),
         FfiSenderVerification::VerificationViolation
@@ -336,9 +351,15 @@ fn nothing_this_build_produces_crosses_as_verified() {
         SenderVerification::NoDeviceMissing,
         SenderVerification::NoDeviceInsecureSource,
         SenderVerification::MismatchedSender,
-        // The two unreachable-until-cross-signing levels are here too. If
-        // one of them ever starts arriving, it must arrive as itself.
+        // `UnverifiedIdentity` is produced by this build, so it is a live
+        // entry rather than a precaution: a cross-signed device whose owner
+        // we have not verified crossing as `Verified` is exactly the
+        // sentence this test exists to forbid, and it is the value most
+        // likely to be folded into `Verified` by someone reading
+        // "cross-signed" as "trusted".
         SenderVerification::UnverifiedIdentity,
+        // Unreachable in this build, and here so that it must arrive as
+        // itself on the day it is not.
         SenderVerification::VerificationViolation,
     ] {
         assert!(
