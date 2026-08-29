@@ -35,7 +35,7 @@ import { DEMO_DEVICE_ID, DEMO_SCOPE, DEMO_USER_ID, demoMachineConfig } from './c
  * in App.tsx and both call `runProbe`; before this, the shared global
  * channel meant one's probe call showed up in the other's check too.
  *
- * THREE PROBE LINES, AND WHY THEY ARE HERE RATHER THAN IN THE SUITE
+ * FOUR PROBE LINES, AND WHY THEY ARE HERE RATHER THAN IN THE SUITE
  *
  * `interop/suite.ts`'s `signal` check answers "did the callback arrive at
  * all", bounded by `SIGNAL_WAIT_MS`. That constant is a measured number, and
@@ -64,6 +64,20 @@ import { DEMO_DEVICE_ID, DEMO_SCOPE, DEMO_USER_ID, demoMachineConfig } from './c
  *   that mistake would have produced. This line is how a reader of a probe
  *   log decides which emission path produced the numbers above it, instead
  *   of trusting whoever ran the build.
+ * - `PROBE_SIGNAL2_MS n` -- the same measurement again, for a second signal
+ *   in the same process. This one exists to settle a question the first
+ *   three cannot: whether a difference between two emission implementations
+ *   is a one-off start-up cost or a cost the process keeps paying.
+ *
+ *   `PROBE_SIGNAL_MS` always times the *first* signal of a cold process,
+ *   because the suite issues exactly one observed call and every measured
+ *   launch is its own fresh install. So the first signal carries whatever
+ *   the emission path builds on first use -- for the blocking pool, this
+ *   library's entire tokio runtime -- and no sample anywhere could tell that
+ *   apart from a per-signal cost. B2's measurement offered a start-up
+ *   explanation it had no way to test; this is the line that tests it. If
+ *   the explanation is right, this number is small on both arms; if the two
+ *   arms still differ here, the cost is not start-up.
  *
  * They are not checks: nothing passes or fails on them, the summary's
  * denominator does not move, and `scripts/run-probe-on-emulator.sh` prints
@@ -71,7 +85,7 @@ import { DEMO_DEVICE_ID, DEMO_SCOPE, DEMO_USER_ID, demoMachineConfig } from './c
  * suite stays free of them deliberately -- it is the shipped contract every
  * binding must satisfy, and a latency number is a measurement of one
  * binding on one machine, not a property a binding must have. The example
- * app is not the bridge and may log; these carry two integers and a build
+ * app is not the bridge and may log; these carry three integers and a build
  * identifier -- no user identifier, no payload and no key material.
  */
 function jsiBinding(): BridgeBinding {
@@ -129,6 +143,35 @@ function jsiCryptoBinding(): CryptoBinding {
       encryptEvent(asCryptoScopeId(scope), eventType, payload),
     decryptEvent: (scope, rawEvent) => decryptEvent(asCryptoScopeId(scope), rawEvent),
     errorKind: (e) => (isCryptoError(e) ? e.kind : undefined),
+  }
+}
+
+/**
+ * Times a second observed signal in this same process, and reports it as
+ * `PROBE_SIGNAL2_MS`.
+ *
+ * Not a check: it adds nothing to `PROBE_SUMMARY`'s numerator or denominator,
+ * and a failure here is swallowed deliberately -- an instrument that can turn
+ * the probe red is worse than no instrument, and `scripts/run-probe-on-emulator.sh`
+ * gates on the summary line.
+ *
+ * Placed last, after both suites, for two reasons. It must not perturb what
+ * the suites measure, and by the time it runs the process is as warm as this
+ * app ever gets -- runtime built, pool threads created, store open. That is
+ * the comparison worth having against `PROBE_SIGNAL_MS`, which is always the
+ * first signal of a cold process.
+ *
+ * The observer is a fresh inline closure, so this call's signal is its own
+ * and reaches nothing else.
+ */
+async function timeASecondSignal(): Promise<void> {
+  try {
+    const calledAt = Date.now()
+    await runProbe('second', new Uint8Array([1]), () => {
+      console.log(`PROBE_SIGNAL2_MS ${Date.now() - calledAt}`)
+    })
+  } catch {
+    // Deliberately silent. See above: this is an instrument, not a check.
   }
 }
 
@@ -225,6 +268,7 @@ export function ProbeHarness({ storeDir }: { storeDir: string }) {
           })),
         )
         results.push(await realCryptoCheck())
+        await timeASecondSignal()
       } catch (e) {
         // Neither suite is supposed to be able to reach this: both report
         // failing checks instead of throwing. If one ever does, the run

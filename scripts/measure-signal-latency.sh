@@ -231,9 +231,12 @@ launch_once() {
   # than immediately.
   sleep "$LATE_GRACE_SECONDS"
 
-  local log sig prom build
+  local log sig sig2 prom build
   log=$(probe_lines)
   sig=$(printf '%s\n' "$log" | grep -E '^PROBE_SIGNAL_MS ' | head -1 | awk '{print $2}')
+  # The second signal of the same process, which is what tells a one-off
+  # start-up cost apart from a per-signal one. See ProbeHarness.tsx.
+  sig2=$(printf '%s\n' "$log" | grep -E '^PROBE_SIGNAL2_MS ' | head -1 | awk '{print $2}')
   prom=$(printf '%s\n' "$log" | grep -E '^PROBE_PROMISE_MS ' | head -1 | awk '{print $2}')
   build=$(printf '%s\n' "$log" | grep -E '^PROBE_EMIT_BUILD ' | head -1 | awk '{print $2}')
 
@@ -244,8 +247,9 @@ launch_once() {
       ProbeHarness.tsx grew that line will do this."
   fi
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$label" "$round" "$LOAD" "${sig:-NONE}" "${prom:-NONE}" "$build" "${summary:-NOSUMMARY}" \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$label" "$round" "$LOAD" "${sig:-NONE}" "${sig2:-NONE}" "${prom:-NONE}" \
+    "$build" "${summary:-NOSUMMARY}" \
     | tee -a "$OUT"
 
   adb shell am force-stop "$PACKAGE" >/dev/null 2>&1 || true
