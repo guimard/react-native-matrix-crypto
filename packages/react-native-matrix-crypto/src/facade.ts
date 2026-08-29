@@ -413,7 +413,16 @@ export async function decryptEvent(scope: CryptoScopeId, rawEvent: unknown): Pro
       // from decryption having succeeded. Those are different questions,
       // and `mismatched_sender` is the case that proves it: the ciphertext
       // decrypts perfectly and the sender is still not who the event says.
-      senderVerification: senderVerificationOf(senderVerification),
+      //
+      // The absent case is handled here rather than inside
+      // `senderVerificationOf`, which is not a style preference: a mapping
+      // whose return type admits `undefined` is not exhaustive by compile
+      // error, and that exhaustiveness is the only thing covering the one
+      // arm no test may exercise. See the function's own doc comment.
+      // Native only omits this on the encrypt path, which does not reach
+      // here, so in practice this reads `Some` every time.
+      senderVerification:
+        senderVerification === undefined ? undefined : senderVerificationOf(senderVerification),
     }
   } catch (e) {
     throw toCryptoError(e)
@@ -1023,24 +1032,35 @@ function verificationStageOf(stage: NativeVerificationStage): VerificationStage 
 /**
  * See {@link verificationStageOf}: exhaustive by compile error.
  *
- * `undefined` in, `undefined` out. That is the encrypt direction, where
- * there is no verification state to report and inventing one would be a
- * claim about an event nobody decrypted; see
- * {@link EventEnvelope.senderVerification}.
+ * **The return type is what makes that true, and an earlier version of this
+ * function did not have it.** It took `NativeSenderVerification | undefined`
+ * and returned `SenderVerification | undefined`, to fold the encrypt
+ * direction's absent value into the same call. That looked tidier and
+ * silently destroyed the guarantee this comment claims: with `undefined` in
+ * the return type, a missing `case` falls off the end, implicitly returns
+ * `undefined`, and compiles. The `Verified` arm was deleted outright in
+ * review and `tsc --noEmit` exited 0 with all 108 tests still green.
+ * `tsconfig.json` sets `strict` but not `noImplicitReturns`, so nothing else
+ * caught it either.
  *
- * **No test in this repository feeds this function `Verified`.** The M3
- * design ruling on this type requires the suite to hold no case that
- * appears to produce it, because a fixture faking it teaches exactly the
- * belief the ruling exists to prevent -- and this release cannot produce
- * it. The arm below is still written, and is still checked, from the other
- * side: `facade.test.ts` asserts that none of the values this release *can*
- * produce comes out as `'verified'`, which is the direction the damage runs
- * in.
+ * So the absent case is handled at the call site instead, and this function
+ * takes and returns non-optional values -- the same shape
+ * {@link verificationStageOf} and {@link trustStateOf} already have, for the
+ * same reason. Falling off the end is now
+ * `TS2366: Function lacks ending return statement and return type does not
+ * include 'undefined'`.
+ *
+ * That mattered more than a tidier signature because of what this arm is.
+ * **No test in this repository feeds this function `Verified`**: the M3
+ * design ruling requires the suite to hold no case that appears to produce
+ * it, since a fixture faking it teaches exactly the belief the ruling exists
+ * to prevent, and this release cannot produce it anyway. The compiler is
+ * therefore the *only* thing standing behind that arm, which is precisely
+ * why it had to actually be standing there. The other direction -- something
+ * else arriving *as* `'verified'`, which is the one that hurts -- is covered
+ * by a test: see `facade.test.ts`.
  */
-function senderVerificationOf(
-  verification: NativeSenderVerification | undefined,
-): SenderVerification | undefined {
-  if (verification === undefined) return undefined
+function senderVerificationOf(verification: NativeSenderVerification): SenderVerification {
   switch (verification) {
     case NativeSenderVerification.Verified:
       return { state: 'verified' }

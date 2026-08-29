@@ -73,14 +73,21 @@ use crate::machine::{with_machine, MachineError};
 /// encodes is meant to be revisited, not optimised into something a later
 /// reader has to track down through an extra indirection.
 fn decryption_settings() -> DecryptionSettings {
-    // M2: verification lands in M3; revisit this with it.
+    // This said "verification lands in M3; revisit this with it." M3 landed
+    // verification, this was revisited, and the answer is that it must not
+    // move yet -- recorded here rather than left as an invitation to make
+    // exactly the wrong change next.
     //
-    // No device is verified anywhere in this milestone, so
-    // `TrustRequirement::CrossSigned` (or `CrossSignedOrLegacy`) would reject
-    // every event M2 needs to process. `Untrusted` is upstream's own most
-    // permissive option, explicitly documented as "not recommended" -- taken
-    // here as a deliberate, named placeholder for a decision M3 must make
-    // with real cross-signing in place, not left as an unnoticed default.
+    // `TrustRequirement` has three tiers and none of them is local trust
+    // (`matrix-sdk-crypto-0.18.0/src/lib.rs`: `Untrusted`,
+    // `CrossSignedOrLegacy`, `CrossSigned`). A short-string comparison sets
+    // local trust, so tightening this to either cross-signed tier would
+    // reject essentially every event in a deployment that has verified
+    // devices by comparison and published no cross-signing identity --
+    // which is every deployment this build supports. `Untrusted` is
+    // upstream's own most permissive option, explicitly documented as "not
+    // recommended", and it stays as a deliberate, named placeholder for a
+    // decision that becomes makeable when cross-signing does, not before.
     DecryptionSettings {
         sender_device_trust_requirement: TrustRequirement::Untrusted,
     }
@@ -210,10 +217,14 @@ pub enum SessionError {
     /// (fixable by the user verifying the device). The second reason is
     /// unreachable in M2, which always decrypts with the most permissive
     /// trust requirement -- see `decryption_settings()` -- so only the
-    /// unfixable case is reachable today. M3, which makes the trust
-    /// requirement configurable, is expected to give these two reasons
-    /// separate kinds; until then, do not assume this kind is always
-    /// fixable by verification.
+    /// unfixable case is reachable today, and still is: this said M3 would
+    /// make the trust requirement configurable and split the two reasons
+    /// apart, and M3 did neither. It could not. `TrustRequirement` has no
+    /// local-trust tier, so the requirement cannot be tightened before
+    /// cross-signing without refusing nearly every event -- see
+    /// `decryption_settings()` above. Splitting these two reasons therefore
+    /// waits on the same thing. Until then, do not assume this kind is
+    /// always fixable by verification.
     #[error("the device that encrypted this event is not trusted")]
     UnknownDevice,
     /// [`decrypt_event`] ran the cryptographic operation and it did not
@@ -586,13 +597,26 @@ pub struct Envelope {
     ///
     /// The same shared-return-type caveat `algorithm` and `sender` above
     /// each carry, in its strongest form: those two hold a real, if
-    /// differently-sourced, value on both paths, and this one has no
-    /// meaning at all on the encrypt path. There is no verification state
-    /// of an event this device has just encrypted for itself. `None` says
-    /// that rather than inventing a value -- and the value that would be
-    /// tempting to invent, `Verified` because this process holds its own
-    /// keys, is a statement about a *device*, and is the one word this
-    /// build cannot honestly put on a decrypted event.
+    /// differently-sourced, value on both paths, and this one is
+    /// **discarded** on the encrypt path rather than absent from it.
+    ///
+    /// Being exact about that, because this whole field is about which
+    /// values exist and where. `OlmMachine::encrypt_room_event_raw` -- the
+    /// call [`encrypt_event`] makes -- returns a `RawEncryptionResult`
+    /// carrying an `EncryptionInfo`, and `own_encryption_info` fills its
+    /// `verification_state` with `VerificationState::Verified`
+    /// (`matrix-sdk-crypto-0.18.0/src/machine/mod.rs:1111-1142`). So a
+    /// value does exist there, this crate holds it for the length of one
+    /// closure, and drops it.
+    ///
+    /// Dropping it is the point. It is upstream reporting `Verified` about
+    /// *this device's own keys*, which is a statement about a device and is
+    /// true of a machine that has never verified anything. Forwarding it
+    /// would put the one word this build cannot honestly attach to a
+    /// decrypted event onto the same field a decrypted event reads, where a
+    /// product switching on `sender_verification` would meet it. `None`
+    /// says "this question was not asked of this event", which is the
+    /// honest answer for something this device just encrypted for itself.
     ///
     /// # It is a snapshot, and upstream says so
     ///
@@ -600,7 +624,7 @@ pub struct Envelope {
     /// time of decryption, which "may change in the future if a device gets
     /// verified or deleted", and tells callers who persist it to mark it
     /// dirty when a device change is received down the sync
-    /// (`matrix-sdk-common-0.18.0/src/deserialized_responses.rs:344-350`).
+    /// (`matrix-sdk-common-0.18.0/src/deserialized_responses.rs:345-351`).
     /// That obligation passes straight through to whoever holds this
     /// value. The trigger is already visible from outside: a
     /// `changed_devices` list arrives through [`receive_sync_changes`].
@@ -696,9 +720,13 @@ pub async fn encrypt_event(
                         event_type,
                         ciphertext,
                         sender: machine.user_id().as_str().to_string(),
-                        // Absent, not defaulted: see the field's own doc
-                        // comment. There is no verification state of an
-                        // event this device has just encrypted.
+                        // Dropped, not defaulted and not absent upstream:
+                        // `encrypt_room_event_raw` does return an
+                        // `EncryptionInfo` here and its `verification_state`
+                        // is `Verified`, about this device's own keys. That
+                        // is a statement about a device, so it is not
+                        // forwarded onto a field a decrypted event reads.
+                        // See the field's own doc comment.
                         sender_verification: None,
                     }
                 })

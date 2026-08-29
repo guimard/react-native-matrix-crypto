@@ -680,9 +680,17 @@ describe('decryptEvent wiring to the native layer', () => {
    * product as an authentic one. This asserts that over every native value
    * this release can produce, and never constructs a `Verified` to do it.
    *
-   * The remaining arm is covered by the compiler: `senderVerificationOf`
-   * is a `switch` with no `default` over the generated enum, so it is total
-   * by construction and a value added to the Rust source is a build error.
+   * The remaining arm is covered by the compiler, and that is a claim this
+   * file previously made while it was false. `senderVerificationOf` returned
+   * `SenderVerification | undefined`, so a missing `case` fell off the end
+   * and compiled; review deleted the `Verified` arm and `tsc` exited 0 with
+   * every test here green. The function now takes and returns non-optional
+   * values, with the absent case handled at its call site, so falling off
+   * the end is `TS2366` -- verified by deleting an arm and reading the
+   * error, not assumed. Two other checks stand behind the Rust half: the
+   * core's own `match` and the FFI `From` are exhaustive over upstream enums
+   * that are not `#[non_exhaustive]`, so an upstream addition fails the Rust
+   * build before it can reach this file.
    */
   it('never reports verified for any native value this release can produce', async () => {
     const producible = [

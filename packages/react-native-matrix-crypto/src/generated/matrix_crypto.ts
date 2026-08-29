@@ -1275,11 +1275,29 @@ const FfiConverterTypeDeviceStatus = (() => {
  * the core's `SenderVerification`.
  *
  * The append-only ordinal rule `VerificationStage` above states in full
- * applies to this enum too. Its consequence here is the sharpest in the
- * file: the variants are ordered with `Verified` first, so a renumbering
- * shifts every answer one place *towards* it, and the worst misdecoding
- * available is an unsigned device or a mismatched sender read as an
- * authentic one. Append; never insert.
+ * applies to this enum too. **Do not borrow `TrustState`'s wording for it.**
+ * That enum is ordered least-trusted-*first*, so an insertion shifts every
+ * answer one place towards `Verified`; this one is ordered
+ * most-authentic-first, so the direction inverts and the sentence becomes
+ * false. It was borrowed anyway when this enum was written, and review
+ * caught it.
+ *
+ * Worked through, with a variant inserted at position 1: new bindings send
+ * `UnsignedDevice` as 5, and a stale binding reads 5 as
+ * `NoDeviceMissing` -- one place *away* from `Verified`, which is
+ * the fail-safe direction. Every shifted value moves that way, because
+ * `Verified` holds the lowest ordinal and nothing can shift towards it.
+ *
+ * **The hazard that does follow from `Verified` being first is the
+ * inserted variant itself: it takes ordinal 1, and every stale binding
+ * decodes it as `Verified`.** An unknown state -- whatever a later
+ * milestone adds -- would be presented to a product as the one value that
+ * guarantees authenticity, which is the worst sentence this library can
+ * say and the reason this enum is called out separately at all. Appending
+ * costs an unrecognised ordinal instead: the generated converter's
+ * `default:` arm throws `UnexpectedEnumCase`, which is a clean failure.
+ * Append; never insert; and never reorder, which would move a value *to*
+ * position 1 by a different route.
  *
  * The order itself is not this crate's choice and is not the core's
  * either -- both take it from upstream's own `VerificationState` and

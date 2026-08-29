@@ -202,11 +202,27 @@ export interface SyncDelta {
  * it as an impersonation signal, not as a weaker `'no_device'`.
  */
 export type SenderVerification =
+  // NOT PRODUCED BY THIS RELEASE. The event came from a device belonging to
+  // a user this library has verified -- the only state in which authenticity
+  // is guaranteed. Needs a published cross-signing master key; completing a
+  // comparison does not produce it. See the type's doc comment above.
   | { state: 'verified' }
+  // The sending device is known and carries no cross-signature. The ordinary
+  // case for every peer in this release, before and after a comparison alike.
   | { state: 'unverified'; reason: 'unsigned_device' }
+  // NOT PRODUCED BY THIS RELEASE. The device is cross-signed by its owner and
+  // that identity is unverified. Needs a published master key.
   | { state: 'unverified'; reason: 'unverified_identity' }
+  // NOT PRODUCED BY THIS RELEASE. The device is cross-signed, that identity
+  // was verified once, and it is not the same identity now. Needs a published
+  // master key and a previous verification of it.
   | { state: 'unverified'; reason: 'verification_violation' }
+  // The claimed sender is not the owner of the session that encrypted the
+  // event. An impersonation signal; decryption succeeded regardless.
   | { state: 'unverified'; reason: 'mismatched_sender' }
+  // No device could be linked to the event: `'missing'` because none is in
+  // the store, `'insecure_source'` because the key came from an imported
+  // session, a legacy backup or an unsafe forward.
   | { state: 'unverified'; reason: 'no_device'; problem: 'missing' | 'insecure_source' }
 
 /** Typed envelope for an encrypted or decrypted event. */
@@ -271,13 +287,14 @@ export interface EventEnvelope {
    * **Present on every successful `decryptEvent`. Absent from
    * `encryptEvent`.** The same one-type-two-directions caveat `algorithm`
    * and `sender` above each carry, in its strongest form: those two hold a
-   * real value in both directions, and this one has no meaning at all on
-   * the encrypt path. There is no verification state of an event this
-   * device just encrypted for itself, so the field is absent rather than
-   * carrying an invented value -- and the value that would be tempting to
-   * invent, `'verified'` because this device holds its own keys, is a
-   * statement about a *device* and is the one word this release cannot
-   * honestly put on a decrypted event.
+   * real value in both directions, and this one is *discarded* on the
+   * encrypt path rather than missing from it. The layer underneath does
+   * receive a value when it encrypts, and that value is `'verified'` --
+   * upstream reporting on this device's own keys, which is a statement
+   * about a *device*, true of a machine that has never verified anything,
+   * and the one word this release cannot honestly attach to an event. It is
+   * dropped rather than forwarded onto the field a decrypted event reads.
+   * Absent here means "this question was not asked of this event".
    *
    * **It is a snapshot, and it can go stale.** Upstream defines it as the
    * state of the sending device at the time of decryption: it "may change
