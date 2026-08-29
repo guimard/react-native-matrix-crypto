@@ -525,10 +525,35 @@ fn two_parties_complete_a_comparison() {
             flow_stage(&flow).await.expect("the flow exists"),
             FlowStage::Started
         );
+
+        // Asked again -- a double tap, or a retry after some unrelated
+        // failure. Upstream would build a second comparison under the same
+        // identifier and its cache would then cancel both, destroying the
+        // flow while this call returned success. Refused instead, and
+        // refused without side effects: everything below still works.
+        assert_eq!(
+            begin_comparison(&flow)
+                .await
+                .expect_err("a comparison already under way cannot be started again"),
+            MachineError::WrongStage
+        );
+        assert_eq!(
+            flow_stage(&flow).await.expect("the flow still exists"),
+            FlowStage::Started
+        );
+
         let crossed = pump_to_bare(&bob, bob_user, bob_device).await;
         assert!(
             crossed.contains(&"m.key.verification.start".to_string()),
             "the start must reach the counterparty through the pump: {crossed:?}"
+        );
+        assert_eq!(
+            crossed
+                .iter()
+                .filter(|kind| *kind == "m.key.verification.start")
+                .count(),
+            1,
+            "the refused second call must not have queued a second start: {crossed:?}"
         );
 
         let bob_sas = bare_comparison(&bob, &flow);
@@ -745,11 +770,15 @@ fn a_disagreement_refuses() {
         );
 
         // ---- The two people are not looking at the same string ----------
-        // What the library's user reports having been read out to them is
-        // not what the library's own screen shows: one digit differs. That
-        // is real data, compared with a real `!=`, not a flag this test can
-        // flip -- which is the whole difference between proving a refusal
-        // and asserting one.
+        // What the library's user reports having been read out to them
+        // differs from what the library's own screen shows by one digit.
+        // The construction is deliberate and so is what it is *not*: this
+        // stands in for a person, so the difference is put there rather
+        // than discovered, and the branch that used to be written around it
+        // was a tautology dressed as a decision. What carries the weight of
+        // this test is everything after the refusal -- that it reaches the
+        // counterparty, that the counterparty observes it, and that neither
+        // side ends up having verified anything.
         let heard_from_the_other_side = (
             material.decimals.0,
             material.decimals.1,
@@ -757,18 +786,13 @@ fn a_disagreement_refuses() {
         );
         assert_ne!(
             heard_from_the_other_side, material.decimals,
-            "this test is worthless unless the two strings genuinely differ"
+            "the string this test puts in the user's mouth must differ from the \
+             one on the library's own screen, or there is nothing to refuse"
         );
 
-        if heard_from_the_other_side == material.decimals {
-            confirm_flow(&flow)
-                .await
-                .expect("matching strings are confirmed");
-        } else {
-            cancel_flow(&flow)
-                .await
-                .expect("differing strings are refused");
-        }
+        cancel_flow(&flow)
+            .await
+            .expect("a string that does not match what the user sees is refused");
 
         let crossed = pump_to_bare(&bob, bob_user, bob_device).await;
         assert!(

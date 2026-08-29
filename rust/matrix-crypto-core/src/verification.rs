@@ -194,6 +194,19 @@ struct FlowRecord {
 /// observable state -- that is the property this whole module rests on.
 static FLOWS: StdMutex<BTreeMap<String, FlowRecord>> = StdMutex::new(BTreeMap::new());
 
+/// Empties the registry, so a test that registered a flow does not leave a
+/// handle -- and through it an `Arc` on the crypto store -- alive past the
+/// machine it belongs to. Called from `machine::reset_for_test`, not left
+/// for each test to remember, because forgetting it is a process abort
+/// rather than a failed assertion (see that function's own comment).
+#[cfg(test)]
+pub(crate) fn reset_flows_for_test() {
+    FLOWS
+        .lock()
+        .expect("verification registry poisoned")
+        .clear();
+}
+
 /// Errors must not carry an identifier or key material, so an upstream
 /// store failure reports its shape and nothing else -- the same rule, and
 /// the same fixed string, as `machine.rs`'s `store_error_detail`.
@@ -267,6 +280,19 @@ fn stage_of_comparison(comparison: &Sas) -> FlowStage {
     }
 }
 
+/// The stage a set of already-fetched handles describes.
+///
+/// Separate from [`stage_of`], which takes the registry's own record and can
+/// fill its comparison cache in passing; this one reads handles that have
+/// already been cloned out, which is what every public call below holds.
+fn stage_from(handles: &Handles) -> FlowStage {
+    let mut record = FlowRecord {
+        request: handles.request.clone(),
+        comparison: handles.comparison.clone(),
+    };
+    stage_of(&mut record)
+}
+
 fn is_finished(stage: FlowStage) -> bool {
     matches!(stage, FlowStage::Done | FlowStage::Cancelled)
 }
@@ -307,12 +333,13 @@ fn register(flow_id: &str, request: VerificationRequest) -> Handles {
 
 /// Records a comparison handle against a flow already in the registry.
 ///
-/// Only ever called with the handle upstream just produced for that flow,
-/// and only for a flow this process registered, so a miss here means the
-/// registry released the flow between two calls about it -- which the
-/// eviction rule cannot do, since it only runs while registering. Ignored
-/// rather than reported: there is no caller mistake to report, and the next
-/// call would recover the same handle from the request anyway.
+/// Only ever called with the handle upstream just produced for that flow.
+/// A miss means the registry released the flow between this call and the
+/// one that fetched its handles, which another thread registering a flow in
+/// that window can cause -- registering is what sweeps, and nothing holds a
+/// lock across the two. Ignored rather than reported: there is no caller
+/// mistake to report, the cache is an optimisation, and the next call
+/// recovers the same handle from the request's own state.
 fn remember_comparison(flow_id: &str, comparison: Sas) {
     let mut flows = FLOWS.lock().expect("verification registry poisoned");
     if let Some(record) = flows.get_mut(flow_id) {
@@ -446,12 +473,34 @@ pub async fn accept_flow(flow: &FlowId) -> Result<(), MachineError> {
 
 /// Starts the comparison itself, once both sides are ready.
 ///
-/// Either side may call this. If both do, upstream settles which one's
-/// comparison survives; the loser's is dropped and the flow carries on, so
-/// this is safe to call from a product that cannot tell who got there
-/// first.
+/// Either side may call this, and only while the flow is at
+/// [`FlowStage::Ready`]. Two sides calling it at the same moment is safe --
+/// each has a ready flow when it calls, upstream settles which comparison
+/// survives, and the loser's is dropped without disturbing the flow. What
+/// is not safe, and is refused here, is the *same* side calling twice: by
+/// the second call the flow is no longer ready, and the reason that has to
+/// be an error rather than a second attempt is below.
 pub async fn begin_comparison(flow: &FlowId) -> Result<(), MachineError> {
     let handles = handles(flow).await?;
+
+    // Rejected before upstream is asked, because upstream does not reject
+    // it. `start_sas` on a flow that is already a comparison builds a
+    // *second* one under the same identifier and hands it to a cache whose
+    // documented behaviour is to cancel every duplicate it finds, "including
+    // the newly inserted one" -- so both are cancelled, the flow is
+    // destroyed, and this function would return `Ok(())` having queued the
+    // opening message of a comparison that no longer exists. A double tap on
+    // a button, or a retry after an unrelated failure, is enough. The doc
+    // comment above is about two *sides* racing, which upstream does handle;
+    // this is one side calling twice, which it does not. A side whose peer
+    // got there first is refused for the same reason and with the same
+    // error: there is nothing left for it to start, and the comparison it
+    // wanted is already under way.
+    let stage = stage_from(&handles);
+    if stage != FlowStage::Ready {
+        return Err(MachineError::WrongStage);
+    }
+
     let flow_id = flow.0.clone();
     let request = handles.request;
 
@@ -473,11 +522,7 @@ pub async fn begin_comparison(flow: &FlowId) -> Result<(), MachineError> {
 /// How far along the flow is.
 pub async fn flow_stage(flow: &FlowId) -> Result<FlowStage, MachineError> {
     let handles = handles(flow).await?;
-    let mut record = FlowRecord {
-        request: handles.request,
-        comparison: handles.comparison,
-    };
-    Ok(stage_of(&mut record))
+    Ok(stage_from(&handles))
 }
 
 /// The short authentication string, once there is one.

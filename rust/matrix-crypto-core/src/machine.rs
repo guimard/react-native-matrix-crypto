@@ -346,6 +346,16 @@ pub(crate) fn reset_for_test() {
     if let Some(held) = previous {
         futures::executor::block_on(in_runtime(async move { drop(held) }));
     }
+
+    // The verification registry is cleared with the machine, not left for
+    // each test to remember. Its entries hold upstream verification handles,
+    // which hold an `Arc` on the very store the block above exists to drop
+    // on a runtime: a registry entry surviving this call keeps that store
+    // alive and moves the SIGABRT described above to wherever the entry is
+    // finally dropped instead. `session`'s request registry needs no such
+    // treatment -- it holds request bodies, not store handles -- which is
+    // why only this one is reset from here.
+    crate::verification::reset_flows_for_test();
 }
 
 /// Serializes this module's and `identity`'s tests against each other.
