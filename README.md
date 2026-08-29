@@ -186,11 +186,10 @@ out three kinds that describe a standing need rather than one message, `keys_upl
 of those kinds retires the older id: `markRequestSent` then rejects it with
 `unknown_request`. That is deliberate, because the machine mints a new id for the same
 need each time and forgets the old one, but it means two pumps racing, or a pump on a
-timer alongside a pump after a write, will fail on ids you are legitimately holding.
-If you do see
-`unknown_request` for an id from an earlier batch, discard that response and pump again
-rather than retrying it; nothing is lost, because the need was re-derived rather than
-dropped. `takeOutgoingRequests`' own doc comment carries the full rule.
+timer alongside a pump after a write, will fail on ids you are legitimately holding. If
+you do see `unknown_request` for an id from an earlier batch, discard that response and
+pump again rather than retrying it; nothing is lost, because the need was re-derived
+rather than dropped. `takeOutgoingRequests`' own doc comment carries the full rule.
 
 **Send the requests within one batch in the order you were given them**, one at a time:
 each has to reach your homeserver before you send the next. *Marking* them is a different
@@ -198,15 +197,16 @@ matter and is not ordered at all -- `markRequestSent` is a lookup by id, so you 
 them in whatever order the responses come back, and you need not wait for one to be marked
 before sending the next.
 
-Up to and including `0.1.0-rc.2` this paragraph said the opposite: that sending and marking
-within one batch could both be concurrent. That was true of every request the library could
-then produce, and it stopped being true when device verification arrived. A verification
-ends with a confirmation followed by an acknowledgement, and the other device **silently
-discards** an acknowledgement that reaches it before the confirmation it acknowledges: it
-then waits for one that has already been sent, while your side completes and records the
-other device as verified. Neither side is told. The library orders the batch it hands you
-correctly, across both of the places those requests come from, but it never sees your
-requests leave, so preserving that order is yours to do.
+Up to and including `0.1.0-rc.2` this section said the opposite: that sending and marking
+within one batch could both be concurrent. That was true of every request the library
+could then produce, and it stopped being true when device verification arrived. A
+verification ends with a confirmation followed by an acknowledgement, and the other
+device **silently discards** an acknowledgement that reaches it before the
+confirmation it acknowledges: it then waits for one that has already been sent, while
+your side completes and records the other device as verified. Neither side is told. The
+library orders the batch it hands you correctly, across both of the places those requests
+come from, but it never sees your requests leave, so preserving that order is yours to
+do.
 
 Once a key has travelled, encryption and decryption are ordinary:
 
