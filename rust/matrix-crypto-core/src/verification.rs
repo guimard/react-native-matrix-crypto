@@ -196,15 +196,20 @@ static FLOWS: StdMutex<BTreeMap<String, FlowRecord>> = StdMutex::new(BTreeMap::n
 
 /// Empties the registry, so a test that registered a flow does not leave a
 /// handle -- and through it an `Arc` on the crypto store -- alive past the
-/// machine it belongs to. Called from `machine::reset_for_test`, not left
-/// for each test to remember, because forgetting it is a process abort
-/// rather than a failed assertion (see that function's own comment).
+/// machine it belongs to. Called from `machine::reset_for_test`, and called
+/// there *before* the store is dropped, for the reason that function's own
+/// comment gives.
 #[cfg(test)]
 pub(crate) fn reset_flows_for_test() {
     FLOWS
         .lock()
         .expect("verification registry poisoned")
         .clear();
+}
+
+#[cfg(test)]
+fn flow_count() -> usize {
+    FLOWS.lock().expect("verification registry poisoned").len()
 }
 
 /// Errors must not carry an identifier or key material, so an upstream
@@ -662,6 +667,125 @@ mod tests {
         assert!(
             !one.contains('\u{1f436}') && !one.contains("Dog"),
             "one symbol is a seventh of the answer and must not be printable: {one}"
+        );
+    }
+
+    const OTHER_USER: &str = "@other:example.org";
+    const OTHER_DEVICE: &str = "OTHERDEVICE";
+
+    /// Teaches the live machine about one device of another user, so a flow
+    /// can be started against it.
+    ///
+    /// Built the same way `session.rs`'s own tests build one: a bare
+    /// upstream machine publishes real, self-signed device keys, and those
+    /// keys come back through this crate's own pump as the response to a
+    /// device query. Fabricated keys would be rejected, and no shortcut
+    /// through `with_machine` is needed because the shipped surface can
+    /// already do all of it.
+    async fn teach_the_machine_about_a_device() {
+        let other_user: matrix_sdk_common::ruma::OwnedUserId = OTHER_USER.parse().unwrap();
+        let other_device: matrix_sdk_common::ruma::OwnedDeviceId = OTHER_DEVICE.into();
+        let other = matrix_sdk_crypto::OlmMachine::new(&other_user, &other_device).await;
+        let device_keys = other
+            .outgoing_requests()
+            .await
+            .unwrap()
+            .iter()
+            .find_map(|request| match request.request() {
+                matrix_sdk_crypto::types::requests::AnyOutgoingRequest::KeysUpload(upload) => {
+                    upload.device_keys.clone()
+                }
+                _ => None,
+            })
+            .expect("a fresh machine always has device keys to upload");
+
+        crate::session::receive_sync_changes(&format!(
+            r#"{{"changed_devices":{{"changed":["{OTHER_USER}"],"left":[]}}}}"#
+        ))
+        .await
+        .unwrap();
+        let query_id = crate::session::take_outgoing_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|request| request.kind == "keys_query")
+            .expect("a machine that has been told a user changed asks about them")
+            .id;
+        crate::session::mark_request_sent(
+            &query_id,
+            &serde_json::json!({
+                "device_keys": {
+                    OTHER_USER: { OTHER_DEVICE: serde_json::to_value(&device_keys).unwrap() }
+                }
+            })
+            .to_string(),
+        )
+        .await
+        .unwrap();
+    }
+
+    /// The registry must be emptied while the machine still holds the store,
+    /// not after it has been dropped.
+    ///
+    /// This test exists because getting that backwards does not fail an
+    /// assertion. A registry entry holds an upstream verification handle,
+    /// which holds an `Arc` on the crypto store; if `reset_for_test` drops
+    /// the machine first, the entry's reference becomes the last one and is
+    /// released on this bare synchronous test thread, where closing the
+    /// pooled Sqlite connections panics with "no reactor running" -- twice,
+    /// in a destructor, which is a non-unwinding panic that **aborts the
+    /// whole test process** with SIGABRT. So the failure this guards
+    /// against does not appear as a red test; it appears as the suite
+    /// dying, which is why it needs a test that actually registers a flow
+    /// rather than a comment saying it would matter if one ever did.
+    /// Deliberately **not** `#[tokio::test]`, unlike its neighbours. The
+    /// hazard exists only on a thread with no runtime in scope, and an
+    /// ambient one hides it completely: under `#[tokio::test]` this passes
+    /// whichever order the two statements are in, which was measured rather
+    /// than assumed. So the setup runs inside `in_runtime` and the call
+    /// under test runs outside it, on the bare synchronous thread
+    /// `block_on` is driving -- which is where a test process actually is
+    /// when it calls this.
+    #[test]
+    fn the_registry_is_emptied_before_the_store_it_holds_alive_is_dropped() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        // Held for the whole test rather than moved into the block below:
+        // the store directory must not be deleted out from under the
+        // machine that is still using it.
+        let dir = tempfile::tempdir().unwrap();
+        let machine_config = config(dir.path());
+
+        let registered = futures::executor::block_on(crate::in_runtime(async move {
+            crate::machine::create_machine(machine_config)
+                .await
+                .unwrap();
+            teach_the_machine_about_a_device().await;
+            let flow = request_flow(OTHER_USER, OTHER_DEVICE)
+                .await
+                .expect("a device the machine has been told about can be asked to verify");
+            assert_eq!(
+                flow_stage(&flow).await.expect("the flow exists"),
+                FlowStage::Requested
+            );
+            flow_count()
+        }));
+        assert_eq!(
+            registered, 1,
+            "this test proves nothing unless the registry is actually holding a handle"
+        );
+
+        // The call under test, from a thread with no runtime in scope. It
+        // either releases the registry's handle while the machine still
+        // holds the store -- in which case this returns and the assertion
+        // below runs -- or it makes the registry's the last reference and
+        // drops the store here, in which case there is no assertion to
+        // reach because the process is gone.
+        crate::machine::reset_for_test();
+        assert_eq!(
+            flow_count(),
+            0,
+            "the registry must be empty once the machine it belongs to is gone"
         );
     }
 

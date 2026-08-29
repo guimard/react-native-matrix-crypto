@@ -346,6 +346,24 @@ where
 
 #[cfg(test)]
 pub(crate) fn reset_for_test() {
+    // Cleared **first**, and the order is the whole point of doing it here
+    // at all. A verification registry entry holds an upstream handle, which
+    // holds an `Arc` on the crypto store this function is about to drop.
+    // Clearing while `HELD` still holds its own reference releases the
+    // registry's without running the store's destructor. Clearing
+    // afterwards makes the registry's reference the *last* one, released on
+    // this bare synchronous test thread -- which is precisely the abort the
+    // block below exists to avoid, relocated rather than removed. It was
+    // written that way once and read twice without anyone noticing;
+    // `verification.rs`'s
+    // `the_registry_is_emptied_before_the_store_it_holds_alive_is_dropped`
+    // is what now keeps these two statements in this order.
+    //
+    // `session`'s request registry needs no such treatment: it holds
+    // request bodies, not store handles, which is why only this one is
+    // reset from here.
+    crate::verification::reset_flows_for_test();
+
     // `RwLock`, not `OnceLock`: the registry must be clearable between tests
     // that each need their own fresh machine, all run in one process rather
     // than one process per test.
@@ -361,16 +379,6 @@ pub(crate) fn reset_for_test() {
     if let Some(held) = previous {
         futures::executor::block_on(in_runtime(async move { drop(held) }));
     }
-
-    // The verification registry is cleared with the machine, not left for
-    // each test to remember. Its entries hold upstream verification handles,
-    // which hold an `Arc` on the very store the block above exists to drop
-    // on a runtime: a registry entry surviving this call keeps that store
-    // alive and moves the SIGABRT described above to wherever the entry is
-    // finally dropped instead. `session`'s request registry needs no such
-    // treatment -- it holds request bodies, not store handles -- which is
-    // why only this one is reset from here.
-    crate::verification::reset_flows_for_test();
 }
 
 /// Serializes this module's and `identity`'s tests against each other.
