@@ -6,6 +6,20 @@ import {
   TrustState as NativeTrustState,
 } from './generated/matrix_crypto'
 import type { CryptoScopeId, TrustState } from './types'
+// Imported for the documentation below and used by nothing here.
+// `{@link}` resolves against what is in scope in the file it is written in,
+// so without this the four names the comments below send a reader to are
+// plain text in an editor's hover: a link that promises navigation and does
+// not deliver it. Type-only, so it is erased and adds no runtime edge, and
+// `facade.ts` imports nothing from this module, so it adds no cycle either.
+// `tsconfig.json` sets `noUnusedLocals: false`, which is what lets an import
+// exist for a reader rather than for the compiler.
+import type {
+  acceptVerification,
+  decryptEvent,
+  getDeviceStatuses,
+  receiveSyncChanges,
+} from './facade'
 
 /**
  * Typed, silent by default. Takes no product decision. Spec sections 7, 11.
@@ -80,7 +94,15 @@ function installNativeObserver(): void {
  * nobody listening, nothing is consumed, and whatever is still live is
  * announced to whoever subscribes next.
  *
- * **One window this cannot close.** A hot reload re-evaluates this module,
+ * **The sync this lands in the middle of is the native side's problem, not
+ * this one's.** The JavaScript thread is free while `await
+ * receiveSyncChanges(..)` is in flight, so an unmount runs its cleanup
+ * there, and the native producer reads the observer once at entry and
+ * consumes afterwards. That is handled where it happens: an announcement
+ * that finds nobody releases the registration it made, so the invitation is
+ * offered again to whoever subscribes next.
+ *
+ * **Two windows this cannot close.** A hot reload re-evaluates this module,
  * resetting `nativeInstalled`, while the native side still holds the
  * observer built by the previous copy -- pointing at a listener set that is
  * now unreachable. Nothing runs on unload, so nothing can uninstall it. The
@@ -89,6 +111,17 @@ function installNativeObserver(): void {
  * between is consumed by the stale observer and lost the same way. That is
  * a development-time hazard rather than a shipped one, and it is recorded
  * rather than claimed away.
+ *
+ * **The second is inherent and ships.** The native side reads its observer,
+ * hands the signal to a thread of its own, and returns; an unsubscribe
+ * landing between that read and the delivery arriving here cannot be told
+ * apart from a delivery, so nothing puts that invitation back. Closing it
+ * would mean the sync path holding a lock across the call into JavaScript,
+ * which is the deadlock the detached delivery exists to avoid. It is
+ * narrower than it sounds, because `listeners` below is module state that
+ * outlives this function: a component remounting before the delivery thread
+ * runs receives the signal into the same set. The loss needs the set to be
+ * empty at that instant and to stay empty until the invitation expires.
  */
 function uninstallNativeObserver(): void {
   if (!nativeInstalled) return
@@ -193,13 +226,19 @@ function trustStateOf(trust: NativeTrustState): TrustState {
  * not lose **those** -- with the one exception named below, which is a real
  * exception and not a hedge.
  *
- * Three things it genuinely does not do. A `trust_changed` for a comparison
+ * Four things it genuinely does not do. A `trust_changed` for a comparison
  * that finished while you were away is not re-offered -- ask
  * {@link getDeviceStatuses}, which is the durable answer and always was.
  * A hot reload leaves the previous module copy's observer installed
  * until something subscribes again; an invitation arriving in that window
- * is consumed by a listener set nothing can reach. And **one shape of
- * invitation is not re-offered at all**: a peer that opens the comparison
+ * is consumed by a listener set nothing can reach. An unsubscribe can land
+ * in the last instant of a sync, after the native side has read its
+ * observer and before the signal reaches this module, and an invitation
+ * caught there is not re-offered either -- narrower than it sounds, because
+ * resubscribing before the delivery arrives still receives it, and closing
+ * it entirely would mean your sync call holding a lock across a call into
+ * JavaScript. And **one shape of invitation is not re-offered at all**: a
+ * peer that opens the comparison
  * directly, without asking first -- see {@link acceptVerification} for who
  * does that and why it makes no difference to your code -- leaves nothing
  * behind that can be enumerated on a later sync. The sync that carried it

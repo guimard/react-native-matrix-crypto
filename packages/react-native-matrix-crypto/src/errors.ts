@@ -15,12 +15,15 @@ export type CryptoErrorKind =
   // retriable.
   | 'session_refused'
   | 'unknown_device'
-  // Forward scaffolding, not dead: nothing produces this yet (device
-  // revocation is trust/M3 work), but it stays in the union, commented,
-  // rather than being silently dropped or silently absent -- the same
-  // treatment 'not_implemented' gets in KIND_BY_NAME. Give it the same
-  // treatment if it turns out never to be needed: keep it commented, or
-  // remove it; either is fine, silence about which is not.
+  // Forward scaffolding, not dead: nothing produces this. M3 landed device
+  // verification and did not, because revoking a device is an identity
+  // operation and identity waits on cross-signing, which is M4. **No
+  // milestone is named here on purpose**, since the last one named came and
+  // went with the comment unchanged: this kind stays declared and unproduced
+  // until something produces it, and it stays in the union rather than being
+  // silently dropped or silently absent -- the same treatment
+  // 'not_implemented' gets in KIND_BY_NAME. If it turns out never to be
+  // needed, remove it and say so; silence about which is not an option.
   | 'revoked_device'
   | 'undecryptable'
   // A payload this library was handed did not parse: `rawEvent`, a
@@ -51,20 +54,31 @@ export type CryptoErrorKind =
   // A verification identifier that names no flow this process is taking
   // part in. Either it never named one, or the flow it named finished and
   // the library has since released it -- which happens the next time a flow
-  // is started, not on a timer. A caller holding an id across a later
-  // `requestVerification` may see this for a flow it watched complete.
+  // is *registered*, not on a timer. Registration is broader than starting
+  // one: an inbound invitation announced down the signal channel registers,
+  // and so does the first call made against a flow this process is not
+  // already caching. A caller holding an id across any of those may see
+  // this for a flow it watched complete.
   | 'unknown_flow'
   // The call is one this flow supports, but not at the stage it is at.
   // `getVerificationStage` says which stage that is; `startVerification-
   // Comparison` reads it for you and reports the two conditions below
   // instead where they apply.
   | 'wrong_stage'
-  // The keys are not exchanged, so there is no string to show yet. **In
-  // practice this almost always means the outbound pump was drained and
-  // never resolved**: the underlying state machine advances on
-  // `markRequestSent`, so a caller that skips it parks the flow here
-  // permanently. Deliberately absent from RETRIABLE below: retrying the
-  // same call changes nothing at all, and pumping is what fixes it.
+  // The keys are not exchanged, so there is no string to show yet. **Two
+  // causes, and they need opposite things done about them** -- read
+  // `getVerificationStage`, which is what tells them apart:
+  //
+  //   - stage `'started'` and *the peer* opened the comparison: their start
+  //     is a question this side has not answered. Answer it with a second
+  //     `acceptVerification`. Pumping never fixes this one, and a product
+  //     that only pumps waits forever.
+  //   - otherwise, the outbound pump was drained and never resolved: the
+  //     underlying state machine advances on `markRequestSent`, so a caller
+  //     that skips it parks the flow here permanently.
+  //
+  // Deliberately absent from RETRIABLE below: retrying the same call
+  // changes nothing at all under either cause.
   | 'material_not_ready'
   // `startVerificationComparison` on a flow the *other* side already
   // started. Not a failure of the verification -- but not nothing to do
@@ -89,10 +103,11 @@ export type CryptoErrorKind =
 export interface CryptoError extends Error {
   kind: CryptoErrorKind
   /**
-   * **Always `undefined` in M2.** Declared, and never populated: every
-   * `SessionFfiError` variant is fieldless by construction, so nothing on
-   * the decryption path can carry a scope across the FFI boundary for
-   * `toCryptoError` to find. See `sender` below for why the fields stay.
+   * **Always `undefined` in every release so far.** Declared, and never
+   * populated: every `SessionFfiError` variant is fieldless by
+   * construction, so nothing on the decryption path can carry a scope
+   * across the FFI boundary for `toCryptoError` to find. See `sender` below
+   * for why the fields stay.
    *
    * A product handling a failed `decryptEvent` must therefore take the
    * scope from the call it made, not from the error it caught.
@@ -101,18 +116,24 @@ export interface CryptoError extends Error {
   /**
    * Fully qualified `@user:server`, verbatim. Spec section 10.
    *
-   * **Always `undefined` in M2**, for the same reason as `scope` above:
-   * `SessionFfiError` is fieldless throughout, `MachineFfiError` carries
-   * only `detail` and `ProbeFfiError` only `reason`, so no FFI error
-   * variant can carry a sender. Both fields are optional and both are read
+   * **Always `undefined` in every release so far**, for the same reason as
+   * `scope` above: `SessionFfiError` is fieldless throughout,
+   * `MachineFfiError` carries only `detail` and `ProbeFfiError` only
+   * `reason`, so no FFI error variant can carry a sender. Both fields are optional and both are read
    * defensively by `toCryptoError`, so a later milestone that starts
    * populating them is additive rather than breaking. That is why they are
    * declared now and said to be empty, rather than removed and re-added.
    *
    * Note that a sender would not become authoritative merely by appearing
    * here. Spec section 7.1 applies to it exactly as it applies to
-   * `EventEnvelope.sender`: until device verification lands, a sender is
-   * unauthenticated transport metadata.
+   * `EventEnvelope.sender` in `types.ts`: a sender is unauthenticated transport
+   * metadata, and **completing a device verification does not change
+   * that.** This used to say "until device verification lands", which
+   * named a condition that has since been met and is not the one that
+   * matters: a short string comparison sets *local* trust in a device, and
+   * the path that decides what an event says about its sender consults
+   * cross-signing, which nothing here publishes yet. The README retracts
+   * the same claim in the same terms; cross-signing is M4.
    */
   sender?: string
   /** The bridge reports transience. The product layer decides what to do. */
@@ -124,7 +145,7 @@ const BRAND = Symbol.for('react-native-matrix-crypto.CryptoError')
 const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   ['Rejected', 'rejected'],
   // The one entry with no Rust variant, and never will have one: synthesised
-  // in TypeScript by facade.ts:17's `notImplemented` helper for every
+  // in TypeScript by facade.ts's `notImplemented` helper for every
   // still-stubbed function, so it never crosses the FFI boundary at all.
   // Not dead scaffolding like the `RevokedDevice`/`StoreCorrupt` entries two
   // reviews found and removed -- this one is reachable today, from every
@@ -155,7 +176,9 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   // to 'store_corrupt' would send a product down a destructive recovery path
   // over what might just be a typo'd passphrase. 'store_corrupt' stays in
   // the CryptoErrorKind union for genuine corruption, which decryption work
-  // later in M2 can detect; nothing maps to it yet.
+  // could detect; nothing maps to it yet, and nothing in M2 or M3 came to.
+  // It stays declared rather than removed, on the same rule as
+  // 'revoked_device' above.
   ['Store', 'store_unavailable'],
   // A parked finding from Task 2's review: opening a store that belongs to
   // a different account (a different user id, device id, or both) is a

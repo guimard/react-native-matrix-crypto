@@ -73,7 +73,7 @@ Being precise about that, because a cryptographic library that oversells itself 
 | Encryption and decryption | working, proven between two crypto machines |
 | Interoperability with a third-party Matrix client | proven both directions against `matrix-nio`, over a real homeserver |
 | Crypto signal channel (`onCryptoSignal`) | working for verification: inbound invitations and completed comparisons emit; the other two variants still have no producer, see below |
-| Sender authenticity, per event | **not provided, and not coming in M3**, see below |
+| Sender authenticity, per event | **not provided.** It needs cross-signing, which is M4; device verification has landed and does not give it, see below |
 | Device verification by short string comparison (SAS) | working, in both flow shapes and whichever side opens the comparison, proven against a bare `matrix-sdk-crypto` machine driven directly -- an agreement completing and a genuine disagreement refusing. A third-party client takes part in one too, over a real homeserver, and stops short of completing it for a reason in the counterparty; see below |
 | Device verification by QR code | **deferred**, see the roadmap |
 | Secret export and import | **not implemented**, see the roadmap |
@@ -92,6 +92,8 @@ What a decrypted event *does* now carry is how little it is claiming. `EventEnve
 
 The interoperability proof has a floor, and it is the ratchet. `matrix-nio`, a Matrix client written in Python by people who have never seen this code, decrypts what this library encrypts and this library decrypts what it sends, over a real homeserver, in two tests anyone can run: one driving the Rust core, one driving the published TypeScript API on an emulator. What neither proves is the ratchet itself. `matrix-nio` 0.26 and this library both call `vodozemac 0.10.0`, so a defect inside that crate, or a misreading shared below the protocol line, would pass both sides. What is genuinely tested by two independent implementations is everything above it: event shapes, the `/keys/*` payloads a real homeserver accepts and answers, to-device routing, and the order a session key has to travel in. That is where this library's own code lives.
 
+**The same floor applies to the verification proof below, and for the same crate.** nio's short-string key agreement and MAC derivation go through `vodozemac` too, so what that proof establishes is the protocol layer -- the event vocabulary, the flow shape, and the commitment computation, which is where the defect it found actually was. Nothing in this repository claims the two implementations share no verification code; one test's header did until this release, and it was corrected rather than quietly edited.
+
 Verified end to end on an iOS simulator and on an Android emulator: a record round trip, a byte array returned reversed to prove Rust genuinely read it, an async call resolving as a Promise, a typed error reaching a JavaScript `catch`, one callback signal travelling back from Rust, and a real Curve25519 and Ed25519 key pair.
 
 ## Installation
@@ -102,7 +104,7 @@ yarn add react-native-matrix-crypto
 
 A plain `yarn add` always resolves npm's `latest` tag, and a prerelease is published under its own tag, so `yarn add react-native-matrix-crypto@rc` is how you ask for one on purpose.
 
-**While this package is pre-1.0, that is not yet enough to keep one away by accident.** npm assigns `latest` to the *first* version published to a new package whatever `--tag` says, because a package must always have a `latest`. `0.1.0-rc.2` was that first version, so today `latest` and `rc` point at the same prerelease and a bare `yarn add` gets it. npm does not allow the `latest` tag to be deleted, so this resolves when the first stable version is published and takes `latest` over -- not before. `scripts/assert-published-tags.sh` reads the tags back off the registry after every publish and says which state you are in, because the pre-publish check could only ever verify the tag npm was *told*, never the one npm *applied*.
+**While this package is pre-1.0, that is not yet enough to keep one away by accident.** npm assigns `latest` to the *first* version published to a new package whatever `--tag` says, because a package must always have a `latest`. `0.1.0-rc.2` was that first version, so from then until the first stable publish, `latest` and `rc` pointed at the same prerelease and a bare `yarn add` got it. npm does not allow the `latest` tag to be deleted, so the only thing that resolves it is a stable version taking `latest` over. **Which state the registry is in right now is not something this file can tell you**, and an earlier revision of this paragraph tried to -- in the present tense, inside the very artifact whose publication changed the answer. `scripts/assert-published-tags.sh` reads the tags back off the registry after every publish and says which state you are in, because the pre-publish check could only ever verify the tag npm was *told*, never the one npm *applied*. Run it, or read the tags yourself with `npm dist-tag ls react-native-matrix-crypto`.
 
 **No Rust toolchain is required.** The published package ships prebuilt binaries: an `.xcframework` for iOS, and for Android a prebuilt Rust library per ABI under `android/src/main/jniLibs/`, which this module's `CMakeLists.txt` links when your app autolinks it and builds its C++ from source. `yarn add` is all you need.
 
@@ -403,9 +405,9 @@ What those proofs still cannot reach is stated under Status: `matrix-nio` and th
 
 The same script runs the third-party **verification** proof. A third-party client does take part in a verification with this library over a real homeserver -- it opens one, this library announces and agrees to it, and this library reaches a short authentication string. What it stops short of is a *completed* verification, because of a defect in the counterparty: matrix-nio 0.26.0 writes the SAS commitment as hexadecimal where the specification requires unpadded base64, which no spec-compliant client can accept in either direction. It was compliant in 0.25.2, which computed the value with libolm; the port to `vodozemac` replaced `olm.sha256` with Python's `hexdigest()`, and nio's own tests pair two nio objects, so nothing there could notice. What the proof does establish is in the roadmap row below and in the test's own header. A corrected nio makes that test fail rather than pass silently -- it waits for a refusal that no longer comes, and says so in the message it times out with.
 
-### M3, device verification, in progress
+### M3, device verification, landed
 
-Four items, scoped against one test: verification, plus whatever would obstruct a team building on `0.1.0`.
+Scoped against one test: verification, plus whatever would obstruct a team building on `0.1.0`. The design named four items; the table below is what they became once each was written down as something observable, and the rows are the list rather than the count. A number in prose has no way to be wrong out loud, which is why this paragraph no longer carries one.
 
 | Item | State |
 |---|---|
@@ -418,6 +420,8 @@ Four items, scoped against one test: verification, plus whatever would obstruct 
 | Signal delivery no longer costing one operating system thread per signal | done |
 
 QR verification is **deferred, not rejected**. It would add a dependency absent from `rust/Cargo.lock`, an off-by-default Cargo feature, and pressure on a size budget that has already been tripped once.
+
+**What M3 cost in binary size is a bound, not a row.** No dependency entered the tree for it -- `grep -c matrix-sdk-qrcode rust/Cargo.lock` is `0` and neither crate enables a `qrcode` feature -- so the growth is compiled code from the Rust this milestone added, on a tarball already at 44 percent of its budget with a full three-architecture framework. `artifact-sizes.json` carries no M3 row on purpose. Measuring one needs both platform legs built from this tree, which is the release workflow's job and not a thing a developer's machine does incidentally; a number taken from whatever binary happened to be lying around would be a real measurement of the wrong artifact, and would read exactly like a real measurement of the right one. `scripts/measure-artifacts.sh` now refuses that case rather than recording it, comparing every file in each binary against the newest Rust source. The row comes from the release build, where both legs are built minutes before it runs.
 
 ### M4 and beyond
 
@@ -502,7 +506,7 @@ Every one of these runs in CI. Each has been observed rejecting a real violation
 | `gate:boundary` | the core takes no direct `uniffi` dependency |
 | `gate:drift` | committed bindings match the Rust source |
 | `gate:logger` | the bridge contains no logger, in every language it ships: Rust, TypeScript, C/C++/Objective-C, Kotlin, Swift and the podspec |
-| `gate:agility` | no Megolm, Olm or room specific identifier reaches the public API |
+| `gate:agility` | no Megolm, Olm, room or Matrix specific identifier reaches the public API |
 | `gate:stubs` | the committed turbo module is really wired up, not an empty shell |
 | `gate:readme` | the README npm shows is the README GitHub shows |
 | `gate:measure-guards` | the B2 measurement harness still refuses the runs it documents refusing |

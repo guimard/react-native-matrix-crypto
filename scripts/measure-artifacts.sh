@@ -10,6 +10,57 @@ size_of() {
 XC=$(find packages -name '*.xcframework' -maxdepth 4 | head -1)
 AAR=$(find packages -name '*.aar' -maxdepth 5 | head -1)
 
+# REFUSE A ROW MEASURED FROM A BINARY OLDER THAN THE RUST IT CLAIMS TO CARRY
+#
+# Every column below except the source ones is a property of compiled code,
+# and nothing in the rest of this script asks whether the compiled code on
+# disk was built from the Rust in the tree. It was not, once, and it was not
+# caught by anything here: at the end of M3 the only `.xcframework` on disk
+# predated `verification.rs` by a day, so a row taken from it would have
+# recorded roughly 1,800 lines of new Rust as costing nothing -- and would
+# have looked exactly like a real measurement, because it *is* a real
+# measurement of the wrong artifact. The whole delta would have been shipped
+# source: `src`, `interop`, the README.
+#
+# That is the shape spec section 3.2 counts: a check reporting success
+# without having examined its target. So this refuses rather than measuring.
+# In CI and at release the binaries are built in the same job, minutes
+# before, and this never fires; on a developer's tree it fires exactly when
+# the number would have been meaningless.
+#
+# Compared file-by-file, not by the enclosing directory's own timestamp: a
+# directory's mtime does not move when a file nested inside it is rewritten,
+# so the container would go on looking fresh while its contents aged.
+NEWEST_RUST=$(find rust/matrix-crypto-core/src rust/matrix-crypto-ffi/src \
+  -name '*.rs' -type f -exec ls -t {} + 2>/dev/null | head -1 || true)
+
+refuse_if_stale() {
+  local what="$1" path="$2"
+  [ -n "$path" ] && [ -e "$path" ] || return 0
+  [ -n "$NEWEST_RUST" ] || return 0
+  # Any file inside it newer than the newest Rust source means it was built
+  # after that source, which is all this needs to establish.
+  local fresh
+  fresh=$( (find "$path" -type f -newer "$NEWEST_RUST" 2>/dev/null || true) | head -1 )
+  [ -n "$fresh" ] && return 0
+  echo "FAIL: refusing to record a size measured from a stale binary."
+  echo "      $what"
+  echo "        $path"
+  echo "      is older than the newest Rust source it would be reported as carrying:"
+  echo "        $NEWEST_RUST"
+  echo "      Every size column here is a property of compiled code. A row taken"
+  echo "      from a binary that predates the Rust in this tree is a real"
+  echo "      measurement of the wrong artifact, and reads exactly like a real"
+  echo "      measurement of the right one. Rebuild both legs and run this again,"
+  echo "      or take the number from the release build, which builds them."
+  exit 1
+}
+
+refuse_if_stale "the iOS framework" "${XC:-}"
+refuse_if_stale "the Android archive" "${AAR:-}"
+refuse_if_stale "the prebuilt Rust libraries" \
+  "packages/react-native-matrix-crypto/android/src/main/jniLibs"
+
 XC_KB=$(size_of "${XC:-/nonexistent}")
 # aarKB below measures the .aar build output on disk exactly as it always
 # has -- unchanged by the 2026-08-28 decision (spec section 9 step 2) to stop

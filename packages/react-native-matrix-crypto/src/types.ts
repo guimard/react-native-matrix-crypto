@@ -1,3 +1,21 @@
+// Imported for the documentation in this file and used by nothing in it.
+// `{@link}` resolves against what is in scope in the file it is written in,
+// so without this every name below that sends a reader to a facade call is
+// plain text in an editor's hover -- a link promising navigation it does not
+// deliver. Type-only, so it is erased: no runtime import, and the cycle it
+// makes with `facade.ts`, which imports the types below, exists only for the
+// typechecker, which resolves it. `tsconfig.json` sets
+// `noUnusedLocals: false`, which is what lets an import exist for a reader
+// rather than for the compiler.
+import type {
+  acceptVerification,
+  getDeviceStatuses,
+  getVerificationMaterial,
+  markRequestSent,
+  receiveSyncChanges,
+  startVerificationComparison,
+} from './facade'
+
 /**
  * Opaque identifier for a cryptographic scope.
  *
@@ -69,9 +87,16 @@ export type TrustState = 'unverified' | 'recognized' | 'verified'
  * - `'ready'` — both sides have agreed, and either may now call
  *   {@link startVerificationComparison}.
  * - `'started'` — the comparison has begun and the keys are not exchanged
- *   yet, so there is nothing to show. A flow that stays here is usually a
- *   flow whose requests were drained and never reported sent; see
- *   {@link getVerificationMaterial}.
+ *   yet, so there is nothing to show. **A flow that stays here has one of
+ *   two causes, and they need opposite things done about them.** If the
+ *   *other* side opened the comparison, their start is a question this side
+ *   has not answered: call {@link acceptVerification} again, and only then
+ *   wait. Otherwise the flow's requests were drained and never reported
+ *   sent, and {@link markRequestSent} is what moves it. Which one you are
+ *   in follows from who started: a side that never called
+ *   {@link startVerificationComparison} and finds itself here is in the
+ *   first. See {@link getVerificationMaterial}, which reports both as
+ *   `'material_not_ready'`.
  * - `'keys-exchanged'` — the short authentication string is available.
  *   Show it, and ask.
  * - `'confirmed'` — this side has said the strings match; the other side
@@ -231,11 +256,13 @@ export interface EventEnvelope {
   /**
    * From `encryptEvent`, the group-session algorithm this build used.
    *
-   * From `decryptEvent`, spec section 7.1: this milestone decrypts events,
-   * it does not authenticate their senders. This value is read from the
-   * incoming event, not independently verified, and for all of M2 it is
-   * **unauthenticated transport metadata** — treat it accordingly, not as
-   * a claim this library has confirmed.
+   * From `decryptEvent`, spec section 7.1: this library decrypts events, it
+   * does not authenticate their senders. This value is read from the
+   * incoming event, not independently verified, and is **unauthenticated
+   * transport metadata** — treat it accordingly, not as a claim this
+   * library has confirmed. Not scoped to a milestone, because the milestone
+   * a reader would infer from it has passed and the property has not: it
+   * holds until cross-signing lands, which is M4.
    */
   algorithm: CryptoAlgorithm
   eventType: string
@@ -265,13 +292,15 @@ export interface EventEnvelope {
    * From `encryptEvent`, this device's own identity — authenticated by
    * definition.
    *
-   * From `decryptEvent`, spec section 7.1: this milestone decrypts events,
-   * it does not authenticate their senders. This is the sender the
+   * From `decryptEvent`, spec section 7.1: this library decrypts events, it
+   * does not authenticate their senders. This is the sender the
    * homeserver delivered on the outer, not-yet-decrypted event, not a
-   * value this library independently confirmed, and for all of M2 it is
-   * **unauthenticated transport metadata**. A product that reads it as
-   * the cryptographic sender of a successfully decrypted event has
-   * assumed something this milestone does not provide, and that
+   * value this library independently confirmed, and it is
+   * **unauthenticated transport metadata**. Verifying the sending device
+   * does not change that; cross-signing is what would, and it is M4. A
+   * product that reads it as the cryptographic sender of a successfully
+   * decrypted event has assumed something this library does not provide,
+   * and that
    * assumption is the shape impersonation takes. Read it together with
    * `senderVerification` below, which is what says how much of a claim it
    * is -- and note that `'mismatched_sender'` is exactly the case where

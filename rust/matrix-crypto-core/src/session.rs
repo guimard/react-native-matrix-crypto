@@ -846,13 +846,17 @@ fn classify_megolm_error(error: MegolmError) -> SessionError {
         MegolmError::MismatchedIdentityKeys(_) => SessionError::UnknownDevice,
 
         // `decryption_settings()` always passes `TrustRequirement::Untrusted`
-        // in M2 (see its own doc comment), under which upstream's
+        // (see its own doc comment), under which upstream's
         // `check_sender_trust_requirement` unconditionally returns `Ok`
         // (`matrix-sdk-crypto-0.18.0/src/machine/mod.rs`'s own match arm
         // `TrustRequirement::Untrusted => true`) -- so this arm is
         // unreachable today, unlike the arm above it. Matched anyway, with
-        // no wildcard, for when M3 tightens that requirement and makes it
-        // reachable.
+        // no wildcard, for whenever that requirement is tightened and this
+        // becomes reachable. **This said "for when M3 tightens that
+        // requirement", and M3 did not**: `TrustRequirement` has no
+        // local-trust tier, so the requirement cannot be tightened before
+        // cross-signing, which is M4. No milestone is named here now, for
+        // the reason `decryption_settings()` gives.
         //
         // Grouped with `MismatchedIdentityKeys` above under the same kind
         // for now, but the two are not the same shape of failure: this one
@@ -861,10 +865,15 @@ fn classify_megolm_error(error: MegolmError) -> SessionError {
         // device -- exactly the opposite of the arm above, which no
         // verification can fix. `UnknownDevice`'s own doc comment is
         // written to be true of both rather than implying either fixes the
-        // other. Revisit this merge in M3: once this arm is reachable, a
-        // product needs to tell "verify this person to read this" apart
-        // from "this event's provenance is broken, never trust it", and
-        // one shared kind cannot say which.
+        // other. Revisit this merge when the arm becomes reachable: a
+        // product will then need to tell "verify this person to read this"
+        // apart from "this event's provenance is broken, never trust it",
+        // and one shared kind cannot say which. That is B8 in the M3
+        // design's own deferred list, and it stays inert exactly as long as
+        // this arm stays unreachable -- which the comment above says is
+        // until cross-signing. This said "Revisit this merge in M3", which
+        // M3 read and did not act on, because there was nothing yet to
+        // split.
         MegolmError::SenderIdentityNotTrusted(_) => SessionError::UnknownDevice,
 
         // The event or its decrypted content was malformed, or the
@@ -1046,7 +1055,10 @@ pub async fn share_scope_key(scope: &str, users: &[String]) -> Result<(), Sessio
                 .share_room_key(
                     &room_id,
                     user_ids.iter().map(AsRef::as_ref),
-                    // M2: verification lands in M3; revisit this with it.
+                    // This said "verification lands in M3; revisit this
+                    // with it." M3 landed verification, this was revisited,
+                    // and the strategy must not move -- for the reason the
+                    // last paragraph below now states rather than defers.
                     //
                     // `EncryptionSettings::default()` carries
                     // `CollectStrategy::AllDevices`, which upstream marks "not
@@ -1058,7 +1070,12 @@ pub async fn share_scope_key(scope: &str, users: &[String]) -> Result<(), Sessio
                     // forced by the same absence. The recommended
                     // identity-based strategy gives room keys to nobody whose
                     // identity is unpublished, and no identity is published
-                    // until cross-signing exists, which is M3's work.
+                    // until cross-signing exists. Cross-signing is **M4**,
+                    // settled as such by the M3 design's 2026-08-29
+                    // amendment; this said "M3's work", which the same
+                    // document contradicts. So the strategy stays where M2
+                    // put it, and moving it before cross-signing would share
+                    // room keys with nobody.
                     EncryptionSettings::default(),
                 )
                 .await;
@@ -1209,9 +1226,12 @@ impl PendingKind {
     /// `queued_to_device`'s own `txn_id`-keyed de-duplication instead) and
     /// for `signature_upload`/`room_message` (independent, per-flow
     /// verification requests upstream does not describe as superseding one
-    /// another; unreachable in M2, since verification is deferred to M3,
-    /// but not given a blanket eviction rule that would be wrong once it
-    /// is reachable).
+    /// another). Both were unreachable while verification was deferred, and
+    /// **both are reachable now**: `verification::queue` hands them to
+    /// [`queue_action_request`], and `facade.ts`'s `OutgoingRequest` table
+    /// documents each endpoint as live. They are still given no blanket
+    /// eviction rule, which is what the sentence above is for -- one would
+    /// have been wrong then and is wrong now.
     fn superseded_by_a_fresh_request(self) -> bool {
         matches!(
             self,

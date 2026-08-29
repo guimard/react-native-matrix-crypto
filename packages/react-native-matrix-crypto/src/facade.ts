@@ -61,8 +61,9 @@ function stringifyOrMalformed(value: unknown): string {
 }
 
 // Spec section 5's surface, re-typed onto the branded scope and the open
-// algorithm tag. Types are real so consumers can compile today; runtime
-// arrives in M2.
+// algorithm tag. Written when the types were real and the runtime was not;
+// M2 landed the runtime behind all of it, and the sentence is kept because
+// it records why the shapes were frozen before anything implemented them.
 
 export interface CryptoMachineConfig {
   userId: string
@@ -363,11 +364,12 @@ export async function encryptEvent(
  * `rawEvent` is the `m.room.encrypted` event as received, verbatim --
  * JSON-stringified as-is before crossing to native.
  *
- * **This milestone decrypts events. It does not authenticate their
+ * **This library decrypts events. It does not authenticate their
  * senders** -- spec section 7.1. The returned envelope's `sender` and
  * `algorithm` are read from the fields the homeserver delivered, not
  * independently verified, and are **unauthenticated transport metadata**
- * for all of M2: see {@link EventEnvelope.sender} and
+ * until cross-signing lands, which is M4. Verifying the sending device does
+ * not change it: see {@link EventEnvelope.sender} and
  * {@link EventEnvelope.algorithm} for what that means and why. A product
  * that reads the sender of a successfully decrypted event as the
  * cryptographic sender has assumed something this milestone does not
@@ -928,8 +930,12 @@ export async function startVerificationComparison(verificationId: string): Promi
  *
  * Rejects with `'unknown_flow'` for an identifier this library is not
  * taking part in -- including a flow that finished and has since been
- * released, which happens the next time a flow is started rather than on a
- * timer.
+ * released, which happens the next time a flow is *registered* rather than
+ * on a timer. Registration is broader than starting one: an inbound
+ * invitation announced down `onCryptoSignal` registers, and so does
+ * the first call made against a flow this library is not already caching.
+ * Nothing observable turns on the difference; it is stated because "started"
+ * reads narrower than the rule is.
  */
 export async function getVerificationStage(verificationId: string): Promise<VerificationStage> {
   try {
@@ -947,20 +953,27 @@ export async function getVerificationStage(verificationId: string): Promise<Veri
  * {@link SasMaterial}, including why the value is secret while the flow is
  * open.
  *
- * **If you drained the pump and never called {@link markRequestSent}, this
- * is where you find out.** The underlying state machine advances from
- * "accepted" to "keys exchanged" on that report and on nothing else, so a
- * caller that skips it parks the flow permanently with no error and no
- * timeout anywhere else. This call names that state instead: it rejects
- * with kind `'material_not_ready'` rather than resolving with an empty
- * record or hanging. Supplying the missing report, and nothing else, is
- * what completes the exchange.
+ * **`'material_not_ready'` has two causes, and they need opposite things
+ * done about them.** Retrying this call alone fixes neither. Read
+ * {@link getVerificationStage} to tell them apart, because doing the wrong
+ * one waits forever:
  *
- * The two failure kinds are worth keeping apart:
+ * - **The peer opened the comparison and you have not answered it.** The
+ *   stage is `'started'` and you never called
+ *   {@link startVerificationComparison}. Their start is a question; call
+ *   {@link acceptVerification} a second time, and the exchange proceeds.
+ *   This is the ordinary receiving side against a client that starts
+ *   directly, `matrix-nio` among them -- it is not an edge case, and
+ *   nothing you pump will move it.
+ * - **You drained the pump and never called {@link markRequestSent}.** The
+ *   underlying state machine advances from "accepted" to "keys exchanged"
+ *   on that report and on nothing else, so a caller that skips it parks the
+ *   flow permanently with no error and no timeout anywhere else. This call
+ *   names that state instead of resolving with an empty record or hanging.
+ *   Supplying the missing report, and nothing else, completes the exchange.
  *
- * - `'material_not_ready'` -- the flow is live and has not got there yet,
- *   which in practice almost always means the report above is missing.
- *   Retrying this call alone never fixes it.
+ * The other failure kind is worth keeping apart from both:
+ *
  * - `'wrong_stage'` -- it never will: the flow is over, or no comparison was
  *   ever started on it.
  */
@@ -1259,8 +1272,10 @@ export function getSupportedAlgorithms(): CryptoAlgorithm[] {
   return ['megolm', 'olm']
 }
 
-// M1b: the first genuine cryptographic value to cross the whole chain, not the
-// probe's echo. Everything else above remains a NotImplemented stub until M2.
+// M1b: the first genuine cryptographic value to cross the whole chain, not
+// the probe's echo. Everything above it was a NotImplemented stub when this
+// was written; M2 and M3 implemented all but the calls the roadmap still
+// lists as deferred.
 
 export interface IdentityKeys {
   curve25519: string
