@@ -25,10 +25,12 @@ import {
   FfiConverterObject,
   FfiConverterObjectWithCallbacks,
   FfiConverterOptional,
+  FfiConverterUInt16,
   FfiConverterUInt32,
   FfiConverterUInt8,
   RustBuffer,
   UniffiAbstractObject,
+  UniffiEnum,
   UniffiError,
   UniffiInternalError,
   UniffiResult,
@@ -52,6 +54,133 @@ const uniffiIsDebug =
   false;
 
 // Public interface members begin here.
+
+/**
+ * Agrees to a verification the other side asked for. Mirrors
+ * `accept_flow`.
+ */
+export async function acceptVerification(
+  verificationId: string,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<void> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_accept_verification(
+          FfiConverterString.lower(
+            verificationId,
+            nativeModule().rustbuffer_alloc
+          )
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_void,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_void,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_void,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_void,
+      /*liftFunc:*/ (_v) => {},
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
+ * Refuses the verification, or abandons it. Mirrors `cancel_flow`.
+ */
+export async function cancelVerification(
+  verificationId: string,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<void> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_cancel_verification(
+          FfiConverterString.lower(
+            verificationId,
+            nativeModule().rustbuffer_alloc
+          )
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_void,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_void,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_void,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_void,
+      /*liftFunc:*/ (_v) => {},
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
+ * Says the strings matched. Mirrors `confirm_flow`.
+ */
+export async function confirmVerification(
+  verificationId: string,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<void> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_confirm_verification(
+          FfiConverterString.lower(
+            verificationId,
+            nativeModule().rustbuffer_alloc
+          )
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_void,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_void,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_void,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_void,
+      /*liftFunc:*/ (_v) => {},
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
 
 /**
  * A plain `async fn`, matching `device_identity_keys` below: the core
@@ -199,6 +328,62 @@ export async function deviceIdentityKeys(
       /*liftFunc:*/ (__rb) => {
         try {
           return FfiConverterTypeIdentityKeys.lift(__rb);
+        } finally {
+          nativeModule().rustbuffer_free(__rb);
+        }
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
+ * Every device this machine knows of for `user_id`, with its trust.
+ * Mirrors `device_statuses`; see its own doc comment in
+ * `matrix-crypto-core::identity`, including why an empty answer does not
+ * mean the user has no devices.
+ */
+export async function deviceStatuses(
+  userId: string,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<Array<DeviceStatus>> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_device_statuses(
+          FfiConverterString.lower(userId, nativeModule().rustbuffer_alloc)
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_rust_buffer,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      // Borrowed view over foreign memory: the call site owns the free,
+      // as on the sync paths. Unconditional — a no-op where buffers are
+      // already JS-owned.
+      /*liftFunc:*/ (__rb) => {
+        try {
+          return FfiConverterSequenceTypeDeviceStatus.lift(__rb);
         } finally {
           nativeModule().rustbuffer_free(__rb);
         }
@@ -544,6 +729,64 @@ export async function receiveSyncChanges(
 }
 
 /**
+ * Asks a device to verify itself against this one, returning the opaque
+ * identifier every other call below addresses the flow by. Mirrors
+ * `request_flow`; see its own doc comment in
+ * `matrix-crypto-core::verification`.
+ */
+export async function requestVerification(
+  userId: string,
+  deviceId: string,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<string> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_request_verification(
+          FfiConverterString.lower(userId, nativeModule().rustbuffer_alloc),
+          FfiConverterString.lower(deviceId, nativeModule().rustbuffer_alloc)
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_rust_buffer,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      // Borrowed view over foreign memory: the call site owns the free,
+      // as on the sync paths. Unconditional — a no-op where buffers are
+      // already JS-owned.
+      /*liftFunc:*/ (__rb) => {
+        try {
+          return FfiConverterString.lift(__rb);
+        } finally {
+          nativeModule().rustbuffer_free(__rb);
+        }
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
  * Ensures `scope` has a group session and shares it with `users`' known
  * devices. Mirrors `share_scope_key`; see its own doc comment in
  * `matrix-crypto-core::session` for why this is two upstream calls, not
@@ -580,6 +823,51 @@ export async function shareScopeKey(
       /*asyncOpts:*/ asyncOpts_,
       /*errorHandler:*/ FfiConverterTypeSessionFfiError.lift.bind(
         FfiConverterTypeSessionFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
+ * Starts the comparison itself, once both sides are ready. Mirrors
+ * `begin_comparison`; see its own doc comment for the two conditions its
+ * `WrongStage` folds together, and the facade for how they are told apart
+ * again.
+ */
+export async function startVerificationComparison(
+  verificationId: string,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<void> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_start_verification_comparison(
+          FfiConverterString.lower(
+            verificationId,
+            nativeModule().rustbuffer_alloc
+          )
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_void,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_void,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_void,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_void,
+      /*liftFunc:*/ (_v) => {},
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
       )
     );
   } catch (__error: any) {
@@ -634,6 +922,120 @@ export async function takeOutgoingRequests(asyncOpts_?: {
       /*asyncOpts:*/ asyncOpts_,
       /*errorHandler:*/ FfiConverterTypeSessionFfiError.lift.bind(
         FfiConverterTypeSessionFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
+ * The short authentication string, once there is one. Mirrors
+ * `read_material`; see its own doc comment for why the absence of a string
+ * is two different errors and not an empty record.
+ */
+export async function verificationMaterial(
+  verificationId: string,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<SasMaterial> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_verification_material(
+          FfiConverterString.lower(
+            verificationId,
+            nativeModule().rustbuffer_alloc
+          )
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_rust_buffer,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      // Borrowed view over foreign memory: the call site owns the free,
+      // as on the sync paths. Unconditional — a no-op where buffers are
+      // already JS-owned.
+      /*liftFunc:*/ (__rb) => {
+        try {
+          return FfiConverterTypeSasMaterial.lift(__rb);
+        } finally {
+          nativeModule().rustbuffer_free(__rb);
+        }
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
+ * How far along the flow is. Mirrors `flow_stage`.
+ */
+export async function verificationStage(
+  verificationId: string,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<VerificationStage> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_verification_stage(
+          FfiConverterString.lower(
+            verificationId,
+            nativeModule().rustbuffer_alloc
+          )
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_rust_buffer,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      // Borrowed view over foreign memory: the call site owns the free,
+      // as on the sync paths. Unconditional — a no-op where buffers are
+      // already JS-owned.
+      /*liftFunc:*/ (__rb) => {
+        try {
+          return FfiConverterTypeVerificationStage.lift(__rb);
+        } finally {
+          nativeModule().rustbuffer_free(__rb);
+        }
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
       )
     );
   } catch (__error: any) {
@@ -761,6 +1163,107 @@ const FfiConverterTypeCryptoMachineConfig = (() => {
         FfiConverterString.allocationSize(value.deviceId) +
         FfiConverterString.allocationSize(value.storePath) +
         FfiConverterOptionalString.allocationSize(value.storePassphrase)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * What this library will say about one device. Mirror of the core's
+ * `TrustState`.
+ *
+ * The append-only ordinal rule `VerificationStage` above states in full
+ * applies to this enum too, and with a sharper consequence: the values are
+ * ordered least-trusted first, so a renumbering shifts every answer one
+ * place towards `Verified`.
+ *
+ * `Recognized` is not produced by this build. It is declared because the
+ * TypeScript union it mirrors is closed, and widening a closed union later
+ * is a breaking change for every consumer that switched on it
+ * exhaustively. The core's own `TrustState` says so at the variant.
+ */
+export enum TrustState {
+  Unverified,
+  Recognized,
+  Verified,
+}
+
+const FfiConverterTypeTrustState = (() => {
+  type TypeName = TrustState;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      switch (c.readI32()) {
+        case 1:
+          return TrustState.Unverified;
+        case 2:
+          return TrustState.Recognized;
+        case 3:
+          return TrustState.Verified;
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase();
+      }
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      switch (value) {
+        case TrustState.Unverified:
+          return c.writeI32(1);
+        case TrustState.Recognized:
+          return c.writeI32(2);
+        case TrustState.Verified:
+          return c.writeI32(3);
+      }
+    }
+    allocationSize(value: TypeName): number {
+      return 4;
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * One device of one user, and the trust this library reports for it.
+ * Mirror of the core's `DeviceStatus`.
+ */
+export type DeviceStatus = {
+  deviceId: string;
+  trust: TrustState;
+};
+
+/**
+ * Generated factory for {@link DeviceStatus} record objects.
+ */
+export const DeviceStatus = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<DeviceStatus, ReturnType<typeof defaults>>(
+      defaults
+    );
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<DeviceStatus>,
+  });
+})();
+
+const FfiConverterTypeDeviceStatus = (() => {
+  type TypeName = DeviceStatus;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      return {
+        deviceId: FfiConverterString.readFromCursor(c),
+        trust: FfiConverterTypeTrustState.readFromCursor(c),
+      };
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      FfiConverterString.writeIntoCursor(value.deviceId, c);
+      FfiConverterTypeTrustState.writeIntoCursor(value.trust, c);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterString.allocationSize(value.deviceId) +
+        FfiConverterTypeTrustState.allocationSize(value.trust)
       );
     }
   }
@@ -1034,6 +1537,126 @@ const FfiConverterTypeProbeSignal = (() => {
       return (
         FfiConverterString.allocationSize(value.kind) +
         FfiConverterString.allocationSize(value.detail)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * One symbol of a short authentication string. Mirror of the core's
+ * `SasEmoji`, carrying the UniFFI record derive.
+ *
+ * No `Debug` derive, and the reason is stronger here than anywhere else in
+ * this file: this record *is* the authentication material. Anything that
+ * learns it while a flow is open learns what an interposed party would
+ * need to answer the comparison correctly. The core hand-writes a
+ * redacting `Debug` for its own copy; this mirror carries none at all,
+ * the same choice `Envelope` and `CryptoMachineConfig` above already make.
+ */
+export type SasEmoji = {
+  symbol: string;
+  description: string;
+};
+
+/**
+ * Generated factory for {@link SasEmoji} record objects.
+ */
+export const SasEmoji = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<SasEmoji, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<SasEmoji>,
+  });
+})();
+
+const FfiConverterTypeSasEmoji = (() => {
+  type TypeName = SasEmoji;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      return {
+        symbol: FfiConverterString.readFromCursor(c),
+        description: FfiConverterString.readFromCursor(c),
+      };
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      FfiConverterString.writeIntoCursor(value.symbol, c);
+      FfiConverterString.writeIntoCursor(value.description, c);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterString.allocationSize(value.symbol) +
+        FfiConverterString.allocationSize(value.description)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * The short authentication string, in both forms the protocol can
+ * produce. Mirror of the core's `SasMaterial`.
+ *
+ * No `Debug` derive. See `SasEmoji` above: one symbol is a seventh of the
+ * answer, and the decimals are the whole of it.
+ */
+export type SasMaterial = {
+  emoji?: Array<SasEmoji>;
+  /**
+   * A three-element tuple in the core; three named fields here, because
+   * UniFFI has no tuple type and a `Vec<u16>` would let a length other
+   * than three cross the boundary and be discovered by a consumer
+   * indexing past the end.
+   */
+  decimalOne: number;
+  decimalTwo: number;
+  decimalThree: number;
+};
+
+/**
+ * Generated factory for {@link SasMaterial} record objects.
+ */
+export const SasMaterial = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<SasMaterial, ReturnType<typeof defaults>>(
+      defaults
+    );
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<SasMaterial>,
+  });
+})();
+
+const FfiConverterTypeSasMaterial = (() => {
+  type TypeName = SasMaterial;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      return {
+        emoji: FfiConverterOptionalSequenceTypeSasEmoji.readFromCursor(c),
+        decimalOne: FfiConverterUInt16.readFromCursor(c),
+        decimalTwo: FfiConverterUInt16.readFromCursor(c),
+        decimalThree: FfiConverterUInt16.readFromCursor(c),
+      };
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      FfiConverterOptionalSequenceTypeSasEmoji.writeIntoCursor(value.emoji, c);
+      FfiConverterUInt16.writeIntoCursor(value.decimalOne, c);
+      FfiConverterUInt16.writeIntoCursor(value.decimalTwo, c);
+      FfiConverterUInt16.writeIntoCursor(value.decimalThree, c);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterOptionalSequenceTypeSasEmoji.allocationSize(value.emoji) +
+        FfiConverterUInt16.allocationSize(value.decimalOne) +
+        FfiConverterUInt16.allocationSize(value.decimalTwo) +
+        FfiConverterUInt16.allocationSize(value.decimalThree)
       );
     }
   }
@@ -2142,6 +2765,90 @@ const FfiConverterTypeSessionFfiError = (() => {
 })();
 
 /**
+ * How far along one verification flow is. Mirror of the core's
+ * `FlowStage`, carrying the UniFFI enum derive.
+ *
+ * **A new variant is appended here. It is never inserted, and no existing
+ * one is ever removed or reordered.** This is the same rule
+ * `SessionFfiError` below states for errors, and it applies to an enum
+ * from birth rather than from its first change: UniFFI assigns each
+ * variant's wire ordinal by declaration position, and the generated
+ * TypeScript reads that back as a numbered `switch` in exactly this order.
+ * Inserting a variant renumbers every variant after it, so a binding
+ * generated before the insert does not fail on the new value -- it decodes
+ * every later value as its neighbour, and a caller is told the flow is at
+ * a stage it is not. For a stage enum specifically, the worst
+ * misdecoding available is `Cancelled` read as `Done`, which is a refused
+ * verification presented as a successful one.
+ *
+ * **This comment ships.** Codegen copies it verbatim into
+ * `src/generated/matrix_crypto.ts`, so it has to describe the rule rather
+ * than the state of one commit.
+ *
+ * The core's own `FlowStage` documents what each stage means for a person
+ * looking at a screen; this mirror deliberately repeats none of it, so the
+ * two cannot drift into saying different things. The `From` impl below is
+ * exhaustive, so a variant added to either side fails this build.
+ */
+export enum VerificationStage {
+  Requested,
+  Ready,
+  Started,
+  KeysExchanged,
+  Confirmed,
+  Done,
+  Cancelled,
+}
+
+const FfiConverterTypeVerificationStage = (() => {
+  type TypeName = VerificationStage;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      switch (c.readI32()) {
+        case 1:
+          return VerificationStage.Requested;
+        case 2:
+          return VerificationStage.Ready;
+        case 3:
+          return VerificationStage.Started;
+        case 4:
+          return VerificationStage.KeysExchanged;
+        case 5:
+          return VerificationStage.Confirmed;
+        case 6:
+          return VerificationStage.Done;
+        case 7:
+          return VerificationStage.Cancelled;
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase();
+      }
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      switch (value) {
+        case VerificationStage.Requested:
+          return c.writeI32(1);
+        case VerificationStage.Ready:
+          return c.writeI32(2);
+        case VerificationStage.Started:
+          return c.writeI32(3);
+        case VerificationStage.KeysExchanged:
+          return c.writeI32(4);
+        case VerificationStage.Confirmed:
+          return c.writeI32(5);
+        case VerificationStage.Done:
+          return c.writeI32(6);
+        case VerificationStage.Cancelled:
+          return c.writeI32(7);
+      }
+    }
+    allocationSize(value: TypeName): number {
+      return 4;
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
  * `with_foreign` makes this implementable from JavaScript.
  */
 export interface ProbeObserver {
@@ -2312,6 +3019,21 @@ const uniffiCallbackInterfaceProbeObserver: {
 // FfiConverter for string | undefined
 const FfiConverterOptionalString = new FfiConverterOptional(FfiConverterString);
 
+// FfiConverter for Array<SasEmoji>
+const FfiConverterSequenceTypeSasEmoji = new FfiConverterArray(
+  FfiConverterTypeSasEmoji
+);
+
+// FfiConverter for Array<SasEmoji> | undefined
+const FfiConverterOptionalSequenceTypeSasEmoji = new FfiConverterOptional(
+  FfiConverterSequenceTypeSasEmoji
+);
+
+// FfiConverter for Array<DeviceStatus>
+const FfiConverterSequenceTypeDeviceStatus = new FfiConverterArray(
+  FfiConverterTypeDeviceStatus
+);
+
 // FfiConverter for Array<string>
 const FfiConverterSequenceString = new FfiConverterArray(FfiConverterString);
 
@@ -2343,6 +3065,30 @@ function uniffiEnsureInitialized() {
     );
   }
   if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_accept_verification() !==
+    30183
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_accept_verification"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_cancel_verification() !==
+    33960
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_cancel_verification"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_confirm_verification() !==
+    5223
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_confirm_verification"
+    );
+  }
+  if (
     nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_create_crypto_machine() !==
     40844
   ) {
@@ -2364,6 +3110,14 @@ function uniffiEnsureInitialized() {
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       "uniffi_matrix_crypto_ffi_checksum_func_device_identity_keys"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_device_statuses() !==
+    30543
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_device_statuses"
     );
   }
   if (
@@ -2414,6 +3168,14 @@ function uniffiEnsureInitialized() {
     );
   }
   if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_request_verification() !==
+    64995
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_request_verification"
+    );
+  }
+  if (
     nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_share_scope_key() !==
     59510
   ) {
@@ -2422,11 +3184,35 @@ function uniffiEnsureInitialized() {
     );
   }
   if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_start_verification_comparison() !==
+    52374
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_start_verification_comparison"
+    );
+  }
+  if (
     nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_take_outgoing_requests() !==
     24897
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       "uniffi_matrix_crypto_ffi_checksum_func_take_outgoing_requests"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_verification_material() !==
+    48616
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_verification_material"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_verification_stage() !==
+    57225
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_verification_stage"
     );
   }
   if (
@@ -2445,6 +3231,7 @@ export default Object.freeze({
   initialize: uniffiEnsureInitialized,
   converters: {
     FfiConverterTypeCryptoMachineConfig,
+    FfiConverterTypeDeviceStatus,
     FfiConverterTypeEnvelope,
     FfiConverterTypeIdentityKeys,
     FfiConverterTypeMachineFfiError,
@@ -2453,7 +3240,11 @@ export default Object.freeze({
     FfiConverterTypeProbeObserver,
     FfiConverterTypeProbeReport,
     FfiConverterTypeProbeSignal,
+    FfiConverterTypeSasEmoji,
+    FfiConverterTypeSasMaterial,
     FfiConverterTypeSessionFfiError,
     FfiConverterTypeSyncOutcome,
+    FfiConverterTypeTrustState,
+    FfiConverterTypeVerificationStage,
   },
 });

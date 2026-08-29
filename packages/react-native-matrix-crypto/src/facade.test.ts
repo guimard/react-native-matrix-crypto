@@ -1,30 +1,49 @@
-import { describe, expect, it, vi } from 'vitest'
-import type { CryptoScopeId, SyncDelta } from './types'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { CryptoScopeId, SasMaterial, SyncDelta, VerificationStage } from './types'
 import { asCryptoScopeId } from './types'
 import { isCryptoError } from './errors'
 import {
+  acceptVerification,
+  cancelVerification,
+  confirmVerification,
   createCryptoMachine,
   decryptEvent,
   encryptEvent,
   encryptionSlice,
   exportSecrets,
   getDeviceIdentityKeys,
+  getDeviceStatuses,
+  getVerificationMaterial,
+  getVerificationStage,
   markRequestSent,
   openCryptoStore,
   receiveSyncChanges,
+  requestVerification,
   shareScopeKey,
+  startVerificationComparison,
   takeOutgoingRequests,
 } from './facade'
 import {
+  acceptVerification as nativeAcceptVerification,
+  cancelVerification as nativeCancelVerification,
+  confirmVerification as nativeConfirmVerification,
   createCryptoMachine as nativeCreateCryptoMachine,
   decryptEvent as nativeDecryptEvent,
   deviceIdentityKeys as nativeDeviceIdentityKeys,
+  deviceStatuses as nativeDeviceStatuses,
   encryptEvent as nativeEncryptEvent,
+  MachineFfiError,
   markRequestSent as nativeMarkRequestSent,
   openCryptoStore as nativeOpenCryptoStore,
   receiveSyncChanges as nativeReceiveSyncChanges,
+  requestVerification as nativeRequestVerification,
   shareScopeKey as nativeShareScopeKey,
+  startVerificationComparison as nativeStartVerificationComparison,
   takeOutgoingRequests as nativeTakeOutgoingRequests,
+  TrustState as NativeTrustState,
+  verificationMaterial as nativeVerificationMaterial,
+  verificationStage as nativeVerificationStage,
+  VerificationStage as NativeVerificationStage,
 } from './generated/matrix_crypto'
 
 const scope = asCryptoScopeId('!scope:example.org')
@@ -86,6 +105,29 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
     shareScopeKey: vi.fn(async () => undefined),
     takeOutgoingRequests: vi.fn(async () => [{ id: 'req-1', kind: 'keys_upload', body: '{}' }]),
     markRequestSent: vi.fn(async () => undefined),
+    // Task 3: the verification surface. Stateless defaults again, and
+    // deliberately distinguishable from anything a facade test supplies, so
+    // a test that forgot to assert on `.mock.calls` would still notice
+    // values it never provided coming back out. `actual.MachineFfiError`,
+    // `actual.TrustState` and `actual.VerificationStage` all come through
+    // `importOriginal` untouched, so every test below that throws or
+    // returns one is using the real generated shape rather than a fixture
+    // that happens to satisfy the facade's reader.
+    deviceStatuses: vi.fn(async () => [
+      { deviceId: 'NATIVEDEVICE', trust: actual.TrustState.Unverified },
+    ]),
+    requestVerification: vi.fn(async () => 'native-flow-id'),
+    acceptVerification: vi.fn(async () => undefined),
+    startVerificationComparison: vi.fn(async () => undefined),
+    verificationStage: vi.fn(async () => actual.VerificationStage.Requested),
+    verificationMaterial: vi.fn(async () => ({
+      emoji: [{ symbol: 'native-symbol', description: 'native-word' }],
+      decimalOne: 1111,
+      decimalTwo: 2222,
+      decimalThree: 3333,
+    })),
+    confirmVerification: vi.fn(async () => undefined),
+    cancelVerification: vi.fn(async () => undefined),
   }
 })
 
@@ -644,5 +686,549 @@ describe('storePassphrase wiring to the native layer', () => {
       }),
     ).resolves.toBeUndefined()
     expect(vi.mocked(nativeOpenCryptoStore).mock.calls.at(-1)?.[0].storePassphrase).toBeUndefined()
+  })
+})
+
+/**
+ * Task 3: the verification surface.
+ *
+ * **What this file can and cannot prove, stated once rather than implied.**
+ * There is no JSI host object under vitest, so nothing here performs any
+ * cryptography and no verification actually happens. What is proven here is
+ * the *bridge*: that each facade call reaches the native function it claims
+ * to, forwards what it was given, rebuilds what it got back field by field,
+ * and turns each native error into the kind its own doc comment promises.
+ *
+ * The cryptography, and the claim that a real comparison changes what
+ * `getDeviceStatuses` reports, is proven in
+ * `rust/matrix-crypto-core/tests/sas_two_party.rs`, against a machine this
+ * library does not control, with the before and after values both asserted
+ * and the change between them asserted separately.
+ */
+
+const FLOW = 'a-verification-id'
+
+/** The material `verificationMaterial` is mocked to return, as the facade rebuilds it. */
+const NATIVE_MATERIAL: SasMaterial = {
+  emoji: [{ symbol: 'native-symbol', description: 'native-word' }],
+  decimals: [1111, 2222, 3333],
+}
+
+/**
+ * Restores every verification mock to the stateless default declared at the
+ * top of this file, so a test that installs its own implementation cannot
+ * leak it into the next one. Vitest's mocks are module-level and shared.
+ */
+beforeEach(() => {
+  vi.mocked(nativeDeviceStatuses).mockReset()
+  vi.mocked(nativeDeviceStatuses).mockResolvedValue([
+    { deviceId: 'NATIVEDEVICE', trust: NativeTrustState.Unverified },
+  ])
+  vi.mocked(nativeRequestVerification).mockReset()
+  vi.mocked(nativeRequestVerification).mockResolvedValue('native-flow-id')
+  vi.mocked(nativeAcceptVerification).mockReset()
+  vi.mocked(nativeAcceptVerification).mockResolvedValue(undefined)
+  vi.mocked(nativeStartVerificationComparison).mockReset()
+  vi.mocked(nativeStartVerificationComparison).mockResolvedValue(undefined)
+  vi.mocked(nativeVerificationStage).mockReset()
+  vi.mocked(nativeVerificationStage).mockResolvedValue(NativeVerificationStage.Requested)
+  vi.mocked(nativeVerificationMaterial).mockReset()
+  vi.mocked(nativeVerificationMaterial).mockResolvedValue({
+    emoji: [{ symbol: 'native-symbol', description: 'native-word' }],
+    decimalOne: 1111,
+    decimalTwo: 2222,
+    decimalThree: 3333,
+  })
+  vi.mocked(nativeConfirmVerification).mockReset()
+  vi.mocked(nativeConfirmVerification).mockResolvedValue(undefined)
+  vi.mocked(nativeCancelVerification).mockReset()
+  vi.mocked(nativeCancelVerification).mockResolvedValue(undefined)
+})
+
+describe('getDeviceStatuses', () => {
+  it('rebuilds each status from the native record, mapping the trust enum onto the string union', async () => {
+    vi.mocked(nativeDeviceStatuses).mockResolvedValue([
+      { deviceId: 'DEVICE-A', trust: NativeTrustState.Unverified },
+      { deviceId: 'DEVICE-B', trust: NativeTrustState.Recognized },
+      { deviceId: 'DEVICE-C', trust: NativeTrustState.Verified },
+    ])
+
+    await expect(getDeviceStatuses('@bob:example.org')).resolves.toEqual([
+      { deviceId: 'DEVICE-A', trust: 'unverified' },
+      { deviceId: 'DEVICE-B', trust: 'recognized' },
+      { deviceId: 'DEVICE-C', trust: 'verified' },
+    ])
+    expect(vi.mocked(nativeDeviceStatuses).mock.calls.at(-1)?.[0]).toBe('@bob:example.org')
+  })
+
+  /**
+   * All three values in one call, above, rather than three calls each
+   * returning one: a mapping that answered a constant would satisfy any
+   * single-value assertion, and asserting the three together is what rules
+   * that out. This second test is the other half -- that the user id is
+   * forwarded rather than ignored -- because a `getDeviceStatuses` that
+   * always asked about the same user would pass everything above.
+   */
+  it('forwards the user id it was given', async () => {
+    await getDeviceStatuses('@carol:example.org')
+    expect(vi.mocked(nativeDeviceStatuses).mock.calls.at(-1)?.[0]).toBe('@carol:example.org')
+  })
+
+  it('reports an empty list as an empty list rather than as an error', async () => {
+    vi.mocked(nativeDeviceStatuses).mockResolvedValue([])
+    await expect(getDeviceStatuses('@nobody:example.org')).resolves.toEqual([])
+  })
+
+  it('turns a native machine error into a typed CryptoError', async () => {
+    vi.mocked(nativeDeviceStatuses).mockRejectedValue(
+      new MachineFfiError.MalformedIdentifier({ detail: 'user id' }),
+    )
+    await expect(getDeviceStatuses('not-a-user-id')).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_identifier',
+    )
+  })
+})
+
+describe('requestVerification, acceptVerification and cancelVerification', () => {
+  it('forwards both identifiers and returns the flow id native minted', async () => {
+    await expect(requestVerification('@bob:example.org', 'BOBDEVICE')).resolves.toBe(
+      'native-flow-id',
+    )
+    expect(vi.mocked(nativeRequestVerification).mock.calls.at(-1)).toEqual([
+      '@bob:example.org',
+      'BOBDEVICE',
+    ])
+  })
+
+  /**
+   * The condition a product recovers from by querying that user's devices
+   * and calling again. It arrives as its own kind rather than as
+   * `malformed_identifier`, which no retry fixes, and rather than as
+   * `unknown` -- which is what it would be if `errors.ts` had no entry for
+   * the variant. That entry is invisible to every Rust test.
+   */
+  it('reports a device this library has never been told about as unknown_device', async () => {
+    vi.mocked(nativeRequestVerification).mockRejectedValue(new MachineFfiError.UnknownDevice())
+    await expect(requestVerification('@bob:example.org', 'NOSUCHDEVICE')).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'unknown_device',
+    )
+  })
+
+  it('forwards the flow id to accept and to cancel', async () => {
+    await expect(acceptVerification(FLOW)).resolves.toBeUndefined()
+    expect(vi.mocked(nativeAcceptVerification).mock.calls.at(-1)?.[0]).toBe(FLOW)
+
+    await expect(cancelVerification(FLOW)).resolves.toBeUndefined()
+    expect(vi.mocked(nativeCancelVerification).mock.calls.at(-1)?.[0]).toBe(FLOW)
+  })
+
+  it('reports an identifier that names no flow as unknown_flow rather than unknown', async () => {
+    vi.mocked(nativeAcceptVerification).mockRejectedValue(new MachineFfiError.UnknownFlow())
+    await expect(acceptVerification('never-a-flow')).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'unknown_flow',
+    )
+  })
+
+  it('reports cancelling an already-cancelled flow as wrong_stage rather than resolving', async () => {
+    vi.mocked(nativeCancelVerification).mockRejectedValue(new MachineFfiError.WrongStage())
+    await expect(cancelVerification(FLOW)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'wrong_stage',
+    )
+  })
+})
+
+describe('getVerificationStage', () => {
+  it('maps every native stage onto its own string, and forwards the flow id', async () => {
+    const expected: [NativeVerificationStage, VerificationStage][] = [
+      [NativeVerificationStage.Requested, 'requested'],
+      [NativeVerificationStage.Ready, 'ready'],
+      [NativeVerificationStage.Started, 'started'],
+      [NativeVerificationStage.KeysExchanged, 'keys-exchanged'],
+      [NativeVerificationStage.Confirmed, 'confirmed'],
+      [NativeVerificationStage.Done, 'done'],
+      [NativeVerificationStage.Cancelled, 'cancelled'],
+    ]
+
+    // Every stage, in one test, and the results collected before they are
+    // compared: seven separate assertions each covering one value would
+    // still all pass against a mapping that returned whatever it was given
+    // as a string, and the pair `done`/`cancelled` is the one where a swap
+    // presents a refusal as a success.
+    const observed: VerificationStage[] = []
+    for (const [native] of expected) {
+      vi.mocked(nativeVerificationStage).mockResolvedValue(native)
+      observed.push(await getVerificationStage(FLOW))
+    }
+
+    expect(observed).toEqual(expected.map(([, stage]) => stage))
+    expect(vi.mocked(nativeVerificationStage).mock.calls.at(-1)?.[0]).toBe(FLOW)
+  })
+
+  it('reports an identifier that names no flow as unknown_flow', async () => {
+    vi.mocked(nativeVerificationStage).mockRejectedValue(new MachineFfiError.UnknownFlow())
+    await expect(getVerificationStage('never-a-flow')).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'unknown_flow',
+    )
+  })
+})
+
+describe('getVerificationMaterial', () => {
+  it('rebuilds the string from the native record, three separate decimals back into one tuple', async () => {
+    await expect(getVerificationMaterial(FLOW)).resolves.toEqual(NATIVE_MATERIAL)
+    expect(vi.mocked(nativeVerificationMaterial).mock.calls.at(-1)?.[0]).toBe(FLOW)
+  })
+
+  it('keeps an absent symbol form absent rather than turning it into an empty list', async () => {
+    vi.mocked(nativeVerificationMaterial).mockResolvedValue({
+      decimalOne: 4444,
+      decimalTwo: 5555,
+      decimalThree: 6666,
+    })
+
+    const material = await getVerificationMaterial(FLOW)
+    expect(material).toEqual({ decimals: [4444, 5555, 6666] })
+    // Asserted separately: `toEqual` above treats an absent key and an
+    // explicit `undefined` as the same, and a screen that renders
+    // `material.emoji` as a list would show seven blanks for one and fall
+    // back to the digits for the other.
+    expect('emoji' in material).toBe(false)
+  })
+
+  /**
+   * **The silent-stall problem, at the bridge.** The underlying state
+   * machine advances from "accepted" to "keys exchanged" only when the
+   * caller reports the key message sent, so a caller that drains the pump
+   * and never calls `markRequestSent` parks the flow forever with no error
+   * and no timeout. The core turns that into `MaterialNotReady`; the whole
+   * question here is whether it survives as something a product can act on.
+   *
+   * Without the `['MaterialNotReady', 'material_not_ready']` entry in
+   * `errors.ts` it arrives as kind `'unknown'` with the message "crypto
+   * error: unknown" -- which no Rust test can see, because the core proves
+   * only that the right *variant* is produced.
+   *
+   * Three things are asserted, not one: the kind, that the call rejects
+   * rather than resolving with an empty record, and that it is not reported
+   * retriable -- because retrying this call alone never resolves it, and a
+   * product that reads `retriable` as permission to loop would spin against
+   * a machine that will never move.
+   */
+  it('rejects with material_not_ready, and not retriably, when the pump was never resolved', async () => {
+    vi.mocked(nativeVerificationMaterial).mockRejectedValue(new MachineFfiError.MaterialNotReady())
+
+    const rejection = await getVerificationMaterial(FLOW).then(
+      (material) => ({ resolved: material }),
+      (e: unknown) => ({ rejected: e }),
+    )
+
+    expect(rejection).not.toHaveProperty('resolved')
+    const error = (rejection as { rejected: unknown }).rejected
+    expect(isCryptoError(error) && error.kind).toBe('material_not_ready')
+    expect(isCryptoError(error) && error.retriable).toBe(false)
+  })
+
+  it('reports a flow that is over as wrong_stage, which is the kind that means it never will be ready', async () => {
+    vi.mocked(nativeVerificationMaterial).mockRejectedValue(new MachineFfiError.WrongStage())
+    await expect(getVerificationMaterial(FLOW)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'wrong_stage',
+    )
+  })
+})
+
+describe('confirmVerification', () => {
+  it('confirms when the material offered is the material the flow is showing', async () => {
+    await expect(confirmVerification(FLOW, NATIVE_MATERIAL)).resolves.toBeUndefined()
+    expect(vi.mocked(nativeConfirmVerification).mock.calls.at(-1)?.[0]).toBe(FLOW)
+  })
+
+  /**
+   * The argument's whole purpose. Without the check, a product could
+   * confirm a comparison it never displayed -- the layer underneath only
+   * checks that a string exists, not that anybody saw it -- and "verified"
+   * would then mean nothing.
+   *
+   * `nativeConfirmVerification` is asserted *not* to have been called: a
+   * check that rejected after confirming would be reporting on something it
+   * could no longer prevent.
+   */
+  it('refuses material that is not what the flow is showing, without confirming anything', async () => {
+    await expect(
+      confirmVerification(FLOW, { ...NATIVE_MATERIAL, decimals: [1111, 2222, 9999] }),
+    ).rejects.toSatisfy((e: unknown) => isCryptoError(e) && e.kind === 'material_mismatch')
+    expect(nativeConfirmVerification).not.toHaveBeenCalled()
+  })
+
+  it('refuses material whose digits are the right ones in the wrong order', async () => {
+    await expect(
+      confirmVerification(FLOW, { ...NATIVE_MATERIAL, decimals: [2222, 1111, 3333] }),
+    ).rejects.toSatisfy((e: unknown) => isCryptoError(e) && e.kind === 'material_mismatch')
+    expect(nativeConfirmVerification).not.toHaveBeenCalled()
+  })
+
+  it('refuses material whose symbols differ, even when the digits agree', async () => {
+    await expect(
+      confirmVerification(FLOW, {
+        decimals: [1111, 2222, 3333],
+        emoji: [{ symbol: 'a-different-symbol', description: 'native-word' }],
+      }),
+    ).rejects.toSatisfy((e: unknown) => isCryptoError(e) && e.kind === 'material_mismatch')
+    expect(nativeConfirmVerification).not.toHaveBeenCalled()
+  })
+
+  it('accepts a translated description, which is a label rather than part of the string', async () => {
+    await expect(
+      confirmVerification(FLOW, {
+        decimals: [1111, 2222, 3333],
+        emoji: [{ symbol: 'native-symbol', description: 'un-mot-traduit' }],
+      }),
+    ).resolves.toBeUndefined()
+    expect(nativeConfirmVerification).toHaveBeenCalledOnce()
+  })
+
+  /**
+   * The same silent-stall problem seen from the other call. A caller that
+   * skipped the pump and confirmed anyway must be told which of its own
+   * steps is missing, not have the confirmation go through on a flow with
+   * nothing to show.
+   */
+  it('rejects with material_not_ready, and confirms nothing, when the pump was never resolved', async () => {
+    vi.mocked(nativeVerificationMaterial).mockRejectedValue(new MachineFfiError.MaterialNotReady())
+
+    await expect(confirmVerification(FLOW, NATIVE_MATERIAL)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'material_not_ready',
+    )
+    expect(nativeConfirmVerification).not.toHaveBeenCalled()
+  })
+
+  it('passes a native rejection from the confirmation itself through as its own kind', async () => {
+    vi.mocked(nativeConfirmVerification).mockRejectedValue(new MachineFfiError.WrongStage())
+    await expect(confirmVerification(FLOW, NATIVE_MATERIAL)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'wrong_stage',
+    )
+  })
+})
+
+/**
+ * The two conditions the core folds into one `WrongStage`, told apart again.
+ *
+ * The core's own `begin_comparison` documents the fold and says why it is
+ * deliberate -- both mean *this call* has nothing to do -- and points at
+ * `flow_stage` as the free discriminator. A screen that shows a person one
+ * sentence for both is showing the wrong one about half the time: "they
+ * started it, wait for the string" and "this is over, ask again" call for
+ * opposite behaviour.
+ */
+describe('startVerificationComparison, and the conditions its one native error folds', () => {
+  it('starts the comparison and forwards the flow id when nothing is wrong', async () => {
+    await expect(startVerificationComparison(FLOW)).resolves.toBeUndefined()
+    expect(vi.mocked(nativeStartVerificationComparison).mock.calls.at(-1)?.[0]).toBe(FLOW)
+    // The stage is not read on the success path: it costs a native call,
+    // and there is nothing to tell apart.
+    expect(nativeVerificationStage).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [NativeVerificationStage.Started],
+    [NativeVerificationStage.KeysExchanged],
+    [NativeVerificationStage.Confirmed],
+  ])('reports comparison_already_started when the peer got there first (stage %i)', async (stage) => {
+    vi.mocked(nativeStartVerificationComparison).mockRejectedValue(new MachineFfiError.WrongStage())
+    vi.mocked(nativeVerificationStage).mockResolvedValue(stage)
+
+    await expect(startVerificationComparison(FLOW)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'comparison_already_started',
+    )
+  })
+
+  it.each([[NativeVerificationStage.Done], [NativeVerificationStage.Cancelled]])(
+    'reports verification_ended when the flow is over (stage %i)',
+    async (stage) => {
+      vi.mocked(nativeStartVerificationComparison).mockRejectedValue(
+        new MachineFfiError.WrongStage(),
+      )
+      vi.mocked(nativeVerificationStage).mockResolvedValue(stage)
+
+      await expect(startVerificationComparison(FLOW)).rejects.toSatisfy(
+        (e: unknown) => isCryptoError(e) && e.kind === 'verification_ended',
+      )
+    },
+  )
+
+  /**
+   * The remainder, kept as `wrong_stage` rather than given a name of its
+   * own: at `requested` the flow has simply not been agreed to yet, which
+   * is what "not at a stage where this call applies" already says.
+   */
+  it.each([[NativeVerificationStage.Requested], [NativeVerificationStage.Ready]])(
+    'leaves the rejection as wrong_stage for a flow that is neither under way nor over (stage %i)',
+    async (stage) => {
+      vi.mocked(nativeStartVerificationComparison).mockRejectedValue(
+        new MachineFfiError.WrongStage(),
+      )
+      vi.mocked(nativeVerificationStage).mockResolvedValue(stage)
+
+      await expect(startVerificationComparison(FLOW)).rejects.toSatisfy(
+        (e: unknown) => isCryptoError(e) && e.kind === 'wrong_stage',
+      )
+    },
+  )
+
+  /**
+   * Only `wrong_stage` is unfolded. An `unknown_flow` rejection already
+   * says exactly what it means, and reading the stage of a flow that does
+   * not exist would only produce a second error to swallow.
+   */
+  it('passes a rejection that is not wrong_stage through untouched, without reading the stage', async () => {
+    vi.mocked(nativeStartVerificationComparison).mockRejectedValue(new MachineFfiError.UnknownFlow())
+
+    await expect(startVerificationComparison('never-a-flow')).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'unknown_flow',
+    )
+    expect(nativeVerificationStage).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The diagnosis is allowed to fail. A flow released between the two calls
+   * would make the stage read throw, and an error about the diagnosis would
+   * be worse than the one it replaced.
+   */
+  it('keeps the original rejection when the stage cannot be read either', async () => {
+    vi.mocked(nativeStartVerificationComparison).mockRejectedValue(new MachineFfiError.WrongStage())
+    vi.mocked(nativeVerificationStage).mockRejectedValue(new MachineFfiError.UnknownFlow())
+
+    await expect(startVerificationComparison(FLOW)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'wrong_stage',
+    )
+  })
+})
+
+/**
+ * The whole arc, driven through the public surface in the order the
+ * documentation publishes, against a fake that models the one ordering rule
+ * this bridge cannot enforce for the caller.
+ *
+ * **What this proves and what it does not.** The fake performs no
+ * cryptography: the comparison it "reaches" is a constant. What it does
+ * model is the sequencing -- a flow that is not accepted cannot start a
+ * comparison, and a comparison whose key message was never reported sent
+ * never produces a string -- so this test proves the six public calls
+ * compose in the documented order, that each one's output is what the next
+ * one needs, and that skipping the pump is reported rather than hung on.
+ * Whether the string two devices reach is the *same* string is the Rust
+ * two-party test's claim, not this one's.
+ */
+describe('a verification driven end to end through the public surface', () => {
+  interface FakeFlow {
+    stage: NativeVerificationStage
+    keyReported: boolean
+  }
+
+  function installFake(): FakeFlow {
+    const flow: FakeFlow = { stage: NativeVerificationStage.Requested, keyReported: false }
+
+    vi.mocked(nativeRequestVerification).mockImplementation(async () => {
+      flow.stage = NativeVerificationStage.Requested
+      return FLOW
+    })
+    vi.mocked(nativeAcceptVerification).mockImplementation(async () => {
+      if (flow.stage !== NativeVerificationStage.Requested) throw new MachineFfiError.WrongStage()
+      flow.stage = NativeVerificationStage.Ready
+    })
+    vi.mocked(nativeStartVerificationComparison).mockImplementation(async () => {
+      if (flow.stage !== NativeVerificationStage.Ready) throw new MachineFfiError.WrongStage()
+      flow.stage = NativeVerificationStage.Started
+    })
+    vi.mocked(nativeVerificationStage).mockImplementation(async () => flow.stage)
+    vi.mocked(nativeVerificationMaterial).mockImplementation(async () => {
+      // The rule the whole surface turns on: no report, no string.
+      if (flow.stage === NativeVerificationStage.Started && !flow.keyReported) {
+        throw new MachineFfiError.MaterialNotReady()
+      }
+      if (flow.stage !== NativeVerificationStage.KeysExchanged) {
+        throw new MachineFfiError.WrongStage()
+      }
+      return { emoji: undefined, decimalOne: 1111, decimalTwo: 2222, decimalThree: 3333 }
+    })
+    vi.mocked(nativeConfirmVerification).mockImplementation(async () => {
+      if (flow.stage !== NativeVerificationStage.KeysExchanged) {
+        throw new MachineFfiError.WrongStage()
+      }
+      flow.stage = NativeVerificationStage.Confirmed
+    })
+    vi.mocked(nativeDeviceStatuses).mockImplementation(async () => [
+      {
+        deviceId: 'BOBDEVICE',
+        trust:
+          flow.stage === NativeVerificationStage.Done
+            ? NativeTrustState.Verified
+            : NativeTrustState.Unverified,
+      },
+    ])
+
+    return flow
+  }
+
+  /** What the product does after sending what the pump handed it. */
+  function reportTheKeySent(flow: FakeFlow): void {
+    flow.keyReported = true
+    flow.stage = NativeVerificationStage.KeysExchanged
+  }
+
+  it('runs request, accept, start, read and confirm in order, and the device reads verified only at the end', async () => {
+    const flow = installFake()
+
+    // Before anything: the far device is not verified, and that is the
+    // value the last assertion in this test has to differ from.
+    expect(await getDeviceStatuses('@bob:example.org')).toEqual([
+      { deviceId: 'BOBDEVICE', trust: 'unverified' },
+    ])
+
+    const id = await requestVerification('@bob:example.org', 'BOBDEVICE')
+    expect(await getVerificationStage(id)).toBe('requested')
+
+    // Starting before both sides have agreed is refused, and refused as the
+    // stage-shaped error rather than as one of the two split-out kinds.
+    await expect(startVerificationComparison(id)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'wrong_stage',
+    )
+
+    await acceptVerification(id)
+    expect(await getVerificationStage(id)).toBe('ready')
+
+    await startVerificationComparison(id)
+    expect(await getVerificationStage(id)).toBe('started')
+
+    // The pump has not been resolved, so there is no string -- named,
+    // rather than an empty record or a promise that never settles.
+    await expect(getVerificationMaterial(id)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'material_not_ready',
+    )
+    // And confirming is refused for the same reason, so a product cannot
+    // skip the string and confirm anyway.
+    await expect(confirmVerification(id, { decimals: [1111, 2222, 3333] })).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'material_not_ready',
+    )
+
+    reportTheKeySent(flow)
+    expect(await getVerificationStage(id)).toBe('keys-exchanged')
+
+    const material = await getVerificationMaterial(id)
+    expect(material).toEqual({ decimals: [1111, 2222, 3333] })
+
+    await confirmVerification(id, material)
+    expect(await getVerificationStage(id)).toBe('confirmed')
+
+    // Confirmed is not done. The device is still unverified here, which is
+    // the sentence this milestone exists to stop being told early.
+    expect(await getDeviceStatuses('@bob:example.org')).toEqual([
+      { deviceId: 'BOBDEVICE', trust: 'unverified' },
+    ])
+
+    // The peer's acknowledgement arrives and the flow closes.
+    flow.stage = NativeVerificationStage.Done
+    expect(await getVerificationStage(id)).toBe('done')
+    expect(await getDeviceStatuses('@bob:example.org')).toEqual([
+      { deviceId: 'BOBDEVICE', trust: 'verified' },
+    ])
   })
 })

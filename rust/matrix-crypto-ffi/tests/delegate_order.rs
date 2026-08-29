@@ -43,19 +43,33 @@
 //! "every exported delegate", and `exports.rs` pins only `echoed`; a review
 //! caught the over-claim.
 //!
+//! It pins the same property on `request_verification(user_id, device_id)`,
+//! the one delegate the verification surface adds with two arguments of the
+//! same type, and on `device_statuses(user_id)` -- which has nothing to
+//! transpose but whose record mirror pairs an identifier with a trust value,
+//! and whose whole point is that the trust it reports is the one that
+//! belongs to that device.
+//!
 //! What this file does **not** cover, stated rather than implied:
 //! `share_scope_key(scope, users)` and `receive_sync_changes(raw_json)` have
 //! no same-typed argument pair to transpose in the first place; `probe` and
 //! `probe_with_observer` likewise (their arguments are `String` and
-//! `Vec<u8>`); and `create_crypto_machine`/`open_crypto_store` delegate to
-//! two core functions that are deliberately the same operation, so swapping
-//! *them* changes nothing observable. A **mis-mapped error variant** in
-//! `From<SessionError>`/`From<MachineError>` is a different hazard from
-//! argument order and is covered by `error_mapping.rs`, not here.
+//! `Vec<u8>`); `accept_verification`, `start_verification_comparison`,
+//! `verification_stage`, `verification_material`, `confirm_verification` and
+//! `cancel_verification` each take a single `String` and so have nothing to
+//! transpose either; and `create_crypto_machine`/`open_crypto_store`
+//! delegate to two core functions that are deliberately the same operation,
+//! so swapping *them* changes nothing observable. A **mis-mapped error
+//! variant** in `From<SessionError>`/`From<MachineError>` is a different
+//! hazard from argument order and is covered by `error_mapping.rs`; the
+//! **value** mirrors those verification calls return -- two fieldless enums
+//! and a three-decimal record -- carry the same "two values, one type"
+//! hazard and are covered by `value_mapping.rs`.
 
 use matrix_crypto_ffi::{
-    create_crypto_machine, decrypt_event, device_identity_keys, encrypt_event, mark_request_sent,
-    receive_sync_changes, share_scope_key, take_outgoing_requests, CryptoMachineConfig,
+    create_crypto_machine, decrypt_event, device_identity_keys, device_statuses, encrypt_event,
+    mark_request_sent, receive_sync_changes, request_verification, share_scope_key,
+    take_outgoing_requests, CryptoMachineConfig, MachineFfiError, TrustState,
 };
 
 const SCOPE: &str = "!delegate-order:example.org";
@@ -109,6 +123,59 @@ fn the_exported_functions_pass_their_arguments_to_the_core_in_order() {
             keys.curve25519.len(),
             43,
             "an identity key is a 32-byte public key in unpadded base64"
+        );
+
+        // --- device_statuses(user_id) -> Vec<DeviceStatus> --------------
+        // Nothing to transpose, but two things worth pinning at this
+        // boundary. The record pairs an identifier with a trust value, and
+        // a mirror that crossed them would report one device's trust under
+        // another device's name -- a verification tick beside the wrong row
+        // in a list. And the argument has to be used at all: an
+        // implementation that ignored it and answered about the live
+        // machine would satisfy the first assertion and fail the second.
+        let statuses = device_statuses(USER_ID.to_string())
+            .await
+            .expect("this machine always knows its own device");
+        assert_eq!(
+            statuses.len(),
+            1,
+            "a machine that has queried nobody knows exactly one device, its own"
+        );
+        assert_eq!(
+            statuses[0].device_id, DEVICE_ID,
+            "the device_id field must carry the device id"
+        );
+        assert!(
+            matches!(statuses[0].trust, TrustState::Verified),
+            "this machine's own device is locally trusted from the moment it is \
+             created, because this process holds its private keys -- which is \
+             upstream's rule and worth pinning, since it means 'some device reads \
+             verified' is true before any verification has ever run"
+        );
+        assert!(
+            device_statuses("@nobody:example.org".to_string())
+                .await
+                .expect("a user this machine knows nothing about is not an error")
+                .is_empty(),
+            "device_statuses must answer about the user it was given, not about \
+             whichever user the machine happens to be"
+        );
+
+        // --- request_verification(user_id, device_id) -------------------
+        // Two `String`s, nothing in the type system between them. Driven
+        // against a user this machine has never queried, so neither order
+        // has a side effect: correct, the core finds no such device;
+        // transposed, `BOBDEVICE` reaches it as a user id and does not
+        // parse. Two different errors, so the transposition is observable
+        // rather than merely differently labelled.
+        let unknown = request_verification("@bob:example.org".to_string(), "BOBDEVICE".to_string())
+            .await
+            .expect_err("this machine has never been told about that device");
+        assert!(
+            matches!(unknown, MachineFfiError::UnknownDevice),
+            "request_verification must receive the user id first and the device id \
+             second -- transposed, the core is handed a device id where a user id \
+             belongs and reports a malformed identifier instead"
         );
 
         share_scope_key(SCOPE.to_string(), vec![USER_ID.to_string()])

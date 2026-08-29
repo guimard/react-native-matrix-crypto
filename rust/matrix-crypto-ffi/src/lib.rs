@@ -258,6 +258,258 @@ pub async fn device_identity_keys(
         .map_err(Into::into)
 }
 
+/// How far along one verification flow is. Mirror of the core's
+/// `FlowStage`, carrying the UniFFI enum derive.
+///
+/// **A new variant is appended here. It is never inserted, and no existing
+/// one is ever removed or reordered.** This is the same rule
+/// `SessionFfiError` below states for errors, and it applies to an enum
+/// from birth rather than from its first change: UniFFI assigns each
+/// variant's wire ordinal by declaration position, and the generated
+/// TypeScript reads that back as a numbered `switch` in exactly this order.
+/// Inserting a variant renumbers every variant after it, so a binding
+/// generated before the insert does not fail on the new value -- it decodes
+/// every later value as its neighbour, and a caller is told the flow is at
+/// a stage it is not. For a stage enum specifically, the worst
+/// misdecoding available is `Cancelled` read as `Done`, which is a refused
+/// verification presented as a successful one.
+///
+/// **This comment ships.** Codegen copies it verbatim into
+/// `src/generated/matrix_crypto.ts`, so it has to describe the rule rather
+/// than the state of one commit.
+///
+/// The core's own `FlowStage` documents what each stage means for a person
+/// looking at a screen; this mirror deliberately repeats none of it, so the
+/// two cannot drift into saying different things. The `From` impl below is
+/// exhaustive, so a variant added to either side fails this build.
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum VerificationStage {
+    Requested,
+    Ready,
+    Started,
+    KeysExchanged,
+    Confirmed,
+    Done,
+    Cancelled,
+}
+
+impl From<matrix_crypto_core::FlowStage> for VerificationStage {
+    fn from(value: matrix_crypto_core::FlowStage) -> Self {
+        // Exhaustive, no wildcard arm. See Global Constraints.
+        match value {
+            matrix_crypto_core::FlowStage::Requested => Self::Requested,
+            matrix_crypto_core::FlowStage::Ready => Self::Ready,
+            matrix_crypto_core::FlowStage::Started => Self::Started,
+            matrix_crypto_core::FlowStage::KeysExchanged => Self::KeysExchanged,
+            matrix_crypto_core::FlowStage::Confirmed => Self::Confirmed,
+            matrix_crypto_core::FlowStage::Done => Self::Done,
+            matrix_crypto_core::FlowStage::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+/// One symbol of a short authentication string. Mirror of the core's
+/// `SasEmoji`, carrying the UniFFI record derive.
+///
+/// No `Debug` derive, and the reason is stronger here than anywhere else in
+/// this file: this record *is* the authentication material. Anything that
+/// learns it while a flow is open learns what an interposed party would
+/// need to answer the comparison correctly. The core hand-writes a
+/// redacting `Debug` for its own copy; this mirror carries none at all,
+/// the same choice `Envelope` and `CryptoMachineConfig` above already make.
+#[derive(Clone, uniffi::Record)]
+pub struct SasEmoji {
+    pub symbol: String,
+    pub description: String,
+}
+
+/// The short authentication string, in both forms the protocol can
+/// produce. Mirror of the core's `SasMaterial`.
+///
+/// No `Debug` derive. See `SasEmoji` above: one symbol is a seventh of the
+/// answer, and the decimals are the whole of it.
+#[derive(Clone, uniffi::Record)]
+pub struct SasMaterial {
+    pub emoji: Option<Vec<SasEmoji>>,
+    /// A three-element tuple in the core; three named fields here, because
+    /// UniFFI has no tuple type and a `Vec<u16>` would let a length other
+    /// than three cross the boundary and be discovered by a consumer
+    /// indexing past the end.
+    pub decimal_one: u16,
+    pub decimal_two: u16,
+    pub decimal_three: u16,
+}
+
+impl From<matrix_crypto_core::SasMaterial> for SasMaterial {
+    fn from(value: matrix_crypto_core::SasMaterial) -> Self {
+        // Destructured, not field-accessed: a field added to the core
+        // record later must fail this build rather than be silently
+        // dropped. See Global Constraints.
+        let matrix_crypto_core::SasMaterial { emoji, decimals } = value;
+        let (decimal_one, decimal_two, decimal_three) = decimals;
+        Self {
+            emoji: emoji.map(|symbols| {
+                symbols
+                    .into_iter()
+                    .map(|symbol| {
+                        let matrix_crypto_core::SasEmoji {
+                            symbol,
+                            description,
+                        } = symbol;
+                        SasEmoji {
+                            symbol,
+                            description,
+                        }
+                    })
+                    .collect()
+            }),
+            decimal_one,
+            decimal_two,
+            decimal_three,
+        }
+    }
+}
+
+/// What this library will say about one device. Mirror of the core's
+/// `TrustState`.
+///
+/// The append-only ordinal rule `VerificationStage` above states in full
+/// applies to this enum too, and with a sharper consequence: the values are
+/// ordered least-trusted first, so a renumbering shifts every answer one
+/// place towards `Verified`.
+///
+/// `Recognized` is not produced by this build. It is declared because the
+/// TypeScript union it mirrors is closed, and widening a closed union later
+/// is a breaking change for every consumer that switched on it
+/// exhaustively. The core's own `TrustState` says so at the variant.
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum TrustState {
+    Unverified,
+    Recognized,
+    Verified,
+}
+
+impl From<matrix_crypto_core::TrustState> for TrustState {
+    fn from(value: matrix_crypto_core::TrustState) -> Self {
+        // Exhaustive, no wildcard arm. See Global Constraints.
+        match value {
+            matrix_crypto_core::TrustState::Unverified => Self::Unverified,
+            matrix_crypto_core::TrustState::Recognized => Self::Recognized,
+            matrix_crypto_core::TrustState::Verified => Self::Verified,
+        }
+    }
+}
+
+/// One device of one user, and the trust this library reports for it.
+/// Mirror of the core's `DeviceStatus`.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct DeviceStatus {
+    pub device_id: String,
+    pub trust: TrustState,
+}
+
+impl From<matrix_crypto_core::DeviceStatus> for DeviceStatus {
+    fn from(value: matrix_crypto_core::DeviceStatus) -> Self {
+        // Destructured, not field-accessed. See Global Constraints.
+        let matrix_crypto_core::DeviceStatus { device_id, trust } = value;
+        Self {
+            device_id,
+            trust: trust.into(),
+        }
+    }
+}
+
+/// Every device this machine knows of for `user_id`, with its trust.
+/// Mirrors `device_statuses`; see its own doc comment in
+/// `matrix-crypto-core::identity`, including why an empty answer does not
+/// mean the user has no devices.
+#[uniffi::export]
+pub async fn device_statuses(user_id: String) -> Result<Vec<DeviceStatus>, MachineFfiError> {
+    matrix_crypto_core::device_statuses(&user_id)
+        .await
+        .map(|statuses| statuses.into_iter().map(Into::into).collect())
+        .map_err(Into::into)
+}
+
+/// Asks a device to verify itself against this one, returning the opaque
+/// identifier every other call below addresses the flow by. Mirrors
+/// `request_flow`; see its own doc comment in
+/// `matrix-crypto-core::verification`.
+#[uniffi::export]
+pub async fn request_verification(
+    user_id: String,
+    device_id: String,
+) -> Result<String, MachineFfiError> {
+    matrix_crypto_core::request_flow(&user_id, &device_id)
+        .await
+        .map(|flow| {
+            // Destructured, not field-accessed. See Global Constraints.
+            let matrix_crypto_core::FlowId(id) = flow;
+            id
+        })
+        .map_err(Into::into)
+}
+
+/// Agrees to a verification the other side asked for. Mirrors
+/// `accept_flow`.
+#[uniffi::export]
+pub async fn accept_verification(verification_id: String) -> Result<(), MachineFfiError> {
+    matrix_crypto_core::accept_flow(&matrix_crypto_core::FlowId(verification_id))
+        .await
+        .map_err(Into::into)
+}
+
+/// Starts the comparison itself, once both sides are ready. Mirrors
+/// `begin_comparison`; see its own doc comment for the two conditions its
+/// `WrongStage` folds together, and the facade for how they are told apart
+/// again.
+#[uniffi::export]
+pub async fn start_verification_comparison(verification_id: String) -> Result<(), MachineFfiError> {
+    matrix_crypto_core::begin_comparison(&matrix_crypto_core::FlowId(verification_id))
+        .await
+        .map_err(Into::into)
+}
+
+/// How far along the flow is. Mirrors `flow_stage`.
+#[uniffi::export]
+pub async fn verification_stage(
+    verification_id: String,
+) -> Result<VerificationStage, MachineFfiError> {
+    matrix_crypto_core::flow_stage(&matrix_crypto_core::FlowId(verification_id))
+        .await
+        .map(Into::into)
+        .map_err(Into::into)
+}
+
+/// The short authentication string, once there is one. Mirrors
+/// `read_material`; see its own doc comment for why the absence of a string
+/// is two different errors and not an empty record.
+#[uniffi::export]
+pub async fn verification_material(
+    verification_id: String,
+) -> Result<SasMaterial, MachineFfiError> {
+    matrix_crypto_core::read_material(&matrix_crypto_core::FlowId(verification_id))
+        .await
+        .map(Into::into)
+        .map_err(Into::into)
+}
+
+/// Says the strings matched. Mirrors `confirm_flow`.
+#[uniffi::export]
+pub async fn confirm_verification(verification_id: String) -> Result<(), MachineFfiError> {
+    matrix_crypto_core::confirm_flow(&matrix_crypto_core::FlowId(verification_id))
+        .await
+        .map_err(Into::into)
+}
+
+/// Refuses the verification, or abandons it. Mirrors `cancel_flow`.
+#[uniffi::export]
+pub async fn cancel_verification(verification_id: String) -> Result<(), MachineFfiError> {
+    matrix_crypto_core::cancel_flow(&matrix_crypto_core::FlowId(verification_id))
+        .await
+        .map_err(Into::into)
+}
+
 /// Mirror of the core's sync outcome, carrying the UniFFI record derive.
 ///
 /// Both counts are plain totals with no payload content, key material or

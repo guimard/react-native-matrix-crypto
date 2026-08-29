@@ -265,3 +265,97 @@ describe('toCryptoError against the real UniFFI error shape', () => {
     expect(err.kind).toBe('rejected')
   })
 })
+
+/**
+ * The verification kinds (Task 3).
+ *
+ * `MachineFfiError` grew three fieldless variants for verification flows,
+ * and the Rust side proves the right *variant* is produced for each
+ * condition. Nothing on the Rust side can see whether this map has an entry
+ * for it: without one, a real `MachineFfiError.MaterialNotReady` arrives as
+ * kind `'unknown'` with the message "crypto error: unknown", every Rust
+ * test still green. That is the whole gap these tests close, and it is the
+ * same gap the `StoreCorrupt` entry above sat in for four tasks.
+ *
+ * Fieldless variants, so `.message` is exactly "<Type>.<Variant>" with no
+ * suffix -- the shape `NotInitialised` above documents in full.
+ */
+describe('toCryptoError for the verification kinds', () => {
+  it('maps a real UniFFI-shaped MachineFfiError.UnknownFlow to kind unknown_flow, not unknown', () => {
+    const err = toCryptoError(new Error('MachineFfiError.UnknownFlow'))
+    expect(err.kind).toBe('unknown_flow')
+    expect(err.kind).not.toBe('unknown')
+    expect(err.retriable).toBe(false)
+  })
+
+  it('maps a real UniFFI-shaped MachineFfiError.WrongStage to kind wrong_stage', () => {
+    const err = toCryptoError(new Error('MachineFfiError.WrongStage'))
+    expect(err.kind).toBe('wrong_stage')
+    expect(err.retriable).toBe(false)
+  })
+
+  /**
+   * The one that matters most, and the one a well-meaning edit is most
+   * likely to get wrong in the other direction. It reads transient -- "not
+   * ready *yet*" -- but the state it names does not resolve on its own: the
+   * flow advances when the caller reports what it drained from the pump as
+   * sent, so a product that read `retriable` as permission to loop would
+   * spin forever against a machine that will never move. Both halves are
+   * asserted, because the kind alone would pass with the wrong
+   * retriability.
+   */
+  it('maps MachineFfiError.MaterialNotReady to kind material_not_ready, and reports it non-retriable', () => {
+    const err = toCryptoError(new Error('MachineFfiError.MaterialNotReady'))
+    expect(err.kind).toBe('material_not_ready')
+    expect(err.retriable).toBe(false)
+  })
+
+  /**
+   * All four verification-related machine variants land on four different
+   * kinds. Asserted as a set rather than one by one: each of the four asks
+   * a product to do something different -- pump and try again, wait for a
+   * stage, stop holding this identifier, or query that user's devices --
+   * and any two of them collapsing onto one kind is invisible to a test
+   * that only checks each in isolation.
+   */
+  it('keeps the four verification-related machine variants on four distinct kinds', () => {
+    const kinds = [
+      'MachineFfiError.UnknownFlow',
+      'MachineFfiError.WrongStage',
+      'MachineFfiError.MaterialNotReady',
+      'MachineFfiError.UnknownDevice',
+    ].map((message) => toCryptoError(new Error(message)).kind)
+
+    expect(new Set(kinds).size).toBe(4)
+    expect(kinds).not.toContain('unknown')
+  })
+
+  /**
+   * `MachineFfiError.UnknownDevice` reaches the same entry as
+   * `SessionFfiError.UnknownDevice`, because this map is keyed on the
+   * variant name alone. Convenient rather than obviously correct, and
+   * invisible from `errors.ts`, which names neither enum -- the same
+   * situation `MalformedIdentifier` above is asserted for, and asserted the
+   * same way.
+   */
+  it('maps MachineFfiError.UnknownDevice to the same kind as the session variant', () => {
+    const fromMachine = toCryptoError(new Error('MachineFfiError.UnknownDevice'))
+    const fromSession = toCryptoError(new Error('SessionFfiError.UnknownDevice'))
+    expect(fromMachine.kind).toBe('unknown_device')
+    expect(fromSession.kind).toBe('unknown_device')
+  })
+
+  /**
+   * The three kinds with no Rust variant at all, synthesised in `facade.ts`
+   * the way `not_implemented` is. They are asserted here, beside the ones
+   * that do cross the boundary, so this file stays the single list of every
+   * kind this library can produce.
+   */
+  it('maps the three facade-synthesised verification names to their own kinds', () => {
+    expect(toCryptoError({ name: 'ComparisonAlreadyStarted' }).kind).toBe(
+      'comparison_already_started',
+    )
+    expect(toCryptoError({ name: 'VerificationEnded' }).kind).toBe('verification_ended')
+    expect(toCryptoError({ name: 'MaterialMismatch' }).kind).toBe('material_mismatch')
+  })
+})

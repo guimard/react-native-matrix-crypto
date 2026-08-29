@@ -43,6 +43,41 @@ export type CryptoErrorKind =
   // An identifier this library was handed did not parse: a `CryptoScopeId`
   // (which `asCryptoScopeId` never validates), a user id, a device id.
   | 'malformed_identifier'
+  // ---- verification ------------------------------------------------------
+  // The first three cross the FFI boundary; the three after them are
+  // synthesised in this file's `toCryptoError` or in facade.ts, the same way
+  // 'not_implemented' is, and have no Rust variant.
+  //
+  // A verification identifier that names no flow this process is taking
+  // part in. Either it never named one, or the flow it named finished and
+  // the library has since released it -- which happens the next time a flow
+  // is started, not on a timer. A caller holding an id across a later
+  // `requestVerification` may see this for a flow it watched complete.
+  | 'unknown_flow'
+  // The call is one this flow supports, but not at the stage it is at.
+  // `getVerificationStage` says which stage that is; `startVerification-
+  // Comparison` reads it for you and reports the two conditions below
+  // instead where they apply.
+  | 'wrong_stage'
+  // The keys are not exchanged, so there is no string to show yet. **In
+  // practice this almost always means the outbound pump was drained and
+  // never resolved**: the underlying state machine advances on
+  // `markRequestSent`, so a caller that skips it parks the flow here
+  // permanently. Deliberately absent from RETRIABLE below: retrying the
+  // same call changes nothing at all, and pumping is what fixes it.
+  | 'material_not_ready'
+  // `startVerificationComparison` on a flow the *other* side already
+  // started. Not a failure of the verification -- carry on, wait for the
+  // string. Split out from 'wrong_stage' because the sentence a product
+  // shows for it is the opposite of the one below.
+  | 'comparison_already_started'
+  // `startVerificationComparison` on a flow that is over, whether finished
+  // or refused. Nothing to carry on with; start a new one.
+  | 'verification_ended'
+  // `confirmVerification` was handed material that is not the material the
+  // flow currently holds. See that function's own doc comment: the argument
+  // exists so a product cannot confirm a comparison it never showed.
+  | 'material_mismatch'
   | 'not_implemented'
   | 'not_initialised'
   | 'already_initialised'
@@ -96,6 +131,14 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   ['MissingKey', 'missing_key'],
   ['UnsharedSession', 'unshared_session'],
   ['SessionRefused', 'session_refused'],
+  // Reached from two enums, like `MalformedIdentifier` below.
+  // `SessionFfiError::UnknownDevice` is a device that did not meet the trust
+  // level a decryption required; `MachineFfiError::UnknownDevice` is a
+  // well-formed pair of identifiers naming a device this machine has never
+  // been told about, which `requestVerification` reports. One entry serves
+  // both because this map is keyed on the variant name alone, and what a
+  // caller does about either is the same: query that user's devices through
+  // the pump and try again.
   ['UnknownDevice', 'unknown_device'],
   ['Undecryptable', 'undecryptable'],
   // The remaining three `SessionFfiError` variants (Task 7): `raw_json`
@@ -133,12 +176,42 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   ['MalformedIdentifier', 'malformed_identifier'],
   ['NotInitialised', 'not_initialised'],
   ['AlreadyInitialised', 'already_initialised'],
+  // The three `MachineFfiError` variants the verification surface added.
+  // Without these entries every one of them arrives as kind 'unknown' with
+  // the message "crypto error: unknown", which is the failure mode this map
+  // exists to prevent and which no test on the Rust side can see: the core
+  // proves the *right error* is produced, and this map is the only thing
+  // that decides whether a product can tell it apart from any other. That
+  // matters most for 'material_not_ready', which is the loud form of the one
+  // way this flow can otherwise fail silently.
+  ['UnknownFlow', 'unknown_flow'],
+  ['WrongStage', 'wrong_stage'],
+  ['MaterialNotReady', 'material_not_ready'],
+  // Three more entries with no Rust variant, like 'NotImplemented' above,
+  // synthesised in facade.ts. The first two are what
+  // `startVerificationComparison` reports in place of the single
+  // `WrongStage` the layer underneath can produce for three different
+  // situations; the third is `confirmVerification` refusing material that
+  // is not what the flow is showing. Named here rather than built inline so
+  // there is one list of every kind this library can produce.
+  ['ComparisonAlreadyStarted', 'comparison_already_started'],
+  ['VerificationEnded', 'verification_ended'],
+  ['MaterialMismatch', 'material_mismatch'],
 ])
 
 // 'session_refused' is deliberately not here: see its own doc comment on
 // CryptoErrorKind above. It is the one kind this set must never gain by a
 // well-meaning edit that assumes every withheld-session kind belongs next
 // to 'unshared_session'.
+//
+// 'material_not_ready' is deliberately not here either, and for the sharper
+// version of the same reason. It reads transient -- "not ready *yet*" -- and
+// a retry loop is the obvious thing to reach for. But the state it names
+// does not resolve on its own: the flow advances when the caller resolves
+// what it drained from the pump, so a caller that retries without doing that
+// spins forever against a machine that will never move. Reporting it
+// non-retriable is what sends a reader to the doc comment that says which
+// call is missing.
 const RETRIABLE: ReadonlySet<CryptoErrorKind> = new Set(['missing_key', 'unshared_session'])
 
 export function isCryptoError(e: unknown): e is CryptoError {

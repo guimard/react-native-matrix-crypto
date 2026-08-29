@@ -21,8 +21,113 @@ export function asCryptoScopeId(raw: string): CryptoScopeId {
  */
 export type CryptoAlgorithm = 'megolm' | 'olm' | (string & {})
 
-/** Product-facing trust signal. Only 'verified' has cryptographic value. */
+/**
+ * Product-facing trust signal. Only 'verified' has cryptographic value.
+ *
+ * **Closed, unlike `CryptoAlgorithm` and `CryptoErrorKind`.** A product may
+ * switch on this exhaustively, and is meant to: a trust decision with a
+ * silent default branch is the shape this library exists to prevent.
+ *
+ * - `'unverified'` — this library holds the device's keys and has no reason
+ *   to trust it beyond that. Every device reads this until a comparison
+ *   finishes. A device an administrator has blacklisted reads it too: this
+ *   build exposes no call that can set that state, so folding it here says
+ *   exactly as much as this build can honestly say.
+ * - `'recognized'` — **not produced by this build.** Reserved for a device
+ *   believable without a person having compared anything, which needs
+ *   cross-signing. Declared now because widening a closed union later
+ *   breaks every consumer that switched on it exhaustively, and would do so
+ *   precisely when a product had stopped expecting the shape to move. Write
+ *   the branch; it will not run yet.
+ * - `'verified'` — a person compared a short authentication string on this
+ *   device and on the far one, both said it matched, and the flow
+ *   completed. See {@link getDeviceStatuses}, including why your own device
+ *   reads this from the moment it exists and therefore proves nothing.
+ *
+ * **This is about a device, not about an event.** A completed comparison
+ * does not change what a decrypted event says about its sender, because the
+ * event path consults cross-signing and a comparison sets local trust. M3
+ * design, section 7, question 6.
+ */
 export type TrustState = 'unverified' | 'recognized' | 'verified'
+
+/**
+ * How far along a verification flow is.
+ *
+ * **Closed**, like {@link TrustState} and for the same reason: a product
+ * branches on this to decide what to show, and a stage it has never seen
+ * must be a compile error rather than a silent default.
+ *
+ * Deliberately coarser than the nineteen states the underlying protocol
+ * distinguishes. What a caller has to decide is which of a small set of
+ * things to do next, and every distinction that does not change that answer
+ * is one this surface would be inviting a product to branch on for no
+ * reason.
+ *
+ * - `'requested'` — asked for, by one side or the other, and not yet
+ *   answered. The other side must call {@link acceptVerification}.
+ * - `'ready'` — both sides have agreed, and either may now call
+ *   {@link startVerificationComparison}.
+ * - `'started'` — the comparison has begun and the keys are not exchanged
+ *   yet, so there is nothing to show. A flow that stays here is usually a
+ *   flow whose requests were drained and never reported sent; see
+ *   {@link getVerificationMaterial}.
+ * - `'keys-exchanged'` — the short authentication string is available.
+ *   Show it, and ask.
+ * - `'confirmed'` — this side has said the strings match; the other side
+ *   has not yet.
+ * - `'done'` — both sides said so. The other device now reads `'verified'`
+ *   from {@link getDeviceStatuses}.
+ * - `'cancelled'` — over without a verification, whether a side refused, a
+ *   side abandoned it, or it timed out.
+ */
+export type VerificationStage =
+  | 'requested'
+  | 'ready'
+  | 'started'
+  | 'keys-exchanged'
+  | 'confirmed'
+  | 'done'
+  | 'cancelled'
+
+/**
+ * One symbol of a short authentication string, with the word for it.
+ *
+ * `description` is the protocol's own English word for the symbol. A
+ * product showing these in another language looks the word up from the
+ * symbol's position in the array, which is why both travel together.
+ */
+export interface SasEmoji {
+  symbol: string
+  description: string
+}
+
+/**
+ * The short authentication string, in both of the forms the protocol can
+ * produce.
+ *
+ * **Show one of these to a person and ask whether it matches what the other
+ * person sees, out of band.** Comparing them programmatically across a
+ * channel this flow itself established proves nothing: that channel is what
+ * is being verified.
+ *
+ * **Treat this value as secret while the flow is open.** Anything that
+ * learns it learns what an interposed party would need to answer the
+ * comparison correctly. Do not log it, do not persist it, do not put it in
+ * a crash report. The Rust core hand-writes a redacting debug format for
+ * exactly this reason and cannot reach across this boundary to do the same
+ * for JavaScript.
+ *
+ * `emoji` is optional and `decimals` is not, and that asymmetry belongs to
+ * the protocol rather than being a convenience: the symbol form exists only
+ * when both sides negotiated it, so a screen offering only symbols has a
+ * live path with nothing to show. The digits are always there once the keys
+ * are exchanged.
+ */
+export interface SasMaterial {
+  emoji?: SasEmoji[]
+  decimals: [number, number, number]
+}
 
 /**
  * The five fields `receiveSyncChanges` reads. Named as the native call names
