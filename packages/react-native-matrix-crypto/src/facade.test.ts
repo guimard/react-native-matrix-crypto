@@ -37,6 +37,7 @@ import {
   openCryptoStore as nativeOpenCryptoStore,
   receiveSyncChanges as nativeReceiveSyncChanges,
   requestVerification as nativeRequestVerification,
+  SenderVerification as NativeSenderVerification,
   shareScopeKey as nativeShareScopeKey,
   startVerificationComparison as nativeStartVerificationComparison,
   takeOutgoingRequests as nativeTakeOutgoingRequests,
@@ -101,6 +102,12 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
       eventType: 'm.native.event',
       ciphertext: toArrayBuffer('native-plaintext'),
       sender: '@native-sender:example.org',
+      // `actual.SenderVerification`, the real generated enum, not a
+      // hand-typed number: a fixture that guessed the ordinal would keep
+      // passing after a regeneration renumbered it. Not `Verified`, here
+      // or anywhere else in this file -- see the distinguishing tests
+      // below for why that is a rule rather than an accident.
+      senderVerification: actual.SenderVerification.UnsignedDevice,
     })),
     shareScopeKey: vi.fn(async () => undefined),
     takeOutgoingRequests: vi.fn(async () => [{ id: 'req-1', kind: 'keys_upload', body: '{}' }]),
@@ -456,6 +463,22 @@ describe('encryptEvent wiring to the native layer', () => {
   })
 
   /**
+   * The encrypt direction has no verification state, and says so by not
+   * carrying one. `toEqual` above already fails on an extra key, so this
+   * asserts the same thing a second way and for a different reason: what
+   * would be wrong is not an unexpected field but an *invented claim*, and
+   * the tempting invention is `'verified'` -- true of this device as a
+   * device, meaningless about an event nobody decrypted. See
+   * `EventEnvelope.senderVerification`.
+   */
+  it('carries no authenticity on the encrypt path, because there is none to carry', async () => {
+    const envelope = await encryptEvent(scope, 'm.room.message', { body: 'hi' })
+
+    expect(envelope.senderVerification).toBeUndefined()
+    expect('senderVerification' in envelope).toBe(false)
+  })
+
+  /**
    * Regression for F6 (Task 7 fix round 1): `JSON.stringify(undefined)` is
    * the *value* `undefined`, not a string, and `payload: unknown` lets it
    * through the type system. This proves it is rejected before native is
@@ -520,6 +543,7 @@ describe('decryptEvent wiring to the native layer', () => {
       eventType: 'm.native.event',
       ciphertext: toArrayBuffer('native-plaintext'),
       sender: '@native-sender:example.org',
+      senderVerification: NativeSenderVerification.UnsignedDevice,
       ...({ internalDebugFlag: true } as Record<string, unknown>),
     })
 
@@ -531,6 +555,7 @@ describe('decryptEvent wiring to the native layer', () => {
       eventType: 'm.native.event',
       ciphertext: new TextEncoder().encode('native-plaintext'),
       sender: '@native-sender:example.org',
+      senderVerification: { state: 'unverified', reason: 'unsigned_device' },
     })
   })
 
@@ -546,6 +571,153 @@ describe('decryptEvent wiring to the native layer', () => {
     )
 
     expect(nativeDecryptEvent).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The distinguishing test, at the public surface.
+   *
+   * Two decryptions whose native verification state genuinely differs must
+   * come out as two different public values. `mismatched_sender` is an
+   * impersonation signal and `unsigned_device` is the ordinary case for
+   * every peer in this release; a surface that folded the first into the
+   * second would hide the case a product must react to, and -- section
+   * 2.5's lesson -- the fold would also disable the test that would have
+   * caught it.
+   *
+   * Both decryptions are handed identical everything else, so the only
+   * thing the returned values can be differing on is the field under test.
+   */
+  it('surfaces two genuinely different native verification states as two different public values', async () => {
+    const sameEverythingElse = {
+      scope: '!native-scope:example.org',
+      algorithm: 'm.native.algorithm',
+      eventType: 'm.native.event',
+      ciphertext: toArrayBuffer('native-plaintext'),
+      sender: '@native-sender:example.org',
+    }
+
+    vi.mocked(nativeDecryptEvent).mockResolvedValueOnce({
+      ...sameEverythingElse,
+      senderVerification: NativeSenderVerification.UnsignedDevice,
+    })
+    const ordinary = await decryptEvent(scope, { type: 'm.room.encrypted' })
+
+    vi.mocked(nativeDecryptEvent).mockResolvedValueOnce({
+      ...sameEverythingElse,
+      senderVerification: NativeSenderVerification.MismatchedSender,
+    })
+    const impersonated = await decryptEvent(scope, { type: 'm.room.encrypted' })
+
+    expect(ordinary.senderVerification).toEqual({
+      state: 'unverified',
+      reason: 'unsigned_device',
+    })
+    expect(impersonated.senderVerification).toEqual({
+      state: 'unverified',
+      reason: 'mismatched_sender',
+    })
+    expect(impersonated.senderVerification).not.toEqual(ordinary.senderVerification)
+
+    // Every other field is identical, so the difference above is the field
+    // under test and not something that leaked in beside it.
+    expect(impersonated.ciphertext).toEqual(ordinary.ciphertext)
+    expect(impersonated.sender).toBe(ordinary.sender)
+    expect(impersonated.algorithm).toBe(ordinary.algorithm)
+  })
+
+  /**
+   * The two reasons behind `no_device` stay apart.
+   *
+   * They are one union member with a `problem` discriminator rather than
+   * two members, which is exactly the shape in which a mapping quietly
+   * collapses them: "the device is missing" and "the key came from an
+   * unauthenticated source" are different facts and different product
+   * responses.
+   */
+  it('keeps the two no_device reasons apart', async () => {
+    const base = {
+      scope: '!native-scope:example.org',
+      algorithm: 'm.native.algorithm',
+      eventType: 'm.native.event',
+      ciphertext: toArrayBuffer('native-plaintext'),
+      sender: '@native-sender:example.org',
+    }
+
+    vi.mocked(nativeDecryptEvent).mockResolvedValueOnce({
+      ...base,
+      senderVerification: NativeSenderVerification.NoDeviceMissing,
+    })
+    expect((await decryptEvent(scope, {})).senderVerification).toEqual({
+      state: 'unverified',
+      reason: 'no_device',
+      problem: 'missing',
+    })
+
+    vi.mocked(nativeDecryptEvent).mockResolvedValueOnce({
+      ...base,
+      senderVerification: NativeSenderVerification.NoDeviceInsecureSource,
+    })
+    expect((await decryptEvent(scope, {})).senderVerification).toEqual({
+      state: 'unverified',
+      reason: 'no_device',
+      problem: 'insecure_source',
+    })
+  })
+
+  /**
+   * **Nothing this release can produce comes out as `'verified'`.**
+   *
+   * The M3 design ruling on this type binds the suite to hold no case that
+   * appears to produce `'verified'`: a fixture faking it would teach
+   * exactly the belief the ruling exists to prevent, and completing a
+   * verification does not make an event read it -- that changes a
+   * *device*, and `getDeviceStatuses` is where it shows.
+   *
+   * So the `'verified'` arm is checked from the other side, which is the
+   * direction the damage runs in. What would hurt is not "`'verified'`
+   * fails to arrive"; it is "something else arrives *as* `'verified'`" --
+   * an unsigned device, or worse a mismatched sender, presented to a
+   * product as an authentic one. This asserts that over every native value
+   * this release can produce, and never constructs a `Verified` to do it.
+   *
+   * The remaining arm is covered by the compiler, and that is a claim this
+   * file previously made while it was false. `senderVerificationOf` returned
+   * `SenderVerification | undefined`, so a missing `case` fell off the end
+   * and compiled; review deleted the `Verified` arm and `tsc` exited 0 with
+   * every test here green. The function now takes and returns non-optional
+   * values, with the absent case handled at its call site, so falling off
+   * the end is `TS2366` -- verified by deleting an arm and reading the
+   * error, not assumed. Two other checks stand behind the Rust half: the
+   * core's own `match` and the FFI `From` are exhaustive over upstream enums
+   * that are not `#[non_exhaustive]`, so an upstream addition fails the Rust
+   * build before it can reach this file.
+   */
+  it('never reports verified for any native value this release can produce', async () => {
+    const producible = [
+      NativeSenderVerification.UnsignedDevice,
+      NativeSenderVerification.NoDeviceMissing,
+      NativeSenderVerification.NoDeviceInsecureSource,
+      NativeSenderVerification.MismatchedSender,
+      // Not producible today either, but neither is a claim of
+      // authenticity, and both become producible when cross-signing lands.
+      NativeSenderVerification.UnverifiedIdentity,
+      NativeSenderVerification.VerificationViolation,
+    ]
+
+    for (const value of producible) {
+      vi.mocked(nativeDecryptEvent).mockResolvedValueOnce({
+        scope: '!native-scope:example.org',
+        algorithm: 'm.native.algorithm',
+        eventType: 'm.native.event',
+        ciphertext: toArrayBuffer('native-plaintext'),
+        sender: '@native-sender:example.org',
+        senderVerification: value,
+      })
+
+      const envelope = await decryptEvent(scope, { type: 'm.room.encrypted' })
+
+      expect(envelope.senderVerification?.state).toBe('unverified')
+    }
   })
 })
 

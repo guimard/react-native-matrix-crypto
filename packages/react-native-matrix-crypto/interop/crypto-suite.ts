@@ -48,7 +48,12 @@ export interface CryptoBindingRequest {
   body: string
 }
 
-/** Mirrors the facade's `EventEnvelope`, minus the branded scope. */
+/**
+ * Mirrors the facade's `EventEnvelope`, minus the branded scope and minus
+ * `senderVerification` -- this suite asserts on transport and payload, not
+ * on sender authenticity, and restating the shape rather than importing it
+ * is deliberate. Nothing here exercises the new field; see the backlog.
+ */
 export interface CryptoBindingEnvelope {
   algorithm: string
   eventType: string

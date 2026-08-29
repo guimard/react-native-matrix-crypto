@@ -26,10 +26,12 @@
 //! crate, and none of the conversions touches state. That is why this file
 //! runs in no measurable time.
 
-use matrix_crypto_core::{DeviceStatus, FlowStage, SasEmoji, SasMaterial, TrustState};
+use matrix_crypto_core::{
+    DeviceStatus, Envelope, FlowStage, SasEmoji, SasMaterial, SenderVerification, TrustState,
+};
 use matrix_crypto_ffi::{
-    DeviceStatus as FfiDeviceStatus, SasMaterial as FfiSasMaterial, TrustState as FfiTrustState,
-    VerificationStage,
+    DeviceStatus as FfiDeviceStatus, Envelope as FfiEnvelope, SasMaterial as FfiSasMaterial,
+    SenderVerification as FfiSenderVerification, TrustState as FfiTrustState, VerificationStage,
 };
 
 /// All seven stages, each to its own. One assertion per variant rather than
@@ -237,5 +239,150 @@ fn a_device_status_keeps_its_identifier_and_its_trust_together() {
         matches!(other.trust, FfiTrustState::Unverified),
         "the second status is here so this test fails against an \
          implementation that returns a constant"
+    );
+}
+
+/// Every sender-verification value this build can produce, each to its own.
+///
+/// # Why `Verified` is not an input anywhere in this file
+///
+/// It is not an oversight and it is not laziness. The M3 design ruling on
+/// this type (spec section 7, question 3) binds the implementation to two
+/// things: document the three unreachable values at the type, and keep the
+/// test suite free of any case that appears to produce `Verified`. A
+/// `From` test taking `SenderVerification::Verified` as a literal is such a
+/// case -- read out of context it says this library produces that value,
+/// which it does not, and the whole reason the ruling exists is that
+/// believing otherwise is the expensive mistake.
+///
+/// So the `Verified` arm is covered from the other side instead, which is
+/// where the danger actually lives. What would hurt is not "`Verified` fails
+/// to arrive"; it is "something else arrives *as* `Verified`" -- the same
+/// sentence this file's own header calls the worst one this library could
+/// say, one enum over. `nothing_this_build_produces_crosses_as_verified`
+/// below asserts exactly that, over every value this build can produce, and
+/// never constructs a `Verified` to do it. Between the two, the only arm no
+/// assertion touches is one the compiler already proves total: the `From`
+/// impl matches exhaustively with no wildcard, so the arm exists and a
+/// variant added to either side fails the build.
+///
+/// One assertion per variant rather than a loop, for the reason the flow
+/// stage test above gives: a loop would need the two enums to be relatable
+/// by something other than this mapping, which is the thing under test.
+#[test]
+fn every_reachable_sender_verification_maps_to_the_matching_ffi_variant() {
+    assert!(
+        matches!(
+            FfiSenderVerification::from(SenderVerification::UnsignedDevice),
+            FfiSenderVerification::UnsignedDevice
+        ),
+        "the ordinary case for every peer in this build must not arrive as \
+         another value"
+    );
+    assert!(
+        matches!(
+            FfiSenderVerification::from(SenderVerification::NoDeviceMissing),
+            FfiSenderVerification::NoDeviceMissing
+        ),
+        "a missing device and an insecure source are different reasons and \
+         must stay apart across the boundary"
+    );
+    assert!(
+        matches!(
+            FfiSenderVerification::from(SenderVerification::NoDeviceInsecureSource),
+            FfiSenderVerification::NoDeviceInsecureSource
+        ),
+        "an insecure source must not arrive as a merely missing device"
+    );
+    assert!(
+        matches!(
+            FfiSenderVerification::from(SenderVerification::MismatchedSender),
+            FfiSenderVerification::MismatchedSender
+        ),
+        "the impersonation signal must not arrive as one of its neighbours; \
+         folding it is the failure the design ruling on this type names"
+    );
+
+    // The two declared-but-unreachable levels that are not `Verified`. No
+    // fixture hazard here: neither is a claim of authenticity, and both
+    // become reachable the moment cross-signing lands, at which point this
+    // is the assertion that says the wiring was already right.
+    assert!(matches!(
+        FfiSenderVerification::from(SenderVerification::UnverifiedIdentity),
+        FfiSenderVerification::UnverifiedIdentity
+    ));
+    assert!(matches!(
+        FfiSenderVerification::from(SenderVerification::VerificationViolation),
+        FfiSenderVerification::VerificationViolation
+    ));
+}
+
+/// No value this build produces crosses the boundary as `Verified`.
+///
+/// The complement of the test above, and the one that would catch the
+/// expensive defect. A `From` arm sending `UnsignedDevice` to `Verified`
+/// compiles, passes clippy, and passes every other test in this repository
+/// -- and it turns "a device this machine has merely heard of" into "this
+/// message is guaranteed to be authentic" on a product's screen.
+///
+/// Constructs no `Verified` of its own, deliberately: see the previous
+/// test's doc comment.
+#[test]
+fn nothing_this_build_produces_crosses_as_verified() {
+    for produced in [
+        SenderVerification::UnsignedDevice,
+        SenderVerification::NoDeviceMissing,
+        SenderVerification::NoDeviceInsecureSource,
+        SenderVerification::MismatchedSender,
+        // The two unreachable-until-cross-signing levels are here too. If
+        // one of them ever starts arriving, it must arrive as itself.
+        SenderVerification::UnverifiedIdentity,
+        SenderVerification::VerificationViolation,
+    ] {
+        assert!(
+            !matches!(
+                FfiSenderVerification::from(produced),
+                FfiSenderVerification::Verified
+            ),
+            "{produced:?} crossed the boundary as Verified -- the one value \
+             this build cannot honestly report about a decrypted event"
+        );
+    }
+}
+
+/// An envelope carries its authenticity across, and an absent one stays
+/// absent.
+///
+/// Two envelopes, not one: an implementation that hard-codes either answer
+/// passes a single-case test. The absent case is the encrypt direction,
+/// where there is no such thing as a verification state and `None` says so
+/// rather than a value being invented.
+#[test]
+fn an_envelope_carries_its_authenticity_across_and_an_absent_one_stays_absent() {
+    let decrypted = FfiEnvelope::from(Envelope {
+        scope: "!s:example.org".to_string(),
+        algorithm: "an.algorithm".to_string(),
+        event_type: "an.event.type".to_string(),
+        ciphertext: b"plaintext".to_vec(),
+        sender: "@someone:example.org".to_string(),
+        sender_verification: Some(SenderVerification::MismatchedSender),
+    });
+    assert!(matches!(
+        decrypted.sender_verification,
+        Some(FfiSenderVerification::MismatchedSender)
+    ));
+
+    let encrypted = FfiEnvelope::from(Envelope {
+        scope: "!s:example.org".to_string(),
+        algorithm: "an.algorithm".to_string(),
+        event_type: "an.event.type".to_string(),
+        ciphertext: b"ciphertext".to_vec(),
+        sender: "@someone:example.org".to_string(),
+        sender_verification: None,
+    });
+    assert!(
+        encrypted.sender_verification.is_none(),
+        "an absent authenticity must stay absent, not acquire a default -- \
+         a default here would be a claim about an event nobody decrypted"
     );
 }

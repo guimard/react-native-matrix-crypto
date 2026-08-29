@@ -25,6 +25,7 @@ export type {
   EventEnvelope,
   SasEmoji,
   SasMaterial,
+  SenderVerification,
   SyncDelta,
   TrustState,
   VerificationStage,

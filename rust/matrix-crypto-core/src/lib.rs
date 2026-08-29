@@ -21,7 +21,8 @@ pub use probe::{probe, ProbeReport};
 pub use runtime::in_runtime;
 pub use session::{
     decrypt_event, encrypt_event, mark_request_sent, receive_sync_changes, share_scope_key,
-    take_outgoing_requests, Envelope, OutgoingRequest, SessionError, SyncOutcome,
+    take_outgoing_requests, Envelope, OutgoingRequest, SenderVerification, SessionError,
+    SyncOutcome,
 };
 pub use verification::{
     accept_flow, begin_comparison, cancel_flow, confirm_flow, flow_stage, read_material,
