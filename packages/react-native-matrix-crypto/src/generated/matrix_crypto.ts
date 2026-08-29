@@ -1271,6 +1271,83 @@ const FfiConverterTypeDeviceStatus = (() => {
 })();
 
 /**
+ * What upstream knew about the sender of one decrypted event. Mirror of
+ * the core's `SenderVerification`.
+ *
+ * The append-only ordinal rule `VerificationStage` above states in full
+ * applies to this enum too. Its consequence here is the sharpest in the
+ * file: the variants are ordered with `Verified` first, so a renumbering
+ * shifts every answer one place *towards* it, and the worst misdecoding
+ * available is an unsigned device or a mismatched sender read as an
+ * authentic one. Append; never insert.
+ *
+ * The order itself is not this crate's choice and is not the core's
+ * either -- both take it from upstream's own `VerificationState` and
+ * `VerificationLevel` declarations, so the three lists can be read side by
+ * side. The core's own enum documents what each value means, and which
+ * three of them this build cannot produce; this mirror deliberately
+ * repeats none of it, so the two cannot drift into saying different
+ * things.
+ */
+export enum SenderVerification {
+  Verified,
+  UnverifiedIdentity,
+  VerificationViolation,
+  UnsignedDevice,
+  NoDeviceMissing,
+  NoDeviceInsecureSource,
+  MismatchedSender,
+}
+
+const FfiConverterTypeSenderVerification = (() => {
+  type TypeName = SenderVerification;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      switch (c.readI32()) {
+        case 1:
+          return SenderVerification.Verified;
+        case 2:
+          return SenderVerification.UnverifiedIdentity;
+        case 3:
+          return SenderVerification.VerificationViolation;
+        case 4:
+          return SenderVerification.UnsignedDevice;
+        case 5:
+          return SenderVerification.NoDeviceMissing;
+        case 6:
+          return SenderVerification.NoDeviceInsecureSource;
+        case 7:
+          return SenderVerification.MismatchedSender;
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase();
+      }
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      switch (value) {
+        case SenderVerification.Verified:
+          return c.writeI32(1);
+        case SenderVerification.UnverifiedIdentity:
+          return c.writeI32(2);
+        case SenderVerification.VerificationViolation:
+          return c.writeI32(3);
+        case SenderVerification.UnsignedDevice:
+          return c.writeI32(4);
+        case SenderVerification.NoDeviceMissing:
+          return c.writeI32(5);
+        case SenderVerification.NoDeviceInsecureSource:
+          return c.writeI32(6);
+        case SenderVerification.MismatchedSender:
+          return c.writeI32(7);
+      }
+    }
+    allocationSize(value: TypeName): number {
+      return 4;
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
  * Mirror of the core's envelope, carrying the UniFFI record derive.
  *
  * No `Debug` derive: `ciphertext` is, depending on which call produced
@@ -1287,6 +1364,12 @@ export type Envelope = {
   eventType: string;
   ciphertext: ArrayBuffer;
   sender: string;
+  /**
+   * `None` from `encrypt_event`, `Some` from every successful
+   * `decrypt_event`. The core's own field says why, at length; this
+   * mirror does not repeat it.
+   */
+  senderVerification?: SenderVerification;
 };
 
 /**
@@ -1314,6 +1397,8 @@ const FfiConverterTypeEnvelope = (() => {
         eventType: FfiConverterString.readFromCursor(c),
         ciphertext: FfiConverterArrayBuffer.readFromCursor(c),
         sender: FfiConverterString.readFromCursor(c),
+        senderVerification:
+          FfiConverterOptionalTypeSenderVerification.readFromCursor(c),
       };
     }
     writeIntoCursor(value: TypeName, c: Cursor): void {
@@ -1322,6 +1407,10 @@ const FfiConverterTypeEnvelope = (() => {
       FfiConverterString.writeIntoCursor(value.eventType, c);
       FfiConverterArrayBuffer.writeIntoCursor(value.ciphertext, c);
       FfiConverterString.writeIntoCursor(value.sender, c);
+      FfiConverterOptionalTypeSenderVerification.writeIntoCursor(
+        value.senderVerification,
+        c
+      );
     }
     allocationSize(value: TypeName): number {
       return (
@@ -1329,7 +1418,10 @@ const FfiConverterTypeEnvelope = (() => {
         FfiConverterString.allocationSize(value.algorithm) +
         FfiConverterString.allocationSize(value.eventType) +
         FfiConverterArrayBuffer.allocationSize(value.ciphertext) +
-        FfiConverterString.allocationSize(value.sender)
+        FfiConverterString.allocationSize(value.sender) +
+        FfiConverterOptionalTypeSenderVerification.allocationSize(
+          value.senderVerification
+        )
       );
     }
   }
@@ -3019,6 +3111,11 @@ const uniffiCallbackInterfaceProbeObserver: {
 // FfiConverter for string | undefined
 const FfiConverterOptionalString = new FfiConverterOptional(FfiConverterString);
 
+// FfiConverter for SenderVerification | undefined
+const FfiConverterOptionalTypeSenderVerification = new FfiConverterOptional(
+  FfiConverterTypeSenderVerification
+);
+
 // FfiConverter for Array<SasEmoji>
 const FfiConverterSequenceTypeSasEmoji = new FfiConverterArray(
   FfiConverterTypeSasEmoji
@@ -3242,6 +3339,7 @@ export default Object.freeze({
     FfiConverterTypeProbeSignal,
     FfiConverterTypeSasEmoji,
     FfiConverterTypeSasMaterial,
+    FfiConverterTypeSenderVerification,
     FfiConverterTypeSessionFfiError,
     FfiConverterTypeSyncOutcome,
     FfiConverterTypeTrustState,

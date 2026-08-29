@@ -537,6 +537,53 @@ impl From<matrix_crypto_core::SyncOutcome> for SyncOutcome {
     }
 }
 
+/// What upstream knew about the sender of one decrypted event. Mirror of
+/// the core's `SenderVerification`.
+///
+/// The append-only ordinal rule `VerificationStage` above states in full
+/// applies to this enum too. Its consequence here is the sharpest in the
+/// file: the variants are ordered with `Verified` first, so a renumbering
+/// shifts every answer one place *towards* it, and the worst misdecoding
+/// available is an unsigned device or a mismatched sender read as an
+/// authentic one. Append; never insert.
+///
+/// The order itself is not this crate's choice and is not the core's
+/// either -- both take it from upstream's own `VerificationState` and
+/// `VerificationLevel` declarations, so the three lists can be read side by
+/// side. The core's own enum documents what each value means, and which
+/// three of them this build cannot produce; this mirror deliberately
+/// repeats none of it, so the two cannot drift into saying different
+/// things.
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum SenderVerification {
+    Verified,
+    UnverifiedIdentity,
+    VerificationViolation,
+    UnsignedDevice,
+    NoDeviceMissing,
+    NoDeviceInsecureSource,
+    MismatchedSender,
+}
+
+impl From<matrix_crypto_core::SenderVerification> for SenderVerification {
+    fn from(value: matrix_crypto_core::SenderVerification) -> Self {
+        // Exhaustive, no wildcard arm. See Global Constraints.
+        match value {
+            matrix_crypto_core::SenderVerification::Verified => Self::Verified,
+            matrix_crypto_core::SenderVerification::UnverifiedIdentity => Self::UnverifiedIdentity,
+            matrix_crypto_core::SenderVerification::VerificationViolation => {
+                Self::VerificationViolation
+            }
+            matrix_crypto_core::SenderVerification::UnsignedDevice => Self::UnsignedDevice,
+            matrix_crypto_core::SenderVerification::NoDeviceMissing => Self::NoDeviceMissing,
+            matrix_crypto_core::SenderVerification::NoDeviceInsecureSource => {
+                Self::NoDeviceInsecureSource
+            }
+            matrix_crypto_core::SenderVerification::MismatchedSender => Self::MismatchedSender,
+        }
+    }
+}
+
 /// Mirror of the core's envelope, carrying the UniFFI record derive.
 ///
 /// No `Debug` derive: `ciphertext` is, depending on which call produced
@@ -553,6 +600,10 @@ pub struct Envelope {
     pub event_type: String,
     pub ciphertext: Vec<u8>,
     pub sender: String,
+    /// `None` from `encrypt_event`, `Some` from every successful
+    /// `decrypt_event`. The core's own field says why, at length; this
+    /// mirror does not repeat it.
+    pub sender_verification: Option<SenderVerification>,
 }
 
 impl From<matrix_crypto_core::Envelope> for Envelope {
@@ -564,6 +615,7 @@ impl From<matrix_crypto_core::Envelope> for Envelope {
             event_type,
             ciphertext,
             sender,
+            sender_verification,
         } = value;
         Self {
             scope,
@@ -571,6 +623,7 @@ impl From<matrix_crypto_core::Envelope> for Envelope {
             event_type,
             ciphertext,
             sender,
+            sender_verification: sender_verification.map(Into::into),
         }
     }
 }

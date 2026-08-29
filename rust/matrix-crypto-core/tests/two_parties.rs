@@ -55,8 +55,9 @@
 use std::collections::BTreeMap;
 
 use matrix_crypto_core::{
-    create_machine, decrypt_event, encrypt_event, in_runtime, mark_request_sent,
-    receive_sync_changes, share_scope_key, take_outgoing_requests, MachineConfig, OutgoingRequest,
+    create_machine, decrypt_event, device_statuses, encrypt_event, in_runtime, mark_request_sent,
+    receive_sync_changes, share_scope_key, take_outgoing_requests, with_machine, MachineConfig,
+    OutgoingRequest, SenderVerification, TrustState,
 };
 use matrix_sdk_common::ruma::api::client::keys::claim_keys::v3::Response as KeysClaimResponse;
 use matrix_sdk_common::ruma::api::client::keys::get_keys::v3::Response as KeysQueryResponse;
@@ -72,7 +73,8 @@ use matrix_sdk_common::ruma::serde::Raw;
 use matrix_sdk_common::ruma::{OwnedDeviceId, OwnedRoomId, OwnedUserId, TransactionId};
 use matrix_sdk_crypto::types::requests::AnyOutgoingRequest;
 use matrix_sdk_crypto::{
-    DecryptionSettings, EncryptionSettings, EncryptionSyncChanges, OlmMachine, TrustRequirement,
+    DecryptionSettings, EncryptionSettings, EncryptionSyncChanges, LocalTrust, OlmMachine,
+    TrustRequirement,
 };
 
 const SCOPE: &str = "!interop:example.org";
@@ -80,6 +82,13 @@ const ALICE_USER: &str = "@alice:example.org";
 const ALICE_DEVICE: &str = "ALICEDEVICE";
 const BOB_USER: &str = "@bob:example.org";
 const BOB_DEVICE: &str = "BOBDEVICE";
+/// A user id nobody in this test has any device under.
+///
+/// Used to re-address an event the other party genuinely encrypted, which
+/// is the whole of what an impersonating homeserver has to do: the
+/// ciphertext, the session and the sender key are untouched and still
+/// decrypt, and only the envelope's claim about who sent it is a lie.
+const CLAIMED_OTHER_SENDER: &str = "@carol:example.org";
 
 /// Distinct per direction, deliberately: a test using one payload for both
 /// directions could pass while only ever proving one machine's own
@@ -633,6 +642,150 @@ fn two_parties_exchange_a_group_key_and_each_decrypts_what_the_other_encrypted()
         assert!(
             !library_envelope.algorithm.is_empty(),
             "the algorithm tag must be populated"
+        );
+
+        // ---- What upstream knew about each sender ----------------------
+        //
+        // Three decryptions, then -- separately, and deliberately in that
+        // order -- what each one says about who sent it.
+        //
+        // The separation is the point. Every assertion above and in the
+        // next two paragraphs is about decryption: plaintext recovered,
+        // type carried, scope carried. Every assertion in the block after
+        // them is about authenticity, and reads a value upstream computed
+        // rather than anything this test can infer from decryption having
+        // worked. Severing the wiring between the two must turn the second
+        // block red and leave the first untouched; keeping them apart is
+        // what makes that observable in one run instead of three.
+        //
+        // Nothing here cross-signs anything, so the only levels available
+        // are the ones needing no published master key. That is the honest
+        // shape of this milestone: it cannot reach `Verified`, so it proves
+        // instead that the values it *can* reach are told apart -- and does
+        // not prove anything with a fixture faking the one it cannot.
+
+        // (2) The same ciphertext, re-addressed.
+        //
+        // Byte-identical content, same session, same sender key. The only
+        // thing changed is the envelope's claim about who sent it, which is
+        // the part a homeserver controls and cryptography does not cover.
+        let readdressed_event = room_event(
+            CLAIMED_OTHER_SENDER,
+            "$re-addressed:example.org",
+            bob_encrypted.content.json().get(),
+        );
+        let readdressed_envelope = decrypt_event(SCOPE, &readdressed_event).await.expect(
+            "re-addressing an event does not stop it decrypting -- Megolm \
+                 authenticates the session, not the envelope's sender claim",
+        );
+        assert!(
+            readdressed_envelope.ciphertext == BOB_PAYLOAD.as_bytes(),
+            "a re-addressed event still decrypts to the same plaintext \
+             (recovered {} bytes, sent {} bytes)",
+            readdressed_envelope.ciphertext.len(),
+            BOB_PAYLOAD.len()
+        );
+        assert_eq!(readdressed_envelope.event_type, "m.room.message");
+        assert!(
+            readdressed_envelope.sender == CLAIMED_OTHER_SENDER,
+            "the envelope carries back the sender the event claimed -- the \
+             unauthenticated value the authenticity field exists to qualify"
+        );
+
+        // (3) The same event again, after the sending device is locally
+        // trusted.
+        //
+        // `LocalTrust::Verified` is the exact state a completed short-string
+        // comparison sets: upstream's own `mark_device_as_verified` calls
+        // `set_trust_state(LocalTrust::Verified)` and does nothing else with
+        // trust. It is set here directly, through upstream, rather than by
+        // running a comparison -- `tests/sas_two_party.rs` already proves a
+        // comparison reaches this state, and what is under test here is what
+        // the *event* path reads once it has been reached.
+        let trusted_user: OwnedUserId = BOB_USER.parse().expect("a literal user id parses");
+        let trusted_device: OwnedDeviceId = BOB_DEVICE.into();
+        with_machine(move |machine| {
+            Box::pin(async move {
+                machine
+                    .get_device(&trusted_user, &trusted_device, None)
+                    .await
+                    .expect("the store must be readable")
+                    .expect("the other party's device is known by now")
+                    .set_local_trust(LocalTrust::Verified)
+                    .await
+                    .expect("setting local trust must not fail");
+            })
+        })
+        .await
+        .expect("the machine must be reachable");
+
+        // The control on the last authenticity assertion below. Without
+        // this, "the event still reads unsigned" would pass just as well on
+        // a machine where the trust change silently did nothing.
+        let statuses = device_statuses(BOB_USER)
+            .await
+            .expect("the other party's devices must be readable");
+        assert!(
+            statuses.iter().any(|status| {
+                status.device_id == BOB_DEVICE && status.trust == TrustState::Verified
+            }),
+            "local trust must actually have taken effect, or the assertion \
+             it is the control for passes for the wrong reason"
+        );
+
+        let after_trust = decrypt_event(SCOPE, &bob_event)
+            .await
+            .expect("the library must still decrypt what the bare machine encrypted");
+        assert!(
+            after_trust.ciphertext == BOB_PAYLOAD.as_bytes(),
+            "verifying a device does not change what its events decrypt to \
+             (recovered {} bytes, sent {} bytes)",
+            after_trust.ciphertext.len(),
+            BOB_PAYLOAD.len()
+        );
+
+        // ---- Authenticity, and nothing else, from here down ------------
+
+        // (1) An event genuinely sent by the other party's device.
+        //
+        // Alice queried Bob's keys above, so his device is in her store and
+        // owns the session that decrypted this. It carries no
+        // cross-signature, because nothing here publishes one. That is
+        // `UnsignedDevice`, and it is the ordinary case for every peer.
+        assert_eq!(
+            library_envelope.sender_verification,
+            Some(SenderVerification::UnsignedDevice),
+            "a device this machine knows, that owns the session, and that \
+             carries no cross-signature is an unsigned device -- a `NoDevice*` \
+             value here would mean the keys-query step above never took effect \
+             and the session's sender was never identified at all"
+        );
+
+        // (2) The impersonation signal.
+        assert_eq!(
+            readdressed_envelope.sender_verification,
+            Some(SenderVerification::MismatchedSender),
+            "an event whose claimed sender is not the owner of the session \
+             that encrypted it is an impersonation signal, and must not be \
+             folded into its neighbours -- a product has to be able to react \
+             to this case specifically"
+        );
+        assert_ne!(
+            readdressed_envelope.sender_verification, library_envelope.sender_verification,
+            "two decryptions whose upstream verification state genuinely \
+             differs must surface as two different public values; equal here \
+             means the public surface lost a distinction upstream made"
+        );
+
+        // (3) The one that keeps `Verified` honest without faking it.
+        assert_eq!(
+            after_trust.sender_verification,
+            Some(SenderVerification::UnsignedDevice),
+            "a device that now reports verified still sends events reading \
+             `UnsignedDevice`: the event path consults cross-signing, and a \
+             short-string comparison sets local trust. This is why \
+             `SenderVerification::Verified` is documented as unreachable in \
+             this build, and why no test here fabricates it"
         );
     }));
 }

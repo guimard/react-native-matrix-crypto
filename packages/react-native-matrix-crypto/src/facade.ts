@@ -2,6 +2,7 @@ import type {
   CryptoAlgorithm,
   CryptoScopeId,
   EventEnvelope,
+  SenderVerification,
   SasEmoji,
   SasMaterial,
   SyncDelta,
@@ -26,6 +27,7 @@ import {
   shareScopeKey as nativeShareScopeKey,
   startVerificationComparison as nativeStartVerificationComparison,
   takeOutgoingRequests as nativeTakeOutgoingRequests,
+  SenderVerification as NativeSenderVerification,
   TrustState as NativeTrustState,
   verificationMaterial as nativeVerificationMaterial,
   verificationStage as nativeVerificationStage,
@@ -370,6 +372,16 @@ export async function encryptEvent(
  * that reads the sender of a successfully decrypted event as the
  * cryptographic sender has assumed something this milestone does not
  * provide, and that assumption is the shape impersonation takes.
+ *
+ * **What the returned envelope now adds is the size of that assumption.**
+ * `senderVerification` carries what this library knew about the sender at
+ * the moment it decrypted -- see {@link SenderVerification}. It does not
+ * turn `sender` into an authenticated value, and in this release it can
+ * never read `'verified'`. What it can do is tell an ordinary unsigned
+ * device apart from an event whose claimed sender is not the owner of the
+ * session that encrypted it, and the second of those is an impersonation
+ * signal a product should react to. It is a snapshot taken at decryption
+ * time, not a live value; see the field.
  */
 export async function decryptEvent(scope: CryptoScopeId, rawEvent: unknown): Promise<EventEnvelope> {
   // `CryptoScopeId` performs no runtime validation (see types.ts) --
@@ -389,7 +401,7 @@ export async function decryptEvent(scope: CryptoScopeId, rawEvent: unknown): Pro
   try {
     const decrypted = await nativeDecryptEvent(scope, rawEventJson)
     // Destructured, not returned directly. See encryptEvent above.
-    const { scope: decryptedScope, algorithm, eventType, ciphertext, sender } = decrypted
+    const { scope: decryptedScope, algorithm, eventType, ciphertext, sender, senderVerification } = decrypted
     return {
       scope: asCryptoScopeId(decryptedScope),
       algorithm,
@@ -397,6 +409,11 @@ export async function decryptEvent(scope: CryptoScopeId, rawEvent: unknown): Pro
       // See encryptEvent above: ArrayBuffer -> Uint8Array.
       ciphertext: new Uint8Array(ciphertext),
       sender,
+      // Derived from what native reported for this event, not inferred
+      // from decryption having succeeded. Those are different questions,
+      // and `mismatched_sender` is the case that proves it: the ciphertext
+      // decrypts perfectly and the sender is still not who the event says.
+      senderVerification: senderVerificationOf(senderVerification),
     }
   } catch (e) {
     throw toCryptoError(e)
@@ -1000,6 +1017,45 @@ function verificationStageOf(stage: NativeVerificationStage): VerificationStage 
       return 'done'
     case NativeVerificationStage.Cancelled:
       return 'cancelled'
+  }
+}
+
+/**
+ * See {@link verificationStageOf}: exhaustive by compile error.
+ *
+ * `undefined` in, `undefined` out. That is the encrypt direction, where
+ * there is no verification state to report and inventing one would be a
+ * claim about an event nobody decrypted; see
+ * {@link EventEnvelope.senderVerification}.
+ *
+ * **No test in this repository feeds this function `Verified`.** The M3
+ * design ruling on this type requires the suite to hold no case that
+ * appears to produce it, because a fixture faking it teaches exactly the
+ * belief the ruling exists to prevent -- and this release cannot produce
+ * it. The arm below is still written, and is still checked, from the other
+ * side: `facade.test.ts` asserts that none of the values this release *can*
+ * produce comes out as `'verified'`, which is the direction the damage runs
+ * in.
+ */
+function senderVerificationOf(
+  verification: NativeSenderVerification | undefined,
+): SenderVerification | undefined {
+  if (verification === undefined) return undefined
+  switch (verification) {
+    case NativeSenderVerification.Verified:
+      return { state: 'verified' }
+    case NativeSenderVerification.UnverifiedIdentity:
+      return { state: 'unverified', reason: 'unverified_identity' }
+    case NativeSenderVerification.VerificationViolation:
+      return { state: 'unverified', reason: 'verification_violation' }
+    case NativeSenderVerification.UnsignedDevice:
+      return { state: 'unverified', reason: 'unsigned_device' }
+    case NativeSenderVerification.NoDeviceMissing:
+      return { state: 'unverified', reason: 'no_device', problem: 'missing' }
+    case NativeSenderVerification.NoDeviceInsecureSource:
+      return { state: 'unverified', reason: 'no_device', problem: 'insecure_source' }
+    case NativeSenderVerification.MismatchedSender:
+      return { state: 'unverified', reason: 'mismatched_sender' }
   }
 }
 

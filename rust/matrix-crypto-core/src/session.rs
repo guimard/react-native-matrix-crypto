@@ -15,7 +15,9 @@ use std::sync::Mutex as StdMutex;
 // this is the type `MegolmError::MissingRoomKey`'s own `Option<_>` carries,
 // reached through the crate that defines it rather than through
 // `matrix-sdk-crypto`, which does not re-export it.
-use matrix_sdk_common::deserialized_responses::WithheldCode;
+use matrix_sdk_common::deserialized_responses::{
+    DeviceLinkProblem, VerificationLevel, VerificationState, WithheldCode,
+};
 // Response types for the six kinds `OlmMachine::outgoing_requests` and
 // `share_room_key` can ever hand out (matched exhaustively against
 // `AnyOutgoingRequest` below, with no wildcard -- see `describe_outgoing`).
@@ -389,6 +391,126 @@ fn parse_user(user_id: &str) -> Result<OwnedUserId, SessionError> {
         .map_err(|_| SessionError::MalformedIdentifier)
 }
 
+/// What upstream knew about the sender of one event, at the moment it
+/// decrypted that event.
+///
+/// **This is not [`crate::TrustState`], and the difference is the whole
+/// reason there are two of them.** `TrustState` describes a *device*, and a
+/// completed short-string comparison changes it. This describes *one
+/// event's sender at one moment*, and a completed comparison does not
+/// change it: upstream's decryption path asks whether the sending device
+/// carries a cross-signature its owner published, and a comparison sets
+/// local trust instead. Two subjects, two vocabularies. Folding them would
+/// lose the distinction between an unverified identity, an unsigned device
+/// and a sender mismatch, which are three different things for a product to
+/// do about one event.
+///
+/// # Three of these cannot happen in this build
+///
+/// [`SenderVerification::Verified`], [`SenderVerification::UnverifiedIdentity`]
+/// and [`SenderVerification::VerificationViolation`] each require the sending
+/// device to be signed by a cross-signing identity its owner has published,
+/// and nothing in this build publishes or follows one. They are declared
+/// anyway, and named as unreachable at each variant, because the set is
+/// closed on both sides of the boundary: widening it later is a breaking
+/// change for every consumer that matched on it exhaustively, and the
+/// alternative to a full type is not a smaller true type but a different
+/// false one -- a four-value type would say that four values is all this
+/// vocabulary has, which is not true of what it models.
+///
+/// **Nothing in this repository's tests produces `Verified`, deliberately.**
+/// A fixture faking it would teach exactly the belief this doc comment
+/// exists to prevent. What the tests do instead is prove the negative:
+/// `tests/two_parties.rs` marks a device locally trusted -- the one state a
+/// completed comparison sets -- confirms `device_statuses` now calls it
+/// verified, and asserts that events from it still read
+/// [`SenderVerification::UnsignedDevice`].
+///
+/// # Order
+///
+/// Upstream's, not this crate's: `VerificationState::Verified` first, then
+/// `VerificationLevel`'s own declaration order, with its `None` sub-enum
+/// expanded in `DeviceLinkProblem`'s declaration order
+/// (`matrix-sdk-common-0.18.0/src/deserialized_responses.rs`). Borrowing
+/// upstream's order rather than inventing one keeps the mapping below
+/// checkable by reading the two lists side by side, and makes every later
+/// change an append -- which the FFI mirror needs, since UniFFI assigns
+/// wire ordinals by declaration position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SenderVerification {
+    /// **Not produced by this build.** The event came from a device
+    /// belonging to a user this machine has verified. Upstream's own words
+    /// for it: the only state in which authenticity is guaranteed.
+    ///
+    /// Unreachable until cross-signing lands, and "a comparison will make
+    /// it reachable" is the wrong summary of why. The path that produces
+    /// this reads `SenderData::SenderVerified`, which needs the device to
+    /// carry a cross-signature from its owner and that identity to be
+    /// trusted; local trust, which is all a comparison sets, is never
+    /// consulted there. See this type's own doc comment.
+    Verified,
+    /// **Not produced by this build.** The device is signed by its owner's
+    /// cross-signing identity, and that identity is one this machine has
+    /// not verified. Requires a published master key.
+    UnverifiedIdentity,
+    /// **Not produced by this build.** The device is signed by its owner's
+    /// cross-signing identity, that identity was verified once, and it is
+    /// not the same identity any more. Requires a published master key and
+    /// a previous verification of it.
+    VerificationViolation,
+    /// The sending device is known to this machine and carries no signature
+    /// from its owner's cross-signing identity.
+    ///
+    /// **The ordinary case for every peer in this build**, before and after
+    /// a short-string comparison alike. It says this event came from a
+    /// device this machine has heard of, and nothing beyond that.
+    UnsignedDevice,
+    /// The event could not be linked back to any device, because no such
+    /// device is in this machine's store -- deleted, never fetched, or
+    /// omitted by a server.
+    NoDeviceMissing,
+    /// The event could not be linked back to any device, because the key
+    /// that decrypted it came from somewhere unauthenticated: an imported
+    /// session, a legacy backup, an unsafe forward -- or a device that
+    /// turned out not to own the session it was offered for.
+    NoDeviceInsecureSource,
+    /// **The sender this event claims is not the owner of the session that
+    /// encrypted it.**
+    ///
+    /// The one value here reporting an act rather than an absence of
+    /// evidence. Decryption succeeds -- the ciphertext really was encrypted
+    /// with a session this machine holds -- and the envelope's claim about
+    /// who sent it is still false. A product has to be able to react to
+    /// this case on its own, which is why it is not folded into its
+    /// neighbours.
+    MismatchedSender,
+}
+
+/// Upstream's verification state for one decrypted event, in this crate's
+/// own vocabulary.
+///
+/// Exhaustive on both enums, with no wildcard arm: neither upstream type is
+/// `#[non_exhaustive]`, so a variant added to either in a later version
+/// fails this build rather than being silently folded into a neighbour --
+/// the same discipline every `From` impl across the boundary already keeps.
+fn sender_verification(state: &VerificationState) -> SenderVerification {
+    match state {
+        VerificationState::Verified => SenderVerification::Verified,
+        VerificationState::Unverified(level) => match level {
+            VerificationLevel::UnverifiedIdentity => SenderVerification::UnverifiedIdentity,
+            VerificationLevel::VerificationViolation => SenderVerification::VerificationViolation,
+            VerificationLevel::UnsignedDevice => SenderVerification::UnsignedDevice,
+            VerificationLevel::None(DeviceLinkProblem::MissingDevice) => {
+                SenderVerification::NoDeviceMissing
+            }
+            VerificationLevel::None(DeviceLinkProblem::InsecureSource) => {
+                SenderVerification::NoDeviceInsecureSource
+            }
+            VerificationLevel::MismatchedSender => SenderVerification::MismatchedSender,
+        },
+    }
+}
+
 /// An event encrypted for a scope, or the plaintext recovered by decrypting
 /// one -- see spec section 6/7. `algorithm` and the scope inside `scope` are
 /// both open: neither this struct nor anything that produces it may name a
@@ -446,16 +568,44 @@ pub struct Envelope {
     /// back the `&UserId` it was called with -- `sender:
     /// sender.to_owned()`), so there is no more-authenticated alternative
     /// available to substitute here. What *does* say how much to trust
-    /// this value is `EncryptionInfo::verification_state`, which this
-    /// function does not read or expose -- deliberately deferred, not
-    /// overlooked: it needs a real design decision about what shape to
-    /// surface on a public struct, not a field bolted on in a fix round,
-    /// and M2's `TrustRequirement::Untrusted` decrypts regardless of it
-    /// either way (see `decryption_settings()`). Treat this field as
-    /// unauthenticated transport metadata on the decrypt path, not as a
-    /// cryptographically established sender, until a later milestone
-    /// surfaces verification state.
+    /// this value is `sender_verification` below, which reads upstream's
+    /// `EncryptionInfo::verification_state` for the same event. Read the
+    /// two together or neither: this field alone is unauthenticated
+    /// transport metadata on the decrypt path, and the whole point of the
+    /// field below is to say how much of a claim it is.
+    ///
+    /// Note that `sender_verification` is not a stamp of approval on this
+    /// string. `MismatchedSender` is precisely the case where this value
+    /// is a lie that decryption did not catch.
     pub sender: String,
+    /// What upstream knew about the sender **at the moment it decrypted
+    /// this event** -- `None` from [`encrypt_event`], `Some` from every
+    /// successful [`decrypt_event`].
+    ///
+    /// # Only one direction has one
+    ///
+    /// The same shared-return-type caveat `algorithm` and `sender` above
+    /// each carry, in its strongest form: those two hold a real, if
+    /// differently-sourced, value on both paths, and this one has no
+    /// meaning at all on the encrypt path. There is no verification state
+    /// of an event this device has just encrypted for itself. `None` says
+    /// that rather than inventing a value -- and the value that would be
+    /// tempting to invent, `Verified` because this process holds its own
+    /// keys, is a statement about a *device*, and is the one word this
+    /// build cannot honestly put on a decrypted event.
+    ///
+    /// # It is a snapshot, and upstream says so
+    ///
+    /// Upstream documents this as the state of the sending device at the
+    /// time of decryption, which "may change in the future if a device gets
+    /// verified or deleted", and tells callers who persist it to mark it
+    /// dirty when a device change is received down the sync
+    /// (`matrix-sdk-common-0.18.0/src/deserialized_responses.rs:344-350`).
+    /// That obligation passes straight through to whoever holds this
+    /// value. The trigger is already visible from outside: a
+    /// `changed_devices` list arrives through [`receive_sync_changes`].
+    /// Nothing in this crate re-derives a stored value for you.
+    pub sender_verification: Option<SenderVerification>,
 }
 
 impl std::fmt::Debug for Envelope {
@@ -469,6 +619,7 @@ impl std::fmt::Debug for Envelope {
             event_type,
             ciphertext,
             sender: _,
+            sender_verification,
         } = self;
         f.debug_struct("Envelope")
             .field("scope", scope)
@@ -476,6 +627,10 @@ impl std::fmt::Debug for Envelope {
             .field("event_type", event_type)
             .field("ciphertext_len", &ciphertext.len())
             .field("sender", &"[redacted]")
+            // Printed, not redacted: a fixed set of tags naming no device,
+            // no user and no key. It is also the field most worth seeing in
+            // a `{:?}` when something is wrong with an event.
+            .field("sender_verification", sender_verification)
             .finish()
     }
 }
@@ -541,6 +696,10 @@ pub async fn encrypt_event(
                         event_type,
                         ciphertext,
                         sender: machine.user_id().as_str().to_string(),
+                        // Absent, not defaulted: see the field's own doc
+                        // comment. There is no verification state of an
+                        // event this device has just encrypted.
+                        sender_verification: None,
                     }
                 })
         })
@@ -748,6 +907,15 @@ pub async fn decrypt_event(scope: &str, raw_json: &str) -> Result<Envelope, Sess
         event_type,
         ciphertext: content.get().as_bytes().to_vec(),
         sender,
+        // Derived from upstream's own `EncryptionInfo`, not inferred from
+        // the fact that decryption succeeded. Those are different
+        // questions, and `MismatchedSender` is the case that proves it:
+        // the ciphertext decrypts perfectly and the sender is still not
+        // who the event says. `tests/two_parties.rs` decrypts one event
+        // twice, re-addressed the second time, to hold the two apart.
+        sender_verification: Some(sender_verification(
+            &decrypted.encryption_info.verification_state,
+        )),
     })
 }
 
@@ -2738,6 +2906,11 @@ mod tests {
             event_type: "m.room.message".to_string(),
             ciphertext: b"super-secret-ciphertext-marker".to_vec(),
             sender: "@alice:example.org".to_string(),
+            // Not `Verified`, here or anywhere else in this repository's
+            // tests: the type's own doc comment says why, and a fixture
+            // reading `Verified` is exactly what it forbids. This value is
+            // also the most useful one to see in a `{:?}`.
+            sender_verification: Some(SenderVerification::MismatchedSender),
         };
         let rendered = format!("{envelope:?}");
         assert!(
@@ -2749,6 +2922,10 @@ mod tests {
         // empty/panicking `Debug` impl standing in for a real one.
         assert!(rendered.contains("!s:example.org"));
         assert!(rendered.contains("m.room.message"));
+        // Named, not redacted: it identifies no device, no user and no key,
+        // and a redacted authenticity field would make `Debug` useless for
+        // the one question this struct is hardest to answer by eye.
+        assert!(rendered.contains("MismatchedSender"), "{rendered}");
 
         let request = OutgoingRequest {
             id: "some-transaction-id".to_string(),

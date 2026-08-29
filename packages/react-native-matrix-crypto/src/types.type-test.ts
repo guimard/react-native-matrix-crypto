@@ -4,6 +4,7 @@ import type {
   CryptoScopeId,
   EventEnvelope,
   SasMaterial,
+  SenderVerification,
   TrustState,
   VerificationStage,
 } from './types'
@@ -21,12 +22,20 @@ const known: CryptoAlgorithm = 'megolm'
 const future: CryptoAlgorithm = 'mls'
 const fabricated: CryptoAlgorithm = 'x-fabricated-suite'
 
+// The authenticity field is optional, because one type describes both
+// directions and only one of them has a value for it. An envelope without
+// it is the encrypt direction and must still compile.
 const envelope: EventEnvelope = {
   scope: good,
   algorithm: fabricated,
   eventType: 'm.room.message',
   ciphertext: new Uint8Array([1, 2, 3]),
   sender: '@a:server1',
+}
+
+const decrypted: EventEnvelope = {
+  ...envelope,
+  senderVerification: { state: 'unverified', reason: 'mismatched_sender' },
 }
 
 // `TrustState` and `VerificationStage` are CLOSED, unlike `CryptoAlgorithm`
@@ -41,6 +50,33 @@ const fabricatedStage: VerificationStage = 'x-fabricated-stage'
 
 const trust: TrustState = 'verified'
 const stage: VerificationStage = 'keys-exchanged'
+
+// `SenderVerification` is CLOSED too, and closed in two places at once: the
+// `state` tag and the `reason` behind it. A product switching on both
+// exhaustively must be told by the compiler when a later version adds a
+// case, which is the entire argument for declaring the three values this
+// release cannot produce rather than adding them later.
+// @ts-expect-error SenderVerification is closed: a fabricated state is not assignable
+const fabricatedState: SenderVerification = { state: 'x-fabricated-state' }
+// @ts-expect-error SenderVerification is closed: a fabricated reason is not assignable
+const fabricatedReason: SenderVerification = { state: 'unverified', reason: 'x-fabricated' }
+// `no_device` is the one member carrying a third field, and it is required:
+// "we could not link this event to a device" is not a complete answer
+// without which of the two reasons it was.
+// @ts-expect-error no_device must say which problem it is
+const problemless: SenderVerification = { state: 'unverified', reason: 'no_device' }
+// And `verified` carries no reason, because there is nothing to explain.
+// @ts-expect-error a verified sender has no reason to give
+const reasoned: SenderVerification = { state: 'verified', reason: 'unsigned_device' }
+
+// The values this release can actually produce.
+const unsigned: SenderVerification = { state: 'unverified', reason: 'unsigned_device' }
+const impersonated: SenderVerification = { state: 'unverified', reason: 'mismatched_sender' }
+const undeliverable: SenderVerification = {
+  state: 'unverified',
+  reason: 'no_device',
+  problem: 'insecure_source',
+}
 
 // The digits are a fixed-length tuple, not an array: a caller cannot index
 // past the end of something it believed had three entries, and a record
@@ -57,6 +93,8 @@ const withSymbols: SasMaterial = {
   emoji: [{ symbol: 'x', description: 'a word' }],
 }
 
-void bad; void known; void future; void envelope
+void bad; void known; void future; void envelope; void decrypted
 void fabricatedTrust; void fabricatedStage; void trust; void stage
 void shortMaterial; void digitsOnly; void withSymbols
+void fabricatedState; void fabricatedReason; void problemless; void reasoned
+void unsigned; void impersonated; void undeliverable

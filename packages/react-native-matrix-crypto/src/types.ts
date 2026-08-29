@@ -150,6 +150,65 @@ export interface SyncDelta {
   next_batch_token?: string
 }
 
+/**
+ * What this library knew about the sender of one decrypted event, at the
+ * moment it decrypted it.
+ *
+ * **This is not {@link TrustState}, and the difference is why there are
+ * two.** `TrustState` describes a *device*, and a completed comparison
+ * changes it. This describes *one event's sender at one moment*, and a
+ * completed comparison does not change it. Two subjects, two vocabularies.
+ * Folding them would lose the difference between an unverified identity, an
+ * unsigned device and a sender mismatch, which are three different things
+ * for a product to do about one event.
+ *
+ * **Closed**, like `TrustState` and {@link VerificationStage}: switch on
+ * `state`, then on `reason`, and the compiler tells you when a later
+ * version adds a case.
+ *
+ * ## Three of these cannot happen yet, and the ones that can
+ *
+ * `'verified'`, `'unverified_identity'` and `'verification_violation'` each
+ * require the sending device to carry a signature from a cross-signing
+ * identity its owner published. Nothing in this release publishes or
+ * follows one, so **none of the three can occur**. Write the branches; they
+ * will not run yet. They are declared now because the union is closed, and
+ * widening a closed union later is a breaking change for every consumer
+ * that switched on it exhaustively -- and because the alternative to a
+ * complete type is not a smaller true one but a different false one: a
+ * four-value type would say that four values is all this vocabulary has,
+ * which is not true of what it models.
+ *
+ * The three that do occur are `'unsigned_device'` (the ordinary case for
+ * every peer), `'no_device'` in both its forms, and `'mismatched_sender'`.
+ *
+ * ## `'verified'` in particular
+ *
+ * **Completing a verification with someone does not make their events read
+ * `'verified'`.** It makes their *device* read `'verified'` from
+ * {@link getDeviceStatuses}, which is a different question with a different
+ * answer. The decrypted-event path consults cross-signing; a short-string
+ * comparison sets local trust. If your product needs "did this specific
+ * event come from a device we have verified", the honest answer today is
+ * assembled from two calls, and this field alone is not it. M3 design,
+ * section 7, questions 3 and 6.
+ *
+ * ## `'mismatched_sender'` in particular
+ *
+ * The only member here reporting an act rather than an absence of evidence:
+ * the event's claimed sender is not the owner of the session that encrypted
+ * it. Decryption succeeded -- the ciphertext really was encrypted with a
+ * session this device holds -- and the `sender` field is still false. Treat
+ * it as an impersonation signal, not as a weaker `'no_device'`.
+ */
+export type SenderVerification =
+  | { state: 'verified' }
+  | { state: 'unverified'; reason: 'unsigned_device' }
+  | { state: 'unverified'; reason: 'unverified_identity' }
+  | { state: 'unverified'; reason: 'verification_violation' }
+  | { state: 'unverified'; reason: 'mismatched_sender' }
+  | { state: 'unverified'; reason: 'no_device'; problem: 'missing' | 'insecure_source' }
+
 /** Typed envelope for an encrypted or decrypted event. */
 export interface EventEnvelope {
   scope: CryptoScopeId
@@ -197,7 +256,38 @@ export interface EventEnvelope {
    * **unauthenticated transport metadata**. A product that reads it as
    * the cryptographic sender of a successfully decrypted event has
    * assumed something this milestone does not provide, and that
-   * assumption is the shape impersonation takes.
+   * assumption is the shape impersonation takes. Read it together with
+   * `senderVerification` below, which is what says how much of a claim it
+   * is -- and note that `'mismatched_sender'` is exactly the case where
+   * this string is a lie decryption did not catch.
    */
   sender: string
+  /**
+   * What this library knew about the sender of this event **at the moment
+   * it decrypted it** -- see {@link SenderVerification}, including which
+   * three of its values cannot occur yet and why completing a verification
+   * does not change this one.
+   *
+   * **Present on every successful `decryptEvent`. Absent from
+   * `encryptEvent`.** The same one-type-two-directions caveat `algorithm`
+   * and `sender` above each carry, in its strongest form: those two hold a
+   * real value in both directions, and this one has no meaning at all on
+   * the encrypt path. There is no verification state of an event this
+   * device just encrypted for itself, so the field is absent rather than
+   * carrying an invented value -- and the value that would be tempting to
+   * invent, `'verified'` because this device holds its own keys, is a
+   * statement about a *device* and is the one word this release cannot
+   * honestly put on a decrypted event.
+   *
+   * **It is a snapshot, and it can go stale.** Upstream defines it as the
+   * state of the sending device at the time of decryption: it "may change
+   * in the future if a device gets verified or deleted", and callers who
+   * persist it are told to mark it dirty when a device change is received
+   * down the sync. That obligation is yours once you hold this value. The
+   * trigger is already in your hands -- `device_lists.changed` on the
+   * `/sync` response you pass to {@link receiveSyncChanges} -- and nothing
+   * in this library re-derives a stored value for you. A record that looks
+   * static is not the same as a fact that stays true.
+   */
+  senderVerification?: SenderVerification
 }
