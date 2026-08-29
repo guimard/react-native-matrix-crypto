@@ -2328,3 +2328,351 @@ fn a_comparison_nobody_requested_is_answerable_without_the_channel() {
         );
     }));
 }
+
+/// The interleaving the request-shaped tests never took: **the peer opens
+/// the comparison**, rather than this library doing it.
+///
+/// # Why this was a stall, and not merely an untested path
+///
+/// Either side may start the comparison once both are ready -- the facade
+/// says so, and it is true of the protocol. What the peer's start needs
+/// back is an `m.key.verification.accept`, and upstream does not send one:
+/// `receive_start` builds the comparison and returns
+/// (`verification/requests.rs:1366-1396`), leaving the message to the
+/// application. Until `accept_flow` learned to answer a comparison on a
+/// flow that also has a request, no call in this library produced it. The
+/// flow read `Started` forever, nothing errored anywhere, and the string
+/// was never produced -- measured on this exact setup before the change:
+/// `accept_flow` answered `WrongStage` and the pump handed out nothing at
+/// all.
+///
+/// So this test is the fix's proof and the shape's only coverage at once.
+/// It ends where `two_parties_complete_a_comparison` ends, on the same two
+/// assertions, reached the other way round.
+#[test]
+fn a_comparison_the_peer_started_on_a_requested_flow_is_agreed_to_and_completes() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    futures::executor::block_on(in_runtime(async move {
+        let bob_user = "@startingafterasking:example.org";
+        let bob_device = "COUNTERPARTYNINE";
+        let bob = counterparty(bob_user, bob_device).await;
+        subscribe_and_drain();
+
+        assert!(
+            !library_reports_verified(bob_user, bob_device).await,
+            "nothing may be verified before a comparison has happened"
+        );
+
+        // ---- The counterparty asks, and the library agrees ---------------
+        let alice: OwnedUserId = ALICE_USER.parse().expect("a literal user id parses");
+        let alice_device: OwnedDeviceId = ALICE_DEVICE.into();
+        let library_device = bob
+            .get_device(&alice, &alice_device, None)
+            .await
+            .expect("the bare machine's store must be readable")
+            .expect("the bare machine knows the library's device");
+        let (bob_request, asking) =
+            library_device.request_verification_with_methods(vec![VerificationMethod::SasV1]);
+        deliver_verification_request(&asking, bob_user).await;
+
+        let announced = next_signal("an inbound invitation must be announced");
+        let CryptoSignal::VerificationRequested { flow_id, .. } = announced.clone() else {
+            panic!("an inbound invitation must announce itself as one, not as {announced:?}");
+        };
+        let flow = FlowId(flow_id);
+
+        accept_flow(&flow)
+            .await
+            .expect("an invitation can be agreed to");
+        assert_eq!(
+            flow_stage(&flow).await.expect("the flow exists"),
+            FlowStage::Ready
+        );
+        let crossed = pump_to_bare(&bob, bob_user, bob_device).await;
+        assert!(
+            crossed.contains(&"m.key.verification.ready".to_string()),
+            "the agreement must reach the counterparty: {crossed:?}"
+        );
+
+        // ---- And then the counterparty starts, not the library -----------
+        let (bob_sas, start) = bob_request
+            .start_sas()
+            .await
+            .expect("the bare machine's store must be readable")
+            .expect("a ready request can start a comparison");
+        deliver_verification_request(&start, bob_user).await;
+        assert_eq!(
+            flow_stage(&flow).await.expect("the flow exists"),
+            FlowStage::Started
+        );
+
+        // There is nothing left for this side to start, and it is told so
+        // rather than building a second comparison under the same name.
+        assert_eq!(
+            begin_comparison(&flow)
+                .await
+                .expect_err("the comparison the peer opened is the one that is running"),
+            MachineError::WrongStage
+        );
+
+        // ---- The library agrees a second time, to the comparison ---------
+        // This is the call that was missing. Asserted on what crosses,
+        // because the failure it replaces produced no error to assert on:
+        // the pump simply handed out nothing.
+        assert!(
+            !bob_sas.has_been_accepted(),
+            "this proves nothing unless the counterparty is still waiting to be answered"
+        );
+        accept_flow(&flow)
+            .await
+            .expect("a comparison the counterparty opened can be agreed to");
+        let crossed = pump_to_bare(&bob, bob_user, bob_device).await;
+        assert!(
+            crossed.contains(&"m.key.verification.accept".to_string()),
+            "the agreement to the comparison must reach the counterparty, and its absence \
+             is exactly the stall this test exists for: {crossed:?}"
+        );
+        assert!(
+            bob_sas.has_been_accepted(),
+            "and the counterparty must have observed it"
+        );
+
+        // ---- From here it is the ordinary flow ---------------------------
+        let crossed = pump_bare_to_library(&bob, bob_user).await;
+        assert!(
+            crossed.contains(&"m.key.verification.key".to_string()),
+            "the counterparty's key must reach the library: {crossed:?}"
+        );
+        let crossed = pump_to_bare(&bob, bob_user, bob_device).await;
+        assert!(
+            crossed.contains(&"m.key.verification.key".to_string()),
+            "the library's key must reach the counterparty: {crossed:?}"
+        );
+
+        assert_eq!(
+            flow_stage(&flow).await.expect("the flow exists"),
+            FlowStage::KeysExchanged
+        );
+        let material = agreed_material(&flow, &bob_sas).await;
+        assert_eq!(
+            material.decimals,
+            bob_sas.decimals().expect("the counterparty has a string"),
+            "the digits both people are about to read out must be the same ones"
+        );
+
+        // ---- Both sides say it matches, and each verifies the other ------
+        let (contents, _signatures) = bob_sas
+            .confirm()
+            .await
+            .expect("the counterparty can confirm");
+        for content in &contents {
+            deliver_verification_request(content, bob_user).await;
+        }
+        confirm_flow(&flow)
+            .await
+            .expect("a flow showing a string can be confirmed");
+        pump_to_bare(&bob, bob_user, bob_device).await;
+        pump_bare_to_library(&bob, bob_user).await;
+
+        assert_eq!(
+            flow_stage(&flow).await.expect("the flow exists"),
+            FlowStage::Done
+        );
+        assert!(
+            library_reports_verified(bob_user, bob_device).await,
+            "the library must report the counterparty's device verified"
+        );
+        assert!(
+            bare_reports_verified(&bob).await,
+            "and the counterparty must report the library's device verified"
+        );
+    }));
+}
+
+/// Every state in which agreeing does not apply, on both flow shapes, told
+/// apart from a successful no-op.
+///
+/// Upstream reports all of them the same way -- by returning `None` from a
+/// call whose signature cannot fail -- and "did nothing, successfully" is
+/// the one answer a verification call must never give. Nothing else in this
+/// file calls [`accept_flow`] in a state where upstream declines, so
+/// without this the mapping is documented and unexercised.
+///
+/// Three states, chosen because each is a different mistake a product
+/// makes: answering an invitation this device sent itself, answering the
+/// same comparison twice, and answering a flow that is over.
+#[test]
+fn agreeing_when_there_is_nothing_to_agree_to_is_refused_on_both_shapes() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    futures::executor::block_on(in_runtime(async move {
+        let bob_user = "@nothingtoagreeto:example.org";
+        let bob_device = "COUNTERPARTYTEN";
+        let bob = counterparty(bob_user, bob_device).await;
+        subscribe_and_drain();
+
+        // ---- The request shape: our own invitation ----------------------
+        // `VerificationRequest::accept_with_methods` declines anything but
+        // `Requested`, and a flow this device asked for is `Created`.
+        let ours = request_flow(bob_user, bob_device)
+            .await
+            .expect("a known device can be asked to verify itself");
+        assert_eq!(
+            flow_stage(&ours).await.expect("the flow exists"),
+            FlowStage::Requested
+        );
+        assert_eq!(
+            accept_flow(&ours)
+                .await
+                .expect_err("a device cannot agree to its own invitation"),
+            MachineError::WrongStage
+        );
+        let crossed = pump_to_bare(&bob, bob_user, bob_device).await;
+        assert!(
+            !crossed.contains(&"m.key.verification.ready".to_string()),
+            "a refused agreement must queue nothing: {crossed:?}"
+        );
+        cancel_flow(&ours)
+            .await
+            .expect("the invitation can be abandoned");
+        pump_to_bare(&bob, bob_user, bob_device).await;
+
+        // ---- The bare shape: agreeing twice -----------------------------
+        // `Sas::accept` declines anything but `SasState::Started`, and one
+        // agreement moves the comparison past it.
+        let bob_sas = bare_start_from(&bob, bob_user).await;
+        let flow = announced_bare_flow(&bob, bob_user, bob_device, &bob_sas).await;
+        assert_eq!(
+            accept_flow(&flow)
+                .await
+                .expect_err("a comparison already agreed to cannot be agreed to again"),
+            MachineError::WrongStage
+        );
+        let crossed = pump_to_bare(&bob, bob_user, bob_device).await;
+        assert!(
+            !crossed.contains(&"m.key.verification.accept".to_string()),
+            "a refused agreement must queue nothing: {crossed:?}"
+        );
+
+        // ---- And a flow that is over ------------------------------------
+        cancel_flow(&flow)
+            .await
+            .expect("a live flow can be refused");
+        pump_to_bare(&bob, bob_user, bob_device).await;
+        assert_eq!(
+            flow_stage(&flow).await.expect("a refused flow is readable"),
+            FlowStage::Cancelled
+        );
+        assert_eq!(
+            accept_flow(&flow)
+                .await
+                .expect_err("a refused flow has nothing left to agree to"),
+            MachineError::WrongStage
+        );
+    }));
+}
+
+/// A comparison that is already over by the time the sync carrying it is
+/// processed must not be announced.
+///
+/// # Why this is reachable, and what it would cost
+///
+/// A start and the cancellation that ends it can arrive in the same sync --
+/// a peer that changes its mind, or a device that was offline while both
+/// crossed. Upstream processes them in order, so by the time the
+/// announcement runs the comparison exists and is cancelled.
+///
+/// Announcing it would break the one rule the channel rests on: the
+/// identifier would be handed to a product that no call in this module
+/// answers to, because [`handles`] refuses to adopt a finished flow. The
+/// negative assertion below is therefore paired with a positive one on the
+/// same identifier -- the channel says nothing, *and* the call rejects it
+/// -- so an implementation that had merely stopped announcing anything at
+/// all fails the pair.
+#[test]
+fn a_comparison_already_over_when_its_sync_is_processed_is_not_announced() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    futures::executor::block_on(in_runtime(async move {
+        let bob_user = "@startedandwithdrawn:example.org";
+        let bob_device = "COUNTERPARTYELEVEN";
+        let bob = counterparty(bob_user, bob_device).await;
+        subscribe_and_drain();
+
+        let alice: OwnedUserId = ALICE_USER.parse().expect("a literal user id parses");
+        let alice_device: OwnedDeviceId = ALICE_DEVICE.into();
+        let library_device = bob
+            .get_device(&alice, &alice_device, None)
+            .await
+            .expect("the bare machine's store must be readable")
+            .expect("the bare machine knows the library's device");
+        let (bob_sas, start) = library_device
+            .start_verification()
+            .await
+            .expect("the bare machine can open a comparison");
+        let start: OutgoingVerificationRequest = start.into();
+        let withdrawal = bob_sas
+            .cancel()
+            .expect("a comparison this side opened can be withdrawn");
+
+        // Both in one sync, in the order the homeserver would deliver them.
+        let start_event = relay_to(
+            &verification_body(&start),
+            bob_user,
+            ALICE_USER,
+            ALICE_DEVICE,
+        )
+        .expect("the counterparty addresses the library's own device");
+        let cancel_event = relay_to(
+            &verification_body(&withdrawal),
+            bob_user,
+            ALICE_USER,
+            ALICE_DEVICE,
+        )
+        .expect("the counterparty addresses the library's own device");
+        assert_eq!(
+            declared_event_type(&verification_body(&start)),
+            "m.key.verification.start",
+            "this test is worthless unless what it feeds in really is a bare start"
+        );
+        deliver_to_library(vec![start_event, cancel_event]).await;
+
+        no_signal(
+            "a comparison that was over before this library ever looked at it has nothing \
+             to announce",
+        );
+        let flow = FlowId(bob_sas.flow_id().as_str().to_string());
+        assert_eq!(
+            flow_stage(&flow)
+                .await
+                .expect_err("a flow that ended before it was seen is not one this library holds"),
+            MachineError::UnknownFlow,
+            "the pair with the silence above: the channel is quiet about this identifier \
+             *because* no call here answers to it, which is the rule announcing off the \
+             wire would break"
+        );
+
+        // And the channel is not merely broken: a live one still announces.
+        let live = bare_start_from(&bob, bob_user).await;
+        let announced = next_signal("a live comparison must still be announced");
+        let CryptoSignal::VerificationRequested { flow_id, .. } = announced.clone() else {
+            panic!("a bare start must announce itself as an invitation, not as {announced:?}");
+        };
+        assert_eq!(
+            flow_id,
+            live.flow_id().as_str(),
+            "and it must be the live one, not the withdrawn one"
+        );
+        cancel_flow(&FlowId(flow_id))
+            .await
+            .expect("the live flow can be tidied away");
+        pump_to_bare(&bob, bob_user, bob_device).await;
+    }));
+}

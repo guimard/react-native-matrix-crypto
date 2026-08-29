@@ -66,13 +66,18 @@
 //! else -- there is no request object behind it and there never will be.
 //!
 //! Every call on this surface answers both, and a caller does not have to
-//! know which it has: [`accept_flow`] agrees to the flow, [`read_material`]
-//! shows the string, [`confirm_flow`] says it matched, [`cancel_flow`]
-//! refuses. The one visible difference is that a bare-start flow is never
-//! [`FlowStage::Ready`] -- it is a comparison from the moment it exists --
-//! so [`begin_comparison`] has nothing to do on one and says so. See
-//! [`accept_flow`] for what agreeing means on each shape and why the two
-//! are the same promise.
+//! know which it has: [`accept_flow`] agrees to whatever the flow is
+//! waiting on, [`read_material`] shows the string, [`confirm_flow`] says it
+//! matched, [`cancel_flow`] refuses. The one visible difference is that a
+//! bare-start flow is never [`FlowStage::Ready`] -- it is a comparison from
+//! the moment it exists -- so [`begin_comparison`] has nothing to do on one
+//! and says so.
+//!
+//! The two shapes differ in *how many times* a caller agrees, not in what
+//! agreeing means: a request-shaped flow can need [`accept_flow`] twice,
+//! once for the invitation and once more if the peer opens the comparison
+//! rather than waiting for this side to. See that function for why, and
+//! for the silent stall that used to be.
 //!
 //! # Requests
 //!
@@ -535,13 +540,22 @@ fn remember_comparison(flow_id: &str, comparison: Sas) {
 /// # A request first, and a comparison only where there is no request
 ///
 /// Upstream keeps requests and comparisons in two separate maps, and a
-/// request-shaped flow whose comparison has started is in **both**. Its
-/// request is the handle that can still be accepted and cancelled *as a
-/// request* and that carries the comparison along with it, so it is the one
-/// that wins here; resolving such a flow to its bare comparison instead
-/// would quietly downgrade every later call on it. The comparison map is
-/// therefore reached only for a flow that is in no other map -- one that
-/// began as a bare `m.key.verification.start`.
+/// request-shaped flow whose comparison has started is in **both**. The
+/// request is the handle that carries the comparison along with it and
+/// that still knows the flow began as a request, so it is the one this
+/// registers; the comparison map is reached only for a flow that is in no
+/// other map, one that began as a bare `m.key.verification.start`.
+///
+/// **Nothing observable turns on that ordering today, and it is worth
+/// saying so rather than implying otherwise.** A flow that has both
+/// handles is always already in this registry: the peer cannot open a
+/// comparison until this side has sent `m.key.verification.ready`, the
+/// only call that sends one is [`accept_flow`], and that call registers
+/// the flow before it sends anything. So this lookup never meets a flow
+/// with both, and reversing the two arms changes no answer any call in
+/// this module gives -- measured, not assumed. The ordering is here so
+/// that a record is built from the handle that describes how the flow
+/// began, which is the thing a later reader has no way to recover.
 ///
 /// A flow found either way is registered only if it is still live. Adopting
 /// a finished one would undo the eviction rule -- an identifier released by
@@ -646,40 +660,61 @@ pub async fn request_flow(user_id: &str, device_id: &str) -> Result<FlowId, Mach
     Ok(FlowId(flow_id))
 }
 
-/// Agrees to a verification the other side asked for.
+/// Agrees to whatever the other side is currently asking of this device.
 ///
-/// # What this means for a flow that arrived as a bare start
+/// # There are two things a peer can ask, and this call answers both
 ///
-/// A request-shaped flow is agreed to by answering the request, which is
-/// what advertises the methods this library can carry out and what moves
-/// the flow to [`FlowStage::Ready`] so either side may start a comparison.
-/// A flow that arrived as a bare `m.key.verification.start` has no request
-/// to answer and skipped `Ready` entirely: the peer has already chosen the
-/// method and opened the comparison, so the only thing left to agree to is
-/// the comparison itself. That is upstream's `Sas::accept`, which replies
-/// `m.key.verification.accept` naming the protocols both sides support and
-/// is the message the peer is waiting for before it will send its key.
+/// An `m.key.verification.request` asks *may we verify?*, and answering it
+/// advertises the methods this library can carry out and moves the flow to
+/// [`FlowStage::Ready`]. An `m.key.verification.start` asks *here is the
+/// comparison, will you take part?*, and answering **that** is an
+/// `m.key.verification.accept` naming the protocols both sides support --
+/// the message the peer waits for before it will send its key.
 ///
-/// So this call means the same thing on both shapes -- *yes, go ahead* --
-/// and a caller drives the two identically: accept, wait for
-/// [`FlowStage::KeysExchanged`], read the string, confirm. What differs is
-/// only that [`begin_comparison`] has nothing to do on a bare-start flow,
-/// because the comparison it would start already exists; it reports
-/// [`MachineError::WrongStage`] there, which [`flow_stage`] tells apart
-/// from the over-and-done case exactly as its own doc comment describes.
+/// Which of the two a flow needs depends on how it arrived and on who
+/// moved first, and a caller does not have to work that out:
 ///
-/// `Sas::accept` returns `None` for any state but `SasState::Started`, and
-/// that `None` is a wrong-state answer rather than an absence -- accepting
-/// a comparison already accepted, cancelled or finished. It is reported as
-/// [`MachineError::WrongStage`], the same as the request shape's `None`,
-/// and never as a successful no-op.
+/// * a flow that arrived as a bare `m.key.verification.start` has no
+///   request and skipped `Ready` entirely, so one call answers the
+///   comparison;
+/// * a flow that arrived as a request needs one call to answer the request
+///   -- and **a second one if the peer then opens the comparison**, which
+///   either side may do. Upstream builds the comparison and sends nothing
+///   (`verification/requests.rs:1366-1396`), so until this is called again
+///   the peer is waiting on a message no other call in this module
+///   produces. Before that second call existed the flow simply stopped
+///   there: `flow_stage` read `Started` forever, no error was returned
+///   anywhere, and the string was never produced. That is the shape of
+///   failure this whole module is written against.
+///
+/// So the rule is one sentence -- *call this whenever the flow is waiting
+/// on your agreement* -- and [`flow_stage`] says when: `Requested` and
+/// `Started` are both states where the answer is yours to give. The
+/// difference between the two shapes is only that a bare-start flow is
+/// never `Requested`, and that [`begin_comparison`] has nothing to do on
+/// one.
+///
+/// # A refusal is never a silent no-op
+///
+/// Both handles report "not in a state where this applies" by returning
+/// `None`: `VerificationRequest::accept_with_methods` for anything but
+/// `Requested` (accepting our own request, or one already answered,
+/// cancelled or finished), `Sas::accept` for anything but
+/// `SasState::Started` (a comparison already accepted, cancelled or
+/// finished). Neither is an absence, and neither is treated as one: they
+/// are folded into [`MachineError::WrongStage`], which is what a caller
+/// gets for a flow that is not waiting on it. [`flow_stage`] separates
+/// "the other side is ahead" from "this is over" for free.
 pub async fn accept_flow(flow: &FlowId) -> Result<(), MachineError> {
     let handles = handles(flow).await?;
-    // `None` from upstream means "not in a state where this applies" --
-    // accepting our own request, or one already answered, cancelled or
-    // finished. Reported, never treated as a successful no-op.
     let outgoing = match (&handles.request, &handles.comparison) {
-        (Some(request), _) => request.accept_with_methods(vec![VerificationMethod::SasV1]),
+        // The request while there is a request to answer, and the
+        // comparison once there is not. Not a precedence between two ways
+        // of doing the same thing: at most one of the two is ever waiting
+        // on an answer, so this is a search for whichever it is.
+        (Some(request), comparison) => request
+            .accept_with_methods(vec![VerificationMethod::SasV1])
+            .or_else(|| comparison.as_ref().and_then(Sas::accept)),
         (None, Some(comparison)) => comparison.accept(),
         // Unreachable: `handles` returns a record built by one of
         // `FlowRecord`'s two constructors, each of which supplies a handle.
