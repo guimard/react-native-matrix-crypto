@@ -349,6 +349,7 @@ Every one of these runs in CI. Each has been observed rejecting a real violation
 | `gate:agility` | no Megolm, Olm or room specific identifier reaches the public API |
 | `gate:stubs` | the committed turbo module is really wired up, not an empty shell |
 | `gate:readme` | the README npm shows is the README GitHub shows |
+| `gate:measure-guards` | the B2 measurement harness still refuses the runs it documents refusing |
 
 `gate:stubs` exists because of a specific near miss. `ubrn build --and-generate` can emit a turbo module that exports nothing, with exit code zero and no warning, when it reads an Android shared library whose symbol table was stripped. Nothing downstream noticed, and the build went green. `gate:drift` cannot catch it either: drift regenerates and compares, so two equally empty generations agree with each other perfectly.
 

@@ -23,6 +23,7 @@ import {
   type CryptoBinding,
 } from 'react-native-matrix-crypto/interop/crypto-suite'
 import { DEMO_DEVICE_ID, DEMO_SCOPE, DEMO_USER_ID, demoMachineConfig } from './cryptoConfig'
+import { nthSignal } from './signalOrder'
 
 /**
  * Adapts the shipped JSI binding to the shared contract from Task 9b.
@@ -34,11 +35,115 @@ import { DEMO_DEVICE_ID, DEMO_SCOPE, DEMO_USER_ID, demoMachineConfig } from './c
  * signal from its own call, never `GuidedFlow`'s. Both mount as siblings
  * in App.tsx and both call `runProbe`; before this, the shared global
  * channel meant one's probe call showed up in the other's check too.
+ *
+ * FOUR PROBE LINES, AND WHY THEY ARE HERE RATHER THAN IN THE SUITE
+ *
+ * `interop/suite.ts`'s `signal` check answers "did the callback arrive at
+ * all", bounded by `SIGNAL_WAIT_MS`. That constant is a measured number, and
+ * a measured number nobody can re-measure decays into a guess: it was sized
+ * from a release build on an emulator because the Rust-to-JavaScript
+ * callback lost a race to the promise there and nowhere else (spec section
+ * 5.1, B2). These two lines are the instrument that produced it, kept in the
+ * tree so the next person to touch the delivery mechanism re-derives the
+ * budget instead of inheriting it.
+ *
+ * - `PROBE_SIGNAL_MS n` -- milliseconds from calling `runProbe` to the
+ *   observer callback landing on the JavaScript thread. This is the whole
+ *   chain a product waits on: Rust's `emit`, the UniFFI callback, the JSI
+ *   hop, and the JavaScript thread getting round to it.
+ * - `PROBE_PROMISE_MS n` -- the same clock, stopped when `runProbe`'s
+ *   promise resolves. The two together say which won, which is the race
+ *   itself rather than a proxy for it.
+ * - `PROBE_EMIT_BUILD v` -- `coreVersion`, which now carries a fingerprint
+ *   of the emission path compiled into the `.so` this launch is running
+ *   (`observer.rs`'s `EMIT_BUILD`). A latency number is worth nothing
+ *   without it. Android imports the Rust library as a prebuilt from a
+ *   gitignored `jniLibs/` with no Gradle edge back to the crate, so a build
+ *   that forgot to re-run `ubrn build android` produces an APK that looks
+ *   new and runs the old `emit` -- and the first measurement of this path
+ *   reported two indistinguishable distributions, which is exactly what
+ *   that mistake would have produced. This line is how a reader of a probe
+ *   log decides which emission path produced the numbers above it, instead
+ *   of trusting whoever ran the build.
+ * - `PROBE_SIGNAL_NTH n` -- which observer callback of this process the
+ *   timed one turned out to be. Not decoration. Three review rounds
+ *   described the line above as timing "the first signal of a cold process",
+ *   arguing from the true fact that the interop suite issues exactly one
+ *   observed call. That fact establishes something else: that this harness
+ *   times only its *own* call, which is what the direct-callback forwarding
+ *   described above is for. It does not establish that this call is the
+ *   process's first emission, and the paragraph forty lines above -- "both
+ *   mount as siblings in App.tsx and both call `runProbe`" -- says why not.
+ *   `GuidedFlow` renders first and calls `runProbe` on mount with a
+ *   non-empty input, so two emitting calls race on every cold launch.
+ *
+ *   Rather than reason about which one wins, every emitting call site in
+ *   this app draws a number from `signalOrder.ts` as its signal lands and
+ *   this line reports the one the timed callback drew. A row then carries
+ *   which delivery it measured instead of a comment asserting it.
+ * - `PROBE_SIGNAL2_MS n` -- the same measurement again, for a second signal
+ *   in the same process, issued after both suites have finished. This one
+ *   exists to settle a question the others cannot: whether a difference
+ *   between two emission implementations is a start-up cost or one the
+ *   process keeps paying.
+ *
+ *   Whatever `PROBE_SIGNAL_MS` times is early in a cold process, so it
+ *   carries whatever the emission path builds on first use -- for the
+ *   blocking pool, this library's entire tokio runtime -- and no single
+ *   sample can tell that apart from a per-signal cost. This line is the
+ *   comparison that can. **It has been run:** across 22 launches the gap
+ *   between the two emission paths was 22 ms at the median on the timed
+ *   early signal under CPU saturation and 0 ms on this one, so the excess is
+ *   a start-up cost and not one paid per signal. That does not identify
+ *   *which* start-up cost. Building the runtime is one candidate among
+ *   several -- creating the first pool thread and simply having more
+ *   handoffs to be descheduled between are others -- and nothing measured
+ *   separates them. `observer::emit` and
+ *   `docs/measurements/2026-08-29-signal-delivery-latency.md` carry the
+ *   detail and the samples.
+ *
+ * They are not checks: nothing passes or fails on them, the summary's
+ * denominator does not move, and `scripts/run-probe-on-emulator.sh` prints
+ * them with the rest of the `PROBE_` output because it greps the prefix. The
+ * suite stays free of them deliberately -- it is the shipped contract every
+ * binding must satisfy, and a latency number is a measurement of one
+ * binding on one machine, not a property a binding must have. The example
+ * app is not the bridge and may log; these carry four integers and a build
+ * identifier -- no user identifier, no payload and no key material.
  */
 function jsiBinding(): BridgeBinding {
   return {
     runProbe(input, payload, onSignal) {
-      return runProbe(input, payload, onSignal && ((signal) => onSignal(signal.kind)))
+      const calledAt = Date.now()
+      const call = runProbe(
+        input,
+        payload,
+        onSignal &&
+          ((signal) => {
+            console.log(`PROBE_SIGNAL_MS ${Date.now() - calledAt}`)
+            console.log(`PROBE_SIGNAL_NTH ${nthSignal()}`)
+            onSignal(signal.kind)
+          }),
+      )
+      // Only the observing call is timed: the suite's second `runProbe` is
+      // the rejection check and passes no observer, so there is no delivery
+      // to time and no promise worth a second line.
+      //
+      // The rejection handler is not a swallowed error. The suite awaits
+      // this same promise and reports whatever it does; this `then` is a
+      // second, independent consumer, and without an `onRejected` a
+      // rejection here would surface as an unhandled promise rejection from
+      // a branch that exists only to print diagnostics.
+      if (onSignal) {
+        void call.then(
+          (report) => {
+            console.log(`PROBE_PROMISE_MS ${Date.now() - calledAt}`)
+            console.log(`PROBE_EMIT_BUILD ${report.coreVersion}`)
+          },
+          () => {},
+        )
+      }
+      return call
     },
     isCryptoError,
     errorKind: (e) => (isCryptoError(e) ? e.kind : undefined),
@@ -62,6 +167,40 @@ function jsiCryptoBinding(): CryptoBinding {
       encryptEvent(asCryptoScopeId(scope), eventType, payload),
     decryptEvent: (scope, rawEvent) => decryptEvent(asCryptoScopeId(scope), rawEvent),
     errorKind: (e) => (isCryptoError(e) ? e.kind : undefined),
+  }
+}
+
+/**
+ * Times a second observed signal in this same process, and reports it as
+ * `PROBE_SIGNAL2_MS`.
+ *
+ * Not a check: it adds nothing to `PROBE_SUMMARY`'s numerator or denominator,
+ * and a failure here is swallowed deliberately -- an instrument that can turn
+ * the probe red is worse than no instrument, and `scripts/run-probe-on-emulator.sh`
+ * gates on the summary line.
+ *
+ * Placed last, after both suites, for two reasons. It must not perturb what
+ * the suites measure, and by the time it runs the process is as warm as this
+ * app ever gets -- runtime built, pool threads created, store open. That is
+ * the comparison worth having against `PROBE_SIGNAL_MS`, which every launch
+ * measured so far reports as the process's first delivery -- read off
+ * `PROBE_SIGNAL_NTH`, not assumed. This sentence said "always the first
+ * signal of a cold process" for four rounds, including one round after the
+ * bullet a hundred lines above had that same claim removed and replaced with
+ * the measured account. There were two copies; one was fixed.
+ *
+ * The observer is a fresh inline closure, so this call's signal is its own
+ * and reaches nothing else.
+ */
+async function timeASecondSignal(): Promise<void> {
+  try {
+    const calledAt = Date.now()
+    await runProbe('second', new Uint8Array([1]), () => {
+      console.log(`PROBE_SIGNAL2_MS ${Date.now() - calledAt}`)
+      console.log(`PROBE_SIGNAL2_NTH ${nthSignal()}`)
+    })
+  } catch {
+    // Deliberately silent. See above: this is an instrument, not a check.
   }
 }
 
@@ -158,6 +297,7 @@ export function ProbeHarness({ storeDir }: { storeDir: string }) {
           })),
         )
         results.push(await realCryptoCheck())
+        await timeASecondSignal()
       } catch (e) {
         // Neither suite is supposed to be able to reach this: both report
         // failing checks instead of throwing. If one ever does, the run

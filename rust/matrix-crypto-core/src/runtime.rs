@@ -26,6 +26,78 @@ fn runtime() -> &'static Runtime {
     })
 }
 
+/// Runs `work` on this library's blocking pool, and does not wait for it.
+///
+/// Three properties, each of which something in this crate depends on:
+///
+/// - **It needs no ambient runtime.** `tokio::task::spawn_blocking` is a free
+///   function that reads the thread's ambient runtime and panics when there is
+///   none. This reaches the runtime this crate owns directly, so it works from
+///   any thread, including a foreign one that has never seen tokio. That is
+///   the property `observer::emit` inherited from `std::thread::spawn` and
+///   must keep: a signal can be produced on a path a foreign caller drove
+///   without entering `in_runtime` first.
+/// - **It cannot stall the runtime's async work.** The blocking pool is a
+///   different set of threads from the two workers `in_runtime` schedules on,
+///   so work handed here may block for as long as it likes -- and a foreign
+///   callback may block for as long as the foreign side likes -- without
+///   stopping encryption or any other call in flight. Handing the same work to
+///   `spawn` would occupy a worker for its whole duration, and there are two.
+/// - **It is bounded, unlike a thread per call.** Tokio caps the pool (512
+///   threads by default) and reuses idle threads rather than creating one per
+///   task. Past the cap, work queues. That cap is shared rather than ours
+///   alone: `matrix-sdk-sqlite` reaches the same pool through `deadpool-sync`
+///   and `deadpool-runtime`, whose `spawn_blocking` is tokio's.
+///
+/// **The sharing runs in both directions, and only one of them used to be
+/// written down here.** Outbound: a caller that parked hundreds of pool
+/// threads would delay the crypto store. Inbound, and this is the direction
+/// `observer::emit` is about: the store's own blocking work now runs in the
+/// same pool as signal delivery, so sqlite can delay a signal. A thread per
+/// signal could not be delayed by anything, because it shared nothing.
+///
+/// That inbound half is judged acceptable, and here is the bound it rests on
+/// rather than an assurance. `SqliteCryptoStore::open` -- what `machine.rs`
+/// calls -- takes `SqliteStoreConfig`'s default pool size, which upstream
+/// computes as `max(2, physical_cpus * 4)`: 32 on an eight-core phone, four
+/// on a single-core one. The store therefore cannot occupy more than a few
+/// dozen of the 512, so it cannot make a signal *queue*; queueing needs more
+/// than an order of magnitude more parked threads than the store can produce,
+/// and those would have to come from listener callbacks, which is the
+/// outbound half above. What the store can do is compete for CPU with a
+/// delivery thread, which delays it by scheduling latency -- the same delay
+/// it already imposed on everything else on the device, and milliseconds
+/// rather than the seconds B2 was opened for. If that bound ever stops
+/// holding -- a caller raising `pool_max_size`, or upstream changing the
+/// default -- this is the paragraph that has gone stale, and the way to tell
+/// is that a signal starts waiting on store work rather than on a scheduler.
+///
+/// A thread per call has no shared cap to exhaust and none of this coupling;
+/// the trade is taken deliberately, because its own bound is the process's
+/// thread table, which fails harder and later.
+///
+/// **Building the runtime is on this path.** `runtime()` is
+/// `OnceLock::get_or_init`, so the first call into this function in a process
+/// where nothing has built the runtime yet builds it -- two workers, reactor
+/// and timer -- on the calling thread before anything is handed off. That is
+/// a real path rather than a theoretical one: nothing on the way to
+/// `observer::emit` enters `in_runtime` -- neither the FFI export nor
+/// `observer::probe_with_observer`, which emits before it awaits -- so on a
+/// cold process whose first native call is the probe, this function builds
+/// the runtime on a thread that has never seen tokio. One-off per process,
+/// and named here so nobody reads "does not wait for it" as "does nothing
+/// before it returns".
+pub(crate) fn spawn_blocking_detached<F>(work: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    // Dropped rather than awaited: that is what "detached" means here.
+    // Dropping the handle does not cancel the closure -- a blocking task
+    // handed to the pool runs to completion regardless -- it only stops
+    // anyone from waiting on it.
+    drop(runtime().spawn_blocking(work));
+}
+
 /// Runs `future` inside this library's runtime, so anything it calls sees a
 /// runtime context.
 ///

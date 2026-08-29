@@ -35,16 +35,94 @@ pub trait ProbeObserver: Send + Sync {
 ///   `emitting_while_a_listener_calls_back_into_the_library_does_not_deadlock`
 ///   below.
 ///
-/// Both are solved the same way: `on_signal` always runs on a freshly
-/// spawned OS thread, detached from the caller's call stack. That thread
+/// Both are solved the same way: `on_signal` always runs on a thread of the
+/// library's own, detached from the caller's call stack. That closure
 /// captures only the observer and the signal, both by value, so it carries
-/// no lock the caller might be holding, and calling this costs the caller
-/// nothing beyond the spawn itself -- no `.await`, no blocking wait for the
-/// foreign side to return, and no dependency on an ambient tokio context
-/// (unlike `tokio::task::spawn`, which panics without one, this needs no
-/// runtime at all). The `JoinHandle` is discarded rather than joined; that
-/// does not cancel the spawned thread, it only stops the caller from
-/// waiting on it, which is the point of "fire-and-forget".
+/// no lock the caller might be holding: no `.await`, no blocking wait for
+/// the foreign side to return, and no dependency on an ambient tokio
+/// context; see
+/// `a_signal_emitted_with_no_ambient_runtime_reaches_the_observer` below,
+/// which is the only test here that would notice if that last one stopped
+/// being true.
+///
+/// **One cost the caller does pay, and it is not the handoff.**
+/// `runtime::spawn_blocking_detached` reaches this library's runtime through
+/// `OnceLock::get_or_init`, so if nothing has built that runtime yet, the
+/// call that gets there first builds it -- two worker threads, their reactor
+/// and their timer -- synchronously, on whatever thread it was called on.
+///
+/// That is not hypothetical here, and it is worth being exact about which
+/// path it is. The only shipped emitter is `probe_with_observer` below, and
+/// nothing on the way to it enters `in_runtime`: not `matrix-crypto-ffi`'s
+/// export, which adapts the observer and forwards, and not
+/// `probe_with_observer` itself, which calls `emit` before the
+/// `probe(...).await` that follows it.
+/// That is unlike the machine paths, where the core function reaches for
+/// `in_runtime` internally -- `machine::create_machine` and
+/// `machine::with_machine` both do. So on a cold process whose first native
+/// call is `runProbe`, the first `emit` is what constructs the runtime, on
+/// whatever thread UniFFI is polling that future on. A cold launch's
+/// `PROBE_SIGNAL_MS` therefore has runtime construction inside it.
+///
+/// It is a one-off cost per process rather than a per-signal one, which is
+/// why it is recorded here rather than treated as a defect -- but it is a
+/// cost `std::thread::spawn` did not have, so "costs the caller nothing
+/// beyond the handoff", which this comment used to say, was wrong.
+///
+/// **What none of that establishes is B2's measured gap, and an earlier draft
+/// of this comment was fairly read as saying it did.** Two things about that
+/// gap are now measured rather than argued, and both narrow it without
+/// closing it:
+///
+/// - **The excess is confined to the first signal of a process.** Timing a
+///   second signal in the same process makes the two emission paths
+///   indistinguishable -- a median gap of 0 ms against 22 ms on the first
+///   signal under the same CPU saturation.
+/// - **It is not fixed work.** The two arms share a floor: launches on both
+///   deliver in 0-1 ms, which bounds any constant added cost far below the
+///   observed median gap. What the gap does instead is grow with contention,
+///   which is the signature of exposure to scheduling rather than of a
+///   constant amount of work.
+///
+/// So runtime construction is on this path, is genuinely one-off, and is *a*
+/// candidate for a first-use cost. Which first-use step dominates -- building
+/// the runtime, creating the first blocking-pool thread, or simply having
+/// more handoffs to be descheduled between -- is not separated by anything
+/// measured here, and this comment no longer claims otherwise. The numbers
+/// and the experiment are in
+/// `docs/measurements/2026-08-29-signal-delivery-latency.md`.
+///
+/// **The thread comes from the runtime's blocking pool, not from a fresh
+/// `std::thread::spawn` per signal.** This used to spawn one operating
+/// system thread per signal, which was cheap while one probe signal fired
+/// once per process and stops being cheap the moment real crypto events
+/// travel this path (spec section 5.1, B2).
+/// `runtime::spawn_blocking_detached` keeps the three properties emission
+/// depends on -- no ambient runtime needed, no worker thread occupied,
+/// nothing the caller waits on -- and replaces one operating system thread
+/// per signal with a reusable pool; see
+/// `a_burst_is_delivered_without_a_thread_per_signal` below, which counts the
+/// threads rather than leaving that last claim to a reader.
+///
+/// It does not keep *every* property a thread per signal had, and the three
+/// it gives up are the ones worth knowing about:
+///
+/// - The pool is capped -- tokio's 512 -- where a thread per signal was
+///   bounded only by the process's thread table. Past the cap, delivery
+///   queues instead of proceeding.
+/// - **That cap is shared, and the sharing runs both ways.** The direction
+///   `runtime.rs` names is outbound: a listener population that parks pool
+///   threads delays the crypto store. The inbound direction is the one this
+///   file is about: `matrix-sdk-sqlite`'s blocking work reaches the same
+///   pool, so store work can now delay *signal delivery*. A thread per
+///   signal made that impossible. `runtime.rs` carries the bound that makes
+///   it an acceptable trade rather than an open one.
+/// - The first emission in a process may build the runtime, as above.
+///
+/// Note also what this is *not*: handing this to `tokio::task::spawn` would
+/// put a foreign callback that blocks for as long as JavaScript likes onto
+/// one of two worker threads shared with encryption, and two such listeners
+/// would stall the runtime.
 ///
 /// Callers must never call this while holding a lock this crate owns.
 /// Correctness does not depend on that discipline -- `emit` itself takes no
@@ -55,7 +133,60 @@ pub trait ProbeObserver: Send + Sync {
 /// visibly completed.
 pub(crate) fn emit(observer: &Arc<dyn ProbeObserver>, signal: ProbeSignal) {
     let observer = Arc::clone(observer);
-    std::thread::spawn(move || observer.on_signal(signal));
+    crate::runtime::spawn_blocking_detached(move || observer.on_signal(signal));
+}
+
+/// Identifies the emission path in the **built artifact**, not in the source
+/// tree someone happens to be reading.
+///
+/// B2's measurement compared two APKs that differed in one function body,
+/// and nothing in either APK -- nor in anything either one printed -- said
+/// which body it carried. Android imports the Rust library as a prebuilt
+/// (`android/CMakeLists.txt`) from a gitignored `jniLibs/`, with no Gradle
+/// dependency edge back to this crate, so `:app:assembleRelease` will
+/// happily repackage a stale `.so`. `probe`'s `core_version` was the only
+/// build identifier crossing the bridge and it is the crate version,
+/// identical on both arms. "Both arms ran the same `.so`" therefore could
+/// not be excluded from the measurement's own output; it had to be taken on
+/// trust from the build procedure. That is exactly the shape spec section
+/// 3.2 rejects everywhere else here: a check that reports success without
+/// having examined its target.
+///
+/// So the artifact identifies itself. This is a compile-time FNV-1a hash of
+/// the source text of the two files that decide how a signal is delivered --
+/// this one and `runtime.rs` -- read with `include_str!`, which reads what
+/// the compiler read. `probe` appends it to `core_version`, so every probe
+/// run says which emission path produced it, including runs nobody planned
+/// as an experiment.
+///
+/// What it does not claim: it covers source text only, and says nothing
+/// about the compiler, the target, the optimisation level or the rest of the
+/// crate. Any edit to either file changes it, a comment included. Both are
+/// the right way round for the job -- it can report a difference where the
+/// behaviour is identical, and it cannot report sameness where the emission
+/// source differs, which is the direction the measurement needed.
+pub(crate) const EMIT_BUILD: u32 = fnv1a(
+    fnv1a(FNV_OFFSET_BASIS, include_str!("observer.rs").as_bytes()),
+    include_str!("runtime.rs").as_bytes(),
+);
+
+const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
+
+/// FNV-1a, 32 bit, seeded so several files can be chained into one value.
+///
+/// `const fn` on purpose: the hash must be fixed when the artifact is built,
+/// not recomputed at run time from whatever source happens to be on the
+/// machine running it -- a run-time hash of a file the binary does not carry
+/// would identify the checkout, which is the thing already known.
+const fn fnv1a(seed: u32, bytes: &[u8]) -> u32 {
+    let mut hash = seed;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+        i += 1;
+    }
+    hash
 }
 
 /// Runs the probe, emitting one signal on the way through.
@@ -113,9 +244,19 @@ mod tests {
         (Arc::new(ChannelObserver { tx }), rx)
     }
 
-    /// Generous relative to how fast a thread spawn actually completes;
-    /// tight enough that a genuinely broken delivery path still fails a
-    /// test in a few seconds rather than hanging it.
+    /// Generous relative to how fast delivery actually completes, and the
+    /// evidence for that is in this file rather than in someone's notes:
+    /// `a_burst_is_delivered_without_a_thread_per_signal` below emits `BURST`
+    /// signals and requires every one of them delivered inside this same
+    /// bound, on whatever machine is running the suite. Whatever that run
+    /// costs there, one signal costs less. Tight enough, meanwhile, that a
+    /// genuinely broken delivery path fails a test in a few seconds rather
+    /// than hanging it.
+    ///
+    /// A number quoted from a measurement nobody can re-run is the defect
+    /// `SIGNAL_WAIT_MS` was re-derived to remove, turned inward; the earlier
+    /// draft of this comment quoted "roughly eight microseconds per signal"
+    /// from exactly such a measurement.
     const DELIVERY_BOUND: Duration = Duration::from_secs(5);
 
     #[tokio::test]
@@ -187,6 +328,169 @@ mod tests {
             .recv_timeout(DELIVERY_BOUND)
             .expect("a signal emitted from a spawned task must still reach the observer");
         assert_eq!(signal.kind, "probe_started");
+    }
+
+    /// `emit` must not need an ambient tokio runtime.
+    ///
+    /// This is the one test in this file that reaches `emit` with no runtime
+    /// in scope at all. `emits_one_signal_that_reaches_the_observer` is a
+    /// `#[tokio::test]`; the two that emit from a spawned task and from
+    /// under the machine lock both do so from inside `in_runtime`. All three
+    /// would keep passing if `emit` silently acquired that requirement. It
+    /// could: `emit` hands its work to a blocking pool now, and
+    /// `tokio::task::spawn_blocking` -- the free function, as opposed to the
+    /// method on the runtime this crate owns -- reads the ambient runtime and
+    /// panics when there is none.
+    ///
+    /// A foreign caller reaches this library on a thread that has never seen
+    /// tokio, and nothing obliges a future signal-producing path to enter
+    /// `in_runtime` before it emits. That makes "no ambient runtime needed" a
+    /// property rather than an implementation detail, and this file's own
+    /// history is the argument for pinning it: `runtime.rs` records the same
+    /// class of gap, where sixteen tests passed against a shipped path that
+    /// would have panicked, because `#[tokio::test]` had been supplying the
+    /// context the product does not have.
+    ///
+    /// Deliberately NOT `#[tokio::test]`, and it says so twice: here, as its
+    /// two neighbours do, and again as the first statement in the body. The
+    /// attribute alone used to carry this test's entire target. Edited to
+    /// `#[tokio::test]` -- by someone making the file look consistent, or by
+    /// a tool -- it would keep passing while examining nothing, which is the
+    /// failure it exists to catch. The assertion is what turns that edit
+    /// into a red test instead of a silent one.
+    #[test]
+    fn a_signal_emitted_with_no_ambient_runtime_reaches_the_observer() {
+        assert!(
+            tokio::runtime::Handle::try_current().is_err(),
+            "this test proves nothing with an ambient runtime in scope: it must reach \
+             `emit` from a thread that has never seen tokio, so it must not be a \
+             `#[tokio::test]` and must not be called from inside `in_runtime`"
+        );
+
+        let (observer, rx) = channel_observer();
+
+        emit(
+            &observer,
+            ProbeSignal {
+                kind: "probe_started".to_string(),
+                detail: "from-no-runtime".to_string(),
+            },
+        );
+
+        let signal = rx
+            .recv_timeout(DELIVERY_BOUND)
+            .expect("a signal emitted with no ambient runtime must reach the observer");
+        assert_eq!(signal.kind, "probe_started");
+    }
+
+    /// One operating system thread per signal is what B2's cost line names,
+    /// and this is the assertion that closes it, rather than a note saying
+    /// it was measured once somewhere.
+    ///
+    /// `std::thread::ThreadId` is never reused within a process, so a thread
+    /// per signal would show exactly `BURST` distinct delivering threads.
+    /// Tokio caps its blocking pool at 512 threads by default and this crate
+    /// does not raise it, so the pool cannot show more than 512 however the
+    /// burst is scheduled. `BURST` is set above that cap so the two
+    /// implementations cannot both satisfy the assertion: the shipped one
+    /// passes by construction, and reverting `emit` to `std::thread::spawn`
+    /// fails here with a count rather than with a timeout.
+    ///
+    /// The burst is concurrent rather than sequential, deliberately. The
+    /// microbenchmark this replaces emitted one signal at a time and waited
+    /// for nothing, so what it measured was how fast a loop can call `emit`
+    /// -- not the regime the cost line describes ("once verification and key
+    /// events flow through the channel"). Every signal here is in flight
+    /// before any of them is waited on.
+    ///
+    /// The timing assertion is deliberately coarse: the whole burst must be
+    /// delivered inside `DELIVERY_BOUND`, the same bound a single signal gets
+    /// elsewhere in this file. That is what makes `DELIVERY_BOUND` a measured
+    /// number rather than a quoted one -- if `BURST` signals fit inside it,
+    /// one does, on whatever machine is running the suite. It is not a
+    /// performance threshold: one on shared CI hardware is a flake generator,
+    /// and this bound is meant to stay far looser than anything it could
+    /// plausibly measure.
+    ///
+    /// No margin is quoted, and that is deliberate. Quoting one would mean
+    /// quoting a measurement this file cannot show you -- the defect
+    /// `DELIVERY_BOUND`'s own comment was rewritten to remove. Nothing here
+    /// writes to stdout either, and that is a constraint rather than a
+    /// preference: `scripts/assert-no-logger.sh` scans this crate's `src` for
+    /// the print macros and does not exempt `#[cfg(test)]`. The actual
+    /// durations travel in the assertion messages, where a reader who wants
+    /// them can get them by making the test fail.
+    #[test]
+    fn a_burst_is_delivered_without_a_thread_per_signal() {
+        use std::collections::HashSet;
+        use std::sync::Mutex;
+        use std::time::Instant;
+
+        /// Comfortably above tokio's blocking pool cap, so the two
+        /// implementations give different answers.
+        const BURST: usize = 2000;
+        /// Tokio's default `max_blocking_threads`, which this crate leaves
+        /// alone -- see `runtime::spawn_blocking_detached`.
+        const POOL_CAP: usize = 512;
+
+        struct Counting {
+            tx: mpsc::Sender<()>,
+            threads: Arc<Mutex<HashSet<std::thread::ThreadId>>>,
+        }
+
+        impl ProbeObserver for Counting {
+            fn on_signal(&self, _signal: ProbeSignal) {
+                self.threads
+                    .lock()
+                    .expect("the recorder's mutex is never held across a panic")
+                    .insert(std::thread::current().id());
+                let _ = self.tx.send(());
+            }
+        }
+
+        let (tx, rx) = mpsc::channel();
+        let threads = Arc::new(Mutex::new(HashSet::new()));
+        let observer: Arc<dyn ProbeObserver> = Arc::new(Counting {
+            tx,
+            threads: Arc::clone(&threads),
+        });
+
+        let started = Instant::now();
+        for _ in 0..BURST {
+            emit(
+                &observer,
+                ProbeSignal {
+                    kind: "probe_started".to_string(),
+                    detail: String::new(),
+                },
+            );
+        }
+        let handed_off = started.elapsed();
+
+        for i in 0..BURST {
+            rx.recv_timeout(DELIVERY_BOUND)
+                .unwrap_or_else(|e| panic!("signal {i} of {BURST} was never delivered: {e}"));
+        }
+        let delivered = started.elapsed();
+
+        let distinct = threads
+            .lock()
+            .expect("the recorder's mutex is never held across a panic")
+            .len();
+
+        assert!(
+            distinct <= POOL_CAP,
+            "{BURST} signals were delivered by {distinct} distinct threads, more than the \
+             blocking pool's {POOL_CAP}-thread cap allows: emission is spawning threads of \
+             its own again rather than reusing the pool (handed off in {handed_off:?}, \
+             all delivered in {delivered:?})"
+        );
+        assert!(
+            delivered < DELIVERY_BOUND,
+            "{BURST} signals took {delivered:?} to deliver, which does not fit inside the \
+             {DELIVERY_BOUND:?} a single signal is given elsewhere in this file \
+             (handed off in {handed_off:?}, across {distinct} threads)"
+        );
     }
 
     /// Emission must never happen under the machine lock.

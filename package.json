@@ -12,6 +12,7 @@
     "gate:logger": "./scripts/assert-no-logger.sh",
     "gate:agility": "./scripts/assert-facade-agility.sh",
     "gate:readme": "./scripts/assert-readme-sync.sh",
-    "gate:stubs": "./scripts/assert-generated-not-stubbed.sh"
+    "gate:stubs": "./scripts/assert-generated-not-stubbed.sh",
+    "gate:measure-guards": "./scripts/assert-measure-guards.sh"
   }
 }

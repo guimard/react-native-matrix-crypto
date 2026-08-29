@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# A stand-in for `adb`, answering exactly the calls
+# scripts/measure-signal-latency.sh makes.
+#
+# It exists so scripts/assert-measure-guards.sh can face that harness's guards
+# with the cases they refuse, on any machine, with no device, no Android SDK
+# and no emulator. What it fakes is the `logcat` bytes and the device
+# properties; the harness's own extraction, its `LAST_BUILD` return and its
+# comparisons are untouched, and those are the parts that have twice been
+# broken.
+#
+# Knobs, all read from the environment:
+#   FAKE_ABI            what `getprop ro.product.cpu.abi` reports (default arm64-v8a)
+#   FAKE_BUILD          the emission build id reported for any arm
+#   FAKE_BUILD_<label>  the same, for the arm whose APK basename is <label>
+#   FAKE_OMIT           comma-separated PROBE_ line kinds to leave out, so a
+#                       launch that never printed one can be reproduced:
+#                       EMIT_BUILD, SIGNAL_MS, SIGNAL_NTH, SIGNAL2_MS,
+#                       PROMISE_MS, SUMMARY
+#   FAKE_SIGNAL_MS, FAKE_SIGNAL_NTH, FAKE_SIGNAL2_MS, FAKE_PROMISE_MS
+#                       the four numbers the harness extracts into four
+#                       different columns. THE DEFAULTS ARE DELIBERATELY ALL
+#                       DIFFERENT. They used to be 2, 1, 1 and 1, so a row
+#                       could carry any three of them in any order and still
+#                       look right -- and the caller asserted only how many
+#                       rows there were, so a one-token edit publishing the
+#                       warm second signal under the first signal's column
+#                       passed with everything green.
+#   FAKE_STATE          where the last-installed APK label is remembered
+set -u
+STATE=${FAKE_STATE:-/tmp/fake-adb.state}
+
+omitted() {
+  case ",${FAKE_OMIT:-}," in
+    *",$1,"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+case "${1:-}" in
+  wait-for-device|uninstall) exit 0 ;;
+  install)
+    shift
+    for a in "$@"; do
+      case "$a" in
+        -*) ;;
+        *) basename "$a" | sed 's/\.[^.]*$//' > "$STATE" ;;
+      esac
+    done
+    exit 0
+    ;;
+  logcat)
+    for a in "$@"; do
+      [ "$a" = "-c" ] && exit 0
+    done
+    label=$(cat "$STATE" 2>/dev/null || echo unknown)
+    var="FAKE_BUILD_${label}"
+    build=$(eval "printf '%s' \"\${$var:-\${FAKE_BUILD:-deadbeef}}\"")
+    omitted PROMISE_MS || echo "PROBE_PROMISE_MS ${FAKE_PROMISE_MS:-44}"
+    omitted EMIT_BUILD || echo "PROBE_EMIT_BUILD 0.1.0+emit.${build}"
+    omitted SIGNAL_MS || echo "PROBE_SIGNAL_MS ${FAKE_SIGNAL_MS:-41}"
+    omitted SIGNAL_NTH || echo "PROBE_SIGNAL_NTH ${FAKE_SIGNAL_NTH:-42}"
+    omitted SIGNAL2_MS || echo "PROBE_SIGNAL2_MS ${FAKE_SIGNAL2_MS:-43}"
+    omitted SUMMARY || echo "PROBE_SUMMARY 12/12"
+    exit 0
+    ;;
+  shell)
+    case "${2:-} ${3:-}" in
+      "getprop ro.product.cpu.abi") echo "${FAKE_ABI:-arm64-v8a}" ;;
+      "getprop ro.build.version.sdk") echo 35 ;;
+      "getprop ro.product.model") echo fake-adb ;;
+      *) : ;;
+    esac
+    exit 0
+    ;;
+esac
+exit 0
