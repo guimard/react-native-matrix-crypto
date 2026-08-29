@@ -100,10 +100,13 @@ export interface InteropSuiteOptions {
  * 9.5 ms against 2 ms, and higher in every host condition separately. The
  * tails overlap -- p90 32.6 ms against 23.1 ms, worst 59 ms against 37 ms --
  * so the separation is in the body rather than the tail. It is real but it is
- * one-star: 12 of 20 interleaved pairs favour the new path being slower, 6 run
- * the other way and 2 tie, which a Wilcoxon signed-rank test puts at p ~ 0.04
- * and a paired sign-flip permutation on the median at p ~ 0.03. Do not read it
- * as more than that.
+ * one-star: 12 of 20 interleaved pairs favour the new path being slower, 6
+ * run the other way and 2 tie. A Wilcoxon signed-rank test puts that at
+ * p ~ 0.04, a paired sign-flip permutation on the median at p ~ 0.03, and the
+ * same permutation on the mean at p ~ 0.08 -- the mean being dragged by two
+ * outlying pairs, a -35 ms and a +58 ms. The weakest of the three is quoted
+ * here because it is the one a reader cannot recompute from the counts above.
+ * Do not read any of it as more than one star.
  *
  * **Slower, and the cause is not established.** What is measured about the
  * cause, rather than argued: the excess is confined to the *first* signal of a
@@ -138,9 +141,10 @@ export interface InteropSuiteOptions {
  * positive. Nothing has ever been observed at 10000 itself, so being "below
  * the value never observed failing" is not evidence for it -- it is only the
  * absence of evidence against it, and this sentence used to blur the two. It
- * is not derived from the clean distribution at all, and it should not be: a budget sized at 1.5x a number that was watched failing is
- * sized against the wrong evidence, and `probe-android` is the wrong job to
- * be wrong in -- a slower machine than the one measured (x86_64 emulator,
+ * is not derived from the clean distribution at all, and it should not be: a
+ * budget sized at 1.5x a number that was watched failing is sized against the
+ * wrong evidence, and `probe-android` is the wrong job to be wrong in -- a
+ * slower machine than the one measured (x86_64 emulator,
  * software GPU, four-vCPU hosted runner), taking most of an hour, gated on
  * the verbatim `PROBE_SUMMARY 12/12` line, so one late signal turns it red
  * with no partial credit.
