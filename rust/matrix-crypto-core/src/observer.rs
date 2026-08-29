@@ -38,26 +38,70 @@ pub trait ProbeObserver: Send + Sync {
 /// Both are solved the same way: `on_signal` always runs on a thread of the
 /// library's own, detached from the caller's call stack. That closure
 /// captures only the observer and the signal, both by value, so it carries
-/// no lock the caller might be holding, and calling this costs the caller
-/// nothing beyond the handoff -- no `.await`, no blocking wait for the
-/// foreign side to return, and no dependency on an ambient tokio context;
-/// see `a_signal_emitted_with_no_ambient_runtime_reaches_the_observer`
-/// below, which is the only test here that would notice if that last one
-/// stopped being true.
+/// no lock the caller might be holding: no `.await`, no blocking wait for
+/// the foreign side to return, and no dependency on an ambient tokio
+/// context; see
+/// `a_signal_emitted_with_no_ambient_runtime_reaches_the_observer` below,
+/// which is the only test here that would notice if that last one stopped
+/// being true.
+///
+/// **One cost the caller does pay, and it is not the handoff.**
+/// `runtime::spawn_blocking_detached` reaches this library's runtime through
+/// `OnceLock::get_or_init`, so if nothing has built that runtime yet, the
+/// call that gets there first builds it -- two worker threads, their reactor
+/// and their timer -- synchronously, on whatever thread it was called on.
+///
+/// That is not hypothetical here, and it is worth being exact about which
+/// path it is. The only shipped emitter is `probe_with_observer` below, and
+/// nothing on the way to it enters `in_runtime`: not `matrix-crypto-ffi`'s
+/// export, which adapts the observer and forwards, and not
+/// `probe_with_observer` itself, which calls `emit` before the
+/// `probe(...).await` that follows it.
+/// That is unlike the machine paths, where the core function reaches for
+/// `in_runtime` internally -- `machine::create_machine` and
+/// `machine::with_machine` both do. So on a cold process whose first native
+/// call is `runProbe`, the first `emit` is what constructs the runtime, on
+/// whatever thread UniFFI is polling that future on. A cold launch's
+/// `PROBE_SIGNAL_MS` therefore has runtime construction inside it, which is
+/// the right window for what a product waits on and worth knowing when
+/// reading the number.
+///
+/// It is a one-off cost per process rather than a per-signal one, which is
+/// why it is recorded here rather than treated as a defect -- but it is a
+/// cost `std::thread::spawn` did not have, so "costs the caller nothing
+/// beyond the handoff", which this comment used to say, was wrong.
 ///
 /// **The thread comes from the runtime's blocking pool, not from a fresh
 /// `std::thread::spawn` per signal.** This used to spawn one operating
 /// system thread per signal, which was cheap while one probe signal fired
 /// once per process and stops being cheap the moment real crypto events
-/// travel this path (spec section 5.1, B2). `runtime::spawn_blocking_detached`
-/// keeps every property the thread per signal had -- no ambient runtime
-/// needed, no worker thread occupied, nothing the caller waits on -- and
-/// adds a reusable, bounded pool. Note what it is *not*: handing this to
-/// `tokio::task::spawn` would put a foreign callback that blocks for as long
-/// as JavaScript likes onto one of two worker threads shared with
-/// encryption, and two such listeners would stall the runtime. The trade the
-/// pool does make -- a cap shared with `matrix-sdk-sqlite` -- is written out
-/// where the pool is.
+/// travel this path (spec section 5.1, B2).
+/// `runtime::spawn_blocking_detached` keeps the three properties emission
+/// depends on -- no ambient runtime needed, no worker thread occupied,
+/// nothing the caller waits on -- and replaces one operating system thread
+/// per signal with a reusable pool; see
+/// `a_burst_is_delivered_without_a_thread_per_signal` below, which counts the
+/// threads rather than leaving that last claim to a reader.
+///
+/// It does not keep *every* property a thread per signal had, and the three
+/// it gives up are the ones worth knowing about:
+///
+/// - The pool is capped -- tokio's 512 -- where a thread per signal was
+///   bounded only by the process's thread table. Past the cap, delivery
+///   queues instead of proceeding.
+/// - **That cap is shared, and the sharing runs both ways.** The direction
+///   `runtime.rs` names is outbound: a listener population that parks pool
+///   threads delays the crypto store. The inbound direction is the one this
+///   file is about: `matrix-sdk-sqlite`'s blocking work reaches the same
+///   pool, so store work can now delay *signal delivery*. A thread per
+///   signal made that impossible. `runtime.rs` carries the bound that makes
+///   it an acceptable trade rather than an open one.
+/// - The first emission in a process may build the runtime, as above.
+///
+/// Note also what this is *not*: handing this to `tokio::task::spawn` would
+/// put a foreign callback that blocks for as long as JavaScript likes onto
+/// one of two worker threads shared with encryption, and two such listeners
+/// would stall the runtime.
 ///
 /// Callers must never call this while holding a lock this crate owns.
 /// Correctness does not depend on that discipline -- `emit` itself takes no
