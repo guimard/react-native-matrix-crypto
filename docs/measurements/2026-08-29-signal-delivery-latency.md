@@ -306,6 +306,14 @@ and 0 ms across the 40 launches of section 5, and 1 ms and 0 ms again here. Four
 the gap does instead is grow with contention, from +2 ms idle to +22 ms saturated, which is
 what exposure to scheduling looks like and not what a constant amount of work looks like.
 
+**How strongly, for this half too.** Under CPU saturation there are 5 pairs. Five pairs
+cannot reach p < 0.0625 under any sign-flip test, so this is a bounded negative rather than
+a demonstrated zero: what it says is that no second-signal gap above roughly the clock's
+resolution was detectable, against a first-signal gap of 22 ms in the same 5 pairs. The
+bound is what carries the argument -- both arms' second-signal samples lie in {0, 1} ms, so
+a 22 ms per-signal cost cannot be hiding in them -- not the p-value, which there is not
+enough data to compute.
+
 **What is left open**: which first-use step dominates. Building the runtime, creating the
 first blocking-pool thread, and simply having more handoffs to be descheduled between are all
 first-use and all consistent with these numbers, and nothing here separates them. Separating
@@ -395,12 +403,13 @@ exists to absorb.
 
 ## 9. Every sample
 
-`label`, `round`, `host load`, `PROBE_SIGNAL_MS`, `PROBE_PROMISE_MS`, `PROBE_EMIT_BUILD`,
-`PROBE_SUMMARY`.
+Both runs, in full. The harness has gained a column between each of them and the next, so
+each block names its own fields; a row from a run today carries nine.
 
-Seven fields, not the eight the harness writes today: `PROBE_SIGNAL2_MS` became a column when
-section 6 was run, which was after these launches. A row from a current run carries it
-between `PROBE_SIGNAL_MS` and `PROBE_PROMISE_MS`.
+### 9.1 The 40 launches of section 5
+
+`label`, `round`, `host load`, `PROBE_SIGNAL_MS`, `PROBE_PROMISE_MS`, `PROBE_EMIT_BUILD`,
+`PROBE_SUMMARY`. Seven fields: `PROBE_SIGNAL2_MS` did not exist yet.
 
 ```
 before	1	none	1	1	0.1.0+emit.8e8c3246	PROBE_SUMMARY 12/12
@@ -443,4 +452,41 @@ before	8	io	1	0	0.1.0+emit.8e8c3246	PROBE_SUMMARY 12/12
 after	8	io	4	1	0.1.0+emit.9c223b45	PROBE_SUMMARY 12/12
 before	9	io	1	1	0.1.0+emit.8e8c3246	PROBE_SUMMARY 12/12
 after	9	io	5	5	0.1.0+emit.9c223b45	PROBE_SUMMARY 12/12
+```
+
+
+### 9.2 The 22 launches of section 6
+
+`label`, `round`, `host load`, `PROBE_SIGNAL_MS`, `PROBE_SIGNAL2_MS`, `PROBE_PROMISE_MS`,
+`PROBE_EMIT_BUILD`, `PROBE_SUMMARY`. Eight fields: `PROBE_SIGNAL_NTH` came later, with
+section 7.
+
+These are the rows behind section 6's tables, and they are here because the round that
+produced them published aggregates only -- in the file that exists because an earlier round
+left its samples in a scratch directory. Every figure in section 6 is recomputable from
+them.
+
+```
+before	1	none	1	9	0	0.1.0+emit.8e8c3246	PROBE_SUMMARY 12/12
+after	1	none	5	1	1	0.1.0+emit.9c223b45	PROBE_SUMMARY 12/12
+before	2	none	0	1	0	0.1.0+emit.8e8c3246	PROBE_SUMMARY 12/12
+after	2	none	1	1	1	0.1.0+emit.9c223b45	PROBE_SUMMARY 12/12
+before	3	none	1	2	2	0.1.0+emit.8e8c3246	PROBE_SUMMARY 12/12
+after	3	none	4	1	3	0.1.0+emit.9c223b45	PROBE_SUMMARY 12/12
+before	4	none	39	3	39	0.1.0+emit.8e8c3246	PROBE_SUMMARY 12/12
+after	4	none	2	0	2	0.1.0+emit.9c223b45	PROBE_SUMMARY 12/12
+before	5	none	2	0	2	0.1.0+emit.8e8c3246	PROBE_SUMMARY 12/12
+after	5	none	2	1	2	0.1.0+emit.9c223b45	PROBE_SUMMARY 12/12
+before	6	none	1	17	1	0.1.0+emit.8e8c3246	PROBE_SUMMARY 12/12
+after	6	none	5	5	1	0.1.0+emit.9c223b45	PROBE_SUMMARY 12/12
+before	1	cpu	15	1	2	0.1.0+emit.8e8c3246	PROBE_SUMMARY 12/12
+after	1	cpu	113	1	1	0.1.0+emit.9c223b45	PROBE_SUMMARY 12/12
+before	2	cpu	62	1	2	0.1.0+emit.8e8c3246	PROBE_SUMMARY 12/12
+after	2	cpu	5	1	2	0.1.0+emit.9c223b45	PROBE_SUMMARY 12/12
+before	3	cpu	73	0	1	0.1.0+emit.8e8c3246	PROBE_SUMMARY 12/12
+after	3	cpu	6	0	2	0.1.0+emit.9c223b45	PROBE_SUMMARY 12/12
+before	4	cpu	2	1	1	0.1.0+emit.8e8c3246	PROBE_SUMMARY 12/12
+after	4	cpu	24	1	7	0.1.0+emit.9c223b45	PROBE_SUMMARY 12/12
+before	5	cpu	9	1	7	0.1.0+emit.8e8c3246	PROBE_SUMMARY 12/12
+after	5	cpu	43	1	2	0.1.0+emit.9c223b45	PROBE_SUMMARY 12/12
 ```
