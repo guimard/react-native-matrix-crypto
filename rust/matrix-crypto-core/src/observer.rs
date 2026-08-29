@@ -62,14 +62,35 @@ pub trait ProbeObserver: Send + Sync {
 /// `machine::with_machine` both do. So on a cold process whose first native
 /// call is `runProbe`, the first `emit` is what constructs the runtime, on
 /// whatever thread UniFFI is polling that future on. A cold launch's
-/// `PROBE_SIGNAL_MS` therefore has runtime construction inside it, which is
-/// the right window for what a product waits on and worth knowing when
-/// reading the number.
+/// `PROBE_SIGNAL_MS` therefore has runtime construction inside it.
 ///
 /// It is a one-off cost per process rather than a per-signal one, which is
 /// why it is recorded here rather than treated as a defect -- but it is a
 /// cost `std::thread::spawn` did not have, so "costs the caller nothing
 /// beyond the handoff", which this comment used to say, was wrong.
+///
+/// **What none of that establishes is B2's measured gap, and an earlier draft
+/// of this comment was fairly read as saying it did.** Two things about that
+/// gap are now measured rather than argued, and both narrow it without
+/// closing it:
+///
+/// - **The excess is confined to the first signal of a process.** Timing a
+///   second signal in the same process makes the two emission paths
+///   indistinguishable -- a median gap of 0 ms against 22 ms on the first
+///   signal under the same CPU saturation.
+/// - **It is not fixed work.** The two arms share a floor: launches on both
+///   deliver in 0-1 ms, which bounds any constant added cost far below the
+///   observed median gap. What the gap does instead is grow with contention,
+///   which is the signature of exposure to scheduling rather than of a
+///   constant amount of work.
+///
+/// So runtime construction is on this path, is genuinely one-off, and is *a*
+/// candidate for a first-use cost. Which first-use step dominates -- building
+/// the runtime, creating the first blocking-pool thread, or simply having
+/// more handoffs to be descheduled between -- is not separated by anything
+/// measured here, and this comment no longer claims otherwise. The numbers
+/// and the experiment are in
+/// `docs/measurements/2026-08-29-signal-delivery-latency.md`.
 ///
 /// **The thread comes from the runtime's blocking pool, not from a fresh
 /// `std::thread::spawn` per signal.** This used to spawn one operating
