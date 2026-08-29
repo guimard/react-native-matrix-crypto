@@ -520,3 +520,21 @@ jobs:
             echo
             echo "https://www.npmjs.com/package/react-native-matrix-crypto/v/$VERSION"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Everything above proves what npm was TOLD. This asks the registry what
+      # npm DID, which is a different question and turned out to have a
+      # different answer: 0.1.0-rc.2 was published with `--tag rc`, and the
+      # registry then reported `latest` pointing at it too, because npm gives
+      # `latest` to the first version of a new package whatever --tag says.
+      # Every check in this workflow had passed. Each was true about its own
+      # question; none was about this one.
+      #
+      # Runs after the publish because it can only run after the publish. A
+      # failure here does not un-publish anything -- it names a registry state
+      # that needs a `npm dist-tag` correction, and refuses to let the run go
+      # green while it stands.
+      - name: Read the distribution tags back off the registry
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          NPM_TAG: ${{ needs.preflight.outputs.npm_tag }}
+        run: ./scripts/assert-published-tags.sh react-native-matrix-crypto "$VERSION" "$NPM_TAG"
