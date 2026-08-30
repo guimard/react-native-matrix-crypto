@@ -97,6 +97,24 @@ jobs:
       # Two typechecks, not one, because they are genuinely two questions.
       - run: yarn --cwd packages/example-app typecheck
       - run: yarn --cwd packages/react-native-matrix-crypto test
+      # packages/example-app had no test runner at all until 2026-08-30, and
+      # that is not a gap in coverage so much as the reason two defects
+      # shipped in one day. The guided walkthrough is the screen a developer
+      # opens first to decide whether to adopt this library, and it is the
+      # only place the published TypeScript surface is driven end to end.
+      # Step 3 spent a release reporting "no signal received" on a device
+      # whose very same launch logged PROBE_SUMMARY 12/12. Step 6 spent a
+      # milestone reporting "unexpected" because its card asserted that a
+      # library function was unimplemented after M3 implemented it. Both were
+      # found by a person holding a phone, because nothing else could look.
+      #
+      # Vitest, matching the library package, so a contributor meets one
+      # convention rather than two. It runs the walkthrough's real step
+      # functions, not a copy of them, and one of its files mocks nothing at
+      # all: a card that claims something about the library is checked
+      # against the library. What it cannot reach is the JSI turbo module,
+      # which no Node process can load; see packages/example-app/README.md.
+      - run: yarn --cwd packages/example-app test
 
   cold-consume:
     # Spec section 4bis.2: installing this package requires no Rust

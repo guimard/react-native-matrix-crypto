@@ -195,9 +195,12 @@ Next, in order:
 yarn install
 cargo test --manifest-path rust/Cargo.toml            # Rust
 yarn --cwd packages/react-native-matrix-crypto test   # TypeScript
+yarn --cwd packages/example-app test                  # the example app
 ```
 
 `packages/example-app` is a neutral React Native application that runs the full chain and explains it, walking seven steps from a trivial call through to real cryptographic keys and showing at each step the exact TypeScript a consumer would write, what crosses the native boundary, and the result.
+
+That app had no test runner until 2026-08-30, which is why it carried two defects at once: a step that read a value before the step producing it had settled, and a card asserting that a library function was unimplemented for a milestone after the library implemented it. It runs vitest now, the same runner as the library, in the same CI job. Those tests drive the walkthrough's real step functions, and the file that checks what a card claims about the library mocks nothing at all. What they cannot reach is the JSI turbo module, which no Node process can load, so nothing in them establishes that the bridge works; `packages/example-app/README.md` lists exactly which behaviour is still exercised only on a device.
 
 The layers, top to bottom: the TypeScript facade in `src/*.ts` holds the branded types, error normalisation and the public API; `src/generated/` and `cpp/generated/` are emitted by [`uniffi-bindgen-react-native`](https://github.com/jhugman/uniffi-bindgen-react-native) and are never edited by hand; `rust/matrix-crypto-ffi` is the `#[uniffi::export]` surface and does type mirroring, conversion and delegation only; `rust/matrix-crypto-core` holds all the logic, knows nothing about UniFFI, JSI or React Native, and is testable with plain `cargo test`. Change the Rust and regenerate with `yarn --cwd packages/react-native-matrix-crypto codegen`; `gate:drift` regenerates and fails on any difference, and `gate:boundary` asserts the core never gains a direct `uniffi` dependency.
 
