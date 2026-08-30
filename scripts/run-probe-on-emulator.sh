@@ -40,12 +40,25 @@ ACTIVITY=".MainActivity"
 # If you add or remove a probe check, update this line in the same commit --
 # CI failing until you do is the point.
 #
-# WHAT THESE TWELVE DO NOT COVER: CROSS-SIGNING, AND WHAT IT WOULD TAKE
+# WHAT THESE TWELVE DO NOT COVER: CROSS-SIGNING AND VERIFICATION, AND WHAT IT
+# WOULD TAKE
 #
 # None of the twelve looks at a signing identity or at what a decrypted event
 # says about its sender. That is a real hole on hardware and it is named here
 # rather than left for someone to discover, because the number above is the
 # only place on the device path where coverage is stated at all.
+#
+# THIS HEADING SAID "CROSS-SIGNING" ALONE AND WAS COMPLETE WHEN IT WAS WRITTEN.
+# It is not any more. Verifying a device by a scannable code shipped after it,
+# and the one claim about that method which no in-process test can make is a
+# device claim: that an ordinary phone camera reads the code this library
+# renders. Nothing on this path touches it. The twelve do not show a code, do
+# not read one, and never call `offerScannableCodes`, so a device run says
+# nothing at all about the method whose whole point is a camera. Getting there
+# needs a scanner in the example app, which is a product-side dependency in a
+# package that is not published, and a second device or a person holding one.
+# Not done, and this paragraph is the alternative to leaving the heading
+# reading as though cross-signing were still the whole of what is missing.
 #
 # The two halves are not equally out of reach, so they are separated:
 #
