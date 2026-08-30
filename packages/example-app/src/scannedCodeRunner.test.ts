@@ -197,10 +197,14 @@ describe('the camera walkthrough', () => {
 
   it('asks the person only at the moment the protocol asks, and then confirms', async () => {
     const { states, final } = await drive(['Requested', 'Ready', 'CodeScanned', 'Done'])
-    // Nothing asks for a confirmation before the other side has scanned.
-    const beforeScan = states.filter(state => state.stage === 'ready')
-    expect(beforeScan.every(state => !state.awaitingConfirmation)).toBe(true)
-    expect(states.some(state => state.awaitingConfirmation)).toBe(true)
+    // Asked for at that stage and at no other. Written this way round on
+    // purpose: an earlier version asked only whether the states at `ready`
+    // were free of it, which a screen that offered the button at every
+    // stage still passed. Sabotaging the condition to `if (true)` is what
+    // showed that, and this is the assertion that catches it.
+    const asking = states.filter(state => state.awaitingConfirmation)
+    expect(asking.length).toBeGreaterThan(0)
+    expect(asking.every(state => state.stage === 'code-scanned')).toBe(true)
     expect(native.confirmed).toBe(true)
     expect(final.headline).toBe('Verified.')
     expect(final.finished).toBe(true)
