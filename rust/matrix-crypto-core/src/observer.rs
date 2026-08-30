@@ -294,9 +294,20 @@ pub enum CryptoSignal {
     ///
     /// **Only a flow that finished by scanning announces here**, and a
     /// comparison that finishes still announces a `TrustChanged` and
-    /// nothing else. The asymmetry is recorded rather than tidied: unifying
-    /// them would change a signal M3 and M4 settled and tested, on flows
-    /// this milestone does not touch.
+    /// nothing else. **That is a named limit of this milestone rather than
+    /// a shape anybody defends.** The two variants carry disjoint halves of
+    /// one fact: a `TrustChanged` names a user and no flow, so a caller
+    /// holding two verifications with that user cannot tell which finished,
+    /// and this one names a flow and no trust. A product therefore writes
+    /// two paths, and the side that *received* an invitation cannot know in
+    /// advance which it will get, because the peer decides by scanning or
+    /// by comparing a string.
+    ///
+    /// The fix is additive: every completed flow announcing this, with
+    /// `TrustChanged` left exactly as it is, so nothing already true stops
+    /// being true. It is deferred because it reaches back into the
+    /// short-string flows M3 and M4 settled and tested, and re-settling
+    /// those belongs to a change that can carry them.
     ///
     /// **A flow that was refused or timed out announces nothing**, here or
     /// anywhere else. That gap is older than codes and is the same for both

@@ -267,6 +267,24 @@ function trustStateOf(trust: NativeTrustState): TrustState {
  *   comparison announces its completion as `trust_changed` and nothing
  *   else, and a flow that was refused or timed out announces nothing at
  *   all: {@link getVerificationStage} is what says `'cancelled'`.
+ *
+ *   **That asymmetry is a known limit of this release, and it is the one
+ *   that will cost you code.** The two variants carry disjoint halves of the
+ *   same fact: `trust_changed` names a user and no flow, so you cannot tell
+ *   which of two verifications with that user finished;
+ *   `verification_completed` names a flow and no trust. So "show a success
+ *   screen for *this* verification" is two paths, and the side that
+ *   *received* an invitation cannot know in advance which it will get,
+ *   because the peer decides that by scanning a code or by starting a string
+ *   comparison. Hold your own map from `verificationId` to what you are
+ *   showing, and treat either signal as "read the durable answer now".
+ *
+ *   The fix is additive and is deferred rather than forgotten: every
+ *   completed flow announcing `verification_completed`, with `trust_changed`
+ *   left exactly as it is. Nothing already true would stop being true. It is
+ *   not in this release because it reaches back into the short-string flows
+ *   settled two milestones ago, and re-settling those belongs to a change
+ *   that can carry them rather than to the corner of one that added codes.
  * - `unexpected_device` and `key_missing` still have no producer. The
  *   conditions they name do occur, and reach you elsewhere: a missing key
  *   arrives as a rejected {@link decryptEvent} with kind `missing_key`, not
