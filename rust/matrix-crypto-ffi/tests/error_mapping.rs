@@ -288,4 +288,48 @@ fn every_machine_error_maps_to_the_matching_ffi_variant() {
          the account has an identity it must not touch when the truth is that \
          it has none and creating one is exactly what is needed"
     );
+
+    // The four server-side recovery refusals. All fieldless, so any
+    // permutation of the four arms compiles and passes every other test in
+    // this repository, and the two in the middle are the pair that must
+    // never be confused: `RecoveryKeyIncorrect` is a typo the user retypes,
+    // `RecoveryDataMalformed` is a recovery no secret will ever open. A
+    // product told the first when the truth is the second leaves a user
+    // retyping a correct passphrase forever; told the second when the truth
+    // is the first, it tells a user with a typo that their identity is
+    // destroyed and sends them to set recovery up again, which is the one
+    // action that makes it destroyed.
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::PrivateKeysNotHeld),
+            MachineFfiError::PrivateKeysNotHeld
+        ),
+        "MachineError::PrivateKeysNotHeld must not arrive as another kind"
+    );
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::RecoveryNotSetUp),
+            MachineFfiError::RecoveryNotSetUp
+        ),
+        "MachineError::RecoveryNotSetUp must not arrive as another kind -- a \
+         product told a passphrase was wrong would ask its user to retype one \
+         against account data that carries no recovery at all"
+    );
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::RecoveryKeyIncorrect),
+            MachineFfiError::RecoveryKeyIncorrect
+        ),
+        "MachineError::RecoveryKeyIncorrect must not arrive as another kind -- \
+         it is the one refusal on this surface a user fixes by typing again"
+    );
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::RecoveryDataMalformed),
+            MachineFfiError::RecoveryDataMalformed
+        ),
+        "MachineError::RecoveryDataMalformed must not arrive as another kind -- \
+         no secret opens this one, and reporting it as a wrong passphrase is \
+         the fold both variants exist to prevent"
+    );
 }

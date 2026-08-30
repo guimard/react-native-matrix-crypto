@@ -32,12 +32,13 @@
 //! runs in no measurable time.
 
 use matrix_crypto_core::{
-    CryptoSignal, DeviceStatus, Envelope, FlowStage, IdentityStatus, SasEmoji, SasMaterial,
-    SenderVerification, TrustState,
+    AccountDataEntry, CryptoSignal, DeviceStatus, Envelope, FlowStage, IdentityStatus,
+    RecoverySetup, SasEmoji, SasMaterial, SenderVerification, TrustState,
 };
 use matrix_crypto_ffi::{
-    CryptoSignal as FfiCryptoSignal, DeviceStatus as FfiDeviceStatus, Envelope as FfiEnvelope,
-    IdentityStatus as FfiIdentityStatus, SasMaterial as FfiSasMaterial,
+    AccountDataEntry as FfiAccountDataEntry, CryptoSignal as FfiCryptoSignal,
+    DeviceStatus as FfiDeviceStatus, Envelope as FfiEnvelope, IdentityStatus as FfiIdentityStatus,
+    RecoverySetup as FfiRecoverySetup, SasMaterial as FfiSasMaterial,
     SenderVerification as FfiSenderVerification, TrustState as FfiTrustState, VerificationStage,
 };
 
@@ -606,4 +607,110 @@ fn an_identity_status_keeps_its_three_facts_apart() {
          it is the field that says this device can sign rather than only \
          recognise"
     );
+}
+
+/// A recovery's account data keeps its type and its content apart, in both
+/// directions.
+///
+/// The file's opening hazard again, and this record crosses the boundary
+/// **both ways**: out of `create_recovery` and back into
+/// `recover_identity`. Both fields are `String`, so swapping them compiles,
+/// passes `clippy -D warnings` and passes every other test in this
+/// repository, including the core's own round trip, because a swap on the
+/// way out that is matched by a swap on the way back cancels itself
+/// exactly.
+///
+/// It would not cancel itself anywhere else. What a product does with these
+/// two values is send the content as the body of a `PUT` whose path ends in
+/// the type, so a swap writes a JSON object to a path named after a JSON
+/// object, and the account data that comes back is unreadable by this
+/// library and by every other Matrix client. The symptom is a recovery that
+/// works perfectly until it is written to a real homeserver.
+///
+/// The two fixtures are deliberately distinguishable, and neither is valid
+/// in the other's place.
+#[test]
+fn an_account_data_entry_keeps_its_type_and_its_content_apart() {
+    let outbound = FfiAccountDataEntry::from(AccountDataEntry {
+        event_type: "m.secret_storage.default_key".to_string(),
+        content: r#"{"key":"ABCD"}"#.to_string(),
+    });
+    assert_eq!(
+        outbound.event_type, "m.secret_storage.default_key",
+        "the event type must not arrive as the content: a product puts this \
+         in the path of a PUT"
+    );
+    assert_eq!(
+        outbound.content, r#"{"key":"ABCD"}"#,
+        "the content must not arrive as the event type: a product puts this \
+         in the body of a PUT"
+    );
+
+    let inbound = AccountDataEntry::from(FfiAccountDataEntry {
+        event_type: "m.cross_signing.master".to_string(),
+        content: r#"{"encrypted":{}}"#.to_string(),
+    });
+    assert_eq!(
+        inbound.event_type, "m.cross_signing.master",
+        "the same rule on the way in: a swap here makes every recovery report \
+         `RecoveryNotSetUp` for account data that is complete"
+    );
+    assert_eq!(inbound.content, r#"{"encrypted":{}}"#);
+}
+
+/// A recovery setup keeps its secret out of its account data, and its
+/// account data in order.
+///
+/// Not a swap hazard, because the two fields have different types. Two
+/// different hazards instead, and both are silent:
+///
+/// * The recovery key is the one value a product shows a human and can
+///   never produce again. A mapping that dropped it, or that handed back an
+///   entry's content in its place, would be a product showing its user a
+///   string that opens nothing.
+/// * The account data is a `Vec` whose order is part of the contract: the
+///   key description is written before the pointer that names it, so a
+///   product interrupted between the two has never advertised a key
+///   description it failed to write. A mapping that reversed or reordered
+///   the list would break that with nothing to show for it.
+#[test]
+fn a_recovery_setup_keeps_its_key_and_the_order_of_its_account_data() {
+    let mapped = FfiRecoverySetup::from(RecoverySetup {
+        recovery_key: "EsTx first second third".to_string(),
+        account_data: vec![
+            AccountDataEntry {
+                event_type: "first".to_string(),
+                content: "1".to_string(),
+            },
+            AccountDataEntry {
+                event_type: "second".to_string(),
+                content: "2".to_string(),
+            },
+            AccountDataEntry {
+                event_type: "third".to_string(),
+                content: "3".to_string(),
+            },
+        ],
+    });
+
+    assert_eq!(
+        mapped.recovery_key, "EsTx first second third",
+        "the recovery key must survive the crossing verbatim; it cannot be \
+         produced again, so a product that shows a corrupted one has no way \
+         back"
+    );
+    let types: Vec<&str> = mapped
+        .account_data
+        .iter()
+        .map(|entry| entry.event_type.as_str())
+        .collect();
+    assert_eq!(
+        types,
+        vec!["first", "second", "third"],
+        "the account data must keep the order the core handed it back in"
+    );
+    // The recovery key's fixture deliberately contains the entries' own
+    // words, so a mapping that built it out of the account data rather than
+    // carrying it across would still look plausible above and fails here.
+    assert_ne!(mapped.account_data[0].content, mapped.recovery_key);
 }

@@ -177,6 +177,24 @@ pub enum MachineFfiError {
     // thing done about it.
     #[error("this account has no signing identity to verify against")]
     IdentityNotKnown,
+    // Appended last, like every variant above and for the same wire-ordinal
+    // reason. These four mirror the ones the core's `MachineError` grew for
+    // server-side recovery, in the core's own order.
+    //
+    // `create_recovery` and `recover_identity`, at the end of this file,
+    // are what return them. The pair that must never be folded is
+    // `RecoveryKeyIncorrect` and `RecoveryDataMalformed`: one is a typo the
+    // user retypes, the other is a recovery no secret will ever open, and
+    // the core's own documentation on each says what a product does about
+    // it.
+    #[error("this device does not hold the account's private signing keys")]
+    PrivateKeysNotHeld,
+    #[error("no complete server-side recovery was supplied")]
+    RecoveryNotSetUp,
+    #[error("the passphrase or recovery key does not open this recovery")]
+    RecoveryKeyIncorrect,
+    #[error("the stored recovery could not be read")]
+    RecoveryDataMalformed,
 }
 
 impl From<matrix_crypto_core::MachineError> for MachineFfiError {
@@ -197,6 +215,10 @@ impl From<matrix_crypto_core::MachineError> for MachineFfiError {
             matrix_crypto_core::MachineError::AccountKeysNotFetched => Self::AccountKeysNotFetched,
             matrix_crypto_core::MachineError::IdentityAlreadyExists => Self::IdentityAlreadyExists,
             matrix_crypto_core::MachineError::IdentityNotKnown => Self::IdentityNotKnown,
+            matrix_crypto_core::MachineError::PrivateKeysNotHeld => Self::PrivateKeysNotHeld,
+            matrix_crypto_core::MachineError::RecoveryNotSetUp => Self::RecoveryNotSetUp,
+            matrix_crypto_core::MachineError::RecoveryKeyIncorrect => Self::RecoveryKeyIncorrect,
+            matrix_crypto_core::MachineError::RecoveryDataMalformed => Self::RecoveryDataMalformed,
         }
     }
 }
@@ -1086,6 +1108,124 @@ pub async fn identity_status() -> Result<IdentityStatus, MachineFfiError> {
 #[uniffi::export]
 pub async fn bootstrap_identity() -> Result<(), MachineFfiError> {
     matrix_crypto_core::bootstrap_identity()
+        .await
+        .map_err(Into::into)
+}
+
+/// Mirror of the core's account data entry, carrying the UniFFI record
+/// derive.
+///
+/// One global account data event, as the homeserver stores it: `content` is
+/// the event's content object as JSON, which is exactly the body of a
+/// `PUT /_matrix/client/v3/user/{userId}/account_data/{eventType}` and
+/// exactly what the matching `GET` answers with. This library adds no
+/// envelope of its own, so a product moves these bytes to and from the
+/// homeserver unchanged.
+///
+/// **No `Debug` derive**, unlike `ProbeReport`/`IdentityKeys` above and for
+/// `CryptoMachineConfig`'s reason: the entries this record carries include
+/// the account's encrypted private signing keys, and a derived `Debug`
+/// would leave a ciphertext one accidental `{:?}` away from a log.
+#[derive(Clone, uniffi::Record)]
+pub struct AccountDataEntry {
+    pub event_type: String,
+    pub content: String,
+}
+
+impl From<matrix_crypto_core::AccountDataEntry> for AccountDataEntry {
+    fn from(value: matrix_crypto_core::AccountDataEntry) -> Self {
+        // Destructured, not field-accessed: a field added to the core
+        // record later must fail this build rather than be silently
+        // dropped. See Global Constraints.
+        let matrix_crypto_core::AccountDataEntry {
+            event_type,
+            content,
+        } = value;
+        Self {
+            event_type,
+            content,
+        }
+    }
+}
+
+impl From<AccountDataEntry> for matrix_crypto_core::AccountDataEntry {
+    fn from(value: AccountDataEntry) -> Self {
+        // Destructured for the same reason, in the other direction: this
+        // record crosses the boundary both ways.
+        let AccountDataEntry {
+            event_type,
+            content,
+        } = value;
+        Self {
+            event_type,
+            content,
+        }
+    }
+}
+
+/// Mirror of the core's recovery setup, carrying the UniFFI record derive.
+///
+/// **No `Debug` derive**, for the reason `AccountDataEntry` above gives and
+/// one sharper still: `recovery_key` is the value that opens this account's
+/// stored identity, and it is the one thing on this surface that must never
+/// reach a log.
+#[derive(uniffi::Record)]
+pub struct RecoverySetup {
+    pub recovery_key: String,
+    pub account_data: Vec<AccountDataEntry>,
+}
+
+impl From<matrix_crypto_core::RecoverySetup> for RecoverySetup {
+    fn from(value: matrix_crypto_core::RecoverySetup) -> Self {
+        // Destructured, not field-accessed. See Global Constraints.
+        let matrix_crypto_core::RecoverySetup {
+            recovery_key,
+            account_data,
+        } = value;
+        Self {
+            recovery_key,
+            account_data: account_data.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// Writes this account's private signing keys into server-side storage,
+/// under a key derived from `passphrase`.
+///
+/// Mirrors `create_recovery`; see its own doc comment in
+/// `matrix-crypto-core::recovery` for what a product owes its user about
+/// the recovery key, for why the account data is handed back rather than
+/// sent, and for the one refusal.
+///
+/// **Nothing here reaches the network.** The returned account data is
+/// written by the product, one `PUT` per entry, in the order it is handed
+/// back.
+#[uniffi::export]
+pub async fn create_recovery(passphrase: String) -> Result<RecoverySetup, MachineFfiError> {
+    matrix_crypto_core::create_recovery(&passphrase)
+        .await
+        .map(Into::into)
+        .map_err(Into::into)
+}
+
+/// Restores this account's private signing keys from server-side storage.
+///
+/// Mirrors `recover_identity`; see its own doc comment in
+/// `matrix-crypto-core::recovery` for which account data events are needed,
+/// for why the key description's type cannot be known before the default
+/// key is read, and for the refusals.
+///
+/// `secret` is either the passphrase or the base58 recovery key: one
+/// parameter serves both, so a product need not ask its user which one they
+/// are holding.
+#[uniffi::export]
+pub async fn recover_identity(
+    secret: String,
+    account_data: Vec<AccountDataEntry>,
+) -> Result<(), MachineFfiError> {
+    let account_data: Vec<matrix_crypto_core::AccountDataEntry> =
+        account_data.into_iter().map(Into::into).collect();
+    matrix_crypto_core::recover_identity(&secret, &account_data)
         .await
         .map_err(Into::into)
 }

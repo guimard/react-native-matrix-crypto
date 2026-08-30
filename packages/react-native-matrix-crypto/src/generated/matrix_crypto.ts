@@ -303,6 +303,69 @@ export async function createCryptoMachine(
 }
 
 /**
+ * Writes this account's private signing keys into server-side storage,
+ * under a key derived from `passphrase`.
+ *
+ * Mirrors `create_recovery`; see its own doc comment in
+ * `matrix-crypto-core::recovery` for what a product owes its user about
+ * the recovery key, for why the account data is handed back rather than
+ * sent, and for the one refusal.
+ *
+ * **Nothing here reaches the network.** The returned account data is
+ * written by the product, one `PUT` per entry, in the order it is handed
+ * back.
+ */
+export async function createRecovery(
+  passphrase: string,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<RecoverySetup> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_create_recovery(
+          FfiConverterString.lower(passphrase, nativeModule().rustbuffer_alloc)
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_rust_buffer,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      // Borrowed view over foreign memory: the call site owns the free,
+      // as on the sync paths. Unconditional — a no-op where buffers are
+      // already JS-owned.
+      /*liftFunc:*/ (__rb) => {
+        try {
+          return FfiConverterTypeRecoverySetup.lift(__rb);
+        } finally {
+          nativeModule().rustbuffer_free(__rb);
+        }
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
  * Decrypts `raw_json`, an event received for `scope`. Mirrors
  * `decrypt_event`; see its own doc comment in
  * `matrix-crypto-core::session`.
@@ -912,6 +975,59 @@ export async function receiveSyncChanges(
 }
 
 /**
+ * Restores this account's private signing keys from server-side storage.
+ *
+ * Mirrors `recover_identity`; see its own doc comment in
+ * `matrix-crypto-core::recovery` for which account data events are needed,
+ * for why the key description's type cannot be known before the default
+ * key is read, and for the refusals.
+ *
+ * `secret` is either the passphrase or the base58 recovery key: one
+ * parameter serves both, so a product need not ask its user which one they
+ * are holding.
+ */
+export async function recoverIdentity(
+  secret: string,
+  accountData: Array<AccountDataEntry>,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<void> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_recover_identity(
+          FfiConverterString.lower(secret, nativeModule().rustbuffer_alloc),
+          FfiConverterSequenceTypeAccountDataEntry.lower(
+            accountData,
+            nativeModule().rustbuffer_alloc
+          )
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_void,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_void,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_void,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_void,
+      /*liftFunc:*/ (_v) => {},
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
  * Asks this account's other devices to verify this one, so that this device
  * can join the signing identity the account already has. Mirrors
  * `request_self_flow`; see its own doc comment in
@@ -1375,6 +1491,67 @@ const stringConverter = (() => {
   };
 })();
 const FfiConverterString = uniffiCreateFfiConverterString(stringConverter);
+
+/**
+ * Mirror of the core's account data entry, carrying the UniFFI record
+ * derive.
+ *
+ * One global account data event, as the homeserver stores it: `content` is
+ * the event's content object as JSON, which is exactly the body of a
+ * `PUT /_matrix/client/v3/user/{userId}/account_data/{eventType}` and
+ * exactly what the matching `GET` answers with. This library adds no
+ * envelope of its own, so a product moves these bytes to and from the
+ * homeserver unchanged.
+ *
+ * **No `Debug` derive**, unlike `ProbeReport`/`IdentityKeys` above and for
+ * `CryptoMachineConfig`'s reason: the entries this record carries include
+ * the account's encrypted private signing keys, and a derived `Debug`
+ * would leave a ciphertext one accidental `{:?}` away from a log.
+ */
+export type AccountDataEntry = {
+  eventType: string;
+  content: string;
+};
+
+/**
+ * Generated factory for {@link AccountDataEntry} record objects.
+ */
+export const AccountDataEntry = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<AccountDataEntry, ReturnType<typeof defaults>>(
+      defaults
+    );
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<AccountDataEntry>,
+  });
+})();
+
+const FfiConverterTypeAccountDataEntry = (() => {
+  type TypeName = AccountDataEntry;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      return {
+        eventType: FfiConverterString.readFromCursor(c),
+        content: FfiConverterString.readFromCursor(c),
+      };
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      FfiConverterString.writeIntoCursor(value.eventType, c);
+      FfiConverterString.writeIntoCursor(value.content, c);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterString.allocationSize(value.eventType) +
+        FfiConverterString.allocationSize(value.content)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
 
 /**
  * Mirror of the core's machine config, carrying the UniFFI record derive.
@@ -2003,6 +2180,64 @@ const FfiConverterTypeProbeSignal = (() => {
 })();
 
 /**
+ * Mirror of the core's recovery setup, carrying the UniFFI record derive.
+ *
+ * **No `Debug` derive**, for the reason `AccountDataEntry` above gives and
+ * one sharper still: `recovery_key` is the value that opens this account's
+ * stored identity, and it is the one thing on this surface that must never
+ * reach a log.
+ */
+export type RecoverySetup = {
+  recoveryKey: string;
+  accountData: Array<AccountDataEntry>;
+};
+
+/**
+ * Generated factory for {@link RecoverySetup} record objects.
+ */
+export const RecoverySetup = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<RecoverySetup, ReturnType<typeof defaults>>(
+      defaults
+    );
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<RecoverySetup>,
+  });
+})();
+
+const FfiConverterTypeRecoverySetup = (() => {
+  type TypeName = RecoverySetup;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      return {
+        recoveryKey: FfiConverterString.readFromCursor(c),
+        accountData: FfiConverterSequenceTypeAccountDataEntry.readFromCursor(c),
+      };
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      FfiConverterString.writeIntoCursor(value.recoveryKey, c);
+      FfiConverterSequenceTypeAccountDataEntry.writeIntoCursor(
+        value.accountData,
+        c
+      );
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterString.allocationSize(value.recoveryKey) +
+        FfiConverterSequenceTypeAccountDataEntry.allocationSize(
+          value.accountData
+        )
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
  * One symbol of a short authentication string. Mirror of the core's
  * `SasEmoji`, carrying the UniFFI record derive.
  *
@@ -2369,6 +2604,10 @@ export enum MachineFfiError_Tags {
   AccountKeysNotFetched = "AccountKeysNotFetched",
   IdentityAlreadyExists = "IdentityAlreadyExists",
   IdentityNotKnown = "IdentityNotKnown",
+  PrivateKeysNotHeld = "PrivateKeysNotHeld",
+  RecoveryNotSetUp = "RecoveryNotSetUp",
+  RecoveryKeyIncorrect = "RecoveryKeyIncorrect",
+  RecoveryDataMalformed = "RecoveryDataMalformed",
 }
 /**
  * Mirror of the core's machine error, carrying the UniFFI error derive.
@@ -2728,6 +2967,122 @@ export const MachineFfiError = (() => {
     }
   }
 
+  type PrivateKeysNotHeld__interface = {
+    tag: MachineFfiError_Tags.PrivateKeysNotHeld;
+  };
+  class PrivateKeysNotHeld_
+    extends UniffiError
+    implements PrivateKeysNotHeld__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.PrivateKeysNotHeld;
+    constructor() {
+      super("MachineFfiError", "PrivateKeysNotHeld");
+    }
+
+    static new(): PrivateKeysNotHeld_ {
+      return new PrivateKeysNotHeld_();
+    }
+
+    static instanceOf(obj: any): obj is PrivateKeysNotHeld_ {
+      return obj.tag === MachineFfiError_Tags.PrivateKeysNotHeld;
+    }
+    static hasInner(obj: any): obj is PrivateKeysNotHeld_ {
+      return false;
+    }
+  }
+
+  type RecoveryNotSetUp__interface = {
+    tag: MachineFfiError_Tags.RecoveryNotSetUp;
+  };
+  class RecoveryNotSetUp_
+    extends UniffiError
+    implements RecoveryNotSetUp__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.RecoveryNotSetUp;
+    constructor() {
+      super("MachineFfiError", "RecoveryNotSetUp");
+    }
+
+    static new(): RecoveryNotSetUp_ {
+      return new RecoveryNotSetUp_();
+    }
+
+    static instanceOf(obj: any): obj is RecoveryNotSetUp_ {
+      return obj.tag === MachineFfiError_Tags.RecoveryNotSetUp;
+    }
+    static hasInner(obj: any): obj is RecoveryNotSetUp_ {
+      return false;
+    }
+  }
+
+  type RecoveryKeyIncorrect__interface = {
+    tag: MachineFfiError_Tags.RecoveryKeyIncorrect;
+  };
+  class RecoveryKeyIncorrect_
+    extends UniffiError
+    implements RecoveryKeyIncorrect__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.RecoveryKeyIncorrect;
+    constructor() {
+      super("MachineFfiError", "RecoveryKeyIncorrect");
+    }
+
+    static new(): RecoveryKeyIncorrect_ {
+      return new RecoveryKeyIncorrect_();
+    }
+
+    static instanceOf(obj: any): obj is RecoveryKeyIncorrect_ {
+      return obj.tag === MachineFfiError_Tags.RecoveryKeyIncorrect;
+    }
+    static hasInner(obj: any): obj is RecoveryKeyIncorrect_ {
+      return false;
+    }
+  }
+
+  type RecoveryDataMalformed__interface = {
+    tag: MachineFfiError_Tags.RecoveryDataMalformed;
+  };
+  class RecoveryDataMalformed_
+    extends UniffiError
+    implements RecoveryDataMalformed__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.RecoveryDataMalformed;
+    constructor() {
+      super("MachineFfiError", "RecoveryDataMalformed");
+    }
+
+    static new(): RecoveryDataMalformed_ {
+      return new RecoveryDataMalformed_();
+    }
+
+    static instanceOf(obj: any): obj is RecoveryDataMalformed_ {
+      return obj.tag === MachineFfiError_Tags.RecoveryDataMalformed;
+    }
+    static hasInner(obj: any): obj is RecoveryDataMalformed_ {
+      return false;
+    }
+  }
+
   function instanceOf(obj: any): obj is MachineFfiError {
     return obj[uniffiTypeNameSymbol] === "MachineFfiError";
   }
@@ -2746,6 +3101,10 @@ export const MachineFfiError = (() => {
     AccountKeysNotFetched: AccountKeysNotFetched_,
     IdentityAlreadyExists: IdentityAlreadyExists_,
     IdentityNotKnown: IdentityNotKnown_,
+    PrivateKeysNotHeld: PrivateKeysNotHeld_,
+    RecoveryNotSetUp: RecoveryNotSetUp_,
+    RecoveryKeyIncorrect: RecoveryKeyIncorrect_,
+    RecoveryDataMalformed: RecoveryDataMalformed_,
   });
 })();
 /**
@@ -2768,7 +3127,11 @@ export type MachineFfiError = InstanceType<
     | "UnknownDevice"
     | "AccountKeysNotFetched"
     | "IdentityAlreadyExists"
-    | "IdentityNotKnown"]
+    | "IdentityNotKnown"
+    | "PrivateKeysNotHeld"
+    | "RecoveryNotSetUp"
+    | "RecoveryKeyIncorrect"
+    | "RecoveryDataMalformed"]
 >;
 
 // FfiConverter for enum MachineFfiError
@@ -2805,6 +3168,14 @@ const FfiConverterTypeMachineFfiError = (() => {
           return new MachineFfiError.IdentityAlreadyExists();
         case 12:
           return new MachineFfiError.IdentityNotKnown();
+        case 13:
+          return new MachineFfiError.PrivateKeysNotHeld();
+        case 14:
+          return new MachineFfiError.RecoveryNotSetUp();
+        case 15:
+          return new MachineFfiError.RecoveryKeyIncorrect();
+        case 16:
+          return new MachineFfiError.RecoveryDataMalformed();
         default:
           throw new UniffiInternalError.UnexpectedEnumCase();
       }
@@ -2863,6 +3234,22 @@ const FfiConverterTypeMachineFfiError = (() => {
           c.writeI32(12);
           return;
         }
+        case MachineFfiError_Tags.PrivateKeysNotHeld: {
+          c.writeI32(13);
+          return;
+        }
+        case MachineFfiError_Tags.RecoveryNotSetUp: {
+          c.writeI32(14);
+          return;
+        }
+        case MachineFfiError_Tags.RecoveryKeyIncorrect: {
+          c.writeI32(15);
+          return;
+        }
+        case MachineFfiError_Tags.RecoveryDataMalformed: {
+          c.writeI32(16);
+          return;
+        }
         default:
           // Throwing from here means that MachineFfiError_Tags hasn't matched an ordinal.
           throw new UniffiInternalError.UnexpectedEnumCase();
@@ -2910,6 +3297,18 @@ const FfiConverterTypeMachineFfiError = (() => {
           return 4;
         }
         case MachineFfiError_Tags.IdentityNotKnown: {
+          return 4;
+        }
+        case MachineFfiError_Tags.PrivateKeysNotHeld: {
+          return 4;
+        }
+        case MachineFfiError_Tags.RecoveryNotSetUp: {
+          return 4;
+        }
+        case MachineFfiError_Tags.RecoveryKeyIncorrect: {
+          return 4;
+        }
+        case MachineFfiError_Tags.RecoveryDataMalformed: {
           return 4;
         }
         default:
@@ -4005,6 +4404,11 @@ const FfiConverterOptionalTypeSenderVerification = new FfiConverterOptional(
   FfiConverterTypeSenderVerification
 );
 
+// FfiConverter for Array<AccountDataEntry>
+const FfiConverterSequenceTypeAccountDataEntry = new FfiConverterArray(
+  FfiConverterTypeAccountDataEntry
+);
+
 // FfiConverter for Array<SasEmoji>
 const FfiConverterSequenceTypeSasEmoji = new FfiConverterArray(
   FfiConverterTypeSasEmoji
@@ -4099,6 +4503,14 @@ function uniffiEnsureInitialized() {
     );
   }
   if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_create_recovery() !==
+    29695
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_create_recovery"
+    );
+  }
+  if (
     nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_decrypt_event() !==
     26398
   ) {
@@ -4183,6 +4595,14 @@ function uniffiEnsureInitialized() {
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       "uniffi_matrix_crypto_ffi_checksum_func_receive_sync_changes"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_recover_identity() !==
+    62184
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_recover_identity"
     );
   }
   if (
@@ -4273,6 +4693,7 @@ function uniffiEnsureInitialized() {
 export default Object.freeze({
   initialize: uniffiEnsureInitialized,
   converters: {
+    FfiConverterTypeAccountDataEntry,
     FfiConverterTypeCryptoMachineConfig,
     FfiConverterTypeCryptoObserver,
     FfiConverterTypeCryptoSignal,
@@ -4286,6 +4707,7 @@ export default Object.freeze({
     FfiConverterTypeProbeObserver,
     FfiConverterTypeProbeReport,
     FfiConverterTypeProbeSignal,
+    FfiConverterTypeRecoverySetup,
     FfiConverterTypeSasEmoji,
     FfiConverterTypeSasMaterial,
     FfiConverterTypeSenderVerification,
