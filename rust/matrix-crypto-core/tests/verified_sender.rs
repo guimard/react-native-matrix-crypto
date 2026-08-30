@@ -44,6 +44,20 @@
 //! the guard, and it is deliberately the mirror image of the chain test:
 //! one `bool`, one difference, both halves of the pair asserted.
 //!
+//! # The third test, and why it is not about the chain at all
+//!
+//! [`history_does_not_improve_when_the_sender_is_verified_later`] runs the
+//! same steps in a different order, which is its whole subject. A message
+//! sent *before* the chain keeps the value it was decrypted with, forever,
+//! and completing the chain afterwards does not revisit it: upstream fixes
+//! an inbound session's sender data when the session key arrives and
+//! recalculates it later only from `UnknownDevice`, `DeviceInfo` or
+//! `VerificationViolation`, never from `SenderUnverified`. The two tests
+//! above send after the chain for exactly that reason, and until M4 that
+//! reason lived in a comment with nothing asserting it. It is a promise a
+//! product's user interface has to keep ("from here on", not "your history
+//! improves"), so it is a test now.
+//!
 //! # Which side is the library
 //!
 //! The asymmetry `tests/two_parties.rs` and `tests/cross_signed_peer.rs`
@@ -64,7 +78,9 @@
 //! second test here is the first instance of that replacement -- a chain
 //! missing one step produces a value below it -- and
 //! `tests/cross_signed_peer.rs` and `tests/two_parties.rs` hold the other
-//! two rungs.
+//! two rungs. The third test holds a fourth: a real chain, completed in
+//! full, still does not reach back and produce `Verified` for what was
+//! decrypted before it.
 
 use matrix_crypto_core::{
     begin_comparison, bootstrap_identity, confirm_flow, create_machine, decrypt_event,
@@ -564,9 +580,9 @@ fn with_our_signature(
 /// Creates the one library machine this process has, performs steps 1 and 2
 /// of the chain on it, and returns its published device keys.
 ///
-/// Called by both tests; the second one gets the machine the first left
-/// behind, which is the only shape available -- the machine registry and
-/// the pump are process-wide and an integration test cannot reset them.
+/// Called by every test in this file; each gets the machine the one before
+/// it left behind, which is the only shape available -- the machine registry
+/// and the pump are process-wide and an integration test cannot reset them.
 async fn library() -> serde_json::Value {
     if let Some(library) = LIBRARY
         .lock()
@@ -608,16 +624,16 @@ async fn library() -> serde_json::Value {
         .and_then(serde_json::Value::as_object)
         .map(|keys| {
             keys.iter()
-                .take(2)
+                .take(3)
                 .map(|(id, key)| (id.clone(), key.to_string()))
                 .collect()
         })
         .expect("a fresh machine's upload carries one-time keys");
     assert!(
-        one_time_keys.len() >= 2,
-        "this file stands up two counterparties and claims one key each; with \
-         fewer, the second counterparty's session would be established by some \
-         other means and the two halves would not be comparable"
+        one_time_keys.len() >= 3,
+        "this file stands up three counterparties and claims one key each; \
+         with fewer, a counterparty's session would be established by some \
+         other means and the halves of this file would not be comparable"
     );
     mark_request_sent(&upload.id, r#"{"one_time_key_counts":{}}"#)
         .await
@@ -718,7 +734,7 @@ fn claim_one_time_key() -> (String, serde_json::Value) {
     let (id, key) = library
         .one_time_keys
         .pop()
-        .expect("this file claims one key per counterparty and publishes enough for both");
+        .expect("this file claims one key per counterparty and publishes enough for all");
     (
         id,
         serde_json::from_str(&key).expect("this test stored well-formed JSON"),
@@ -744,23 +760,35 @@ struct Outcome {
     device_trust: TrustState,
 }
 
-/// Drives the whole chain against one counterparty and decrypts one event
-/// from it.
+/// The counterparty of the ordering test, whose message is sent before the
+/// chain rather than after it.
+const HISTORY_USER: &str = "@history:example.org";
+const HISTORY_DEVICE: &str = "PEERHISTORY";
+const HISTORY_PAYLOAD: &str = r#"{"body":"sent before the chain ran","msgtype":"m.text"}"#;
+const HISTORY_SAME_SESSION_PAYLOAD: &str =
+    r#"{"body":"sent after the chain, on the session that predates it","msgtype":"m.text"}"#;
+const HISTORY_ROTATED_PAYLOAD: &str =
+    r#"{"body":"sent after the chain, on a session created after it","msgtype":"m.text"}"#;
+
+/// A counterparty that holds a cross-signing identity of its own and has
+/// signed its own device with it. Step three of the chain, plus the key
+/// publication that has to precede it.
+struct Counterparty {
+    peer: OlmMachine,
+    signed_device_keys: serde_json::Value,
+    master_key: serde_json::Value,
+    self_signing_key: serde_json::Value,
+}
+
+/// Stands up one counterparty and performs step three against it.
 ///
-/// `refetch` is the single axis the two tests differ on: with it, step
-/// seven happens; without it, everything up to and including step six
-/// happens and the chain stops there.
-async fn chain(
-    user_id: &str,
-    device_id: &str,
-    payload: &str,
-    refetch: bool,
-    alice_device_keys: &serde_json::Value,
-) -> Outcome {
+/// Extracted from `chain` so that the ordering test can perform the steps
+/// in a different order rather than reproducing them. The order is the
+/// subject of that test, so it has to be able to vary it without varying
+/// anything else.
+async fn counterparty_with_identity(user_id: &str, device_id: &str) -> Counterparty {
     let peer_user: OwnedUserId = user_id.parse().expect("a literal user id parses");
     let peer_device: OwnedDeviceId = device_id.into();
-    let alice_user: OwnedUserId = ALICE_USER.parse().expect("a literal user id parses");
-    let scope_id: OwnedRoomId = SCOPE.parse().expect("a literal scope id parses");
 
     let peer = OlmMachine::new(&peer_user, &peer_device).await;
 
@@ -816,6 +844,29 @@ async fn chain(
          and its owner's self-signing key"
     );
 
+    Counterparty {
+        peer,
+        signed_device_keys,
+        master_key,
+        self_signing_key,
+    }
+}
+
+/// Step four: the library asks who this user is, and is answered.
+///
+/// Returns the answer, because step seven has to repeat it with one
+/// signature merged in and nothing else changed.
+async fn fetch_counterparty_keys(
+    counterparty: &Counterparty,
+    user_id: &str,
+    device_id: &str,
+    alice_device_keys: &serde_json::Value,
+) -> serde_json::Value {
+    let peer = &counterparty.peer;
+    let signed_device_keys = counterparty.signed_device_keys.clone();
+    let master_key = counterparty.master_key.clone();
+    let self_signing_key = counterparty.self_signing_key.clone();
+
     // ---- Step 4: we fetch the sender's keys -----------------------------
     //
     // `share_scope_key` first, because it is what makes the library track
@@ -860,6 +911,16 @@ async fn chain(
         .await
         .expect("the pump must be drainable");
 
+    first_answer
+}
+
+/// Steps five and six: a completed comparison signs the sender's master
+/// key, and the signature it produces is uploaded.
+///
+/// Returns the signatures the upload carried, which step seven needs.
+async fn compare_and_sign(peer: &OlmMachine, user_id: &str, device_id: &str) -> serde_json::Value {
+    let alice_user: OwnedUserId = ALICE_USER.parse().expect("a literal user id parses");
+
     // ---- Step 5: a completed comparison signs the sender's master key ---
     //
     // Nothing else on this crate's surface signs another user's identity,
@@ -870,7 +931,7 @@ async fn chain(
     let flow = request_flow(user_id, device_id)
         .await
         .expect("a known device can be asked to verify itself");
-    let crossed = pump_to_bare(&peer, user_id, device_id).await;
+    let crossed = pump_to_bare(peer, user_id, device_id).await;
     assert!(
         crossed.contains(&"m.key.verification.request".to_string()),
         "the request must reach the counterparty through the pump: {crossed:?}"
@@ -887,20 +948,20 @@ async fn chain(
     begin_comparison(&flow)
         .await
         .expect("a ready flow can start a comparison");
-    let crossed = pump_to_bare(&peer, user_id, device_id).await;
+    let crossed = pump_to_bare(peer, user_id, device_id).await;
     assert!(
         crossed.contains(&"m.key.verification.start".to_string()),
         "the start must reach the counterparty through the pump: {crossed:?}"
     );
 
-    let peer_sas = bare_comparison(&peer, &flow);
+    let peer_sas = bare_comparison(peer, &flow);
     let accept = peer_sas
         .accept()
         .expect("a comparison the other side started can be accepted");
     deliver_verification_request(&accept, user_id).await;
 
-    pump_to_bare(&peer, user_id, device_id).await;
-    pump_bare_to_library(&peer, user_id).await;
+    pump_to_bare(peer, user_id, device_id).await;
+    pump_bare_to_library(peer, user_id).await;
 
     assert_eq!(
         flow_stage(&flow).await.expect("the flow exists"),
@@ -930,12 +991,12 @@ async fn chain(
         .await
         .expect("a flow showing a string can be confirmed");
 
-    let crossed = pump_to_bare(&peer, user_id, device_id).await;
+    let crossed = pump_to_bare(peer, user_id, device_id).await;
     assert!(
         crossed.contains(&"m.key.verification.mac".to_string()),
         "the library's confirmation must reach the counterparty: {crossed:?}"
     );
-    let crossed = pump_bare_to_library(&peer, user_id).await;
+    let crossed = pump_bare_to_library(peer, user_id).await;
     assert!(
         crossed.contains(&"m.key.verification.done".to_string()),
         "the counterparty's acknowledgement must reach the library: {crossed:?}"
@@ -967,50 +1028,52 @@ async fn chain(
         .await
         .expect("a signature-upload response must be accepted");
 
-    // ---- Step 7: we fetch the sender's keys again -----------------------
-    //
-    // Only when this run is the one that does. The homeserver notices the
-    // master key gained a signature and reports the user in a sync's
-    // changed device lists, which is what gets a second `/keys/query`
-    // issued at all -- so the sync below is not a shortcut around anything,
-    // it is the mechanism.
-    if refetch {
-        receive_sync_changes(
-            &serde_json::json!({ "changed_devices": { "changed": [user_id] } }).to_string(),
-        )
+    signatures
+}
+
+/// Step seven: the library fetches the sender's keys again, so that the
+/// signature it made in step five is in its own store.
+async fn refetch_counterparty_keys(
+    user_id: &str,
+    device_id: &str,
+    first_answer: &serde_json::Value,
+    signatures: &serde_json::Value,
+) {
+    receive_sync_changes(
+        &serde_json::json!({ "changed_devices": { "changed": [user_id] } }).to_string(),
+    )
+    .await
+    .expect("the library must accept a sync naming a changed device list");
+
+    let requery = drain_for_query_about(
+        user_id,
+        "a sync naming the counterparty as changed must get a second key \
+         query issued",
+    )
+    .await;
+    let second_answer = serde_json::json!({
+        "device_keys": { user_id: { device_id: first_answer["device_keys"][user_id][device_id] } },
+        "master_keys": {
+            user_id: with_our_signature(
+                first_answer["master_keys"][user_id].clone(),
+                signatures,
+            )
+        },
+        "self_signing_keys": { user_id: first_answer["self_signing_keys"][user_id] },
+    });
+    mark_request_sent(&requery.id, &second_answer.to_string())
         .await
-        .expect("the library must accept a sync naming a changed device list");
+        .expect("a keys-query response must be accepted");
+}
 
-        let requery = drain_for_query_about(
-            user_id,
-            "a sync naming the counterparty as changed must get a second key \
-             query issued",
-        )
-        .await;
-        let second_answer = serde_json::json!({
-            "device_keys": { user_id: { device_id: first_answer["device_keys"][user_id][device_id] } },
-            "master_keys": {
-                user_id: with_our_signature(
-                    first_answer["master_keys"][user_id].clone(),
-                    &signatures,
-                )
-            },
-            "self_signing_keys": { user_id: first_answer["self_signing_keys"][user_id] },
-        });
-        mark_request_sent(&requery.id, &second_answer.to_string())
-            .await
-            .expect("a keys-query response must be accepted");
-    }
+/// Opens the counterparty's Olm session to the library's device.
+///
+/// Once per counterparty: it consumes one of the library's published
+/// one-time keys, and a second call would find no missing session to
+/// report.
+async fn open_session_to_library(peer: &OlmMachine) {
+    let alice_user: OwnedUserId = ALICE_USER.parse().expect("a literal user id parses");
 
-    // ---- The counterparty sends, and the library decrypts ---------------
-    //
-    // After the chain, not before it. Upstream fixes an inbound session's
-    // sender data when the key arrives and recalculates it later only from
-    // `UnknownDevice`, `DeviceInfo` or `VerificationViolation`
-    // (`SenderData::should_recalculate`) -- never from `SenderUnverified`.
-    // So a session received *before* its sender was verified keeps reading
-    // `UnverifiedIdentity` for its whole life, and this file would be
-    // measuring that instead of what it says it measures.
     let (claim_id, _request) = peer
         .get_missing_sessions(std::iter::once(alice_user.as_ref()))
         .await
@@ -1028,6 +1091,17 @@ async fn chain(
     )
     .await
     .expect("the bare machine must accept a keys-claim response");
+}
+
+/// Shares the counterparty's current group session key with the library.
+///
+/// Called again after a rotation, which is what makes the ordering test's
+/// last reading possible: upstream fixes an inbound session's sender data
+/// when its key arrives, so a new key arriving later is the only way a
+/// sender's authenticity is ever re-evaluated.
+async fn share_group_key(peer: &OlmMachine, user_id: &str) {
+    let alice_user: OwnedUserId = ALICE_USER.parse().expect("a literal user id parses");
+    let scope_id: OwnedRoomId = SCOPE.parse().expect("a literal scope id parses");
 
     let shares = peer
         .share_room_key(
@@ -1055,6 +1129,22 @@ async fn chain(
          anything this test is about"
     );
     deliver_to_library(key_events).await;
+}
+
+/// One encrypted event from the counterparty, ready to hand to the library.
+///
+/// The event id is a parameter rather than derived, because the ordering
+/// test decrypts the *same* event twice and has to hand back the same
+/// identifier both times: a different one over the same message index is a
+/// replay to upstream, and would fail for a reason unrelated to anything
+/// under test.
+async fn encrypted_event_from(
+    peer: &OlmMachine,
+    user_id: &str,
+    event_id: &str,
+    payload: &str,
+) -> String {
+    let scope_id: OwnedRoomId = SCOPE.parse().expect("a literal scope id parses");
 
     let content = Raw::<AnyMessageLikeEventContent>::from_json_string(payload.to_owned())
         .expect("a literal payload is well-formed JSON");
@@ -1062,14 +1152,13 @@ async fn chain(
         .encrypt_room_event_raw(&scope_id, "m.room.message", &content)
         .await
         .expect("the bare machine must be able to encrypt for its own session");
-    let event = scoped_event(
-        user_id,
-        &format!("$from-{device_id}:example.org"),
-        encrypted.content.json().get(),
-    );
-    let envelope = decrypt_event(SCOPE, &event)
-        .await
-        .expect("the library must decrypt what the bare machine encrypted");
+    scoped_event(user_id, event_id, encrypted.content.json().get())
+}
+
+/// What the library's own surfaces say about the counterparty right now:
+/// whether its identity is verified, and what its device's trust reads.
+async fn observed(user_id: &str, device_id: &str) -> (bool, TrustState) {
+    let peer_user: OwnedUserId = user_id.parse().expect("a literal user id parses");
 
     let identity_verified = with_machine({
         let peer_user = peer_user.clone();
@@ -1096,6 +1185,59 @@ async fn chain(
         .find(|status| status.device_id == device_id)
         .expect("the library must know the device it just verified")
         .trust;
+
+    (identity_verified, device_trust)
+}
+
+/// Drives the whole chain against one counterparty and decrypts one event
+/// from it.
+///
+/// `refetch` is the single axis the two tests differ on: with it, step
+/// seven happens; without it, everything up to and including step six
+/// happens and the chain stops there.
+async fn chain(
+    user_id: &str,
+    device_id: &str,
+    payload: &str,
+    refetch: bool,
+    alice_device_keys: &serde_json::Value,
+) -> Outcome {
+    let counterparty = counterparty_with_identity(user_id, device_id).await;
+    let first_answer =
+        fetch_counterparty_keys(&counterparty, user_id, device_id, alice_device_keys).await;
+    let signatures = compare_and_sign(&counterparty.peer, user_id, device_id).await;
+    if refetch {
+        refetch_counterparty_keys(user_id, device_id, &first_answer, &signatures).await;
+    }
+
+    // ---- The counterparty sends, and the library decrypts ---------------
+    //
+    // After the chain, not before it. Upstream fixes an inbound session's
+    // sender data when the key arrives and recalculates it later only from
+    // `UnknownDevice`, `DeviceInfo` or `VerificationViolation`
+    // (`SenderData::should_recalculate`) -- never from `SenderUnverified`.
+    // So a session received *before* its sender was verified keeps reading
+    // `UnverifiedIdentity` for its whole life, and these two tests would be
+    // measuring that instead of what they say they measure.
+    //
+    // That behaviour used to be documented here and asserted nowhere.
+    // [`history_does_not_improve_when_the_sender_is_verified_later`] is now
+    // the test for it, and this comment records why these two tests order
+    // themselves the way they do rather than standing in for the property.
+    open_session_to_library(&counterparty.peer).await;
+    share_group_key(&counterparty.peer, user_id).await;
+    let event = encrypted_event_from(
+        &counterparty.peer,
+        user_id,
+        &format!("$from-{device_id}:example.org"),
+        payload,
+    )
+    .await;
+    let envelope = decrypt_event(SCOPE, &event)
+        .await
+        .expect("the library must decrypt what the bare machine encrypted");
+
+    let (identity_verified, device_trust) = observed(user_id, device_id).await;
 
     Outcome {
         verification: envelope.sender_verification,
@@ -1260,6 +1402,208 @@ fn omitting_the_second_key_fetch_leaves_the_sender_below_verified() {
             "the comparison verified the device locally whatever happened to \
              the identity, which is exactly why omitting step seven looks \
              like success"
+        );
+    }));
+}
+
+/// Verifying a sender does not improve the events already decrypted from
+/// them. It changes what arrives next, on the next session.
+///
+/// # The property, and why a product has to know it
+///
+/// A product's user interface has to decide what a badge does when someone
+/// verifies a contact halfway down a conversation. The honest answer is
+/// "from here on", not "your history improves", and this test is what makes
+/// that answer a fact about the library rather than a note in a design
+/// document.
+///
+/// The mechanism is upstream's and it is not configurable. An inbound group
+/// session's `SenderData` is computed once, when the session key arrives,
+/// and recomputed later only when `SenderData::should_recalculate` says so.
+/// That predicate is true for `UnknownDevice`, `DeviceInfo` and
+/// `VerificationViolation`, and false for `SenderUnverified`
+/// (`matrix-sdk-crypto-0.18.0/src/olm/group_sessions/sender_data.rs`). A
+/// session whose key arrived while its sender was merely cross-signed is
+/// `SenderUnverified`, so it is never revisited, and the `/keys/query`
+/// sweep that does revisit sessions only looks at the two device-level
+/// states. Doing better would mean enumerating and rewriting stored
+/// sessions ourselves, and `Store::save_inbound_group_sessions` is
+/// `pub(crate)`.
+///
+/// # Four readings, in one run, on one counterparty
+///
+/// The order is the whole subject, so the readings are taken around the
+/// chain rather than after it:
+///
+/// 1. **Before any verification**, on a session created before it:
+///    `UnverifiedIdentity`. The premise. If this were `UnsignedDevice` the
+///    counterparty never bootstrapped and every reading below would be
+///    measuring something else.
+/// 2. **The same event, decrypted again after the whole chain has run**:
+///    still `UnverifiedIdentity`. This is the claim, in its literal form.
+///    The same bytes, the same event id, a library that now holds our
+///    signature over this sender's master key, and the same answer.
+/// 3. **A new message on that same session**: still `UnverifiedIdentity`.
+///    The value belongs to the session, not to the message, so a
+///    conversation that keeps flowing on an established session does not
+///    start improving either.
+/// 4. **A message on a session created after the chain**: `Verified`. The
+///    contrast, and the reason readings 2 and 3 mean anything. Without it
+///    this test would pass just as well against a chain that silently did
+///    nothing at all, which is precisely the failure
+///    [`omitting_the_second_key_fetch_leaves_the_sender_below_verified`]
+///    exists to catch one rung higher.
+///
+/// Between 1 and 2 the library's own view of the sender really does change:
+/// `identity_verified` and the device's `TrustState` are both asserted
+/// after the chain, so nothing here can pass by the chain having failed.
+/// That is the shape of this test's own guard against vacuity, and it is
+/// worth being explicit about it: three of the four readings are assertions
+/// that a value did **not** move, and such a test is worthless unless
+/// something in the same run proves the machinery underneath it did.
+#[test]
+fn history_does_not_improve_when_the_sender_is_verified_later() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    futures::executor::block_on(in_runtime(async move {
+        let scope_id: OwnedRoomId = SCOPE.parse().expect("a literal scope id parses");
+        let alice_device_keys = library().await;
+        let counterparty = counterparty_with_identity(HISTORY_USER, HISTORY_DEVICE).await;
+        let first_answer = fetch_counterparty_keys(
+            &counterparty,
+            HISTORY_USER,
+            HISTORY_DEVICE,
+            &alice_device_keys,
+        )
+        .await;
+
+        // ---- (1) One message, sent and decrypted before any comparison --
+        open_session_to_library(&counterparty.peer).await;
+        share_group_key(&counterparty.peer, HISTORY_USER).await;
+        let event_id = format!("$before-the-chain-{HISTORY_DEVICE}:example.org");
+        let event =
+            encrypted_event_from(&counterparty.peer, HISTORY_USER, &event_id, HISTORY_PAYLOAD)
+                .await;
+
+        let before = decrypt_event(SCOPE, &event)
+            .await
+            .expect("the library must decrypt what the counterparty encrypted");
+        assert_eq!(
+            before.ciphertext,
+            HISTORY_PAYLOAD.as_bytes(),
+            "the control on every authenticity assertion below: if decryption \
+             broke, the values under test are meaningless rather than wrong"
+        );
+        assert_eq!(
+            before.sender_verification,
+            Some(SenderVerification::UnverifiedIdentity),
+            "the premise. A cross-signed sender we have not verified reads \
+             `UnverifiedIdentity`; `UnsignedDevice` here would mean the \
+             counterparty's own signature was never seen and this run is not \
+             testing what it says it tests"
+        );
+
+        // ---- The whole chain, after the message rather than before it ---
+        let signatures = compare_and_sign(&counterparty.peer, HISTORY_USER, HISTORY_DEVICE).await;
+        refetch_counterparty_keys(HISTORY_USER, HISTORY_DEVICE, &first_answer, &signatures).await;
+
+        let (identity_verified, device_trust) = observed(HISTORY_USER, HISTORY_DEVICE).await;
+        assert!(
+            identity_verified,
+            "the chain must actually have completed: our user-signing key over \
+             their master key, in our own store. Red here and every assertion \
+             below is asserting that nothing changed while nothing changed"
+        );
+        assert_eq!(
+            device_trust,
+            TrustState::Verified,
+            "the device-level surface must report the verification a product \
+             just performed, which is the half that does move"
+        );
+
+        // ---- (2) The same event again. The claim. --------------------
+        let again = decrypt_event(SCOPE, &event)
+            .await
+            .expect("the same event decrypts the same way, chain or no chain");
+        assert_eq!(
+            again.ciphertext,
+            HISTORY_PAYLOAD.as_bytes(),
+            "decrypting the same event twice recovers the same plaintext"
+        );
+        assert_eq!(
+            again.sender_verification,
+            Some(SenderVerification::UnverifiedIdentity),
+            "an event decrypted before its sender was verified reads the same \
+             afterwards. `Verified` here would mean this library had started \
+             rewriting the authenticity of stored sessions, which upstream \
+             does not do and this repository does not add"
+        );
+
+        // ---- (3) A new message on the session that predates the chain ---
+        let same_session_event = encrypted_event_from(
+            &counterparty.peer,
+            HISTORY_USER,
+            &format!("$same-session-{HISTORY_DEVICE}:example.org"),
+            HISTORY_SAME_SESSION_PAYLOAD,
+        )
+        .await;
+        let same_session = decrypt_event(SCOPE, &same_session_event)
+            .await
+            .expect("the library must decrypt a later message on the same session");
+        assert_eq!(
+            same_session.ciphertext,
+            HISTORY_SAME_SESSION_PAYLOAD.as_bytes(),
+            "a later message on the same session still decrypts"
+        );
+        assert_eq!(
+            same_session.sender_verification,
+            Some(SenderVerification::UnverifiedIdentity),
+            "the value belongs to the session and not to the message, so a \
+             conversation already flowing does not start improving in the \
+             middle either"
+        );
+
+        // ---- (4) A session created after the chain. The contrast. -------
+        //
+        // Rotation is the only thing that moves this value, and it is the
+        // counterparty's to perform: a new key arriving is a new
+        // `SenderData` computed, this time against a store that holds our
+        // signature.
+        assert!(
+            counterparty
+                .peer
+                .discard_room_key(&scope_id)
+                .await
+                .expect("the counterparty's own store must be writable"),
+            "there must have been a session to discard; false here means the \
+             three readings above ran against no shared session at all"
+        );
+        share_group_key(&counterparty.peer, HISTORY_USER).await;
+        let rotated_event = encrypted_event_from(
+            &counterparty.peer,
+            HISTORY_USER,
+            &format!("$rotated-{HISTORY_DEVICE}:example.org"),
+            HISTORY_ROTATED_PAYLOAD,
+        )
+        .await;
+        let rotated = decrypt_event(SCOPE, &rotated_event)
+            .await
+            .expect("the library must decrypt what the rotated session encrypted");
+        assert_eq!(
+            rotated.ciphertext,
+            HISTORY_ROTATED_PAYLOAD.as_bytes(),
+            "a rotated session still decrypts"
+        );
+        assert_eq!(
+            rotated.sender_verification,
+            Some(SenderVerification::Verified),
+            "a session created after the chain reads `Verified`, and that is \
+             what makes the three readings above a statement about history \
+             rather than about a chain that failed. `UnverifiedIdentity` here \
+             means the chain did not take effect and nothing above was \
+             measured against a working verification"
         );
     }));
 }
