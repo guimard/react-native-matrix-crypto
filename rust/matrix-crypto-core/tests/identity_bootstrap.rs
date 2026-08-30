@@ -30,8 +30,8 @@
 //! machine registry and the pump's bookkeeping are process-wide.
 
 use matrix_crypto_core::{
-    bootstrap_identity, create_machine, identity_status, mark_request_sent, take_outgoing_requests,
-    MachineConfig, OutgoingRequest, SessionError,
+    bootstrap_identity, create_identity, create_machine, identity_status, mark_request_sent,
+    take_outgoing_requests, MachineConfig, MachineError, OutgoingRequest, SessionError,
 };
 
 const ACCOUNT: &str = "@alice:example.org";
@@ -100,9 +100,10 @@ fn a_bootstrap_publishes_one_identity_and_republishes_the_same_one() {
             "asking a question mints nothing: {asked:?}"
         );
 
-        bootstrap_identity()
-            .await
-            .expect("bootstrapping after the account keys have been fetched must be served");
+        create_identity().await.expect(
+            "creating the account's first identity after the keys have been fetched \
+                     must be served",
+        );
 
         let minted = identity_status()
             .await
@@ -114,6 +115,21 @@ fn a_bootstrap_publishes_one_identity_and_republishes_the_same_one() {
         assert!(
             minted.identity_known,
             "a served bootstrap must leave a public identity known for this account: {minted:?}"
+        );
+
+        // The two calls are different acts, and this is the state that says
+        // so at integration level rather than only in `signing.rs`'s unit
+        // tests. The account now has an identity **and** this device holds
+        // its private keys, which is the one state where the old single rule
+        // served both: it could not tell a republication from a creation, so
+        // it served whichever was asked for. Publishing is right here.
+        // Creating is not, and creating a second identity over the one this
+        // device just made is exactly the shape that resets everybody's
+        // trust when the first one came from somewhere else.
+        assert_eq!(
+            create_identity().await,
+            Err(MachineError::IdentityAlreadyExists),
+            "there is nothing left to create: {minted:?}"
         );
 
         // Claim 2.

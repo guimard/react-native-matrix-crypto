@@ -83,7 +83,7 @@
 //! decrypted before it.
 
 use matrix_crypto_core::{
-    begin_comparison, bootstrap_identity, confirm_flow, create_machine, decrypt_event,
+    begin_comparison, confirm_flow, create_identity, create_machine, decrypt_event,
     device_statuses, flow_stage, identity_status, in_runtime, mark_request_sent, read_material,
     receive_sync_changes, request_flow, share_scope_key, take_outgoing_requests, with_machine,
     FlowId, FlowStage, MachineConfig, OutgoingRequest, SenderVerification, TrustState,
@@ -666,9 +666,10 @@ async fn library() -> serde_json::Value {
         .await
         .expect("answering the account key query must not fail");
 
-    bootstrap_identity()
-        .await
-        .expect("bootstrapping after the account keys have been fetched must be served");
+    create_identity().await.expect(
+        "creating this account's identity after the keys have been fetched must be \
+                 served",
+    );
 
     let status = identity_status()
         .await

@@ -1113,8 +1113,7 @@ pub async fn identity_status() -> Result<IdentityStatus, MachineFfiError> {
         .map_err(Into::into)
 }
 
-/// Publishes this account's signing identity, minting one first if the
-/// account provably has none.
+/// Publishes the signing identity this device already holds.
 ///
 /// Mirrors `bootstrap_identity`; see its own doc comment in
 /// `matrix-crypto-core::signing` for the gate, for the two refusals it
@@ -1260,6 +1259,35 @@ pub async fn recover_identity(
     let account_data: Vec<matrix_crypto_core::AccountDataEntry> =
         account_data.into_iter().map(Into::into).collect();
     matrix_crypto_core::recover_identity(&secret, &account_data)
+        .await
+        .map_err(Into::into)
+}
+
+/// Creates this account's first signing identity.
+///
+/// **Appended after `recover_identity`, which was after everything else in
+/// this file, for the ordinal reason `CryptoSignal`'s own comment gives.
+/// This addition moves no ordinal: it declares one function and no enum
+/// variant and no record field anywhere, so every existing wire number is
+/// where it was.**
+///
+/// Mirrors `create_identity`; see its own doc comment in
+/// `matrix-crypto-core::signing` for what a caller must hold before calling
+/// it, for the measured race no rule can close, and for what the confirming
+/// key query it queues does and does not buy.
+///
+/// **This is the one destructive call on this surface.** It exists
+/// separately from `bootstrap_identity` because that call is the one this
+/// library tells a product to make on every launch, and creating an identity
+/// over one the account already has resets the trust of every device and
+/// every person who ever verified it. The split is the whole point: nothing
+/// reaches this by default.
+///
+/// No parameter and no credential, for `bootstrap_identity`'s reason, which
+/// it states in full.
+#[uniffi::export]
+pub async fn create_identity() -> Result<(), MachineFfiError> {
+    matrix_crypto_core::create_identity()
         .await
         .map_err(Into::into)
 }

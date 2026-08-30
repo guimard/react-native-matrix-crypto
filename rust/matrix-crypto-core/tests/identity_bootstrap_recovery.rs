@@ -35,8 +35,8 @@
 //! situation it exists for.
 
 use matrix_crypto_core::{
-    bootstrap_identity, create_machine, mark_request_sent, share_scope_key, take_outgoing_requests,
-    MachineConfig, MachineError, OutgoingRequest, SessionError,
+    bootstrap_identity, create_identity, create_machine, mark_request_sent, share_scope_key,
+    take_outgoing_requests, MachineConfig, MachineError, OutgoingRequest, SessionError,
 };
 
 const ACCOUNT: &str = "@alice:example.org";
@@ -156,7 +156,7 @@ fn the_refusal_queues_the_query_that_lifts_it_when_upstream_never_would() {
              case it exists for"
         );
 
-        bootstrap_identity()
+        create_identity()
             .await
             .expect("the answered recovery query must lift the gate");
     });

@@ -101,8 +101,7 @@ export async function acceptVerification(
 }
 
 /**
- * Publishes this account's signing identity, minting one first if the
- * account provably has none.
+ * Publishes the signing identity this device already holds.
  *
  * Mirrors `bootstrap_identity`; see its own doc comment in
  * `matrix-crypto-core::signing` for the gate, for the two refusals it
@@ -278,6 +277,63 @@ export async function createCryptoMachine(
             nativeModule().rustbuffer_alloc
           )
         );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_void,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_void,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_void,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_void,
+      /*liftFunc:*/ (_v) => {},
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
+ * Creates this account's first signing identity.
+ *
+ * **Appended after `recover_identity`, which was after everything else in
+ * this file, for the ordinal reason `CryptoSignal`'s own comment gives.
+ * This addition moves no ordinal: it declares one function and no enum
+ * variant and no record field anywhere, so every existing wire number is
+ * where it was.**
+ *
+ * Mirrors `create_identity`; see its own doc comment in
+ * `matrix-crypto-core::signing` for what a caller must hold before calling
+ * it, for the measured race no rule can close, and for what the confirming
+ * key query it queues does and does not buy.
+ *
+ * **This is the one destructive call on this surface.** It exists
+ * separately from `bootstrap_identity` because that call is the one this
+ * library tells a product to make on every launch, and creating an identity
+ * over one the account already has resets the trust of every device and
+ * every person who ever verified it. The split is the whole point: nothing
+ * reaches this by default.
+ *
+ * No parameter and no credential, for `bootstrap_identity`'s reason, which
+ * it states in full.
+ */
+export async function createIdentity(asyncOpts_?: {
+  signal: AbortSignal;
+}): Promise<void> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_create_identity();
       },
       /*pollFunc:*/ nativeModule()
         .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_void,
@@ -4528,7 +4584,7 @@ function uniffiEnsureInitialized() {
   }
   if (
     nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_bootstrap_identity() !==
-    42604
+    15762
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       "uniffi_matrix_crypto_ffi_checksum_func_bootstrap_identity"
@@ -4564,6 +4620,14 @@ function uniffiEnsureInitialized() {
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       "uniffi_matrix_crypto_ffi_checksum_func_create_crypto_machine"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_create_identity() !==
+    10651
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_create_identity"
     );
   }
   if (

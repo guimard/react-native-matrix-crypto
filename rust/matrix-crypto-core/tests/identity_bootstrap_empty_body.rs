@@ -50,8 +50,8 @@
 //! monotonic, so the answer that lifts it has to come last.
 
 use matrix_crypto_core::{
-    bootstrap_identity, create_machine, identity_status, mark_request_sent, take_outgoing_requests,
-    MachineConfig, MachineError, OutgoingRequest,
+    bootstrap_identity, create_identity, create_machine, identity_status, mark_request_sent,
+    take_outgoing_requests, MachineConfig, MachineError, OutgoingRequest,
 };
 
 const ACCOUNT: &str = "@alice:example.org";
@@ -134,9 +134,9 @@ fn a_completely_empty_body_does_not_answer_the_account_key_query() {
                 .account_keys_fetched,
             "an answer upstream could read must lift the gate"
         );
-        bootstrap_identity()
+        create_identity()
             .await
-            .expect("and the bootstrap it authorises must be served");
+            .expect("and the creation it authorises must be served");
     });
 }
 

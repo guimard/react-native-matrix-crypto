@@ -61,8 +61,9 @@
 //! one accepted body finally lifts the gate.
 
 use matrix_crypto_core::{
-    bootstrap_identity, create_machine, identity_status, mark_request_failed, mark_request_sent,
-    take_outgoing_requests, MachineConfig, MachineError, OutgoingRequest, SessionError,
+    bootstrap_identity, create_identity, create_machine, identity_status, mark_request_failed,
+    mark_request_sent, take_outgoing_requests, MachineConfig, MachineError, OutgoingRequest,
+    SessionError,
 };
 
 const ACCOUNT: &str = "@alice:example.org";
@@ -445,9 +446,9 @@ fn a_body_that_is_not_a_response_cannot_open_the_bootstrap_gate() {
              disease: no product could ever bootstrap"
         );
 
-        bootstrap_identity()
+        create_identity()
             .await
-            .expect("bootstrapping after a real answer must be served");
+            .expect("creating an identity after a real answer must be served");
 
         // --- Act 4: the fieldless kind, where this check is the only one ---
         //

@@ -56,8 +56,8 @@
 //! is monotonic, so the one body that lifts it has to come last.
 
 use matrix_crypto_core::{
-    bootstrap_identity, create_machine, identity_status, in_runtime, mark_request_sent,
-    take_outgoing_requests, MachineConfig, MachineError, OutgoingRequest,
+    bootstrap_identity, create_identity, create_machine, identity_status, in_runtime,
+    mark_request_sent, take_outgoing_requests, MachineConfig, MachineError, OutgoingRequest,
 };
 use matrix_sdk_common::ruma::{DeviceId, OwnedUserId};
 use matrix_sdk_crypto::OlmMachine;
@@ -244,9 +244,9 @@ fn a_body_that_says_nothing_about_this_account_cannot_open_the_bootstrap_gate() 
             "an answer that covers this account must lift the gate. If this fails the cure is \
              worse than the disease: no product on any measured homeserver could ever bootstrap"
         );
-        bootstrap_identity()
+        create_identity()
             .await
-            .expect("and the bootstrap it authorises must be served");
+            .expect("and the creation it authorises must be served");
     });
 }
 

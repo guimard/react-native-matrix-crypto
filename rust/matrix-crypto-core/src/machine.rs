@@ -190,7 +190,18 @@ pub enum MachineError {
     #[error("this account already has a signing identity this device does not hold")]
     IdentityAlreadyExists,
     /// This machine holds no public signing identity for the account, so
-    /// there is nothing for this device to verify itself against.
+    /// there is nothing for this device to verify itself against, and
+    /// nothing for it to publish.
+    ///
+    /// **Two calls report it and they are asking for the same decision.**
+    /// `crate::request_self_flow` reports it because there is no identity to
+    /// join. `crate::bootstrap_identity` reports it because there is none to
+    /// publish; it used to create one at this point, and creating one at
+    /// this point is what an honest homeserver plus ordinary two-device
+    /// timing turned into a creation over an identity another device had
+    /// published a moment earlier. The remedy for both is
+    /// `crate::create_identity`, and its own documentation says why it is a
+    /// decision a product makes rather than a refusal a handler retries.
     ///
     /// The mirror image of `IdentityAlreadyExists`, and the pair says the
     /// whole rule between them: a device that does not hold the private keys
@@ -201,7 +212,7 @@ pub enum MachineError {
     /// Distinguished from `AccountKeysNotFetched` by the same question
     /// `signing.rs`'s gate asks and for the same reason: this one means the
     /// server was asked and named no identity, so the remedy is to create one
-    /// with `crate::bootstrap_identity`. `AccountKeysNotFetched` means nobody
+    /// with `crate::create_identity`. `AccountKeysNotFetched` means nobody
     /// has asked, and asking is the remedy. Collapsing them would send a
     /// caller to create an identity on the strength of a question never put.
     ///

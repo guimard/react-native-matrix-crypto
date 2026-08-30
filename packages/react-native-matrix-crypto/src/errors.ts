@@ -135,11 +135,19 @@ export type CryptoErrorKind =
   // it would reset the trust of everyone who had verified the old one.
   | 'identity_already_exists'
   // The mirror image of the kind above, and the third refusal on this
-  // surface that turns on the same question. `requestSelfVerification` reports
-  // it when the server has been asked and named no identity for this account:
-  // there is nothing to join, so the answer is
-  // {@link bootstrapCrossSigning}, not a retry. Deliberately absent from
-  // RETRIABLE below: calling again changes nothing until an identity exists.
+  // surface that turns on the same question: the server has been asked and
+  // named no identity for this account. Deliberately absent from RETRIABLE
+  // below: calling again changes nothing until an identity exists.
+  //
+  // **Two calls report it and they want the same thing done, which is a
+  // decision rather than a retry.** `requestSelfVerification` reports it
+  // because there is no identity to join. `bootstrapCrossSigning` reports it
+  // because there is none to publish; it used to create one at this point,
+  // and that is what an honest server plus ordinary two-device timing turned
+  // into a creation over an identity another device had just published. The
+  // answer to both is `createCrossSigningIdentity`, and it belongs where
+  // your product has decided this account should be getting its first
+  // identity, not in the handler that caught this.
   | 'identity_not_known'
   // ---- server-side recovery ----------------------------------------------
   // All four cross the FFI boundary. The pair in the middle is the one this

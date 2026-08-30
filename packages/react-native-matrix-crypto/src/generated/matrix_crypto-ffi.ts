@@ -204,6 +204,7 @@ interface NativeModuleInterface {
   ubrn_uniffi_matrix_crypto_ffi_fn_func_create_crypto_machine(
     config: Uint8Array
   ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_create_identity(): bigint;
   ubrn_uniffi_matrix_crypto_ffi_fn_func_create_recovery(
     passphrase: Uint8Array,
     accountData: Uint8Array
@@ -292,6 +293,7 @@ interface NativeModuleInterface {
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_clear_crypto_observer(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_confirm_verification(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_create_crypto_machine(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_create_identity(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_create_recovery(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_decrypt_event(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_device_identity_keys(): number;
