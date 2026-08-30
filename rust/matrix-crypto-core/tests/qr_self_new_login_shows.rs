@@ -271,6 +271,14 @@ fn a_new_login_shows_a_code_and_the_account_verifies_it() {
             crossed.contains(&"m.key.verification.done".to_string()),
             "confirming a scan must reach the other device through the pump: {crossed:?}"
         );
+        // A cut rather than a check, and in this one file it is a no-op:
+        // measured, by removing it and watching the test still pass. This
+        // device holds none of the account's private keys, so M4's identity
+        // latch never fires here, and it opened the flow itself, so no
+        // invitation is announced back to it. Kept anyway, and the reason is
+        // that the two sibling files both go red without theirs: what makes
+        // the assertion below mean "what this one sync produced" is the cut,
+        // not the fixture that happens to have nothing to clear.
         drain_to_quiet();
         let crossed = pump_bare_to_library(&first.peer, ACCOUNT, ACCOUNT, NEW_DEVICE).await;
         assert!(
