@@ -48,6 +48,32 @@
 //! from a product's point of view, extending the pump becomes the better
 //! trade.
 //!
+//! # What an empty content object means here, once, for both directions
+//!
+//! **`{}` is how account data is deleted in Matrix.** The client-server API
+//! has no `DELETE` for a global account data event; `PUT {}` is the only
+//! spelling of "cleared" it offers, and the event stays in place forever
+//! afterwards with an empty content. So an empty object is not damage and
+//! is not an absence: it is the tombstone the protocol leaves behind, and
+//! every reader in this module has to treat it as one.
+//!
+//! Both directions read the pointer, and they read it through one function,
+//! [`pointed_key_id`], rather than through one shared paragraph. That is
+//! deliberate. This rule was already written down once, on
+//! [`names_a_recovery`]'s ancestor, and [`restore`] four hundred lines away
+//! read the same bytes the other way and reported a cleared pointer as
+//! `RecoveryDataMalformed`, whose remedy is to set recovery up again. A
+//! user whose recovery was intact and reversibly cleared was told to
+//! destroy it. A shared paragraph did not prevent that and a third reader
+//! would not have read it either, so the rule lives in code that both
+//! callers must go through.
+//!
+//! The same reasoning applies one level out and is worth knowing before
+//! adding a third reader: `{}` is also the real `/keys/query` answer for an
+//! account with no signing identity, which is the residue
+//! `session::refuse_a_non_response` could not close. An empty object is a
+//! meaningful value in this protocol far more often than it is a mistake.
+//!
 //! # What is deliberately not here
 //!
 //! Key backup (`m.megolm_backup.v1`) coordination. Upstream has a separate
@@ -156,31 +182,41 @@ fn entry<'a>(account_data: &'a [AccountDataEntry], event_type: &str) -> Option<&
         .map(|entry| entry.content.as_str())
 }
 
-/// Whether this account data already names a server-side recovery.
+/// The key id this account data points at, if it points at one.
 ///
-/// **The pointer decides it, and nothing else does.**
-/// `m.secret_storage.default_key` is what every Matrix client follows to
-/// find the key it should ask for, so an account whose pointer names a key
-/// has a recovery somebody can open, and writing over that pointer is the
-/// act that takes it away.
+/// **The one reading of `m.secret_storage.default_key` in this module.**
+/// [`create_recovery`] asks it whether there is a recovery to protect and
+/// [`restore`] asks it which key to open, and they must not be able to
+/// disagree: for one round of this task they did, and the answer a user got
+/// was that their intact recovery was destroyed. See this module's own
+/// documentation on what an empty content object means.
 ///
-/// Four inputs and one rule. A pointer naming a key id is a recovery.
-/// Absent is not. An empty object is not, and that is the case that has to
-/// work: the client-server API has no way to delete account data, so
-/// `PUT {}` is how a product clears an event, and a rule that treated the
-/// cleared pointer as a recovery would make the documented remedy at
-/// [`create_recovery`] impossible to carry out. Content that is not JSON,
-/// or that names no key, is not a recovery either: nothing can follow it.
-fn names_a_recovery(account_data: &[AccountDataEntry]) -> bool {
+/// **The pointer decides, and nothing else does.** It is what every Matrix
+/// client follows to find the key it should ask for, so an account whose
+/// pointer names a key has a recovery somebody can open, and taking that
+/// pointer away is what takes the recovery away.
+///
+/// Four inputs and one rule, and only the first is a recovery:
+///
+/// * naming a key id: that key is the account's default.
+/// * absent: no client would look for a key, so there is none to find.
+/// * an empty object: cleared, which is the only way the client-server API
+///   can express a deletion, so it means the same as absent and must.
+/// * anything else, including content that is not JSON or that names no
+///   `key`: no client can follow it, so it points at nothing.
+///
+/// The last three are one answer here and stay one answer at both call
+/// sites. `create_recovery` writes; `restore` reports
+/// [`MachineError::RecoveryNotSetUp`], whose meaning is "the account data
+/// handed over carries no complete recovery" and whose remedy is to supply
+/// more of it or to create one. Neither is
+/// [`MachineError::RecoveryDataMalformed`], because none of the three says
+/// anything is damaged.
+fn pointed_key_id(account_data: &[AccountDataEntry]) -> Option<String> {
     entry(account_data, &default_key_event_type())
         .and_then(|content| serde_json::from_str::<serde_json::Value>(content).ok())
-        .and_then(|content| {
-            content
-                .get("key")?
-                .as_str()
-                .map(|key_id| !key_id.is_empty())
-        })
-        .unwrap_or(false)
+        .and_then(|content| content.get("key")?.as_str().map(str::to_owned))
+        .filter(|key_id| !key_id.is_empty())
 }
 
 /// The `encrypted` map already stored for one secret, if the account data
@@ -254,10 +290,13 @@ fn existing_ciphertexts(
 /// its users and its threat model and this call does not. Choose a policy
 /// and apply it before calling.
 ///
-/// The recovery key is not affected by any of that. It is thirty-two random
-/// bytes whatever the passphrase is, so a user who keeps it is protected
-/// even if the passphrase is guessable, which is the other reason to make
-/// them record it.
+/// **A strong recovery key does not offset a weak passphrase, and this
+/// paragraph used to imply that it did.** Secret storage opens on either
+/// credential, so what an attacker who can read this account data has to
+/// beat is the *weaker* of the two: thirty-two random bytes are no help at
+/// all while `""` also opens the same ciphertext. What the recovery key
+/// protects is the user's own access, not the secret's confidentiality, and
+/// that is the reason to make them record it.
 ///
 /// # This is the interoperable format
 ///
@@ -285,20 +324,45 @@ fn existing_ciphertexts(
 /// another client, where the key that stops working is one somebody wrote
 /// down and was told to keep forever. Both arrive here as the same call.
 ///
-/// To replace a recovery deliberately, clear the account's existing
-/// `m.secret_storage.default_key` and its `m.secret_storage.key.<id>` first
-/// (`PUT {}` to each, which is how the client-server API clears account
-/// data), then read the account data again and call this. That is the same
-/// two requests a product already makes, and it puts the destructive step in
-/// the product's own code where a review can see it.
+/// **To replace a recovery deliberately, call this again with the same
+/// account data minus the `m.secret_storage.default_key` entry.** Drop that
+/// one entry from the list; write nothing to the server to arrange it. The
+/// refusal lifts because nothing points at a key any more, everything else
+/// is still in the list so the ciphertexts still merge, and the recovery the
+/// account has goes on working until the last `PUT` of the new pointer
+/// switches it over. There is no window in which the account has no working
+/// recovery, and nothing to roll back if the product stops halfway.
 ///
-/// **This call believes the account data it is handed.** A caller that
-/// passes an empty list asserts the account has no recovery, and the refusal
-/// above believes it, exactly as `crate::bootstrap_identity`'s gate believes
-/// a key query reported as answered. That is unavoidable in a library that
-/// performs no request of its own, and it is said rather than left to be
-/// discovered: what this refusal buys is that a product has to have *looked*
-/// before it destroys anything.
+/// **Do not clear the key description.** An earlier version of this
+/// paragraph said to clear it alongside the pointer. That is irreversible
+/// and buys nothing: the description is where the salt, the iteration count
+/// and the MAC live, so once it is gone no secret can be turned back into
+/// the key and the ciphertexts it protected are unreadable for good. The
+/// refusal reads the pointer and only the pointer.
+///
+/// Two other routes lift the refusal, and both cost something the route
+/// above does not:
+///
+/// * **Clearing the pointer on the server** (`PUT {}`, which is how the
+///   client-server API deletes account data) works, and the ciphertexts
+///   still merge because everything else is still in the list. What it costs
+///   is a window: between that write and the last one the account resolves
+///   no recovery, and a product that stops in the middle leaves it there.
+/// * **Passing an empty list** works too, and costs the merge. This call
+///   merges into what it is handed, so handed nothing it merges into
+///   nothing, and every other key's ciphertext, including another client's,
+///   is evicted from the account. It asserts a fact rather than describing
+///   one, so use it only for an account that genuinely has no account data.
+///
+/// **This call believes the account data it is handed**, which is what makes
+/// all three possible. A caller that passes an empty list asserts the
+/// account has no recovery and the refusal believes it, exactly as
+/// `crate::bootstrap_identity`'s gate believes a key query reported as
+/// answered. That is unavoidable in a library that performs no request of
+/// its own, and it is said rather than left to be discovered: what this
+/// refusal buys is not that destruction is impossible, but that a product
+/// has to have *looked*, and that the cheapest way past it is also the one
+/// that destroys nothing.
 ///
 /// [`MachineError::AccountKeysNotFetched`] if this process has not yet asked
 /// the server about this account. The keys this device holds may belong to
@@ -342,7 +406,7 @@ async fn write(
     // refusal that protects something a user already has comes first: a
     // caller whose account already has a recovery should be told that
     // whatever else is true of its process.
-    if names_a_recovery(account_data) {
+    if pointed_key_id(account_data).is_some() {
         return Err(MachineError::RecoveryAlreadyExists);
     }
 
@@ -632,11 +696,15 @@ async fn restore(
         return Err(MachineError::IdentityNotKnown);
     }
 
-    let default_key =
-        entry(account_data, &default_key_event_type()).ok_or(MachineError::RecoveryNotSetUp)?;
-    let default_key: SecretStorageDefaultKeyEventContent =
-        serde_json::from_str(default_key).map_err(|_| MachineError::RecoveryDataMalformed)?;
-    let key_id = default_key.key_id;
+    // Through [`pointed_key_id`], so that this and `create_recovery` cannot
+    // come to disagree about what a pointer says. They did: this read used
+    // to parse the content into ruma's own type and report a parse failure
+    // as `RecoveryDataMalformed`, which meant a *cleared* pointer, the state
+    // `create_recovery`'s remedy tells a product to create, was reported as
+    // damaged stored data. The remedy for damaged stored data is to set
+    // recovery up again, so a user whose recovery was intact and one `PUT`
+    // away from working was told to destroy it.
+    let key_id = pointed_key_id(account_data).ok_or(MachineError::RecoveryNotSetUp)?;
 
     // The key description's event type carries the key id, so it is built
     // here rather than searched for by prefix: an account may hold several
@@ -736,7 +804,7 @@ mod tests {
     // itself.
     use matrix_sdk_common::ruma::exports::http;
     use matrix_sdk_common::ruma::serde::Raw;
-    use matrix_sdk_common::ruma::{OwnedDeviceId, OwnedRoomId, OwnedUserId, TransactionId};
+    use matrix_sdk_common::ruma::{OwnedDeviceId, OwnedRoomId, OwnedUserId, TransactionId, UInt};
     use matrix_sdk_crypto::types::requests::AnyOutgoingRequest;
     use matrix_sdk_crypto::types::DeviceKeys;
     use matrix_sdk_crypto::{CrossSigningBootstrapRequests, EncryptionSettings, OlmMachine};
@@ -1259,6 +1327,11 @@ mod tests {
         /// Whether the reinstalled device holds the account's private
         /// signing keys by the time the event arrives.
         private_keys_held: bool,
+        /// The store this reinstall created, so the caller can delete it
+        /// once the machine holding it open has been released. A `TempDir`
+        /// guard cannot do that job here, which is why the directory is
+        /// kept and handed back instead: see [`destroy`].
+        store_dir: std::path::PathBuf,
     }
 
     /// The reinstall: a brand new store, a new device id, and one axis.
@@ -1457,6 +1530,7 @@ mod tests {
             verification: envelope.sender_verification,
             recovered: envelope.ciphertext,
             private_keys_held,
+            store_dir: dir,
         }
     }
 
@@ -1518,6 +1592,7 @@ mod tests {
         destroy(&store_dir);
 
         let outcome = futures::executor::block_on(in_runtime(after_the_reinstall(before, true)));
+        let reinstalled_store = outcome.store_dir.clone();
 
         assert!(
             outcome.private_keys_held,
@@ -1540,6 +1615,12 @@ mod tests {
              on the peer's master key, which is the one thing a recovery is \
              for"
         );
+
+        // The reinstalled device's store, released and deleted. The first
+        // device's went at the uninstall above; this is the other one this
+        // scenario creates.
+        reset_for_test();
+        destroy(&reinstalled_store);
     }
 
     /// The mirror image, and the reason the test above is not asserting a
@@ -1561,6 +1642,7 @@ mod tests {
         destroy(&store_dir);
 
         let outcome = futures::executor::block_on(in_runtime(after_the_reinstall(before, false)));
+        let reinstalled_store = outcome.store_dir.clone();
 
         assert!(
             !outcome.private_keys_held,
@@ -1582,6 +1664,9 @@ mod tests {
              here would mean the value does not depend on the recovered key \
              at all"
         );
+
+        reset_for_test();
+        destroy(&reinstalled_store);
     }
 
     /// A wrong passphrase and a recovery that cannot be read are different
@@ -1601,7 +1686,7 @@ mod tests {
         reset_for_test();
         destroy(&store_dir);
 
-        futures::executor::block_on(in_runtime(async move {
+        let second_store = futures::executor::block_on(in_runtime(async move {
             let BeforeTheReinstall {
                 account_identity,
                 recovery,
@@ -1610,6 +1695,8 @@ mod tests {
 
             // `keep()`, for the reason `after_the_reinstall` above gives:
             // the machine outlives this block in the process-wide registry.
+            // The path is handed back so this test can delete it once the
+            // machine has been released.
             let dir = tempfile::tempdir().expect("temp dir").keep();
             create_machine(config(
                 dir.join("store").to_string_lossy().into_owned(),
@@ -1775,7 +1862,12 @@ mod tests {
                     "the recovery key this call returned must open the recovery \
                      it returned it for",
                 );
+
+            dir
         }));
+
+        reset_for_test();
+        destroy(&second_store);
     }
 
     /// A copy of `account_data` with one byte of the master key's
@@ -1968,6 +2060,163 @@ mod tests {
             .expect("a stored secret always carries an encrypted map")
     }
 
+    /// A copy of `account_data` with the default-key pointer entry removed
+    /// entirely, as a product hands it over when it means to write a new
+    /// recovery without touching the one the account has.
+    ///
+    /// The difference from [`with_the_pointer_cleared`] is where it
+    /// happens. This one drops an entry from a list in memory and writes
+    /// nothing anywhere; that one models a `PUT {}` the product actually
+    /// made. Both lift `create_recovery`'s refusal, by the one rule
+    /// [`pointed_key_id`] states, and only this one leaves the account
+    /// untouched while the new recovery is being written.
+    fn without_the_pointer(account_data: &[AccountDataEntry]) -> Vec<AccountDataEntry> {
+        let kept: Vec<AccountDataEntry> = account_data
+            .iter()
+            .filter(|entry| entry.event_type != "m.secret_storage.default_key")
+            .cloned()
+            .collect();
+        assert_eq!(
+            kept.len(),
+            account_data.len() - 1,
+            "the fixture must have carried exactly one pointer for removing \
+             it to mean anything"
+        );
+        kept
+    }
+
+    /// **A cleared pointer is not a destroyed recovery, and this is where
+    /// the library stops saying it is.**
+    ///
+    /// # The harm this closes
+    ///
+    /// `create_recovery` refuses to write over a recovery the account
+    /// already has and tells a product how to get past that. Every route
+    /// past it involves the account's pointer no longer naming a key, and
+    /// on a real homeserver the only spelling of that is `PUT {}`, because
+    /// the client-server API has no delete for account data.
+    ///
+    /// `restore` used to parse that pointer into ruma's own content type
+    /// and report the parse failure as `RecoveryDataMalformed`, whose
+    /// documented remedy, at the variant, at `recoverIdentity` and in both
+    /// READMEs, is to stop asking for a secret and set recovery up again.
+    /// So a user holding the correct passphrase, whose key description and
+    /// all three ciphertexts were still on the server and one `PUT` away
+    /// from working, was told their recovery was destroyed and sent to do
+    /// the one thing that would destroy it. On the library's own
+    /// recommended path.
+    ///
+    /// # The three answers, and the control that settles which is right
+    ///
+    /// A cleared pointer and an absent one must give the same answer,
+    /// because a homeserver cannot express the second once the first has
+    /// been written. And the control is the one that makes this a
+    /// misreport rather than a fact: put the pointer back, and the same
+    /// secret opens the same recovery. Nothing was ever destroyed.
+    #[test]
+    fn a_cleared_pointer_is_not_a_destroyed_recovery() {
+        let _guard = futures::executor::block_on(lock_for_test());
+        reset_for_test();
+        let before = futures::executor::block_on(in_runtime(before_the_reinstall()));
+        let first_store = before.store_dir.clone();
+
+        // The uninstall, before the recovering device exists: the registry
+        // holds one machine at a time, and the store this releases is the
+        // one the assertions below must not be able to read from.
+        reset_for_test();
+        destroy(&first_store);
+
+        let second_store = futures::executor::block_on(in_runtime(async move {
+            let BeforeTheReinstall {
+                account_identity,
+                recovery,
+                ..
+            } = before;
+
+            // `keep()`, for the reason `after_the_reinstall` gives: the
+            // machine outlives this block in the process-wide registry. The
+            // path is handed back so the test can delete it once the
+            // machine has been released.
+            let dir = tempfile::tempdir().expect("temp dir").keep();
+            create_machine(config(
+                dir.join("store").to_string_lossy().into_owned(),
+                SECOND_DEVICE,
+            ))
+            .await
+            .expect("the reinstalled device's machine must be creatable");
+
+            let upload = drain_for(
+                "keys_upload",
+                "a machine on a fresh store must have keys to publish",
+            )
+            .await;
+            mark_request_sent(&upload.id, r#"{"one_time_key_counts":{}}"#)
+                .await
+                .expect("a keys-upload response must be accepted");
+            let account_query = drain_for_query_about(
+                ALICE_USER,
+                "a machine on a fresh store must owe a key query for its own account",
+            )
+            .await;
+            mark_request_sent(&account_query.id, &account_identity.to_string())
+                .await
+                .expect("answering the account key query must not fail");
+
+            // (1) The state the library's own remedy creates. `PUT {}` is
+            //     the only way to clear account data, so this is what a
+            //     product that followed the instruction is looking at.
+            let cleared = with_the_pointer_cleared(&recovery.account_data);
+            assert_eq!(
+                recover_identity(PASSPHRASE, &cleared).await,
+                Err(MachineError::RecoveryNotSetUp),
+                "a cleared pointer means this account data carries no recovery \
+                 to follow, which is what `RecoveryNotSetUp` says and what a \
+                 product should do something about. `RecoveryDataMalformed` \
+                 here tells a user with the right passphrase and an intact \
+                 recovery that no secret will ever open it, and sends them to \
+                 set recovery up again, which is the one action that makes \
+                 that true"
+            );
+
+            // (2) And a pointer that was never written at all gives the
+            //     same answer, which it must: a homeserver cannot express
+            //     absent once an event has been written, so these two are
+            //     the same state seen before and after a clear.
+            let absent = without_the_pointer(&recovery.account_data);
+            assert_eq!(
+                recover_identity(PASSPHRASE, &absent).await,
+                Err(MachineError::RecoveryNotSetUp),
+                "absent and cleared are one state as far as any client can \
+                 tell, so they must be one answer"
+            );
+
+            // (3) The control that settles it. Put the pointer back and the
+            //     same secret opens the same recovery: the key description
+            //     and all three ciphertexts were on the server the whole
+            //     time, and nothing about (1) was a report of damage.
+            recover_identity(PASSPHRASE, &recovery.account_data)
+                .await
+                .expect(
+                    "restoring the pointer must restore the recovery, or the \
+                     two refusals above are describing real damage and this \
+                     test is asserting the wrong thing",
+                );
+            assert!(
+                identity_status()
+                    .await
+                    .expect("reading the identity status must not fail")
+                    .private_keys_held,
+                "the control must actually restore the identity, or it is not \
+                 a control"
+            );
+
+            dir
+        }));
+
+        reset_for_test();
+        destroy(&second_store);
+    }
+
     /// **Writing a recovery must not take away the recovery that is already
     /// there**, and this is the test that says what it does instead.
     ///
@@ -2018,17 +2267,20 @@ mod tests {
             assert_eq!(
                 create_recovery(PASSPHRASE, &first.account_data).await.err(),
                 Some(MachineError::RecoveryAlreadyExists),
-                "a recovery this account already has must be protected by a \\
-                 refusal of its own, because the alternative is a call that \\
-                 silently invalidates a recovery key a user was told to keep \\
+                "a recovery this account already has must be protected by a \
+                 refusal of its own, because the alternative is a call that \
+                 silently invalidates a recovery key a user was told to keep \
                  forever, including one another Matrix client wrote"
             );
 
-            // (2) The documented remedy, performed as a product would.
-            let cleared = with_the_pointer_cleared(&first.account_data);
-            let second = create_recovery(PASSPHRASE, &cleared).await.expect(
-                "clearing the pointer is what the refusal tells a product \\
-                     to do, so it must be what lets the write through",
+            // (2) **The route the documentation recommends**: hand over
+            //     the account data with the pointer entry left out.
+            //     Nothing is written to the server to arrange this. The
+            //     account still has its recovery, intact, the whole time.
+            let without_pointer = without_the_pointer(&first.account_data);
+            let second = create_recovery(PASSPHRASE, &without_pointer).await.expect(
+                "omitting the pointer is what the refusal tells a product to do, so it must \
+                     be what lets the write through",
             );
 
             // (3) The merge. Nothing the account already held is dropped.
@@ -2044,11 +2296,10 @@ mod tests {
             assert_eq!(
                 after_write.len(),
                 2,
-                "the second write must add its ciphertext to the map rather \\
-                 than replace it: the specification's shape is a map from key \\
-                 id to ciphertext so that more than one key can open one \\
-                 secret, and another client's entry is not this library's to \\
-                 remove. Got {after_write:?}"
+                "the second write must add its ciphertext to the map rather than replace \
+                 it: the specification's shape is a map from key id to ciphertext so that \
+                 more than one key can open one secret, and another client's entry is not \
+                 this library's to remove. Got {after_write:?}"
             );
             let (old_key_id, old_ciphertext) = before_write
                 .iter()
@@ -2060,10 +2311,70 @@ mod tests {
                 "the entry that was already there must survive byte for byte"
             );
 
-            // (4) And the result is a working recovery for the new key.
+            // (4) And the account's existing recovery still opens while the
+            //     new one is being written, because nothing has been sent
+            //     yet. That is the property this route has and the other
+            //     two do not: there is no window in which the account has
+            //     no working recovery.
+            recover_identity(PASSPHRASE, &first.account_data)
+                .await
+                .expect(
+                    "this route writes nothing, so the recovery the account had must go on \
+                     working right up to the final PUT of the new pointer",
+                );
+
+            // (5) The two other routes past the refusal, and what each
+            //     costs. Both are served, so nobody is trapped; neither is
+            //     what the documentation should send a product to.
+            //
+            //     An empty list asserts the account has nothing, and the
+            //     refusal believes it. The cost is not the refusal: it is
+            //     the merge. `existing_ciphertexts` is handed nothing, so it
+            //     merges into nothing, so every other key's ciphertext is
+            //     evicted. One entry where there were two, silently.
+            let from_nothing = create_recovery(PASSPHRASE, &[])
+                .await
+                .expect("an empty list lifts the refusal, by the same rule");
+            assert_eq!(
+                ciphertexts_of(
+                    &from_nothing.account_data,
+                    &SecretName::CrossSigningMasterKey
+                )
+                .len(),
+                1,
+                "passing an empty list discards the merge along with the refusal, which is \
+                 the whole thing the merge was added to prevent. Asserted rather than \
+                 merely documented, because the documentation used to sanction this route \
+                 without naming this cost"
+            );
+
+            //     And the pointer cleared on the server, which is what a
+            //     product holding an already-cleared account is looking at.
+            //     Served, and the merge survives, because everything except
+            //     the pointer is still in the list. What this route costs is
+            //     time, not data: between the clearing PUT and the final
+            //     one the account has no working recovery, and
+            //     `a_cleared_pointer_is_not_a_destroyed_recovery` is what
+            //     stops the library calling that state destruction.
+            let cleared = with_the_pointer_cleared(&first.account_data);
+            let from_cleared = create_recovery(PASSPHRASE, &cleared)
+                .await
+                .expect("a cleared pointer lifts the refusal, by the same rule");
+            assert_eq!(
+                ciphertexts_of(
+                    &from_cleared.account_data,
+                    &SecretName::CrossSigningMasterKey
+                )
+                .len(),
+                2,
+                "clearing the pointer keeps the rest of the account data, so the merge \
+                 survives this route too"
+            );
+
+            // (6) And the result is a working recovery for the new key.
             //     Written out as a homeserver would store it: the merged
             //     entries replace their predecessors, one event per type.
-            let mut stored = cleared.clone();
+            let mut stored = first.account_data.clone();
             for entry in &second.account_data {
                 match stored
                     .iter_mut()
@@ -2092,10 +2403,14 @@ mod tests {
     /// threshold picked here would be arbitrary, wrong for somebody, and
     /// enforced in the one place a product cannot adjust it.
     ///
-    /// The second half is the reason that trade is acceptable rather than
-    /// merely convenient. The recovery key is thirty-two random bytes
-    /// whatever the passphrase is, so a user who keeps it is protected even
-    /// if the passphrase is guessable, and it opens the recovery here.
+    /// The second half is what the recovery key does and does not buy, and
+    /// this test is what keeps the doc comment honest about it. It is
+    /// thirty-two random bytes whatever the passphrase is, and it opens the
+    /// recovery here, so the user's own access does not depend on the
+    /// passphrase. It offsets nothing about confidentiality: the assertions
+    /// below open the same ciphertext with `""` and with the recovery key,
+    /// which is the demonstration that an attacker faces the weaker of the
+    /// two rather than the stronger.
     #[test]
     fn an_empty_passphrase_is_accepted_and_the_recovery_key_is_still_strong() {
         let _guard = futures::executor::block_on(lock_for_test());
@@ -2135,7 +2450,7 @@ mod tests {
                 .expect("the recovery key is random whatever the passphrase is");
             assert!(
                 weak.recovery_key.len() > 40,
-                "the recovery key is thirty-two bytes of base58 however weak \\
+                "the recovery key is thirty-two bytes of base58 however weak \
                  the passphrase was: {}",
                 weak.recovery_key.len()
             );
@@ -2156,10 +2471,17 @@ mod tests {
         let _guard = futures::executor::block_on(lock_for_test());
         reset_for_test();
 
-        let setup = futures::executor::block_on(in_runtime(async {
+        let (setup, store_dir) = futures::executor::block_on(in_runtime(async {
             let before = before_the_reinstall().await;
-            before.recovery
+            (before.recovery, before.store_dir)
         }));
+
+        // Released and deleted here rather than at the end: nothing below
+        // touches the machine, and a test that builds a crypto store and
+        // leaves it in the temporary directory is one more store on disk
+        // for every run of this suite.
+        reset_for_test();
+        destroy(&store_dir);
 
         let types: Vec<&str> = setup
             .account_data
