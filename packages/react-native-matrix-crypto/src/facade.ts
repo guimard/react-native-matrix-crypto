@@ -1598,6 +1598,10 @@ export async function cancelVerification(verificationId: string): Promise<void> 
  *   own new login does not need them.
  * - `'wrong_stage'` -- nobody has agreed to this flow yet, or it is over.
  * - `'unknown_flow'` -- no flow of that id.
+ * - `'malformed_identifier'` -- the flow's own identifier is too long to fit
+ *   in a code. Only reachable from a peer that chose the identifier, since
+ *   the ones this library mints are ordinary transaction ids, and nothing a
+ *   product does about it will help: offer a short-string comparison.
  *
  * Calling it twice is legal and produces a code for the same flow. Draw the
  * newer one: it is the live one.
