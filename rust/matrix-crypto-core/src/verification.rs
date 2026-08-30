@@ -149,7 +149,7 @@ use matrix_sdk_common::deserialized_responses::ProcessedToDeviceEvent;
 use matrix_sdk_common::ruma::events::key::verification::VerificationMethod;
 use matrix_sdk_common::ruma::{OwnedDeviceId, OwnedUserId};
 use matrix_sdk_crypto::matrix_sdk_qrcode::qrcode::Color;
-use matrix_sdk_crypto::matrix_sdk_qrcode::QrVerificationData;
+use matrix_sdk_crypto::matrix_sdk_qrcode::{DecodingError, QrVerificationData};
 use matrix_sdk_crypto::types::requests::OutgoingRequest as UpstreamOutgoingRequest;
 use matrix_sdk_crypto::{
     QrVerification, Sas, SasState, ScanError, Verification, VerificationRequest,
@@ -1486,7 +1486,11 @@ async fn why_no_code(
 /// scanner library that returns a decoded `String` has already lost this
 /// payload: it is binary, it is not UTF-8, and any string round trip
 /// replaces the bytes it could not represent. A product must take the raw
-/// byte output its scanner offers.
+/// byte output its scanner offers. That is not a caution about a
+/// hypothetical: a payload put through a string is refused as
+/// [`MachineError::ScannedCodeMalformed`], watched in
+/// `tests/qr_refusals.rs`, and the refusal is the only thing that can tell a
+/// product its scanner is the problem.
 ///
 /// This is one call and two protocol steps, and it is one call on purpose:
 /// upstream's scan produces the handle, and `reciprocate` produces the
@@ -1497,10 +1501,20 @@ async fn why_no_code(
 ///
 /// # Refusals
 ///
-/// * [`MachineError::ScannedCodeRefused`] -- the payload is not one of these
-///   codes, or is for another flow, or carries keys that are not the ones
-///   this flow expects. Three different things to say to a person, folded
-///   for now; see the variant's own documentation for where they separate.
+/// Four of them are about the payload, and they are four rather than one
+/// because they are four different things to say to a person. The design's
+/// section 4 requires the first three to be distinguishable.
+///
+/// * [`MachineError::ScannedCodeUnrecognised`] -- not one of these codes at
+///   all: a camera pointed at some other square, or a client speaking a
+///   revision of the format this library does not implement.
+/// * [`MachineError::ScannedCodeMalformed`] -- damaged in transit. Above
+///   all, a scanner that handed back text.
+/// * [`MachineError::ScannedCodeForAnotherFlow`] -- a well-formed code, for
+///   a different verification. The camera read the wrong screen.
+/// * [`MachineError::ScannedCodeRefused`] -- a code for this flow whose keys
+///   are not the ones this flow expects. The only one of the four that can
+///   mean something is wrong rather than that somebody aimed badly.
 /// * [`MachineError::IdentityNotKnown`] and
 ///   [`MachineError::PeerIdentityNotKnown`] -- scanning needs a signing
 ///   identity on *both* sides, unconditionally, and upstream names which one
@@ -1520,8 +1534,39 @@ pub async fn submit_scanned_code(flow: &FlowId, payload: &[u8]) -> Result<(), Ma
             // Decoding is a separate, earlier step with an error type of its
             // own, which is why a mangled payload cannot arrive as a
             // `ScanError`. Nothing here touches the store or a key.
-            let scanned = QrVerificationData::from_bytes(&payload)
-                .map_err(|_upstream| MachineError::ScannedCodeRefused)?;
+            //
+            // Upstream's seven decoding failures split in two, and the split
+            // is the difference between two sentences a product shows a
+            // person. Exhaustive, no wildcard, like every other upstream
+            // match in this crate: a variant added later must be ruled on
+            // here rather than land on whichever side a wildcard named.
+            let scanned =
+                QrVerificationData::from_bytes(&payload).map_err(|upstream| match upstream {
+                    // Nothing about these bytes says they were ever one of
+                    // these codes. The header is somebody else's, or the
+                    // version or the mode is one this library does not
+                    // implement -- upstream reads all three before it reads
+                    // anything else (`types.rs:240-246`).
+                    DecodingError::Header | DecodingError::Version(_) | DecodingError::Mode(_) => {
+                        MachineError::ScannedCodeUnrecognised
+                    }
+                    // These four say the bytes were damaged: they ran out
+                    // early, the identifier inside is not text, the secret
+                    // is too short to be one, or the keys do not decompress
+                    // to points on the curve. **A payload put through a
+                    // string arrives here**, which is the misuse
+                    // `submit_scanned_code`'s own documentation warns about,
+                    // and `Keys` is the variant it was observed landing on.
+                    //
+                    // `Read` also catches a payload too short to carry a
+                    // header at all, which nothing but a truncated read
+                    // produces: bytes that stop before six is damage, not a
+                    // code somebody else wrote.
+                    DecodingError::Utf8(_)
+                    | DecodingError::Read(_)
+                    | DecodingError::SharedSecret(_)
+                    | DecodingError::Keys(_) => MachineError::ScannedCodeMalformed,
+                })?;
 
             let own = machine.user_id().to_owned();
             let code = request
@@ -1539,9 +1584,18 @@ pub async fn submit_scanned_code(flow: &FlowId, payload: &[u8]) -> Result<(), Ma
                         MachineError::IdentityNotKnown
                     }
                     ScanError::MissingCrossSigningIdentity(_) => MachineError::PeerIdentityNotKnown,
-                    ScanError::KeyMismatch { .. }
-                    | ScanError::MissingDeviceKeys(..)
-                    | ScanError::FlowIdMismatch { .. } => MachineError::ScannedCodeRefused,
+                    ScanError::FlowIdMismatch { .. } => MachineError::ScannedCodeForAnotherFlow,
+                    // Both mean the code cannot be matched to the device
+                    // this flow is with: one because the keys inside it are
+                    // not that device's, the other because this side holds
+                    // no keys for that device to compare against. Folded on
+                    // purpose -- a product refuses and starts again in
+                    // either case -- and kept apart from
+                    // `ScannedCodeForAnotherFlow` above, which is a code
+                    // that never claimed to be this flow's.
+                    ScanError::KeyMismatch { .. } | ScanError::MissingDeviceKeys(..) => {
+                        MachineError::ScannedCodeRefused
+                    }
                 })?;
 
             // `Ok(None)` here means the flow is not one a scan applies to,

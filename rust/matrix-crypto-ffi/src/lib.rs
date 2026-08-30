@@ -228,6 +228,25 @@ pub enum MachineFfiError {
     CodeNotOffered,
     #[error("the scanned code was refused")]
     ScannedCodeRefused,
+    // Appended last, like every variant above and for the same wire-ordinal
+    // reason. These three are the split the design's section 4 required:
+    // `ScannedCodeRefused` above folded four conditions, and a product has
+    // to tell three of them apart to say anything useful about a scan that
+    // failed. It keeps ordinal 20 and its narrowest meaning -- a code for
+    // this flow whose keys are not this flow's -- rather than being renamed,
+    // because renaming it would change what ordinal 20 decodes to in every
+    // binding already generated. These take 21, 22 and 23 and move nothing;
+    // confirmed against the generated TypeScript rather than reasoned about.
+    //
+    // The core's `MachineError` documents what each one means and what a
+    // product does about it; that is deliberately not repeated here, so the
+    // two cannot drift into saying different things.
+    #[error("the scanned bytes are not one of these codes")]
+    ScannedCodeUnrecognised,
+    #[error("the scanned code did not arrive intact")]
+    ScannedCodeMalformed,
+    #[error("the scanned code is for a different verification")]
+    ScannedCodeForAnotherFlow,
 }
 
 impl From<matrix_crypto_core::MachineError> for MachineFfiError {
@@ -256,6 +275,13 @@ impl From<matrix_crypto_core::MachineError> for MachineFfiError {
             matrix_crypto_core::MachineError::PeerIdentityNotKnown => Self::PeerIdentityNotKnown,
             matrix_crypto_core::MachineError::CodeNotOffered => Self::CodeNotOffered,
             matrix_crypto_core::MachineError::ScannedCodeRefused => Self::ScannedCodeRefused,
+            matrix_crypto_core::MachineError::ScannedCodeUnrecognised => {
+                Self::ScannedCodeUnrecognised
+            }
+            matrix_crypto_core::MachineError::ScannedCodeMalformed => Self::ScannedCodeMalformed,
+            matrix_crypto_core::MachineError::ScannedCodeForAnotherFlow => {
+                Self::ScannedCodeForAnotherFlow
+            }
         }
     }
 }
@@ -457,6 +483,54 @@ impl From<matrix_crypto_core::SasMaterial> for SasMaterial {
     }
 }
 
+/// A code for a person to hold up to another camera, in both of the forms a
+/// product needs to draw one. Mirror of the core's `ScannableCode`.
+///
+/// **Two forms and not one, and the second is not a convenience.** The
+/// payload is binary and is not text: it carries two raw ed25519 keys and a
+/// random shared secret, so there is no string a product can honestly turn
+/// it into. A product handed only bytes reaches for a JavaScript component
+/// that draws a code from a string, and draws a square that decodes to
+/// something else. `modules` is upstream's own symbol, built at the version
+/// and error-correction level upstream fixes because mobile clients have
+/// trouble decoding otherwise, rather than a re-encoding of `payload` -- so
+/// a product that draws the grid draws what upstream meant. The core's own
+/// record says the same at greater length and is the copy to read.
+///
+/// No `Debug` derive, and the reason is `SasEmoji`'s: **this record is
+/// authentication material.** The payload carries the shared secret the
+/// whole method rests on, and the modules are that same secret drawn as
+/// squares. The core hand-writes a redacting `Debug` for its own copy; this
+/// mirror carries none at all.
+#[derive(uniffi::Record)]
+pub struct ScannableCode {
+    /// The bytes the specification defines. About 126 of them, binary.
+    pub payload: Vec<u8>,
+    /// The side length, in squares, of the symbol below.
+    pub width: u32,
+    /// The symbol, row-major, `width * width` entries. `true` is a dark
+    /// square.
+    pub modules: Vec<bool>,
+}
+
+impl From<matrix_crypto_core::ScannableCode> for ScannableCode {
+    fn from(value: matrix_crypto_core::ScannableCode) -> Self {
+        // Destructured, not field-accessed: a field added to the core
+        // record later must fail this build rather than be silently
+        // dropped. See Global Constraints.
+        let matrix_crypto_core::ScannableCode {
+            payload,
+            width,
+            modules,
+        } = value;
+        Self {
+            payload,
+            width,
+            modules,
+        }
+    }
+}
+
 /// What this library will say about one device. Mirror of the core's
 /// `TrustState`.
 ///
@@ -615,6 +689,61 @@ pub async fn confirm_verification(verification_id: String) -> Result<(), Machine
 #[uniffi::export]
 pub async fn cancel_verification(verification_id: String) -> Result<(), MachineFfiError> {
     matrix_crypto_core::cancel_flow(&matrix_crypto_core::FlowId(verification_id))
+        .await
+        .map_err(Into::into)
+}
+
+/// The code for this flow, for a person to hold up to another camera.
+/// Mirrors `read_code`; see its own doc comment in
+/// `matrix-crypto-core::verification` for the seven silent conditions it
+/// turns into named refusals, and `ScannableCode` above for why two forms of
+/// one code cross rather than one.
+///
+/// **No camera and no image on either side of this call.** A product draws
+/// the grid and shows it; this library never sees a screen.
+#[uniffi::export]
+pub async fn verification_code(verification_id: String) -> Result<ScannableCode, MachineFfiError> {
+    matrix_crypto_core::read_code(&matrix_crypto_core::FlowId(verification_id))
+        .await
+        .map(Into::into)
+        .map_err(Into::into)
+}
+
+/// Hands in the payload a product's scanner read off the other device's
+/// screen. Mirrors `submit_scanned_code`; see its own doc comment for the
+/// four refusals a payload can give and what each one tells a product.
+///
+/// **`payload` must be the bytes that were encoded, not a decoded string.**
+/// The payload is binary, and a scanner library that returns a `String` has
+/// already replaced every byte that is not valid text. This library cannot
+/// undo that; what it can do is refuse it distinguishably, which is
+/// `ScannedCodeMalformed`.
+#[uniffi::export]
+pub async fn submit_scanned_code(
+    verification_id: String,
+    payload: Vec<u8>,
+) -> Result<(), MachineFfiError> {
+    matrix_crypto_core::submit_scanned_code(&matrix_crypto_core::FlowId(verification_id), &payload)
+        .await
+        .map_err(Into::into)
+}
+
+/// Says the other device really did scan the code this one showed. Mirrors
+/// `confirm_scan`.
+///
+/// The one thing a person still has to do in a flow with no string to
+/// compare, and it is the same act a short-string comparison asks for: *that
+/// was my other phone, not somebody's screenshot*. A product must ask before
+/// calling this, and a flow where nobody ever calls it stalls until the
+/// protocol's own timeout retires it.
+///
+/// Bridged with the two calls above rather than left for a later task
+/// because without it the showing side of a code flow cannot be completed
+/// from TypeScript at all: a product could draw a code that a peer scans and
+/// then have no way to answer.
+#[uniffi::export]
+pub async fn confirm_scan(verification_id: String) -> Result<(), MachineFfiError> {
+    matrix_crypto_core::confirm_scan(&matrix_crypto_core::FlowId(verification_id))
         .await
         .map_err(Into::into)
 }

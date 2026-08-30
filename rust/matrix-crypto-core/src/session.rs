@@ -362,7 +362,14 @@ impl From<MachineError> for SessionError {
             // wildcard here would have cost.
             | MachineError::PeerIdentityNotKnown
             | MachineError::CodeNotOffered
-            | MachineError::ScannedCodeRefused => SessionError::Failed,
+            | MachineError::ScannedCodeRefused
+            // The three that split `ScannedCodeRefused` apart when the
+            // payload gained a surface to cross to. Same rule, same
+            // unreachability, listed by name for the same reason, and this
+            // match caught all three of them the moment they were declared.
+            | MachineError::ScannedCodeUnrecognised
+            | MachineError::ScannedCodeMalformed
+            | MachineError::ScannedCodeForAnotherFlow => SessionError::Failed,
         }
     }
 }

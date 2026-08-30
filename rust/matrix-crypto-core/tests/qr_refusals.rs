@@ -337,42 +337,83 @@ fn every_refusal_a_scannable_code_can_give_is_named() {
              upstream says which side it is and this is ours"
         );
 
-        // ---- A payload for a different flow -----------------------------
+        // ---- The three vocabularies, told apart --------------------------
         //
-        // Upstream checks the flow id before it looks at any identity, so
-        // this is refused for a reason that has nothing to do with the
-        // phase this test is in.
+        // "You pointed the camera at the wrong thing", "that code is for a
+        // different verification" and "those bytes did not arrive intact"
+        // are three different things to say to a person, and the design's
+        // section 4 requires all three to reach a product separately. They
+        // arrived as one error until the payload crossed to TypeScript;
+        // these four assertions are what hold them apart now, and each of
+        // them failed against the code that folded them.
+        //
+        // Every one of these is refused before any identity is consulted,
+        // so the phase this test is in changes none of them.
+
+        // A well-formed code, for a verification that is not this one.
+        // Upstream reads the flow id before it looks at any identity.
         assert_eq!(
             submit_scanned_code(&flow, &payload_naming("a-flow-that-is-not-this-one"))
                 .await
                 .expect_err("a code for another flow cannot be scanned into this one"),
-            MachineError::ScannedCodeRefused,
-            "a code for another flow must not arrive as the identity refusal above"
+            MachineError::ScannedCodeForAnotherFlow,
+            "a code for another flow must not arrive as the identity refusal above, \
+             nor as the two decoding refusals below: nothing is damaged and nothing \
+             is suspicious, and the answer is to scan the other screen"
         );
 
-        // ---- A payload that is not one of these codes at all ------------
-        //
-        // Refused before anything reaches the flow: turning bytes into a
-        // code is a separate, earlier step with an error type upstream's
-        // scan error does not wrap.
-        //
-        // **Indistinguishable from the two lines above today, and that is a
-        // scheduled fold rather than an accident.** "You pointed the camera
-        // at the wrong thing", "that code is for a different verification"
-        // and "those keys are not the ones expected" are three different
-        // things to say to a person; the design's section 4 requires all
-        // three to reach a product separately, and the task that crosses
-        // the payload to TypeScript is where they separate. Asserted
-        // together here so the day they separate, this is what has to be
-        // updated.
+        // Not one of these codes at all. Refused before anything reaches
+        // the flow: turning bytes into a code is a separate, earlier step
+        // with an error type upstream's scan error does not wrap.
         assert_eq!(
             submit_scanned_code(&flow, b"this is not a code")
                 .await
-                .expect_err("bytes that do not decode cannot be scanned"),
-            MachineError::ScannedCodeRefused,
-            "a payload that does not decode must not arrive as the identity \
-             refusal above: a person who pointed a camera at the wrong thing and \
-             a person whose account is not set up need to be told different things"
+                .expect_err("bytes that are not a code cannot be scanned"),
+            MachineError::ScannedCodeUnrecognised,
+            "a payload with no header of ours must not arrive as the identity \
+             refusal above: a person who pointed a camera at a link and a person \
+             whose account is not set up need to be told different things"
+        );
+
+        // A code whose version this library does not speak. Grouped with
+        // the line above rather than with the two below, deliberately:
+        // nothing here is damaged, this is simply not a code we can use.
+        let mut from_the_future = payload_naming(&flow.0);
+        from_the_future[6] = 0x03;
+        assert_eq!(
+            submit_scanned_code(&flow, &from_the_future)
+                .await
+                .expect_err("a code from a version this library does not speak cannot be scanned"),
+            MachineError::ScannedCodeUnrecognised,
+            "a version this library does not implement is not a damaged payload, \
+             and telling a person to scan again would send them round a loop that \
+             cannot end"
+        );
+
+        // **The scanner hazard, driven rather than described.** A product
+        // whose scanner hands back a decoded `String` has already lost this
+        // payload: it is binary, and a string round trip replaces every byte
+        // that is not valid text. This is that exact round trip, and what
+        // comes back must say the bytes did not survive -- not that the
+        // person aimed badly, and not that the code was for something else.
+        let through_a_string = String::from_utf8_lossy(&payload_naming(&flow.0))
+            .as_bytes()
+            .to_vec();
+        assert_ne!(
+            through_a_string,
+            payload_naming(&flow.0),
+            "the round trip must actually damage the payload, or the assertion \
+             below would be testing nothing"
+        );
+        assert_eq!(
+            submit_scanned_code(&flow, &through_a_string)
+                .await
+                .expect_err("a payload that went through a string cannot be scanned"),
+            MachineError::ScannedCodeMalformed,
+            "a mangled payload must say so. Observed: the two ed25519 keys no \
+             longer decompress to points on the curve, which upstream reports as \
+             a decoding failure and this library must report as damage rather \
+             than as a wrong code"
         );
 
         // Relayed, not merely drained: a refusal the peer never hears
@@ -477,6 +518,30 @@ fn every_refusal_a_scannable_code_can_give_is_named() {
              first is fixed by the other person and the second by this one, and a \
              product that showed the same sentence for both would send half its \
              users to fix something that is not broken"
+        );
+
+        // ---- The fourth scanning refusal, which needs both identities ----
+        //
+        // A well-formed code, naming *this* flow, carrying keys that belong
+        // to nobody. Everything upstream checks before the keys now passes:
+        // the flow id matches, Bob's device is known, this account has an
+        // identity and so has Bob. What is left is the comparison the whole
+        // method exists for, and it fails.
+        //
+        // This is what `ScannedCodeRefused` means now that the three
+        // refusals above have names of their own, and it is the one of the
+        // four that can mean something is wrong rather than that a camera
+        // was aimed badly. Unreachable in phase one, where the identity
+        // refusal comes first, which is why it is asserted here.
+        let with_bob = ready_flow(&bob.peer, BOB, BOB_DEVICE, every_method()).await;
+        assert_eq!(
+            submit_scanned_code(&with_bob, &payload_naming(&with_bob.0))
+                .await
+                .expect_err("a code carrying keys nobody holds cannot be scanned"),
+            MachineError::ScannedCodeRefused,
+            "a code for this flow whose keys are not this flow's must not arrive as \
+             any of the three refusals above: those say a person aimed a camera \
+             badly, and this one is what an interposed party would look like"
         );
     }));
 }

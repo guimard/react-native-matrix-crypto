@@ -198,6 +198,9 @@ interface NativeModuleInterface {
   ubrn_uniffi_matrix_crypto_ffi_fn_func_clear_crypto_observer(
     uniffi_out_err: UniffiRustCallStatus
   ): void;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_confirm_scan(
+    verificationId: Uint8Array
+  ): bigint;
   ubrn_uniffi_matrix_crypto_ffi_fn_func_confirm_verification(
     verificationId: Uint8Array
   ): bigint;
@@ -268,7 +271,14 @@ interface NativeModuleInterface {
   ubrn_uniffi_matrix_crypto_ffi_fn_func_start_verification_comparison(
     verificationId: Uint8Array
   ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_submit_scanned_code(
+    verificationId: Uint8Array,
+    payload: Uint8Array
+  ): bigint;
   ubrn_uniffi_matrix_crypto_ffi_fn_func_take_outgoing_requests(): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_verification_code(
+    verificationId: Uint8Array
+  ): bigint;
   ubrn_uniffi_matrix_crypto_ffi_fn_func_verification_material(
     verificationId: Uint8Array
   ): bigint;
@@ -290,6 +300,7 @@ interface NativeModuleInterface {
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_bootstrap_identity(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_cancel_verification(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_clear_crypto_observer(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_confirm_scan(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_confirm_verification(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_create_crypto_machine(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_create_recovery(): number;
@@ -310,7 +321,9 @@ interface NativeModuleInterface {
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_set_crypto_observer(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_share_scope_key(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_start_verification_comparison(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_submit_scanned_code(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_take_outgoing_requests(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_verification_code(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_verification_material(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_verification_stage(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_method_cryptoobserver_on_signal(): number;

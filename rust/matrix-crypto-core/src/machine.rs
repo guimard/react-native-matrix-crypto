@@ -332,24 +332,85 @@ pub enum MachineError {
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("the other device did not offer to scan a code")]
     CodeNotOffered,
-    /// A scanned payload was refused.
+    /// A scanned payload decoded, named this flow, and carries keys this flow
+    /// does not expect.
     ///
-    /// **This variant deliberately folds what a later task splits.** Three
-    /// things a product must eventually be able to tell apart arrive here
-    /// today: a payload that is not one of these codes at all, a payload for
-    /// a different flow, and a payload whose keys are not the ones this flow
-    /// expects. The design (section 4) requires all three to reach a product
-    /// separately, and the task that crosses the payload to TypeScript is
-    /// where that split lands, because the split is only worth anything once
-    /// there is a surface for it to be visible on.
+    /// **The narrowest of the four scanning refusals, and the only one that
+    /// can mean something is wrong rather than somebody aimed a camera
+    /// badly.** The bytes are a well-formed code for this very verification,
+    /// and the keys inside them are not the ones this side holds for the
+    /// device on the other end. That is what a person in the middle showing
+    /// their own code would look like; it is also what a device whose keys
+    /// this side fetched before they were rotated looks like, and nothing
+    /// here can tell those two apart. A product's answer is the same either
+    /// way: refuse, and verify again from a fresh request.
     ///
-    /// What is *not* folded in here is the one condition that already has a
+    /// This variant used to fold three further conditions, each of which now
+    /// has a name of its own: `ScannedCodeUnrecognised`,
+    /// `ScannedCodeMalformed` and `ScannedCodeForAnotherFlow` below. The
+    /// design's section 4 required the split; it landed with the surface that
+    /// made it visible, which is the one that crosses a payload to a product.
+    ///
+    /// What is *not* folded in here is the one condition that already had a
     /// name: a payload refused because a cross-signing identity is missing
     /// reports `IdentityNotKnown` or `PeerIdentityNotKnown` by whose it is.
     ///
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("the scanned code was refused")]
     ScannedCodeRefused,
+    /// The scanned bytes are not one of these codes at all.
+    ///
+    /// No header, or a version or a mode this library does not speak. What
+    /// this usually is: a camera pointed at some other square -- a link, a
+    /// network's password, a boarding pass -- and the answer is to aim it at
+    /// the code the other device is showing. What it can also be, and the
+    /// reason the version and the mode are here rather than beside
+    /// `ScannedCodeMalformed`: a client speaking a revision of this format
+    /// that this library does not implement, where nothing a person does
+    /// with the camera will help.
+    ///
+    /// Kept apart from `ScannedCodeMalformed` because the sentence a product
+    /// shows is different, and so is who has to act: this one is answered by
+    /// pointing the camera somewhere else, that one by scanning the same code
+    /// again or by fixing the scanner.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("the scanned bytes are not one of these codes")]
+    ScannedCodeUnrecognised,
+    /// The scanned bytes did not survive whatever brought them here.
+    ///
+    /// They ran out early, or the identifier inside them is not text, or the
+    /// keys inside them are not keys. **The signal a product's scanner is
+    /// handing this library a decoded string rather than raw bytes**, which
+    /// is the single most likely way this call is misused: the payload is
+    /// binary, most scanner libraries offer a `String`, and a string round
+    /// trip replaces every byte that is not valid text. Observed rather than
+    /// assumed -- a payload put through one arrives here, refused for keys
+    /// that no longer decompress to a point on the curve.
+    ///
+    /// So this is two sentences at once: to a person, *that code did not come
+    /// through, try again*; to whoever wrote the product, *your scanner is
+    /// giving us text*. `crate::submit_scanned_code`'s own documentation
+    /// carries the obligation this variant reports the breach of.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("the scanned code did not arrive intact")]
+    ScannedCodeMalformed,
+    /// A well-formed code, for a different verification than this one.
+    ///
+    /// Two devices with two verifications open, and the camera read the wrong
+    /// screen; or a code from a flow that has since been replaced. Nothing is
+    /// damaged and nothing is suspicious: the answer is to scan the code the
+    /// flow being confirmed is showing, or to confirm the flow the code
+    /// belongs to.
+    ///
+    /// Kept apart from `ScannedCodeRefused` above, which is the same shape of
+    /// refusal about a code that *is* for this flow, because one of them is a
+    /// mis-aimed camera and the other can be an attack.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("the scanned code is for a different verification")]
+    ScannedCodeForAnotherFlow,
 }
 
 struct Held {

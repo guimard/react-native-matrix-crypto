@@ -216,6 +216,60 @@ export function clearCryptoObserver(): void {
 }
 
 /**
+ * Says the other device really did scan the code this one showed. Mirrors
+ * `confirm_scan`.
+ *
+ * The one thing a person still has to do in a flow with no string to
+ * compare, and it is the same act a short-string comparison asks for: *that
+ * was my other phone, not somebody's screenshot*. A product must ask before
+ * calling this, and a flow where nobody ever calls it stalls until the
+ * protocol's own timeout retires it.
+ *
+ * Bridged with the two calls above rather than left for a later task
+ * because without it the showing side of a code flow cannot be completed
+ * from TypeScript at all: a product could draw a code that a peer scans and
+ * then have no way to answer.
+ */
+export async function confirmScan(
+  verificationId: string,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<void> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_confirm_scan(
+          FfiConverterString.lower(
+            verificationId,
+            nativeModule().rustbuffer_alloc
+          )
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_void,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_void,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_void,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_void,
+      /*liftFunc:*/ (_v) => {},
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
  * Says the strings matched. Mirrors `confirm_flow`.
  */
 export async function confirmVerification(
@@ -1274,6 +1328,61 @@ export async function startVerificationComparison(
 }
 
 /**
+ * Hands in the payload a product's scanner read off the other device's
+ * screen. Mirrors `submit_scanned_code`; see its own doc comment for the
+ * four refusals a payload can give and what each one tells a product.
+ *
+ * **`payload` must be the bytes that were encoded, not a decoded string.**
+ * The payload is binary, and a scanner library that returns a `String` has
+ * already replaced every byte that is not valid text. This library cannot
+ * undo that; what it can do is refuse it distinguishably, which is
+ * `ScannedCodeMalformed`.
+ */
+export async function submitScannedCode(
+  verificationId: string,
+  payload: ArrayBuffer,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<void> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_submit_scanned_code(
+          FfiConverterString.lower(
+            verificationId,
+            nativeModule().rustbuffer_alloc
+          ),
+          FfiConverterArrayBuffer.lower(
+            payload,
+            nativeModule().rustbuffer_alloc
+          )
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_void,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_void,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_void,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_void,
+      /*liftFunc:*/ (_v) => {},
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
  * Drains every outstanding outbound request. Mirrors
  * `take_outgoing_requests`; see its own doc comment in
  * `matrix-crypto-core::session` and the design doc section 3bis for why
@@ -1317,6 +1426,69 @@ export async function takeOutgoingRequests(asyncOpts_?: {
       /*asyncOpts:*/ asyncOpts_,
       /*errorHandler:*/ FfiConverterTypeSessionFfiError.lift.bind(
         FfiConverterTypeSessionFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
+ * The code for this flow, for a person to hold up to another camera.
+ * Mirrors `read_code`; see its own doc comment in
+ * `matrix-crypto-core::verification` for the seven silent conditions it
+ * turns into named refusals, and `ScannableCode` above for why two forms of
+ * one code cross rather than one.
+ *
+ * **No camera and no image on either side of this call.** A product draws
+ * the grid and shows it; this library never sees a screen.
+ */
+export async function verificationCode(
+  verificationId: string,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<ScannableCode> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_verification_code(
+          FfiConverterString.lower(
+            verificationId,
+            nativeModule().rustbuffer_alloc
+          )
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_rust_buffer,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      // Borrowed view over foreign memory: the call site owns the free,
+      // as on the sync paths. Unconditional — a no-op where buffers are
+      // already JS-owned.
+      /*liftFunc:*/ (__rb) => {
+        try {
+          return FfiConverterTypeScannableCode.lift(__rb);
+        } finally {
+          nativeModule().rustbuffer_free(__rb);
+        }
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
       )
     );
   } catch (__error: any) {
@@ -2369,6 +2541,86 @@ const FfiConverterTypeSasMaterial = (() => {
 })();
 
 /**
+ * A code for a person to hold up to another camera, in both of the forms a
+ * product needs to draw one. Mirror of the core's `ScannableCode`.
+ *
+ * **Two forms and not one, and the second is not a convenience.** The
+ * payload is binary and is not text: it carries two raw ed25519 keys and a
+ * random shared secret, so there is no string a product can honestly turn
+ * it into. A product handed only bytes reaches for a JavaScript component
+ * that draws a code from a string, and draws a square that decodes to
+ * something else. `modules` is upstream's own symbol, built at the version
+ * and error-correction level upstream fixes because mobile clients have
+ * trouble decoding otherwise, rather than a re-encoding of `payload` -- so
+ * a product that draws the grid draws what upstream meant. The core's own
+ * record says the same at greater length and is the copy to read.
+ *
+ * No `Debug` derive, and the reason is `SasEmoji`'s: **this record is
+ * authentication material.** The payload carries the shared secret the
+ * whole method rests on, and the modules are that same secret drawn as
+ * squares. The core hand-writes a redacting `Debug` for its own copy; this
+ * mirror carries none at all.
+ */
+export type ScannableCode = {
+  /**
+   * The bytes the specification defines. About 126 of them, binary.
+   */
+  payload: ArrayBuffer;
+  /**
+   * The side length, in squares, of the symbol below.
+   */
+  width: number;
+  /**
+   * The symbol, row-major, `width * width` entries. `true` is a dark
+   * square.
+   */
+  modules: Array<boolean>;
+};
+
+/**
+ * Generated factory for {@link ScannableCode} record objects.
+ */
+export const ScannableCode = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<ScannableCode, ReturnType<typeof defaults>>(
+      defaults
+    );
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<ScannableCode>,
+  });
+})();
+
+const FfiConverterTypeScannableCode = (() => {
+  type TypeName = ScannableCode;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      return {
+        payload: FfiConverterArrayBuffer.readFromCursor(c),
+        width: FfiConverterUInt32.readFromCursor(c),
+        modules: FfiConverterSequenceBoolean.readFromCursor(c),
+      };
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      FfiConverterArrayBuffer.writeIntoCursor(value.payload, c);
+      FfiConverterUInt32.writeIntoCursor(value.width, c);
+      FfiConverterSequenceBoolean.writeIntoCursor(value.modules, c);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterArrayBuffer.allocationSize(value.payload) +
+        FfiConverterUInt32.allocationSize(value.width) +
+        FfiConverterSequenceBoolean.allocationSize(value.modules)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
  * Mirror of the core's sync outcome, carrying the UniFFI record derive.
  *
  * Both counts are plain totals with no payload content, key material or
@@ -2623,6 +2875,9 @@ export enum MachineFfiError_Tags {
   PeerIdentityNotKnown = "PeerIdentityNotKnown",
   CodeNotOffered = "CodeNotOffered",
   ScannedCodeRefused = "ScannedCodeRefused",
+  ScannedCodeUnrecognised = "ScannedCodeUnrecognised",
+  ScannedCodeMalformed = "ScannedCodeMalformed",
+  ScannedCodeForAnotherFlow = "ScannedCodeForAnotherFlow",
 }
 /**
  * Mirror of the core's machine error, carrying the UniFFI error derive.
@@ -3214,6 +3469,93 @@ export const MachineFfiError = (() => {
     }
   }
 
+  type ScannedCodeUnrecognised__interface = {
+    tag: MachineFfiError_Tags.ScannedCodeUnrecognised;
+  };
+  class ScannedCodeUnrecognised_
+    extends UniffiError
+    implements ScannedCodeUnrecognised__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.ScannedCodeUnrecognised;
+    constructor() {
+      super("MachineFfiError", "ScannedCodeUnrecognised");
+    }
+
+    static new(): ScannedCodeUnrecognised_ {
+      return new ScannedCodeUnrecognised_();
+    }
+
+    static instanceOf(obj: any): obj is ScannedCodeUnrecognised_ {
+      return obj.tag === MachineFfiError_Tags.ScannedCodeUnrecognised;
+    }
+    static hasInner(obj: any): obj is ScannedCodeUnrecognised_ {
+      return false;
+    }
+  }
+
+  type ScannedCodeMalformed__interface = {
+    tag: MachineFfiError_Tags.ScannedCodeMalformed;
+  };
+  class ScannedCodeMalformed_
+    extends UniffiError
+    implements ScannedCodeMalformed__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.ScannedCodeMalformed;
+    constructor() {
+      super("MachineFfiError", "ScannedCodeMalformed");
+    }
+
+    static new(): ScannedCodeMalformed_ {
+      return new ScannedCodeMalformed_();
+    }
+
+    static instanceOf(obj: any): obj is ScannedCodeMalformed_ {
+      return obj.tag === MachineFfiError_Tags.ScannedCodeMalformed;
+    }
+    static hasInner(obj: any): obj is ScannedCodeMalformed_ {
+      return false;
+    }
+  }
+
+  type ScannedCodeForAnotherFlow__interface = {
+    tag: MachineFfiError_Tags.ScannedCodeForAnotherFlow;
+  };
+  class ScannedCodeForAnotherFlow_
+    extends UniffiError
+    implements ScannedCodeForAnotherFlow__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.ScannedCodeForAnotherFlow;
+    constructor() {
+      super("MachineFfiError", "ScannedCodeForAnotherFlow");
+    }
+
+    static new(): ScannedCodeForAnotherFlow_ {
+      return new ScannedCodeForAnotherFlow_();
+    }
+
+    static instanceOf(obj: any): obj is ScannedCodeForAnotherFlow_ {
+      return obj.tag === MachineFfiError_Tags.ScannedCodeForAnotherFlow;
+    }
+    static hasInner(obj: any): obj is ScannedCodeForAnotherFlow_ {
+      return false;
+    }
+  }
+
   function instanceOf(obj: any): obj is MachineFfiError {
     return obj[uniffiTypeNameSymbol] === "MachineFfiError";
   }
@@ -3240,6 +3582,9 @@ export const MachineFfiError = (() => {
     PeerIdentityNotKnown: PeerIdentityNotKnown_,
     CodeNotOffered: CodeNotOffered_,
     ScannedCodeRefused: ScannedCodeRefused_,
+    ScannedCodeUnrecognised: ScannedCodeUnrecognised_,
+    ScannedCodeMalformed: ScannedCodeMalformed_,
+    ScannedCodeForAnotherFlow: ScannedCodeForAnotherFlow_,
   });
 })();
 /**
@@ -3270,7 +3615,10 @@ export type MachineFfiError = InstanceType<
     | "RecoveryAlreadyExists"
     | "PeerIdentityNotKnown"
     | "CodeNotOffered"
-    | "ScannedCodeRefused"]
+    | "ScannedCodeRefused"
+    | "ScannedCodeUnrecognised"
+    | "ScannedCodeMalformed"
+    | "ScannedCodeForAnotherFlow"]
 >;
 
 // FfiConverter for enum MachineFfiError
@@ -3323,6 +3671,12 @@ const FfiConverterTypeMachineFfiError = (() => {
           return new MachineFfiError.CodeNotOffered();
         case 20:
           return new MachineFfiError.ScannedCodeRefused();
+        case 21:
+          return new MachineFfiError.ScannedCodeUnrecognised();
+        case 22:
+          return new MachineFfiError.ScannedCodeMalformed();
+        case 23:
+          return new MachineFfiError.ScannedCodeForAnotherFlow();
         default:
           throw new UniffiInternalError.UnexpectedEnumCase();
       }
@@ -3413,6 +3767,18 @@ const FfiConverterTypeMachineFfiError = (() => {
           c.writeI32(20);
           return;
         }
+        case MachineFfiError_Tags.ScannedCodeUnrecognised: {
+          c.writeI32(21);
+          return;
+        }
+        case MachineFfiError_Tags.ScannedCodeMalformed: {
+          c.writeI32(22);
+          return;
+        }
+        case MachineFfiError_Tags.ScannedCodeForAnotherFlow: {
+          c.writeI32(23);
+          return;
+        }
         default:
           // Throwing from here means that MachineFfiError_Tags hasn't matched an ordinal.
           throw new UniffiInternalError.UnexpectedEnumCase();
@@ -3484,6 +3850,15 @@ const FfiConverterTypeMachineFfiError = (() => {
           return 4;
         }
         case MachineFfiError_Tags.ScannedCodeRefused: {
+          return 4;
+        }
+        case MachineFfiError_Tags.ScannedCodeUnrecognised: {
+          return 4;
+        }
+        case MachineFfiError_Tags.ScannedCodeMalformed: {
+          return 4;
+        }
+        case MachineFfiError_Tags.ScannedCodeForAnotherFlow: {
           return 4;
         }
         default:
@@ -4594,6 +4969,9 @@ const FfiConverterOptionalSequenceTypeSasEmoji = new FfiConverterOptional(
   FfiConverterSequenceTypeSasEmoji
 );
 
+// FfiConverter for Array<boolean>
+const FfiConverterSequenceBoolean = new FfiConverterArray(FfiConverterBool);
+
 // FfiConverter for Array<DeviceStatus>
 const FfiConverterSequenceTypeDeviceStatus = new FfiConverterArray(
   FfiConverterTypeDeviceStatus
@@ -4659,6 +5037,14 @@ function uniffiEnsureInitialized() {
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       "uniffi_matrix_crypto_ffi_checksum_func_clear_crypto_observer"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_confirm_scan() !==
+    64565
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_confirm_scan"
     );
   }
   if (
@@ -4821,11 +5207,27 @@ function uniffiEnsureInitialized() {
     );
   }
   if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_submit_scanned_code() !==
+    45835
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_submit_scanned_code"
+    );
+  }
+  if (
     nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_take_outgoing_requests() !==
     24897
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       "uniffi_matrix_crypto_ffi_checksum_func_take_outgoing_requests"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_verification_code() !==
+    57217
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_verification_code"
     );
   }
   if (
@@ -4885,6 +5287,7 @@ export default Object.freeze({
     FfiConverterTypeRecoverySetup,
     FfiConverterTypeSasEmoji,
     FfiConverterTypeSasMaterial,
+    FfiConverterTypeScannableCode,
     FfiConverterTypeSenderVerification,
     FfiConverterTypeSessionFfiError,
     FfiConverterTypeSyncOutcome,

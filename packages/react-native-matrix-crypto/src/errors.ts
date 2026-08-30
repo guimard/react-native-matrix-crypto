@@ -182,13 +182,38 @@ export type CryptoErrorKind =
   // compare a short string instead. Every client that speaks only the short
   // string produces this, including this library's own earlier releases.
   | 'code_not_offered'
-  // A scanned payload was refused. This kind currently folds three things a
-  // product must eventually tell apart -- not one of these codes at all, a
-  // code for a different flow, and keys that are not the ones expected --
-  // and the task that crosses the payload to this side is where they
-  // separate. Named here rather than left to arrive as 'unknown', because
-  // 'unknown' is the failure this map exists to prevent.
+  // A scanned payload decoded, named this flow, and carries keys this flow
+  // does not expect. **The narrowest of the four, and the only one that can
+  // mean something is wrong rather than that a camera was aimed badly**: it
+  // is what an interposed party showing their own code looks like, and also
+  // what a device whose keys were fetched before they were rotated looks
+  // like. Nothing here can tell those apart, and the answer is the same
+  // either way: refuse, and verify again from a fresh request. This kind
+  // folded the three below until the payload gained a surface to cross on.
   | 'scanned_code_refused'
+  // The scanned bytes are not one of these codes at all: no header of ours,
+  // or a version or mode this library does not speak. A camera pointed at
+  // some other square -- a link, a network password -- or a client speaking
+  // a revision of the format this release does not implement. What a product
+  // says: point the camera at the code the other device is showing.
+  | 'scanned_code_unrecognised'
+  // The scanned bytes did not survive whatever brought them here: they ran
+  // out early, or the identifier inside is not text, or the keys are not
+  // keys. **The signal that a product's scanner is handing this library a
+  // decoded string rather than raw bytes**, which is the most likely way
+  // `submitScannedCode` is misused: the payload is binary, most scanner
+  // libraries offer a `string`, and a string round trip replaces every byte
+  // that is not valid text. Two sentences at once -- to a person, that code
+  // did not come through; to whoever wrote the product, your scanner is
+  // giving us text.
+  | 'scanned_code_malformed'
+  // A well-formed code, for a different verification than the one it was
+  // handed to. Two flows open and the camera read the wrong screen, or a
+  // code from a flow since replaced. Nothing is damaged and nothing is
+  // suspicious, which is why it is not 'scanned_code_refused': a product
+  // that alarmed a person here would be alarming them about their own
+  // mis-aim.
+  | 'scanned_code_for_another_flow'
   | 'not_implemented'
   | 'not_initialised'
   | 'already_initialised'
@@ -363,6 +388,18 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   ['PeerIdentityNotKnown', 'peer_identity_not_known'],
   ['CodeNotOffered', 'code_not_offered'],
   ['ScannedCodeRefused', 'scanned_code_refused'],
+  // The three that split `ScannedCodeRefused` apart, and the reason this
+  // block is where the split is worth anything: the design's section 4
+  // requires a product to be able to tell "this is not one of our codes"
+  // from "this code is for a different flow" from "the bytes were mangled",
+  // and nothing in Rust can decide whether it can. Four distinct kinds here
+  // is what makes those four Rust variants four different sentences on a
+  // screen; three entries missing would have made all three arrive as
+  // 'unknown' on the one call whose refusals a product most needs to word
+  // differently.
+  ['ScannedCodeUnrecognised', 'scanned_code_unrecognised'],
+  ['ScannedCodeMalformed', 'scanned_code_malformed'],
+  ['ScannedCodeForAnotherFlow', 'scanned_code_for_another_flow'],
 ])
 
 // 'session_refused' is deliberately not here: see its own doc comment on

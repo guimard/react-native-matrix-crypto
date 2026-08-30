@@ -33,13 +33,14 @@
 
 use matrix_crypto_core::{
     AccountDataEntry, CryptoSignal, DeviceStatus, Envelope, FlowStage, IdentityStatus,
-    RecoverySetup, SasEmoji, SasMaterial, SenderVerification, TrustState,
+    RecoverySetup, SasEmoji, SasMaterial, ScannableCode, SenderVerification, TrustState,
 };
 use matrix_crypto_ffi::{
     AccountDataEntry as FfiAccountDataEntry, CryptoSignal as FfiCryptoSignal,
     DeviceStatus as FfiDeviceStatus, Envelope as FfiEnvelope, IdentityStatus as FfiIdentityStatus,
     RecoverySetup as FfiRecoverySetup, SasMaterial as FfiSasMaterial,
-    SenderVerification as FfiSenderVerification, TrustState as FfiTrustState, VerificationStage,
+    ScannableCode as FfiScannableCode, SenderVerification as FfiSenderVerification,
+    TrustState as FfiTrustState, VerificationStage,
 };
 
 /// All seven stages, each to its own. One assertion per variant rather than
@@ -220,6 +221,62 @@ fn a_material_with_no_symbols_crosses_with_none_rather_than_an_empty_list() {
         ),
         (4444, 5555, 6666),
     );
+}
+
+/// A code crosses as both of its forms, with the grid in the order it was
+/// drawn.
+///
+/// Three fields and three separate hazards, which is why this is asserted
+/// rather than assumed of a three-line `From`:
+///
+/// * **The payload must cross byte for byte.** It carries the shared secret
+///   the whole method rests on, and a payload that lost a byte draws a code
+///   the other phone refuses with nothing to say about why.
+/// * **The grid must keep its order.** It is row-major and square; a
+///   reversed or rotated sequence is still `width * width` booleans, still
+///   type-checks, still draws a plausible-looking square, and decodes to
+///   nothing.
+/// * **`width` must be the symbol's own.** A product draws `width * width`
+///   squares out of `modules`, so a width that crossed as anything else
+///   either draws a fraction of the code or runs off the end of the vector.
+///
+/// The fixture is deliberately asymmetric in every direction -- a payload
+/// whose bytes are all different, a grid that is not a palindrome and does
+/// not read the same by rows as by columns, and a width that is not the
+/// length of anything else here.
+#[test]
+fn a_scannable_code_crosses_as_both_of_its_forms() {
+    // Three by three, dark on one diagonal only: reversing the sequence,
+    // transposing it, or inverting it all give a different vector.
+    let modules = vec![true, false, false, false, true, false, false, false, false];
+    let crossed = FfiScannableCode::from(ScannableCode {
+        payload: vec![1, 2, 3, 4, 250, 251, 252, 253],
+        width: 3,
+        modules: modules.clone(),
+    });
+
+    assert_eq!(
+        crossed.payload,
+        vec![1, 2, 3, 4, 250, 251, 252, 253],
+        "the payload must cross byte for byte -- it is the code, and the bytes \
+         above are all distinct so a reordering fails here rather than passing \
+         on a length check"
+    );
+    assert_eq!(
+        crossed.width, 3,
+        "the width must be the symbol's own; a product draws `width * width` \
+         squares out of the grid below"
+    );
+    assert_eq!(
+        crossed.modules, modules,
+        "the grid must cross in the order it was drawn -- it is row-major, and \
+         a reversed or transposed one is the same length and draws a square \
+         that decodes to nothing"
+    );
+    // The payload and the grid are different lengths on purpose: a mapping
+    // that built one out of the other would satisfy both assertions above
+    // for a symbol whose sizes happened to agree.
+    assert_ne!(crossed.payload.len(), crossed.modules.len());
 }
 
 /// A device status keeps its identifier and its trust together.

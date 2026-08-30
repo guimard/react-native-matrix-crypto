@@ -103,3 +103,47 @@ async fn the_recovery_calls_reach_the_core() {
         matrix_crypto_ffi::MachineFfiError::NotInitialised
     ));
 }
+
+/// The three calls that carry a scannable code reach the core, with the same
+/// three ways of going wrong as every delegation above: absent, wired to the
+/// wrong core function, or swallowing the core's error.
+///
+/// Wiring one to another core function is not a hypothetical for this group.
+/// All three take a verification identifier and two of them return nothing,
+/// so `submit_scanned_code` wired to `confirm_scan` -- which is the pair a
+/// product calls one after the other -- compiles, and every test that only
+/// checked the call could be made would pass against it. What that build
+/// would do is confirm a scan that never happened.
+///
+/// The same limit applies as above: a body of
+/// `Err(MachineFfiError::NotInitialised)` would pass this, and no test
+/// reachable from here can tell it apart, because this binary creates no
+/// machine. The core's own `tests/qr_refusals.rs` and the three mode tests
+/// beside it are what drive the served path and all four scanning refusals
+/// against a real store.
+#[tokio::test]
+async fn the_scannable_code_calls_reach_the_core() {
+    // `unwrap_err` is unavailable here: `ScannableCode` has no `Debug`
+    // derive on purpose, because the payload is authentication material.
+    // Matched instead, which asserts the same thing.
+    assert!(matches!(
+        matrix_crypto_ffi::verification_code("a-flow".to_string()).await,
+        Err(matrix_crypto_ffi::MachineFfiError::NotInitialised)
+    ));
+
+    let err = matrix_crypto_ffi::submit_scanned_code("a-flow".to_string(), vec![1, 2, 3])
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        matrix_crypto_ffi::MachineFfiError::NotInitialised
+    ));
+
+    let err = matrix_crypto_ffi::confirm_scan("a-flow".to_string())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        matrix_crypto_ffi::MachineFfiError::NotInitialised
+    ));
+}

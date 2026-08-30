@@ -341,4 +341,67 @@ fn every_machine_error_maps_to_the_matching_ffi_variant() {
          a product told `RecoveryNotSetUp` instead would conclude the account \
          has no recovery and write one over the recovery it does have"
     );
+
+    // The six refusals verification by a scannable code adds. Four of them
+    // are about one scanned payload and they are the sharpest instance in
+    // this file of the hazard it exists for: fieldless, adjacent, declared
+    // in one block, and describing four *different* things to say to a
+    // person. Any permutation of the four arms compiles and passes every
+    // other test in this repository, and the design's section 4 is a
+    // requirement that a product be able to tell three of them apart.
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::PeerIdentityNotKnown),
+            MachineFfiError::PeerIdentityNotKnown
+        ),
+        "MachineError::PeerIdentityNotKnown must not arrive as another kind -- \
+         swapped with `IdentityNotKnown` it sends a user to set up an identity \
+         that is already in place, over a gap only the other person can close"
+    );
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::CodeNotOffered),
+            MachineFfiError::CodeNotOffered
+        ),
+        "MachineError::CodeNotOffered must not arrive as another kind -- read as \
+         a stage, a product waits for a code the peer will never be able to \
+         scan instead of offering a short string"
+    );
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::ScannedCodeRefused),
+            MachineFfiError::ScannedCodeRefused
+        ),
+        "MachineError::ScannedCodeRefused must not arrive as another kind -- it \
+         is the only one of the four that can mean an interposed party rather \
+         than a mis-aimed camera, and reporting it as any of the other three \
+         tells a person to try again at exactly the moment they must not"
+    );
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::ScannedCodeUnrecognised),
+            MachineFfiError::ScannedCodeUnrecognised
+        ),
+        "MachineError::ScannedCodeUnrecognised must not arrive as another kind -- \
+         a product told the code was damaged asks for the same square to be \
+         scanned again, when the answer is to point the camera somewhere else"
+    );
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::ScannedCodeMalformed),
+            MachineFfiError::ScannedCodeMalformed
+        ),
+        "MachineError::ScannedCodeMalformed must not arrive as another kind -- it \
+         is the one signal that a product's scanner is handing this library \
+         text rather than bytes, and it is invisible from anywhere else"
+    );
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::ScannedCodeForAnotherFlow),
+            MachineFfiError::ScannedCodeForAnotherFlow
+        ),
+        "MachineError::ScannedCodeForAnotherFlow must not arrive as another kind \
+         -- nothing is damaged and nothing is suspicious, and a product that \
+         said either would alarm a person who simply read the wrong screen"
+    );
 }
