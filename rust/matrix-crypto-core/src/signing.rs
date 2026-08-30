@@ -62,10 +62,18 @@
 //! failed query's body as a success supplies that fact falsely and the gate
 //! believes it. `session::mark_request_sent` refuses the two failure shapes
 //! a body can carry -- a standard Matrix error and an authentication
-//! challenge -- and its own doc comment states what no body-based check can
-//! catch. It is also "asked at some point in this process", not "asked
-//! recently": a bootstrap long after the answer decides on stale
-//! information.
+//! challenge -- and the key query's own response parse rejects anything
+//! that is not that endpoint's shape, so a proxy's HTML page does not get
+//! through either.
+//!
+//! What does still lift the gate, all of it a body no conformant homeserver
+//! sends: `{}`, an empty body (ruma substitutes `{}` for it before
+//! parsing), a JSON error object carrying no top-level `errcode` such as a
+//! gateway's `{"error":"Bad Gateway"}`, and a JSON array. Each is something
+//! serde can read as an all-optional response shape, and only the HTTP
+//! status separates them from a real answer. Fact (1) is also "asked at some point in this
+//! process", not "asked recently": a bootstrap long after the answer
+//! decides on stale information.
 //!
 //! # This library never sees a credential
 //!
@@ -231,24 +239,43 @@ pub async fn identity_status() -> Result<IdentityStatus, MachineError> {
 /// then `signing_keys_upload`, then `signature_upload`, because a signature
 /// may reference a key that is not published yet.
 ///
-/// Expect **four** entries, not three, and the batch is ordered as above:
-/// a `keys_upload` this call queued, the `signing_keys_upload`, the
-/// `signature_upload`, and then a *second* `keys_upload` under a different
-/// id carrying the same device keys. The duplicate is upstream's own
-/// standing "these device keys are not published yet" request, which
-/// `outgoing_requests()` offers independently of the copy
-/// `bootstrap_cross_signing` hands back. Sending both is harmless -- the
-/// endpoint is idempotent and the second is a no-op at the server -- and
-/// the copy this call queues is the one that has to exist, because only a
-/// queued request carries a sequence stamp early enough to sort ahead of
-/// the signing keys. A caller that would rather not send the same twelve
-/// kilobytes twice may send the first `keys_upload`, report it, and find
-/// the duplicate absent from the next batch.
+/// **Four of the batch's entries come from this call, and the batch is
+/// longer than four.** Do not assert a length. Observed after a served
+/// bootstrap on a fresh machine:
+/// `["keys_upload", "signing_keys_upload", "signature_upload",
+/// "keys_upload", "keys_query"]` -- five, because the pump also carries
+/// whatever else upstream owed at that moment, which here is a key query.
+///
+/// The four that belong to the bootstrap are a `keys_upload` this call
+/// queued, the `signing_keys_upload`, the `signature_upload`, and then a
+/// *second* `keys_upload` under a different id carrying the same device
+/// keys. The duplicate is upstream's own standing "these device keys are
+/// not published yet" request, which `outgoing_requests()` offers
+/// independently of the copy `bootstrap_cross_signing` hands back. Sending
+/// both is harmless -- the endpoint is idempotent and the second is a no-op
+/// at the server -- and the copy this call queues is the one that has to
+/// exist, because only a queued request carries a sequence stamp early
+/// enough to sort ahead of the signing keys. A caller that would rather not
+/// send the same twelve kilobytes twice may send the first `keys_upload`,
+/// report it, and find the duplicate absent from the next batch.
 ///
 /// The `signing_keys_upload` request is the one that needs user-interactive
 /// authentication. Expect the first attempt to be refused with a challenge,
-/// merge an `auth` object into the body, and send it again; the request id
-/// stays valid across any number of refused attempts.
+/// merge an `auth` object into the body, and send it again.
+///
+/// **The id survives any number of refused attempts, but not another
+/// bootstrap.** Nothing about failing an attempt consumes the request:
+/// [`crate::mark_request_sent`] removes an entry only on success, so a
+/// caller may loop on a 401 as long as its user needs. What does retire the
+/// id is calling this function again and draining the pump again, because a
+/// second bootstrap re-derives the same three keys and the fresh
+/// publication supersedes the stale one -- without that, the pump's pending
+/// map would grow by one entry for every bootstrap-and-drain cycle in the
+/// process. A held id then reports
+/// [`crate::SessionError::UnknownRequest`], which fails closed and costs
+/// nothing to recover from: the body is identical, so drain again and use
+/// the id from the newer batch. If a user-interactive loop is in flight, do
+/// not call this again until it finishes.
 ///
 /// # Report only what a success returned
 ///
@@ -259,11 +286,19 @@ pub async fn identity_status() -> Result<IdentityStatus, MachineError> {
 /// is read by the gate below as "the server answered and this account has
 /// no identity", which is the one fact that authorises a mint; and the
 /// signing-keys upload's success response is an empty object, so a reported
-/// challenge would mark an identity published that never was. That call
-/// refuses a standard error body and a challenge on sight, but no HTTP
-/// status crosses this library's boundary, so a failure that never reaches
-/// Matrix's error format -- a proxy's HTML error page, a truncated body --
-/// cannot be caught for you.
+/// challenge would mark an identity published that never was.
+///
+/// That call refuses a standard error body and a challenge on sight, and
+/// how much else it catches differs by request. For the key query, whose
+/// response type has fields, a body that is not that endpoint's shape --
+/// a proxy's HTML page, a truncated response -- is rejected by the parse
+/// behind it. For the signing-keys upload, whose success response is
+/// `Response {}`, ruma emits no body parse at all, so **anything that is
+/// not a Matrix error or a challenge is accepted**, including bytes that
+/// are not JSON. No HTTP status crosses this library's boundary, so what
+/// gets past that is yours to prevent by branching on the status. See
+/// `session::refuse_a_non_response` for the mechanism and the exact
+/// division.
 ///
 /// # Refusals
 ///

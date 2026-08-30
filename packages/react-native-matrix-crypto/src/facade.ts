@@ -95,16 +95,25 @@ export interface DeviceStatus {
  * Today's six values, the endpoint each addresses, and what
  * {@link markRequestSent}'s own `responseJson` must contain to report one
  * sent -- that endpoint's response body, unwrapped, exactly as the
- * homeserver returned it; nothing this library adds or removes, and a
- * differently-shaped `responseJson` is rejected with `malformed_payload`
- * rather than silently accepted:
+ * homeserver returned it, and nothing this library adds or removes.
+ *
+ * **A wrong `responseJson` is not reliably rejected**, so do not treat the
+ * column below as validated input. It is checked as far as it can be: a
+ * Matrix error body and an authentication challenge are always rejected
+ * with `malformed_payload`, and the three kinds whose response carries a
+ * required field (`keys_upload`, `keys_claim`, `room_message`) reject a
+ * body that lacks it. What is *not* checked: `keys_query`'s fields are all
+ * optional, so it accepts any JSON object -- `{}` included, since `{}` is
+ * a real answer meaning "nothing known" -- and `to_device` accepts anything
+ * at all, because its response type has no fields and no parse is generated
+ * for it. See {@link markRequestSent}.
  *
  * | `kind` | Method & path | `responseJson` must contain |
  * |---|---|---|
  * | `'keys_upload'` | `POST /_matrix/client/v3/keys/upload` | `{ one_time_key_counts: { [algorithm: string]: number } }` |
  * | `'keys_query'` | `POST /_matrix/client/v3/keys/query` | `{ device_keys?, master_keys?, self_signing_keys?, user_signing_keys?, failures? }` (all optional; `{}` is valid) |
  * | `'keys_claim'` | `POST /_matrix/client/v3/keys/claim` | `{ one_time_keys: {...}, failures? }` |
- * | `'to_device'` | `PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}` | `{}` -- the machine ignores the body, but it must still be valid JSON |
+ * | `'to_device'` | `PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}` | `{}` -- the machine ignores the body and nothing validates it; any bytes are accepted, so send the real one |
  * | `'signature_upload'` | `POST /_matrix/client/v3/keys/signatures/upload` | `{ failures? }` (optional; `{}` is valid) |
  * | `'room_message'` | `PUT /_matrix/client/v3/rooms/{roomId}/send/{eventType}/{txnId}` | `{ event_id: string }` |
  *
@@ -606,29 +615,43 @@ export async function takeOutgoingRequests(): Promise<OutgoingRequest[]> {
  *
  * **`responseJson` must be that request's own endpoint's response body,
  * unwrapped** -- see {@link OutgoingRequest}'s own doc comment for the
- * table mapping each `kind` to what it must contain. It is parsed per
- * `kind`, and a `responseJson` that does not match rejects with
- * `malformed_payload` rather than being accepted or silently ignored; the
- * request named by `id` stays outstanding when that happens, so the same
- * `id` can be retried with corrected input.
+ * table mapping each `kind` to what it must contain.
+ *
+ * **How much of that this library can enforce depends on the `kind`, and
+ * for two kinds it is nothing.** A Matrix error body (top-level `errcode`)
+ * and an authentication challenge (top-level `flows`) are always rejected
+ * with `malformed_payload`. Beyond those, `keys_upload`, `keys_claim`,
+ * `room_message` and `keys_query` are parsed against the real response
+ * shape and a body that does not fit is rejected -- but `keys_query`'s
+ * fields are all optional, so any JSON object fits, `{}` included. And
+ * `to_device` is not parsed at all, because its response type has no
+ * fields; any bytes are accepted there. When a body *is* rejected the
+ * request named by `id` stays outstanding, so the same `id` can be retried
+ * with corrected input.
  *
  * **Call this only for a 2xx, and never for an error or a challenge.**
  * `markRequestSent(id, await res.text())` without branching on the status
  * is the obvious wrapper and it is wrong. No HTTP status crosses this
- * boundary, and every field of every response shape here is optional, so a
- * homeserver error body parses as a flawless *empty success* -- an errored
- * `keys_query` reported this way tells the machine the server answered and
- * this account has no signing identity, which is exactly the fact that
- * authorises minting a new one over whatever the account already had.
+ * boundary, and every field of the `keys_query` response is optional, so a
+ * homeserver error body parses as a flawless *empty success* there -- an
+ * errored `keys_query` reported this way tells the machine the server
+ * answered and this account has no signing identity, which is exactly the
+ * fact that authorises minting a new one over whatever the account already
+ * had. An empty body does it too: it is substituted with `{}` before
+ * parsing.
  *
  * A standard Matrix error body (top-level `errcode`) and a user-interactive
  * authentication challenge (top-level `flows`) are both rejected with
  * `malformed_payload`, and the id stays outstanding, so the ordinary
  * "retry with `auth` merged in" flow needs nothing special: report nothing
- * for the challenge, and report the eventual success. What cannot be
- * rejected for you is a failure that never reaches Matrix's error format at
- * all -- a proxy's HTML error page, a `{}` body carrying a 503 -- because
- * only the status distinguishes those, and the status is not on this
+ * for the challenge, and report the eventual success.
+ *
+ * What cannot be rejected for you is a failure that survives the parse for
+ * that `kind`. For `keys_query`, observed: `{}`, an empty body, and a
+ * gateway's own JSON error with no `errcode` all pass, while a proxy's HTML
+ * page, a bare JSON string and `null` are rejected. For `to_device`
+ * everything passes, since nothing is parsed at all. Only the HTTP status
+ * separates the survivors from a real answer, and the status is not on this
  * signature. Branch on `res.ok` before calling.
  *
  * **This call is what stops `id` being handed out again**, not a courtesy

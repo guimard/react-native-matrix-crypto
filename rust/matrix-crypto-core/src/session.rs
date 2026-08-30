@@ -1333,6 +1333,19 @@ impl PendingKind {
     /// the life of the process, which is the bound M2 and M3 both had to
     /// prove for their own kinds.
     ///
+    /// **The caller-visible cost is that a held `signing_keys_upload` id
+    /// does not survive a second `bootstrap_identity` followed by a drain**,
+    /// which matters because that is the id a product holds across a
+    /// user-interactive authentication loop. It survives any number of
+    /// refused attempts, since only success consumes an entry; it does not
+    /// survive being superseded. `signing::bootstrap_identity` says so at
+    /// the call, and the recovery is to drain again and use the newer id
+    /// for the identical body. Reusing one stable id for the life of the
+    /// publication was the alternative and was rejected: it would put a
+    /// second, differently-shaped bounding rule beside this one for a
+    /// single kind, where this rule already covers every kind that needs
+    /// one.
+    ///
     /// `account_keys_query_out_of_band` is the group name that is **not** a
     /// `tag()`, and it must not be: see
     /// [`AccountKeysQueryOutOfBand`](PendingKind::AccountKeysQueryOutOfBand)
@@ -2133,53 +2146,80 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
 ///
 /// [`http_response`] below hardcodes status 200 and **no HTTP status
 /// crosses this boundary** -- the frozen `markRequestSent(id, responseJson)`
-/// signature carries a body and nothing else. Every field of every response
-/// shape this module parses is `#[serde(default)]`, so a homeserver *error*
-/// body deserialises into a perfectly valid, perfectly empty success
-/// response. Reported that way, `/keys/query` becomes "the server answered
-/// and named no identity for this account", which is exactly the fact
-/// `signing.rs`'s ordering gate mints an identity on. A product whose HTTP
-/// layer does the obvious `markRequestSent(id, await res.text())` without
-/// branching on the status therefore mints a second identity on a
-/// rate-limited or 502'd key query, and silently invalidates every
-/// verification anyone has ever made of that account. That was reproduced
-/// end to end, not imagined.
+/// signature carries a body and nothing else. So a homeserver *error* body
+/// arrives looking exactly like an answer, and for `/keys/query` it
+/// deserialises into a perfectly valid, perfectly empty one: every field of
+/// that endpoint's response is `#[serde(default)]`
+/// (`ruma-client-api-0.24.0/src/keys/get_keys.rs`), so an object with none
+/// of them is a success naming no devices and no identities. Reported that
+/// way, `/keys/query` becomes "the server answered and named no identity
+/// for this account", which is exactly the fact `signing.rs`'s ordering gate
+/// mints an identity on. A product whose HTTP layer does the obvious
+/// `markRequestSent(id, await res.text())` without branching on the status
+/// therefore mints a second identity on a rate-limited or 502'd key query,
+/// and silently invalidates every verification anyone has ever made of that
+/// account. That was reproduced end to end, not imagined.
 ///
 /// Two shapes are refused, and both are unambiguous because the Matrix
 /// specification defines them and no success body of any endpoint this
-/// module handles carries either field:
+/// module handles declares either key at the top level:
 ///
 /// * **A standard error response**, which the specification requires to
-///   carry a top-level `errcode` string. Covers every 4xx and 5xx a
-///   conformant homeserver produces.
+///   carry a top-level `errcode`. Covers every 4xx and 5xx a conformant
+///   homeserver produces.
 /// * **A user-interactive authentication challenge**, whose top-level
-///   `flows` array is what makes it a challenge. This is the 401 the
-///   signing-keys upload always gets on its first attempt. Refusing it
-///   matters more than it looks: that endpoint's success response is
-///   `Response {}`, so reporting the challenge would otherwise succeed and
-///   mark an identity *shared* that was never published, undetectably.
+///   `flows` is what makes it a challenge. This is the 401 the signing-keys
+///   upload always gets on its first attempt. Refusing it matters more than
+///   it looks: see the next section for why nothing else would catch it.
 ///
-/// Checked against the seven response shapes this module parses
-/// (`/keys/upload`, `/keys/query`, `/keys/claim`, `/sendToDevice`,
-/// `/keys/signatures/upload`, room message send, and
-/// `/keys/device_signing/upload`): not one declares `errcode` or `flows`,
-/// so neither test can reject a legitimate answer.
+/// Presence is tested, not type. `{"errcode":429}` is not a conformant
+/// error response and `{"flows":{...}}` is not a conformant challenge, but
+/// refusing them costs nothing -- no success shape declares either key, so
+/// there is no legitimate answer to falsely refuse -- and an earlier version
+/// that required a JSON string and a JSON array respectively let both
+/// through. Nested occurrences are untouched, which is the half that has to
+/// be right: `/keys/query`, `/keys/claim` and `/keys/signatures/upload` all
+/// carry a `failures` map whose values are real per-server errors with real
+/// `errcode`s inside them, and those are successes.
 ///
-/// # What this does not do
+/// # What this does not do, and it differs by kind
 ///
-/// **It is not a substitute for the status.** It catches every failure a
-/// spec-conformant homeserver reports, because the specification mandates
-/// `errcode`. It cannot catch a failure that never reaches Matrix's error
-/// format at all: a proxy's HTML 502, a CDN error page, an empty body from
-/// a dropped connection. `{}` returned with a 503 is still
-/// indistinguishable from a successful empty `/keys/query`, and no amount
-/// of body inspection fixes that -- only the status can, and the status is
-/// not on this signature. The obligation is therefore also stated in prose
-/// at [`mark_request_sent`], at `signing::bootstrap_identity` and in the
-/// facade, and the residual gap is recorded rather than papered over.
+/// **It is not a substitute for the status.** What backs it up depends
+/// entirely on whether the endpoint's response type has any fields, because
+/// ruma only emits a body parse when it does -- `BodyFields::Empty => None`
+/// at `ruma-macros-0.19.0/src/api/common.rs:329-331`:
 ///
-/// A body that is not JSON at all is deliberately *not* refused here: it is
-/// passed through to the per-kind parse that has always rejected it, so
+/// * **`keys_upload`, `keys_query`, `keys_claim`, `signature_upload` and
+///   `room_message`** have fields, so [`mark_sent`] really does parse the
+///   body and rejects anything that is not that endpoint's shape. A proxy's
+///   HTML error page or any other non-JSON body is caught there, not here,
+///   and reaches the caller as [`SessionError::MalformedPayload`] all the
+///   same, as are a bare JSON string and `null`. What still passes is a
+///   body serde can read as that shape, which for `/keys/query` is more
+///   than it sounds: every field is optional, so `{}` and any other JSON
+///   object pass, a gateway's `{"error":"Bad Gateway"}` passes, and so does
+///   a JSON *array*, because serde will read a struct from a sequence
+///   positionally. Verified by probe against the vendored crate, not
+///   reasoned about -- the reasoning said an array would be rejected and
+///   the reasoning was wrong.
+/// * **`to_device` and `signing_keys_upload`** have `Response {}` and no
+///   fields, so **no body parse is emitted at all and this function is the
+///   only check that exists**. Observed: `not json at all !!!` and an HTML
+///   502 page are both accepted for a signing-keys upload, and accepting one
+///   marks the identity *shared* when the server holds nothing. This is the
+///   weakest point on the surface and the reason the "report only a 2xx"
+///   obligation is stated in prose at [`mark_request_sent`], at
+///   `signing::bootstrap_identity` and in the facade rather than left to
+///   this check.
+///
+/// An **empty** body is not the same as an absent one and is not caught by
+/// either mechanism: ruma substitutes `b"{}"` for it before parsing ("If
+/// the body is completely empty, pretend it is an empty JSON object
+/// instead", `ruma-macros-0.19.0/src/api/common.rs:365-371`), so a dropped
+/// connection reporting nothing looks like an empty success.
+///
+/// Closing the remainder needs the status, which is not on this signature.
+/// A body that is not JSON at all is deliberately *not* refused here, so
 /// this function can only ever turn a previously accepted body into a
 /// refusal when that body is provably an error or a challenge.
 fn refuse_a_non_response(body: &str) -> Result<(), SessionError> {
@@ -2189,11 +2229,7 @@ fn refuse_a_non_response(body: &str) -> Result<(), SessionError> {
     let Some(object) = parsed.as_object() else {
         return Ok(());
     };
-    if object
-        .get("errcode")
-        .is_some_and(serde_json::Value::is_string)
-        || object.get("flows").is_some_and(serde_json::Value::is_array)
-    {
+    if object.contains_key("errcode") || object.contains_key("flows") {
         return Err(SessionError::MalformedPayload);
     }
     Ok(())
@@ -2367,8 +2403,12 @@ pub async fn mark_request_sent(id: &str, response_json: &str) -> Result<(), Sess
     }
     .ok_or(SessionError::UnknownRequest)?;
 
-    // Before the machine lock is taken, and before any per-kind parse: a
-    // body this rejects would otherwise be *accepted* by every one of them.
+    // Before the machine lock is taken, and before any per-kind parse.
+    // Some of those parses would have rejected an error body on their own
+    // (`keys_upload`, `keys_claim` and `room_message` each have a required
+    // field an error body does not carry); `keys_query` would not, and
+    // `to_device`/`signing_keys_upload` have no body parse to reject
+    // anything at all. See `refuse_a_non_response` for which is which.
     refuse_a_non_response(response_json)?;
 
     let transaction_id: OwnedTransactionId = <&TransactionId>::from(id).to_owned();

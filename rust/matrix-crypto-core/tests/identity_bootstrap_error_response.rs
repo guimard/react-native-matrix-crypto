@@ -26,6 +26,14 @@
 //!    that never was -- undetectably, because nothing afterwards disagrees.
 //!    This one carries no `errcode` at all, so it is caught by a different
 //!    test than act 1 and both need driving.
+//! 3. The same two shapes with the wrong JSON *type*. Neither is a
+//!    conformant response, and an earlier version of the check required
+//!    `errcode` to be a string and `flows` to be an array, so both slipped
+//!    through and lifted the gate. Presence is what is tested now, because
+//!    no success shape of any endpoint here declares either key at all --
+//!    so there is no legitimate body to refuse by mistake. The last
+//!    assertion is that half: a real success carrying a *nested* `errcode`
+//!    must still be accepted.
 //!
 //! Its own process, for the reason `tests/pump_eviction.rs` gives: the
 //! machine registry and the pump's bookkeeping are process-wide.
@@ -51,6 +59,17 @@ const CHALLENGE: &str =
 
 /// A `/keys/query` answer naming no identity for this account.
 const NO_IDENTITY: &str = r#"{"device_keys":{}}"#;
+
+/// Non-conformant shapes of the same two things: a numeric `errcode` and a
+/// `flows` object rather than an array. Both used to pass.
+const ERRCODE_NOT_A_STRING: &str = r#"{"errcode":429,"error":"Too Many Requests"}"#;
+const FLOWS_NOT_AN_ARRAY: &str = r#"{"flows":{"0":{"stages":["m.login.password"]}},"session":"s"}"#;
+
+/// A real `/keys/query` success whose per-server `failures` map carries an
+/// `errcode` **nested** inside it. This must be accepted: refusing it would
+/// break every key query that touches an unreachable server.
+const FAILURE_WITH_NESTED_ERRCODE: &str =
+    r#"{"device_keys":{},"failures":{"example.org":{"errcode":"M_UNKNOWN","error":"boom"}}}"#;
 
 #[test]
 fn a_failed_request_reported_as_sent_neither_lifts_the_gate_nor_publishes() {
@@ -138,6 +157,36 @@ fn a_failed_request_reported_as_sent_neither_lifts_the_gate_nor_publishes() {
         mark_request_sent(&signing_keys.id, "{}")
             .await
             .expect("the same id must still be resolvable after a refused challenge");
+
+        // --- Act 3: presence, not type, and no false refusal ---
+
+        let batch = take_outgoing_requests()
+            .await
+            .expect("draining the pump must not fail");
+        let query = find(&batch, "keys_query", names_the_account);
+
+        assert_eq!(
+            mark_request_sent(&query.id, ERRCODE_NOT_A_STRING).await,
+            Err(SessionError::MalformedPayload),
+            "a numeric `errcode` is still not a response. Testing the JSON type rather than \
+             the key's presence let this through, and it lifts the gate"
+        );
+        assert_eq!(
+            mark_request_sent(&query.id, FLOWS_NOT_AN_ARRAY).await,
+            Err(SessionError::MalformedPayload),
+            "a `flows` object is still a challenge. Same mistake, other key"
+        );
+
+        // The half that has to be right, or the cure is worse than the
+        // disease: `errcode` appears legitimately *inside* a key query's own
+        // `failures` map, once per unreachable server. Only the top level is
+        // inspected.
+        mark_request_sent(&query.id, FAILURE_WITH_NESTED_ERRCODE)
+            .await
+            .expect(
+                "a success whose `failures` map carries a nested `errcode` must be accepted; \
+                 refusing it would break every key query that touches an unreachable server",
+            );
     });
 }
 
