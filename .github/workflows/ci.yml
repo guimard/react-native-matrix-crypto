@@ -607,4 +607,14 @@ jobs:
       # wheel missing rather than silently resolving something else.
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
+      # The second counterparty, for the scanned-code proof. matrix-nio
+      # cannot serve that one: its wheel contains no QR vocabulary and no
+      # cross-signing vocabulary at all, and a code carries cross-signing
+      # keys. The version is read from the module's own `go` directive rather
+      # than pinned here, so what this job builds with is what the module
+      # declares and there is one place to change it.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: rust/matrix-crypto-core/tests/interop/mautrix_party/go.mod
+          cache-dependency-path: rust/matrix-crypto-core/tests/interop/mautrix_party/go.sum
       - run: ./scripts/run-level-two-interop.sh
