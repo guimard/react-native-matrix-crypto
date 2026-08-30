@@ -771,13 +771,18 @@ fn is_finished(stage: FlowStage) -> bool {
     matches!(stage, FlowStage::Done | FlowStage::Cancelled)
 }
 
-/// Drops every flow that has finished, except one whose completion nobody
-/// has collected yet.
+/// Drops every flow that is over, except one whose completion nobody has
+/// collected yet.
 ///
 /// Upstream's own rule, `retain(|_, v| !(v.is_done() || v.is_cancelled()))`
 /// from `VerificationMachine::garbage_collect`, run here at the one moment
 /// this registry can grow rather than on every sync. See the module's own
 /// header for what that costs a caller and why it is bounded.
+///
+/// **Over** is two questions, not one: the stage a product would be told, and
+/// whether the request behind the record has reached a state nothing moves it
+/// out of. [`request_is_over`] is the second, and it says why one question is
+/// not enough.
 ///
 /// # The one exception, and why it does not reopen the growth question
 ///
@@ -808,23 +813,72 @@ fn release_finished(flows: &mut BTreeMap<String, FlowRecord>) {
     let something_will_announce = crate::observer::crypto_observer().is_some();
     flows.retain(|_, record| {
         let stage = stage_of(record);
-        if !is_finished(stage) {
+        if !is_finished(stage) && !request_is_over(record) {
             return true;
         }
         stage == FlowStage::Done && !record.completion_announced && something_will_announce
     });
-    // The one thing a code could have broken here, checked rather than
-    // reasoned about. `stage_of` cannot see a code handle -- see
-    // [`code_of`] -- so if a finished code left its request short of
-    // `Done` or `Cancelled`, every scanned verification a process ever ran
-    // would stay in this map for the life of the process, and the
-    // boundedness this module rests on would be gone. It does not: both
-    // sides exchange `m.key.verification.done`, upstream's
-    // `receive_done` moves the request to `Done`
-    // (`verification/requests.rs:934-940`), and the sweep above sees it.
-    // `a_scanned_flow_is_not_retained_forever` in
-    // `tests/qr_cross_user.rs` is what measures that rather than
-    // asserting it here, because it needs a flow that really finished.
+}
+
+/// Whether the request behind a record has reached a state nothing moves it
+/// out of.
+///
+/// # Why the stage is not enough on its own
+///
+/// The stage is what a *product* is told, and it is read off whichever
+/// handle the flow became: [`stage_of`] consults the comparison, then the
+/// code, and only then the request. That is right for a caller and wrong for
+/// eviction, because **upstream does not advance the two together.** One
+/// `m.key.verification.done` reaches both
+/// (`verification/machine.rs:501-527`), but
+/// `VerificationRequest::receive_done` moves `Transitioned` to `Done`
+/// unconditionally (`verification/requests.rs:934-940`) while
+/// `QrVerification::receive_done` moves only a code that is `Confirmed` or
+/// `Reciprocated`, and leaves a `Created` or `Scanned` one exactly where it
+/// is (`verification/qrcode.rs:392-440`). `Sas` has the same shape.
+///
+/// So a peer that scans this device's code and then declares itself done,
+/// without waiting for the person here to answer, leaves the request
+/// finished and the code at `Scanned` for ever. Reading the stage alone,
+/// that record is `CodeScanned`, is never finished, and is never swept: one
+/// entry per such flow, for the life of the process, which is exactly the
+/// unbounded growth this whole sweep exists to prevent.
+///
+/// **This is not a hazard codes invented.** The same hole was open for a
+/// comparison whose peer sent `done` before the strings were confirmed, and
+/// it was open before this milestone; reading the code handle is what made
+/// it reachable by an ordinary flow shape and therefore what made it worth
+/// finding. Asking both questions closes it for both shapes.
+///
+/// # What that costs a caller, which is nothing
+///
+/// A record retired this way is not reported differently. It is dropped from
+/// the registry, and the next call naming it rebuilds from upstream, finds a
+/// request that is over, and answers [`MachineError::UnknownFlow`] -- which
+/// is what the caller was already told about any flow that had finished.
+/// Nothing here reports `Done` for a flow that did not finish: the stage a
+/// product reads is still the code's own, right up to the sweep.
+///
+/// # What measures it
+///
+/// Two assertions, both in
+/// `another_user_verifies_by_scanning_a_code_this_library_showed` in
+/// `tests/qr_cross_user.rs`, because both need a flow that really ran:
+/// *"registering another flow must sweep the one that finished by
+/// scanning"* for the ordinary shape, and *"a flow whose request is over
+/// must be swept even though its code never finished"* for this one. The
+/// second fails without the second question above, reporting `CodeScanned`
+/// where it expects no flow at all.
+///
+/// The comparison side is measured by
+/// `a_finished_flow_is_not_retained_forever` in `tests/sas_two_party.rs`,
+/// which counts what the library still answers for after one cycle against
+/// after three.
+fn request_is_over(record: &FlowRecord) -> bool {
+    matches!(
+        record.request.as_ref().map(VerificationRequest::state),
+        Some(VerificationRequestState::Done | VerificationRequestState::Cancelled(_))
+    )
 }
 
 fn cached(flow_id: &str) -> Option<Handles> {
