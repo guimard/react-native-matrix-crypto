@@ -347,7 +347,8 @@ impl From<MachineError> for SessionError {
             | MachineError::PrivateKeysNotHeld
             | MachineError::RecoveryNotSetUp
             | MachineError::RecoveryKeyIncorrect
-            | MachineError::RecoveryDataMalformed => SessionError::Failed,
+            | MachineError::RecoveryDataMalformed
+            | MachineError::RecoveryAlreadyExists => SessionError::Failed,
         }
     }
 }

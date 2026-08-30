@@ -198,7 +198,8 @@ extern "C" {
         RustBuffer config
     );
     /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_func_create_recovery(
-        RustBuffer passphrase
+        RustBuffer passphrase, 
+        RustBuffer account_data
     );
     /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_func_decrypt_event(
         RustBuffer scope, 
@@ -2956,7 +2957,7 @@ NativeMatrixCrypto::NativeMatrixCrypto(
     props["ubrn_uniffi_matrix_crypto_ffi_fn_func_create_recovery"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_fn_func_create_recovery"),
-        1,
+        2,
         [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_uniffi_matrix_crypto_ffi_fn_func_create_recovery(rt, thisVal, args, count);
         }
@@ -4078,7 +4079,7 @@ jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_create_crypt
         return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker, value);
 }
 jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_create_recovery(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
-        auto value = uniffi_matrix_crypto_ffi_fn_func_create_recovery(uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0])
+        auto value = uniffi_matrix_crypto_ffi_fn_func_create_recovery(uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1])
         );
 
         

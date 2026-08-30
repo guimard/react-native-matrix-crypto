@@ -1757,10 +1757,17 @@ export interface RecoverySetup {
   /**
    * The account data to write, in the order to write it.
    *
-   * Five events: the key description, the pointer that makes it this
-   * account's default key, and one per private signing key. The pointer is
-   * second on purpose, so a product interrupted partway through has never
-   * advertised a key description it did not manage to write.
+   * Five events: the key description, one per private signing key, and the
+   * pointer that makes the new key this account's default.
+   *
+   * **The pointer is last, and the order is load-bearing.** Everything
+   * before it adds to the account without changing what any client
+   * currently resolves, so a product interrupted partway through has
+   * written a key description and some ciphertexts that nothing points at,
+   * and whatever recovery the account had before still works. Writing the
+   * pointer earlier would repoint the account at a key whose secrets do not
+   * exist yet, which is a window in which neither the old recovery nor the
+   * new one opens anything.
    */
   accountData: AccountDataEntry[]
 }
@@ -1779,6 +1786,12 @@ export interface RecoverySetup {
  * the passphrase and is the same identity it was before, and nobody else
  * has to do anything.
  *
+ * `accountData` is the account's **existing** global account data, read
+ * back from your homeserver the same way {@link recoverIdentity} takes it.
+ * It is required rather than optional because this call will not write over
+ * a recovery the account already has, and passing `[]` is you saying there
+ * is none.
+ *
  * # Say what this costs, at the moment you ask for the passphrase
  *
  * `recoveryKey` comes back exactly once and is never stored anywhere. If
@@ -1788,22 +1801,46 @@ export interface RecoverySetup {
  * the user taps past is how that ends in a support request nobody can
  * answer. Make them record it.
  *
+ * # The passphrase is the weak half, and this library imposes no rule on it
+ *
+ * The encrypted keys live on your homeserver, so the passphrase is what
+ * stands between anyone who can read this account's account data and the
+ * account's private signing keys. `createRecovery('')` is accepted, and so
+ * is any other passphrase: **no minimum length, no strength estimate and no
+ * refusal.** That is a decision rather than an omission. Any threshold this
+ * library picked would be arbitrary, would be wrong for somebody, and would
+ * sit in the one place your product cannot adjust it. You know your users
+ * and your threat model; choose a policy and apply it before calling.
+ *
+ * The recovery key is not affected by any of that. It is thirty-two random
+ * bytes whatever the passphrase is, so a user who keeps it is protected
+ * even if the passphrase is guessable, which is the other reason to make
+ * them record it.
+ *
  * # This is Matrix's own format, not one this library invented
  *
  * The account data written here is secret storage as the specification
  * defines it, the `m.secret_storage.v1.aes-hmac-sha2` scheme, produced by
  * `matrix-sdk-crypto`'s own implementation of it. Another Matrix client
- * signed into the same account reads these same five events with the same
+ * signed into the same account reads the same five events with the same
  * passphrase or recovery key, and a recovery another client wrote is one
  * {@link recoverIdentity} restores. That interoperability is the reason
  * this call exists and {@link exportSecrets} does not.
+ *
+ * It is also why the ciphertexts are **merged** rather than replaced. Each
+ * `m.cross_signing.*` event holds a map from key id to ciphertext so that
+ * more than one key can open the same secret, and this call adds its entry
+ * to whatever you handed it instead of writing a map of one. Another
+ * client's entry under its own key id is not this library's to remove.
  *
  * # Nothing here reaches the network
  *
  * This library performs no request, here or anywhere. On success, `PUT`
  * each entry of `accountData` to
  * `/_matrix/client/v3/user/{userId}/account_data/{eventType}` with the
- * entry's `content` as the body, **in the order they are handed back**.
+ * entry's `content` as the body, **in the order they are handed back**. The
+ * default-key pointer is last, and sending it out of order gives up the
+ * property described at {@link RecoverySetup.accountData}.
  *
  * Nothing is queued through {@link takeOutgoingRequests} for this, and that
  * is deliberate: the outbound pump is a body to send and a report that it
@@ -1816,6 +1853,36 @@ export interface RecoverySetup {
  *
  * # Refusals
  *
+ * `'recovery_already_exists'` means `accountData` names a recovery already.
+ * **This call will not write over one.** It cannot tell your two callers
+ * apart: a user replacing their own passphrase, where the old recovery key
+ * is meant to stop working, and a product writing what it believes is a
+ * first recovery for a user who already set one up in another Matrix
+ * client, where the key that stops working is one somebody wrote down and
+ * was told to keep forever. Both arrive here as the same call.
+ *
+ * To replace a recovery deliberately, clear the account's existing
+ * `'m.secret_storage.default_key'` and its `'m.secret_storage.key.<id>'`
+ * first (`PUT {}` to each, which is how the client-server API clears
+ * account data), read the account data again, and call this. That is the
+ * same two endpoints you are already using, and it puts the destructive
+ * step in your own code where a review can see it.
+ *
+ * **This call believes the account data you hand it.** Passing `[]` asserts
+ * the account has no recovery and the refusal believes you, exactly as
+ * {@link bootstrapCrossSigning}'s gate believes a key query you reported as
+ * answered. That is unavoidable in a library that performs no request, and
+ * it is said rather than left to be discovered: what the refusal buys is
+ * that you have to have *looked* before anything is destroyed.
+ *
+ * `'account_keys_not_fetched'` means this process has not yet asked the
+ * server about this account. The private keys this device holds may belong
+ * to an identity the account has already replaced, and a recovery written
+ * for those opens perfectly and restores an identity that no longer exists,
+ * with nothing said at the time. The call queues that key query as it
+ * refuses, so the remedy is the ordinary loop: drain, send, report sent,
+ * call again.
+ *
  * `'private_keys_not_held'` means this device does not hold all three
  * private signing keys, so there is nothing to write. Read
  * {@link getIdentityStatus}: an account with no identity needs
@@ -1824,10 +1891,17 @@ export interface RecoverySetup {
  * an alternative, because account data that opens with the right passphrase
  * and restores half an identity is worse than none.
  */
-export async function createRecovery(passphrase: string): Promise<RecoverySetup> {
+export async function createRecovery(
+  passphrase: string,
+  accountData: AccountDataEntry[],
+): Promise<RecoverySetup> {
+  const existing = accountData.map((entry) => ({
+    eventType: entry.eventType,
+    content: stringifyOrMalformed(entry.content),
+  }))
   let setup
   try {
-    setup = await nativeCreateRecovery(passphrase)
+    setup = await nativeCreateRecovery(passphrase, existing)
   } catch (e) {
     throw toCryptoError(e)
   }
@@ -1838,10 +1912,10 @@ export async function createRecovery(passphrase: string): Promise<RecoverySetup>
   // has the same shape for the same reason.
   //
   // Destructured, not returned directly. See encryptEvent above.
-  const { recoveryKey, accountData } = setup
+  const { recoveryKey, accountData: written } = setup
   return {
     recoveryKey,
-    accountData: accountData.map((entry) => ({
+    accountData: written.map((entry) => ({
       eventType: entry.eventType,
       // Parsed here rather than handed over as a string, so a product
       // sends an object to an endpoint that takes an object.
@@ -1864,8 +1938,16 @@ export async function createRecovery(passphrase: string): Promise<RecoverySetup>
  * and `'m.cross_signing.user_signing'`. Fetch them with
  * `GET /_matrix/client/v3/user/{userId}/account_data/{eventType}`, or take
  * them out of a `/sync` response's global account data, which carries all
- * of them. Entries this call does not need are ignored, so handing over
- * everything you have is fine and is the simpler thing to do.
+ * of them. Entries this call does not need are ignored, so passing more
+ * than the five is fine.
+ *
+ * **Pass one reading of the account, not two joined together.** A
+ * homeserver never serves two events of one global type, so where a
+ * duplicate can come from is a caller concatenating an older snapshot with
+ * a newer one, and the first of the two wins here. Do that across a
+ * `createRecovery` and the older pointer is the one followed, which reports
+ * `'recovery_key_incorrect'` for the secret your user actually has: a
+ * refusal no amount of retyping resolves.
  *
  * **The key description's event type is not known in advance**, because it
  * ends in the key's own id. Read `'m.secret_storage.default_key'` first and
@@ -1891,7 +1973,12 @@ export async function createRecovery(passphrase: string): Promise<RecoverySetup>
  * # Refusals, and the one distinction your error message needs
  *
  * `'recovery_key_incorrect'` means the secret is wrong and the stored
- * recovery is intact. Ask again.
+ * recovery is intact. Ask again. Both halves of `secret` report it: a
+ * mistyped passphrase, and a recovery key with a character wrong, whatever
+ * the stored key description does or does not carry. That second case is
+ * the one worth naming, because a recovery written by another client need
+ * not describe a passphrase at all, and this refusal is what a user with a
+ * typo must be shown rather than the one below.
  *
  * `'recovery_data_malformed'` means no secret will ever open it. Stop
  * asking, and set recovery up again from a device that still holds the

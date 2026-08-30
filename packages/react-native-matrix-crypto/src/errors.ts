@@ -163,6 +163,13 @@ export type CryptoErrorKind =
   // user whose recovery really is unreadable retypes a correct passphrase
   // forever.
   | 'recovery_data_malformed'
+  // `createRecovery` was handed account data that already names a recovery.
+  // It will not write over one, because it cannot tell a user replacing
+  // their own passphrase from a product about to invalidate the recovery key
+  // another Matrix client gave this user and told them to keep. See that
+  // call for the remedy, which is a deliberate clear-then-write rather than
+  // a retry.
+  | 'recovery_already_exists'
   | 'not_implemented'
   | 'not_initialised'
   | 'already_initialised'
@@ -322,6 +329,11 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   ['RecoveryNotSetUp', 'recovery_not_set_up'],
   ['RecoveryKeyIncorrect', 'recovery_key_incorrect'],
   ['RecoveryDataMalformed', 'recovery_data_malformed'],
+  // The fifth, added when `createRecovery` stopped writing over a recovery
+  // the account already had. Without this entry a product would be told
+  // 'unknown' on the one refusal whose whole purpose is to make it stop and
+  // look.
+  ['RecoveryAlreadyExists', 'recovery_already_exists'],
 ])
 
 // 'session_refused' is deliberately not here: see its own doc comment on

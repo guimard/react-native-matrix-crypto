@@ -13,7 +13,16 @@
 //! this sequence exists. The same reason
 //! `tests/self_verification_unasked.rs` is its own file.
 //!
-//! # A fresh machine cannot test the third act, and this file says why
+//! # Why `PrivateKeysNotHeld` is not the first thing asserted
+//!
+//! It was, and it moved. `create_recovery` now carries the same
+//! `account_keys_fetched` gate `bootstrap_identity` and `recover_identity`
+//! do, and that gate comes first, so a fresh machine that has asked nothing
+//! meets it rather than the one about the keys. Holding no private keys is
+//! still what `create_recovery` reports once the query has been answered,
+//! which is where act four asserts it.
+//!
+//! # A fresh machine cannot test the second act, and this file says why
 //!
 //! `recover_identity` refuses until this process has asked the server about
 //! this account, and that refusal is a refusal rather than a deadlock only
@@ -26,7 +35,7 @@
 //! query, reported the branch covered, and went on passing after the two
 //! lines that queue it were removed.
 //!
-//! So the third act constructs the case the mechanism exists for, using
+//! So the second act constructs the case the mechanism exists for, using
 //! nothing but the shipped surface: share a key with somebody else first.
 //! That marks another user as needing a key query, upstream's own-account
 //! fallback then never fires, and the only possible source of a query
@@ -35,16 +44,19 @@
 //! mechanics at length; this file exercises the other call that depends on
 //! them.
 //!
-//! # The account data is empty everywhere below, on purpose
+//! # The account data is empty in most of what follows, on purpose
 //!
-//! If any refusal here were ever replaced by one about the *argument*, an
-//! empty list is exactly what `RecoveryNotSetUp` reports, and none of these
-//! assertions accepts it. So the order these checks run in is asserted by
-//! the assertions themselves rather than by a comment.
+//! If a refusal about the machine were ever replaced by one about the
+//! *argument*, an empty list is exactly what `RecoveryNotSetUp` reports, and
+//! none of these assertions accepts it. So the order these checks run in is
+//! asserted by the assertions themselves rather than by a comment. The one
+//! act that does pass account data is act five, which is about the opposite
+//! ordering and says so.
 
 use matrix_crypto_core::{
     create_machine, create_recovery, in_runtime, mark_request_sent, recover_identity,
-    share_scope_key, take_outgoing_requests, MachineConfig, MachineError, OutgoingRequest,
+    share_scope_key, take_outgoing_requests, AccountDataEntry, MachineConfig, MachineError,
+    OutgoingRequest,
 };
 
 const ACCOUNT: &str = "@alice:example.org";
@@ -69,7 +81,7 @@ const PASSPHRASE: &str = "recovery-test-passphrase";
 
 /// One `#[test]` fn, because the machine registry and the pump are
 /// process-wide and an integration test has no access to the `#[cfg(test)]`
-/// reset helpers. The four acts are one sequence and have to be.
+/// reset helpers. The five acts are one sequence and have to be.
 #[test]
 fn a_recovery_refuses_before_it_can_know_what_identity_this_account_has() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -85,19 +97,7 @@ fn a_recovery_refuses_before_it_can_know_what_identity_this_account_has() {
         .await
         .expect("the library's machine must be creatable");
 
-        // ---- Act one: nothing to write ---------------------------------
-        //
-        // A fresh machine holds no private signing keys, so there is no
-        // copy of them to put anywhere.
-        assert_eq!(
-            create_recovery(PASSPHRASE).await,
-            Err(MachineError::PrivateKeysNotHeld),
-            "a device that does not hold the account's private signing keys \
-             cannot write them into server-side storage, and must say so \
-             rather than write a recovery that opens onto nothing"
-        );
-
-        // ---- Act two: nothing to restore into, and nobody has asked ----
+        // ---- Act one: nothing to restore into, and nobody has asked ----
         //
         // Give upstream something else to ask about first, so its
         // own-account fallback stops firing. This delivers nothing, since
@@ -133,7 +133,7 @@ fn a_recovery_refuses_before_it_can_know_what_identity_this_account_has() {
              that looked at its argument first would answer `RecoveryNotSetUp`"
         );
 
-        // ---- Act three: the refusal queued the question ----------------
+        // ---- Act two: the refusal queued the question ------------------
         //
         // Nothing else can have put an account key query in this batch.
         let after = take_outgoing_requests()
@@ -157,7 +157,7 @@ fn a_recovery_refuses_before_it_can_know_what_identity_this_account_has() {
             .await
             .expect("answering the account key query must not fail");
 
-        // ---- Act four: asked, and the answer named no identity ---------
+        // ---- Act three: asked, and the answer named no identity --------
         //
         // A different refusal with a different remedy: create an identity,
         // do not ask again.
@@ -167,6 +167,40 @@ fn a_recovery_refuses_before_it_can_know_what_identity_this_account_has() {
             "an account the server says has no signing identity has nothing \
              for a recovery to restore into, and that is not the same answer \
              as `nobody has asked`"
+        );
+
+        // ---- Act four: nothing to write --------------------------------
+        //
+        // Reached only now, because the gate above had to be lifted first.
+        // This machine holds no private signing keys, so there is no copy
+        // of them to put anywhere.
+        assert_eq!(
+            create_recovery(PASSPHRASE, &[]).await.err(),
+            Some(MachineError::PrivateKeysNotHeld),
+            "a device that does not hold the account's private signing keys \
+             cannot write them into server-side storage, and must say so \
+             rather than write a recovery that opens onto nothing"
+        );
+
+        // ---- Act five: the argument is checked before the machine ------
+        //
+        // The mirror of the section above, and the one act that passes
+        // account data. This machine holds no private keys, so a
+        // `create_recovery` that looked at the machine first would answer
+        // `PrivateKeysNotHeld` here. It answers about the argument instead,
+        // because the refusal that protects something a user already has
+        // should arrive whatever else is true of this device.
+        let existing = [AccountDataEntry {
+            event_type: "m.secret_storage.default_key".to_string(),
+            content: r#"{"key":"AKEYIDFROMANOTHERCLIENT"}"#.to_string(),
+        }];
+        assert_eq!(
+            create_recovery(PASSPHRASE, &existing).await.err(),
+            Some(MachineError::RecoveryAlreadyExists),
+            "account data naming a recovery must be refused before anything \
+             about this device is considered, or a product on a device that \
+             happens to hold no keys is told the wrong thing about an account \
+             whose recovery it was about to invalidate"
         );
     }));
 }

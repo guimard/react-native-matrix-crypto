@@ -332,4 +332,13 @@ fn every_machine_error_maps_to_the_matching_ffi_variant() {
          no secret opens this one, and reporting it as a wrong passphrase is \
          the fold both variants exist to prevent"
     );
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::RecoveryAlreadyExists),
+            MachineFfiError::RecoveryAlreadyExists
+        ),
+        "MachineError::RecoveryAlreadyExists must not arrive as another kind -- \
+         a product told `RecoveryNotSetUp` instead would conclude the account \
+         has no recovery and write one over the recovery it does have"
+    );
 }
