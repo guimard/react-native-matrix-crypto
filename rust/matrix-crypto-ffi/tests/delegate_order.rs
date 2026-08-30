@@ -55,16 +55,27 @@
 //! no same-typed argument pair to transpose in the first place; `probe` and
 //! `probe_with_observer` likewise (their arguments are `String` and
 //! `Vec<u8>`); `accept_verification`, `start_verification_comparison`,
-//! `verification_stage`, `verification_material`, `confirm_verification` and
-//! `cancel_verification` each take a single `String` and so have nothing to
-//! transpose either; and `create_crypto_machine`/`open_crypto_store`
+//! `verification_stage`, `verification_material`, `confirm_verification`,
+//! `cancel_verification`, `verification_code` and `confirm_scan` each take a
+//! single `String` and so have nothing to transpose either;
+//! `offer_scanning` takes a single `bool` and `submit_scanned_code` takes a
+//! `String` and a `Vec<u8>`, which no compiler could let anyone transpose
+//! -- the hazard on that one is the bridge dropping or reshaping the bytes,
+//! which `exports.rs` and `value_mapping.rs` cover between them; and
+//! `create_crypto_machine`/`open_crypto_store`
 //! delegate to two core functions that are deliberately the same operation,
 //! so swapping *them* changes nothing observable. A **mis-mapped error
 //! variant** in `From<SessionError>`/`From<MachineError>` is a different
 //! hazard from argument order and is covered by `error_mapping.rs`; the
-//! **value** mirrors those verification calls return -- two fieldless enums
-//! and a three-decimal record -- carry the same "two values, one type"
-//! hazard and are covered by `value_mapping.rs`.
+//! **value** mirrors those verification calls return -- two fieldless enums,
+//! a three-decimal record, and a code's width beside its grid of squares --
+//! carry the same "two values, one type" hazard and are covered by
+//! `value_mapping.rs`.
+//!
+//! This list is the file's own claim about its coverage, and it went stale
+//! once already, silently, which is what the "every exported delegate"
+//! paragraph above records. Four exports arrived with verification by a
+//! scannable code and appeared in neither half of it until this sweep.
 
 use matrix_crypto_ffi::{
     create_crypto_machine, decrypt_event, device_identity_keys, device_statuses, encrypt_event,

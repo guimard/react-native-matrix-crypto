@@ -8,8 +8,8 @@
  * imports below are the published entry point, the same specifier the app
  * itself imports.
  *
- * THE DEFECT THIS EXISTS FOR. Step 6's card said calling a named function
- * rejects with `not_implemented`. That was true when it was written and
+ * THE DEFECT THIS EXISTS FOR. The `notYet` card said calling a named
+ * function rejects with `not_implemented`. That was true when it was written and
  * stopped being true the moment the library implemented that function, and
  * because the claim lived in a screen with no test runner behind it, the
  * card went on reporting "unexpected" on every launch of a library that was
@@ -20,6 +20,15 @@
  * implementation detail of a library under active development WILL rot; the
  * only question is whether it rots in CI or on a developer's phone. These
  * tests put it in CI.
+ *
+ * THIS FILE NAMED THE CARD BY ITS POSITION, "step 6", and the walkthrough
+ * moved it. It is the ninth card's eighth title today, `notYet`, and the
+ * package README already said 8 while every name in here said 6, so a
+ * reader following one to the other landed on a contradiction. The card is
+ * named by its id from here on, because an id does not renumber when a step
+ * is inserted above it and a position does. Nothing failed when it did:
+ * `NOT_YET_CARD` is looked up by id and always found the right card, so the
+ * only thing that was ever wrong was what the test said it was doing.
  */
 import { describe, expect, it } from 'vitest'
 import * as lib from 'react-native-matrix-crypto'
@@ -63,7 +72,7 @@ async function rejectsNotImplemented(fn: (...args: unknown[]) => unknown): Promi
   }
 }
 
-describe('step 6 claims a call rejects, so the call must reject', () => {
+describe('the notYet card claims a call rejects, so the call must reject', () => {
   it('reports ok when the real facade is asked, with nothing mocked', async () => {
     // The defect, exactly. With the card pointing at `getDeviceStatuses`
     // this is the assertion that fails, and it fails with the same words
@@ -88,7 +97,7 @@ describe('step 6 claims a call rejects, so the call must reject', () => {
 })
 
 describe('the library surface the cards describe', () => {
-  it('still refuses exactly the functions step 6 is allowed to point at', async () => {
+  it('still refuses exactly the functions the notYet card is allowed to point at', async () => {
     const found: string[] = []
     for (const [name, value] of Object.entries(lib)) {
       if (typeof value !== 'function') continue

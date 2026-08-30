@@ -237,7 +237,16 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
   }
 })
 
-describe('facade before implementation', () => {
+/**
+ * The calls that reject in JavaScript rather than reaching native code.
+ *
+ * This describe was called "facade before implementation", which said the
+ * implementation was coming. It is not: `exportSecrets` and `importSecrets`
+ * are refused on purpose, because the byte array they would return has no
+ * interoperable form, and their own doc comments say so. `restoreCryptoMachine`
+ * is the only one of the three still waiting on anything.
+ */
+describe('the calls that reject in JavaScript rather than reaching native code', () => {
   it('rejects exportSecrets with a typed not_implemented error rather than undefined', async () => {
     await expect(exportSecrets('passphrase')).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'not_implemented',
@@ -1711,7 +1720,14 @@ describe('confirmVerification', () => {
 })
 
 /**
- * The two conditions the core folds into one `WrongStage`, told apart again.
+ * The two conditions the core folds into one `WrongStage` **on this call**,
+ * told apart again.
+ *
+ * `WrongStage` is folded elsewhere too, and this describe covers only the
+ * fold here: `confirmScan` folds "nobody has scanned yet" against "this
+ * flow is over" into the same kind, and nothing unfolds that one, because
+ * the stage cannot yet tell them apart. Named so this block is not read as
+ * the account of every fold on the surface.
  *
  * The core's own `begin_comparison` documents the fold and says why it is
  * deliberate -- both mean *this call* has nothing to do -- and points at
@@ -1720,7 +1736,7 @@ describe('confirmVerification', () => {
  * started it, wait for the string" and "this is over, ask again" call for
  * opposite behaviour.
  */
-describe('startVerificationComparison, and the conditions its one native error folds', () => {
+describe('startVerificationComparison, and the two conditions its own native error folds', () => {
   it('starts the comparison and forwards the flow id when nothing is wrong', async () => {
     await expect(startVerificationComparison(FLOW)).resolves.toBeUndefined()
     expect(vi.mocked(nativeStartVerificationComparison).mock.calls.at(-1)?.[0]).toBe(FLOW)
@@ -1805,9 +1821,10 @@ describe('startVerificationComparison, and the conditions its one native error f
 })
 
 /**
- * The whole arc, driven through the public surface in the order the
- * documentation publishes, against a fake that models the one ordering rule
- * this bridge cannot enforce for the caller.
+ * The whole arc of a verification **by short string**, driven through the
+ * public surface in the order the documentation publishes, against a fake
+ * that models the one ordering rule this bridge cannot enforce for the
+ * caller.
  *
  * **What this proves and what it does not.** The fake performs no
  * cryptography: the comparison it "reaches" is a constant. What it does
@@ -1818,8 +1835,16 @@ describe('startVerificationComparison, and the conditions its one native error f
  * one needs, and that skipping the pump is reported rather than hung on.
  * Whether the string two devices reach is the *same* string is the Rust
  * two-party test's claim, not this one's.
+ *
+ * **This was called "a verification driven end to end" and there are two
+ * kinds now.** A flow can also finish by one device scanning the other's
+ * code, and nothing in this package drives that arc end to end: the calls
+ * are covered one at a time above, and the composed arc is driven in the
+ * core, in `rust/matrix-crypto-core/tests/qr_cross_user.rs` and its two
+ * self-mode siblings. The gap is named rather than papered over by a name
+ * that claims both.
  */
-describe('a verification driven end to end through the public surface', () => {
+describe('a verification by short string, driven end to end through the public surface', () => {
   interface FakeFlow {
     stage: NativeVerificationStage
     keyReported: boolean

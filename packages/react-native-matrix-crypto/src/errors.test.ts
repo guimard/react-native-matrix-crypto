@@ -284,15 +284,23 @@ describe('toCryptoError against the real UniFFI error shape', () => {
 })
 
 /**
- * The verification kinds (Task 3).
+ * The verification kinds.
  *
- * `MachineFfiError` grew three fieldless variants for verification flows,
- * and the Rust side proves the right *variant* is produced for each
+ * `MachineFfiError` grew three fieldless variants when verification by a
+ * short string landed, and six more when verification by a scannable code
+ * did. The Rust side proves the right *variant* is produced for each
  * condition. Nothing on the Rust side can see whether this map has an entry
  * for it: without one, a real `MachineFfiError.MaterialNotReady` arrives as
  * kind `'unknown'` with the message "crypto error: unknown", every Rust
  * test still green. That is the whole gap these tests close, and it is the
  * same gap the `StoreCorrupt` entry above sat in for four tasks.
+ *
+ * **This heading said "(Task 3)" and named three variants, and the block
+ * under it covered four of the ten that exist now.** The six a scannable
+ * code brought are covered by the distinctness test at the end of the
+ * block, which is where their kinds would collapse together invisibly, and
+ * by the walk over every generated variant further down. A milestone number
+ * in a heading is what let the count go stale, so there is not one any more.
  *
  * Fieldless variants, so `.message` is exactly "<Type>.<Variant>" with no
  * suffix -- the shape `NotInitialised` above documents in full.
@@ -328,22 +336,39 @@ describe('toCryptoError for the verification kinds', () => {
   })
 
   /**
-   * All four verification-related machine variants land on four different
-   * kinds. Asserted as a set rather than one by one: each of the four asks
-   * a product to do something different -- pump and try again, wait for a
-   * stage, stop holding this identifier, or query that user's devices --
-   * and any two of them collapsing onto one kind is invisible to a test
-   * that only checks each in isolation.
+   * Every verification-related machine variant lands on a kind of its own.
+   * Asserted as a set rather than one by one: each asks a product to do
+   * something different -- pump and try again, wait for a stage, stop
+   * holding this identifier, query that user's devices, turn codes on, ask
+   * the other person to set up an identity, point the camera somewhere
+   * else, or refuse and start over -- and any two of them collapsing onto
+   * one kind is invisible to a test that only checks each in isolation.
+   *
+   * **This said "the four" and listed four while ten existed.** Six
+   * arrived with verification by a scannable code, and the name went on
+   * asserting exhaustiveness that the body had stopped having. The four
+   * code-refusal kinds are the ones this most needed to cover: they are
+   * four sentences a product shows a person about the same failed scan,
+   * and a fold between any two of them is exactly what the design's
+   * section 4 forbids and what nothing else on this side would catch.
    */
-  it('keeps the four verification-related machine variants on four distinct kinds', () => {
-    const kinds = [
+  it('keeps every verification-related machine variant on a kind of its own', () => {
+    const variants = [
       'MachineFfiError.UnknownFlow',
       'MachineFfiError.WrongStage',
       'MachineFfiError.MaterialNotReady',
       'MachineFfiError.UnknownDevice',
-    ].map((message) => toCryptoError(new Error(message)).kind)
+      'MachineFfiError.IdentityNotKnown',
+      'MachineFfiError.PeerIdentityNotKnown',
+      'MachineFfiError.CodeNotOffered',
+      'MachineFfiError.ScannedCodeRefused',
+      'MachineFfiError.ScannedCodeUnrecognised',
+      'MachineFfiError.ScannedCodeMalformed',
+      'MachineFfiError.ScannedCodeForAnotherFlow',
+    ]
+    const kinds = variants.map((message) => toCryptoError(new Error(message)).kind)
 
-    expect(new Set(kinds).size).toBe(4)
+    expect(new Set(kinds).size).toBe(variants.length)
     expect(kinds).not.toContain('unknown')
   })
 

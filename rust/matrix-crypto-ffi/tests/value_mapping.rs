@@ -1,10 +1,13 @@
 //! Which core value becomes which FFI value.
 //!
-//! `error_mapping.rs`'s hazard, one file over and with two more shapes of
-//! it. This crate mirrors five more core types by hand -- `FlowStage`,
-//! `TrustState`, `SasMaterial`, `DeviceStatus` and `IdentityStatus` -- and
-//! every one of them has the property that a wrong arm compiles, passes
-//! `clippy -D warnings`, and passes every other test in this repository:
+//! `error_mapping.rs`'s hazard, one file over and with three more shapes of
+//! it. This crate mirrors core types by hand -- `FlowStage`, `TrustState`,
+//! `SasMaterial`, `DeviceStatus`, `IdentityStatus`, `ScannableCode`,
+//! `Envelope`, `SenderVerification`, `RecoverySetup`, `AccountDataEntry`
+//! and `CryptoSignal` -- and every one of them has the property that a
+//! wrong arm compiles, passes `clippy -D warnings`, and passes every other
+//! test in this repository. This paragraph named five and the file has
+//! exercised more than five for two milestones:
 //!
 //! * **Two fieldless enums.** Every variant of `FlowStage` is
 //!   interchangeable with every other as far as the compiler is concerned,
@@ -25,6 +28,15 @@
 //!   those three exist precisely to be told apart, and reporting them the
 //!   wrong way round tells a product it may publish an identity over one the
 //!   account already has.
+//!
+//! * **A boolean grid whose polarity is invisible.** `ScannableCode`
+//!   crosses as a width and `width * width` booleans, `true` for a dark
+//!   square. Reversing every one of them compiles, and produces the
+//!   photographic negative of a valid code: a product draws it, a camera
+//!   reads nothing, and no error is returned to anybody. Reversing the row
+//!   order, or crossing the width off by one, is the same class. Nothing
+//!   in the core's own tests can see any of it, because none of them
+//!   crosses this boundary.
 //!
 //! No machine, no store and no runtime: every `From` impl under test is
 //! public, every core type is public and constructible from outside the

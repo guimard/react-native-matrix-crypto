@@ -2339,16 +2339,61 @@ fn announce(signals: Vec<CryptoSignal>) {
 mod tests {
     use super::*;
 
-    /// Every public error this module can produce is a `MachineError`
-    /// variant appended after the five the enum shipped with, and the FFI
-    /// mirror's `From` impl is exhaustive, so this only has to pin the
-    /// mapping this module relies on: three distinct conditions, three
-    /// distinct errors, none of them collapsed into another.
+    /// Every refusal this module can produce is its own `MachineError`
+    /// variant, none of them folded onto another.
+    ///
+    /// **This said "three distinct conditions" and pinned three.** Three
+    /// was the whole of what this module refused with when it was written.
+    /// It refuses with fourteen now: `UnknownDevice` and
+    /// `AccountKeysNotFetched` arrived with self-verification, and
+    /// verifying by a scannable code brought eight more. The name and the
+    /// list went on agreeing with each other while agreeing with nothing
+    /// else. Extended rather than replaced, and pairwise over a list, so
+    /// that a variant added later and forgotten here is the only way it
+    /// goes stale again. `NotInitialised` and `Store` are left out
+    /// deliberately: they say the machine is not there or the store failed,
+    /// which is true of every call in this crate and is not a condition of
+    /// a flow.
+    ///
+    /// **What this defends, said plainly, because it is less than it
+    /// looks.** `MachineError` derives `PartialEq`, so distinctness is
+    /// nearly free and a fold has to be written by hand to break it. What
+    /// it catches is exactly that: a hand-written `PartialEq`, or a variant
+    /// quietly re-pointed at another. The heavier work is elsewhere and
+    /// stays there: `matrix-crypto-ffi/tests/error_mapping.rs` asserts that
+    /// each of these crosses to its own kind, and
+    /// `tests/qr_refusals.rs` drives each of the eight code refusals to a
+    /// real condition rather than asserting them against each other.
     #[test]
-    fn the_three_flow_errors_are_distinct() {
-        assert_ne!(MachineError::UnknownFlow, MachineError::WrongStage);
-        assert_ne!(MachineError::WrongStage, MachineError::MaterialNotReady);
-        assert_ne!(MachineError::UnknownFlow, MachineError::MaterialNotReady);
+    fn every_refusal_this_module_produces_is_its_own_error() {
+        let refusals = [
+            MachineError::UnknownDevice,
+            MachineError::AccountKeysNotFetched,
+            MachineError::UnknownFlow,
+            MachineError::WrongStage,
+            MachineError::MaterialNotReady,
+            MachineError::MalformedIdentifier {
+                detail: "flow id".to_string(),
+            },
+            MachineError::IdentityNotKnown,
+            MachineError::PeerIdentityNotKnown,
+            MachineError::PrivateKeysNotHeld,
+            MachineError::CodeNotOffered,
+            MachineError::ScannedCodeRefused,
+            MachineError::ScannedCodeUnrecognised,
+            MachineError::ScannedCodeMalformed,
+            MachineError::ScannedCodeForAnotherFlow,
+        ];
+
+        for (i, left) in refusals.iter().enumerate() {
+            for right in refusals.iter().skip(i + 1) {
+                assert_ne!(
+                    left, right,
+                    "two refusals this module produces compare equal, so a caller \
+                     branching on them cannot tell the conditions apart"
+                );
+            }
+        }
     }
 
     /// The redacting `Debug` impls, checked against the strings they must

@@ -5,9 +5,11 @@
  * runner. Two defects reached a device because of it. Step 3 reported "no
  * signal received" on a real phone while the same launch logged
  * `PROBE_SUMMARY 12/12`, because step 2 returned before its own observer
- * callback had landed and step 3 read the array anyway. Step 6 reported
- * "unexpected" on every launch because its card asserted that a library
- * function was unimplemented after the library had implemented it. Neither
+ * callback had landed and step 3 read the array anyway. The `notYet` card
+ * reported "unexpected" on every launch because it asserted that a library
+ * function was unimplemented after the library had implemented it. This
+ * paragraph called that one "step 6" until the walkthrough renumbered and
+ * the sentence did not; cards are named by id here now. Neither
  * is exotic. Both are the kind of thing a test catches in a second, and
  * nothing in this package could run a test.
  *
