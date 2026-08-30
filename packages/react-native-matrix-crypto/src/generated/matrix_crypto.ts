@@ -23,6 +23,7 @@ import {
   Cursor,
   FfiConverterArray,
   FfiConverterArrayBuffer,
+  FfiConverterBool,
   FfiConverterObject,
   FfiConverterObjectWithCallbacks,
   FfiConverterOptional,
@@ -75,6 +76,56 @@ export async function acceptVerification(
             nativeModule().rustbuffer_alloc
           )
         );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_void,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_void,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_void,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_void,
+      /*liftFunc:*/ (_v) => {},
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
+ * Publishes this account's signing identity, minting one first if the
+ * account provably has none.
+ *
+ * Mirrors `bootstrap_identity`; see its own doc comment in
+ * `matrix-crypto-core::signing` for the gate, for the two refusals it
+ * keeps apart, and for the order the requests this queues must be sent in.
+ *
+ * **No parameter, and in particular no credential.** Publishing the
+ * identity needs user-interactive authentication at the homeserver, and
+ * the product owns that loop rather than this library: the challenge is
+ * only known *after* the first request is refused, so an argument here
+ * would have to be guessed before the server has said what it wants. The
+ * absence is the design and not an omission to be filled in later; the
+ * core's module documentation says the same at more length, and the M4
+ * design's section 1.1 is where it was decided.
+ */
+export async function bootstrapIdentity(asyncOpts_?: {
+  signal: AbortSignal;
+}): Promise<void> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_bootstrap_identity();
       },
       /*pollFunc:*/ nativeModule()
         .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_void,
@@ -474,6 +525,63 @@ export async function encryptEvent(
       /*asyncOpts:*/ asyncOpts_,
       /*errorHandler:*/ FfiConverterTypeSessionFfiError.lift.bind(
         FfiConverterTypeSessionFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
+ * What this library will say about the account's signing identity right
+ * now. Reads only; asks the server nothing and mints nothing.
+ *
+ * Mirrors `identity_status`; see its own doc comment in
+ * `matrix-crypto-core::signing`, including why `identity_known == false`
+ * means two completely different things depending on
+ * `account_keys_fetched` and why both are reported rather than one
+ * collapsed answer.
+ */
+export async function identityStatus(asyncOpts_?: {
+  signal: AbortSignal;
+}): Promise<IdentityStatus> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_identity_status();
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_rust_buffer,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      // Borrowed view over foreign memory: the call site owns the free,
+      // as on the sync paths. Unconditional — a no-op where buffers are
+      // already JS-owned.
+      /*liftFunc:*/ (__rb) => {
+        try {
+          return FfiConverterTypeIdentityStatus.lift(__rb);
+        } finally {
+          nativeModule().rustbuffer_free(__rb);
+        }
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
       )
     );
   } catch (__error: any) {
@@ -1403,13 +1511,22 @@ const FfiConverterTypeDeviceStatus = (() => {
  * The order itself is not this crate's choice and is not the core's
  * either -- both take it from upstream's own `VerificationState` and
  * `VerificationLevel` declarations, so the three lists can be read side by
- * side. The core's own enum documents what each value means, and which of
- * them this build cannot produce; this mirror deliberately repeats none of
- * it, so the two cannot drift into saying different things.
+ * side. The core's own enum documents what each value means and what
+ * reaching it costs; this mirror deliberately repeats none of it, so the
+ * two cannot drift into saying different things.
  *
- * It said "which three of them" until 0.1.0, and repeating a count was
- * exactly the drift this paragraph forbids: the count was wrong, and this
- * file had no way to know.
+ * That sentence has now gone stale twice, one level of generality apart,
+ * and both corrections belong here because the second is the one a reader
+ * would otherwise repeat. It said "which three of them this build cannot
+ * produce" until 0.1.0, and the count was wrong. Dropping the count left
+ * "which of them this build cannot produce", which was a promise about
+ * what the core's enum says rather than a count, and M4 made that false
+ * too: the core stopped describing a category of unproducible values and
+ * started describing what each value costs to reach, because after
+ * cross-signing the category was down to one variant nothing in this
+ * repository can construct. A pointer to another file's comment is a claim
+ * about that comment, and it goes stale exactly like a count does, with
+ * nothing here able to notice.
  */
 export enum SenderVerification {
   Verified,
@@ -1592,6 +1709,75 @@ const FfiConverterTypeIdentityKeys = (() => {
       return (
         FfiConverterString.allocationSize(value.curve25519) +
         FfiConverterString.allocationSize(value.ed25519)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * What this library will say about the account's signing identity. Mirror
+ * of the core's `IdentityStatus`.
+ *
+ * Appended after `mark_request_failed`, which is after everything else in
+ * this file, for the ordinal reason `CryptoSignal`'s own comment gives.
+ * This addition moves no ordinal: it declares a record and two functions
+ * and no enum variant anywhere, so every existing wire number is where it
+ * was.
+ *
+ * `Debug` is derived, unlike `Envelope` and `CryptoMachineConfig` above:
+ * three booleans about this account's own publication state carry no
+ * identifier and no key material, so there is nothing here the global
+ * no-secret rule forbids from a `{:?}`.
+ *
+ * The core's own `IdentityStatus` documents what each field means, and in
+ * particular why the pair that looks redundant is the pair that matters;
+ * this mirror deliberately repeats none of it, so the two cannot drift
+ * into saying different things.
+ */
+export type IdentityStatus = {
+  accountKeysFetched: boolean;
+  identityKnown: boolean;
+  privateKeysHeld: boolean;
+};
+
+/**
+ * Generated factory for {@link IdentityStatus} record objects.
+ */
+export const IdentityStatus = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<IdentityStatus, ReturnType<typeof defaults>>(
+      defaults
+    );
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<IdentityStatus>,
+  });
+})();
+
+const FfiConverterTypeIdentityStatus = (() => {
+  type TypeName = IdentityStatus;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      return {
+        accountKeysFetched: FfiConverterBool.readFromCursor(c),
+        identityKnown: FfiConverterBool.readFromCursor(c),
+        privateKeysHeld: FfiConverterBool.readFromCursor(c),
+      };
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      FfiConverterBool.writeIntoCursor(value.accountKeysFetched, c);
+      FfiConverterBool.writeIntoCursor(value.identityKnown, c);
+      FfiConverterBool.writeIntoCursor(value.privateKeysHeld, c);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterBool.allocationSize(value.accountKeysFetched) +
+        FfiConverterBool.allocationSize(value.identityKnown) +
+        FfiConverterBool.allocationSize(value.privateKeysHeld)
       );
     }
   }
@@ -3773,6 +3959,14 @@ function uniffiEnsureInitialized() {
     );
   }
   if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_bootstrap_identity() !==
+    42604
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_bootstrap_identity"
+    );
+  }
+  if (
     nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_cancel_verification() !==
     33960
   ) {
@@ -3834,6 +4028,14 @@ function uniffiEnsureInitialized() {
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       "uniffi_matrix_crypto_ffi_checksum_func_encrypt_event"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_identity_status() !==
+    40301
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_identity_status"
     );
   }
   if (
@@ -3969,6 +4171,7 @@ export default Object.freeze({
     FfiConverterTypeDeviceStatus,
     FfiConverterTypeEnvelope,
     FfiConverterTypeIdentityKeys,
+    FfiConverterTypeIdentityStatus,
     FfiConverterTypeMachineFfiError,
     FfiConverterTypeOutgoingRequest,
     FfiConverterTypeProbeFfiError,

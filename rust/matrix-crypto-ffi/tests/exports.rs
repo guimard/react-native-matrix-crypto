@@ -18,3 +18,38 @@ async fn ffi_probe_propagates_typed_error() {
         matches!(err, matrix_crypto_ffi::ProbeFfiError::Rejected { reason } if reason == "input must not be empty")
     );
 }
+
+/// The signing identity's two calls exist on this crate's surface and reach
+/// the core, which is the whole content of the bridge: both are one-line
+/// delegations, so what can go wrong is that they are absent, or wired to
+/// the wrong core function, or swallow the core's error.
+///
+/// No machine is created in this test binary, so the core answers
+/// `NotInitialised` for both, and asserting on that particular variant is
+/// what separates a real delegation from a stub that succeeds: a function
+/// returning `Ok(())` or a default record passes a test that only checks it
+/// can be called, and fails this one.
+///
+/// **It does not separate it from a stub that fails the same way.** A body
+/// of `Err(MachineFfiError::NotInitialised)` passes this, and no test
+/// reachable from here can tell it apart, because reaching the core's other
+/// answers means creating a machine and this binary deliberately creates
+/// none. The stronger check lives where a machine exists: the core's own
+/// `tests/identity_bootstrap*.rs` drive both refusals and the served path
+/// against a real store. Said rather than left implied, because a comment
+/// claiming more than its assertion is the defect this milestone keeps
+/// finding.
+#[tokio::test]
+async fn the_signing_identity_calls_reach_the_core() {
+    let err = matrix_crypto_ffi::identity_status().await.unwrap_err();
+    assert!(matches!(
+        err,
+        matrix_crypto_ffi::MachineFfiError::NotInitialised
+    ));
+
+    let err = matrix_crypto_ffi::bootstrap_identity().await.unwrap_err();
+    assert!(matches!(
+        err,
+        matrix_crypto_ffi::MachineFfiError::NotInitialised
+    ));
+}

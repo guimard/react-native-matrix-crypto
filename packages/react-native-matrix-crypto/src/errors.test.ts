@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { isCryptoError, toCryptoError } from './errors'
+// The generated tag enums, imported rather than restated: the walk at the
+// bottom of this file has to enumerate what the bindings really declare, or
+// it is a hand-written list wearing a derivation's clothes.
+import {
+  MachineFfiError_Tags,
+  ProbeFfiError_Tags,
+  SessionFfiError_Tags,
+} from './generated/matrix_crypto'
 
 describe('toCryptoError', () => {
   it('maps a generated Rejected error to a typed CryptoError', () => {
@@ -367,4 +375,96 @@ describe('toCryptoError for the verification kinds', () => {
     expect(toCryptoError({ name: 'VerificationEnded' }).kind).toBe('verification_ended')
     expect(toCryptoError({ name: 'MaterialMismatch' }).kind).toBe('material_mismatch')
   })
+})
+
+/**
+ * Every variant the generated bindings can throw maps to a kind of its own.
+ *
+ * # The class of defect this ends
+ *
+ * `KIND_BY_NAME` is the only thing standing between a typed Rust refusal
+ * and a product being handed kind `'unknown'` with the message "crypto
+ * error: unknown". Nothing on the Rust side can see it: the core proves the
+ * right *variant* is produced, every Rust test stays green, and the entry is
+ * simply absent.
+ *
+ * The repository has now met that three times. `StoreCorrupt` sat in the map
+ * pointing at nothing for four tasks. M4's bridge found
+ * `AccountKeysNotFetched` and `IdentityAlreadyExists` had no entries at all,
+ * because they were declared on the Rust side a task before anything
+ * returned them, so nothing could notice. And a review of that fix found the
+ * other half: entries that exist and that no test defends, so deleting one
+ * passes the whole suite. It named three, `IdentityAlreadyExists`,
+ * `Undecryptable` and `AlreadyInitialised`, and observed that nothing
+ * structural prevented a fourth.
+ *
+ * This is the structural thing. It is derived from the generated bindings
+ * rather than from a list written here, so it grows with the Rust surface
+ * instead of rotting against it, and every future variant is defended the
+ * day it is generated rather than the day someone remembers.
+ *
+ * # Why the tag enums rather than the error classes
+ *
+ * `@ubjs/core`'s `UniffiError` sets `.message` to exactly
+ * `"<EnumTypeName>.<VariantName>"`, which is the shape `toCryptoError` reads
+ * and the shape this file's other tests use. Constructing a real instance
+ * would need each variant's `inner` payload; the tag enums carry every
+ * variant name with no payload at all, and they are generated from the same
+ * declaration, so walking them covers exactly the same set.
+ */
+describe('every generated error variant maps to a kind of its own', () => {
+  const GENERATED: ReadonlyArray<readonly [string, Record<string, string>]> = [
+    ['MachineFfiError', MachineFfiError_Tags],
+    ['SessionFfiError', SessionFfiError_Tags],
+    ['ProbeFfiError', ProbeFfiError_Tags],
+  ]
+
+  /**
+   * Pinned, and it is a floor against this walk collapsing rather than a
+   * claim about the world: an enumeration that silently went to zero would
+   * make every assertion below trivially pass, which is the failure the
+   * shell gates in `scripts/` all carry a guard for. When the Rust surface
+   * grows a variant this number changes here, deliberately, in the same
+   * change that adds the mapping.
+   */
+  const EXPECTED_VARIANTS = 23
+
+  it('refuses to pass having walked nothing', () => {
+    for (const [name, tags] of GENERATED) {
+      expect(Object.values(tags).length, `${name} enumerated no variants`).toBeGreaterThan(0)
+    }
+    const total = GENERATED.reduce((sum, [, tags]) => sum + Object.values(tags).length, 0)
+    expect(total).toBe(EXPECTED_VARIANTS)
+  })
+
+  it.each(
+    GENERATED.flatMap(([enumName, tags]) =>
+      Object.values(tags).map((variant) => [`${enumName}.${variant}`] as const),
+    ),
+  )('maps %s to a kind rather than to unknown', (message) => {
+    const err = toCryptoError(new Error(message))
+    expect(err.kind).not.toBe('unknown')
+    expect(typeof err.kind).toBe('string')
+  })
+
+  /**
+   * And no two variants of the *same* enum share a kind by accident.
+   *
+   * Deliberately per enum rather than across all three: `UnknownDevice` and
+   * `MalformedIdentifier` are each reached from two different enums and land
+   * on one kind on purpose, which is asserted directly elsewhere in this
+   * file. Within one enum there is no such case, so a collision there is a
+   * copy-paste in the map rather than a decision, and it would silently make
+   * two conditions a product must tell apart indistinguishable.
+   */
+  it.each(GENERATED.map(([name, tags]) => [name, tags] as const))(
+    'keeps every variant of %s on a distinct kind',
+    (_name, tags) => {
+      const variants = Object.values(tags)
+      const kinds = variants.map(
+        (variant) => toCryptoError(new Error(`${_name}.${variant}`)).kind,
+      )
+      expect(new Set(kinds).size).toBe(variants.length)
+    },
+  )
 })

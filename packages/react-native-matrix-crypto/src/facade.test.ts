@@ -4,6 +4,7 @@ import { asCryptoScopeId } from './types'
 import { isCryptoError } from './errors'
 import {
   acceptVerification,
+  bootstrapCrossSigning,
   cancelVerification,
   confirmVerification,
   createCryptoMachine,
@@ -13,6 +14,7 @@ import {
   exportSecrets,
   getDeviceIdentityKeys,
   getDeviceStatuses,
+  getIdentityStatus,
   getVerificationMaterial,
   getVerificationStage,
   markRequestFailed,
@@ -26,6 +28,7 @@ import {
 } from './facade'
 import {
   acceptVerification as nativeAcceptVerification,
+  bootstrapIdentity as nativeBootstrapIdentity,
   cancelVerification as nativeCancelVerification,
   confirmVerification as nativeConfirmVerification,
   createCryptoMachine as nativeCreateCryptoMachine,
@@ -33,6 +36,7 @@ import {
   deviceIdentityKeys as nativeDeviceIdentityKeys,
   deviceStatuses as nativeDeviceStatuses,
   encryptEvent as nativeEncryptEvent,
+  identityStatus as nativeIdentityStatus,
   MachineFfiError,
   markRequestFailed as nativeMarkRequestFailed,
   markRequestSent as nativeMarkRequestSent,
@@ -40,6 +44,7 @@ import {
   receiveSyncChanges as nativeReceiveSyncChanges,
   requestVerification as nativeRequestVerification,
   SenderVerification as NativeSenderVerification,
+  SessionFfiError,
   shareScopeKey as nativeShareScopeKey,
   startVerificationComparison as nativeStartVerificationComparison,
   takeOutgoingRequests as nativeTakeOutgoingRequests,
@@ -138,6 +143,18 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
     })),
     confirmVerification: vi.fn(async () => undefined),
     cancelVerification: vi.fn(async () => undefined),
+    // The signing identity. Stateless defaults, and deliberately the
+    // "nobody has asked" row rather than a served one: a test that forgot
+    // to install the chain fake below gets the refusal the real core would
+    // give it, not a bootstrap that silently succeeds.
+    identityStatus: vi.fn(async () => ({
+      accountKeysFetched: false,
+      identityKnown: false,
+      privateKeysHeld: false,
+    })),
+    bootstrapIdentity: vi.fn(async () => {
+      throw new actual.MachineFfiError.AccountKeysNotFetched()
+    }),
   }
 })
 
@@ -960,9 +977,20 @@ const NATIVE_MATERIAL: SasMaterial = {
 }
 
 /**
- * Restores every verification mock to the stateless default declared at the
- * top of this file, so a test that installs its own implementation cannot
- * leak it into the next one. Vitest's mocks are module-level and shared.
+ * Restores every mock any test in this file reimplements, to the stateless
+ * default declared at the top, so a test that installs its own
+ * implementation cannot leak it into the next one. Vitest's mocks are
+ * module-level and shared.
+ *
+ * **The list has to cover what `installFake` touches, not just the
+ * verification surface.** A review found it did not: the chain describe
+ * reimplemented seven mocks this hook restored none of, and a probe
+ * appended after it saw `decryptEvent` return the chain's peer and
+ * `takeOutgoingRequests` return `[]`. Nothing failed, only because that
+ * describe happens to be last in the file, which nothing enforces and which
+ * `--sequence.shuffle` does not respect. `the mock defaults survive every
+ * describe above` at the bottom of this file is the guard that now does
+ * enforce it; this list is what makes that guard pass.
  */
 beforeEach(() => {
   vi.mocked(nativeDeviceStatuses).mockReset()
@@ -988,6 +1016,41 @@ beforeEach(() => {
   vi.mocked(nativeConfirmVerification).mockResolvedValue(undefined)
   vi.mocked(nativeCancelVerification).mockReset()
   vi.mocked(nativeCancelVerification).mockResolvedValue(undefined)
+  // The seven the signing-identity chain reimplements. Same defaults as the
+  // module-level factory declares, restated here rather than shared with it
+  // because that factory runs once and this runs before every test.
+  vi.mocked(nativeIdentityStatus).mockReset()
+  vi.mocked(nativeIdentityStatus).mockResolvedValue({
+    accountKeysFetched: false,
+    identityKnown: false,
+    privateKeysHeld: false,
+  })
+  vi.mocked(nativeBootstrapIdentity).mockReset()
+  vi.mocked(nativeBootstrapIdentity).mockImplementation(async () => {
+    throw new MachineFfiError.AccountKeysNotFetched()
+  })
+  vi.mocked(nativeTakeOutgoingRequests).mockReset()
+  vi.mocked(nativeTakeOutgoingRequests).mockResolvedValue([
+    { id: 'req-1', kind: 'keys_upload', body: '{}' },
+  ])
+  vi.mocked(nativeMarkRequestSent).mockReset()
+  vi.mocked(nativeMarkRequestSent).mockResolvedValue(undefined)
+  vi.mocked(nativeMarkRequestFailed).mockReset()
+  vi.mocked(nativeMarkRequestFailed).mockResolvedValue(undefined)
+  vi.mocked(nativeReceiveSyncChanges).mockReset()
+  vi.mocked(nativeReceiveSyncChanges).mockResolvedValue({
+    toDeviceEventCount: 0,
+    newSessionCount: 0,
+  })
+  vi.mocked(nativeDecryptEvent).mockReset()
+  vi.mocked(nativeDecryptEvent).mockResolvedValue({
+    scope: '!native-scope:example.org',
+    algorithm: 'm.native.algorithm',
+    eventType: 'm.native.event',
+    ciphertext: toArrayBuffer('native-plaintext'),
+    sender: '@native-sender:example.org',
+    senderVerification: NativeSenderVerification.UnsignedDevice,
+  })
 })
 
 describe('getDeviceStatuses', () => {
@@ -1475,5 +1538,606 @@ describe('a verification driven end to end through the public surface', () => {
     expect(await getDeviceStatuses('@bob:example.org')).toEqual([
       { deviceId: 'BOBDEVICE', trust: 'verified' },
     ])
+  })
+})
+
+/**
+ * The seven-step chain that makes a decrypted event read `'verified'`,
+ * driven through the functions this package publishes and through nothing
+ * else, against a hand-written model of the core.
+ *
+ * # The line falls in an unobvious place, so read this before the tick
+ *
+ * **The boundary is exactly one module: `./generated/matrix_crypto`.**
+ * Everything above it runs for real. Everything below it is this file's
+ * model. A green run here is evidence about the first and no evidence at
+ * all about the second, and the two halves are set out separately below so
+ * that nobody has to infer which is which.
+ *
+ * ## What a green run does prove
+ *
+ * * **Every published call in the chain exists, and composes in this
+ *   order.** `bootstrapCrossSigning`, `getIdentityStatus`,
+ *   `takeOutgoingRequests`, `markRequestSent`, `markRequestFailed`,
+ *   `receiveSyncChanges`, `requestVerification`, `acceptVerification`,
+ *   `startVerificationComparison`, `getVerificationStage`,
+ *   `getVerificationMaterial`, `confirmVerification`, `decryptEvent` and
+ *   `getDeviceStatuses`, each taking what the one before it returns. That
+ *   is the milestone's actual claim about TypeScript, and it is what was
+ *   missing: the core has reached `Verified` since M4's second task and no
+ *   product could get there, because the call that creates this account's
+ *   identity stopped at the FFI crate.
+ * * **Error translation, unmocked.** `vi.mock` wraps `importOriginal`, so
+ *   the real generated `MachineFfiError` and `SessionFfiError` classes
+ *   cross this boundary and `errors.ts` runs on them untouched. The
+ *   `'account_keys_not_fetched'`, `'identity_already_exists'` and
+ *   `'material_not_ready'` assertions are real assertions about that map;
+ *   any of the three reverting to `'unknown'` fails here.
+ * * **Value translation, unmocked, against the real enums.**
+ *   `senderVerificationOf`, `trustStateOf` and `flowStageOf` run on genuine
+ *   generated enum members carrying the real wire ordinals, not hand-typed
+ *   numbers. The `{ state: 'verified' }` at the end is the first time that
+ *   value has been read off an `EventEnvelope` anywhere in this repository.
+ * * **Argument forwarding.** The model throws `UnknownRequest` for an id it
+ *   did not hand out, so a facade that dropped or mangled an id fails.
+ *
+ * ## What a green run does not prove, and where that proof lives instead
+ *
+ * **Not one line of Rust executes.** There is no JSI host object under
+ * vitest, so no test in this directory has ever run any. The cryptography
+ * is proved in `rust/matrix-crypto-core/tests/verified_sender.rs`, by
+ * `the_whole_chain_makes_an_event_read_verified` against a
+ * counterparty that process does not control, and that test is the only
+ * thing entitled to say the value is earned.
+ *
+ * **Every outcome below is decided by `installFake`, not by the library.**
+ * The refusal and the key query it queues, the batch and its order, the
+ * `401` leaving the id alive, the device moving, and `'verified'` itself
+ * are all the model's five-boolean conjunction agreeing with the model's
+ * own `queue()` calls. So the three interleaved negative assertions do not
+ * fail on a library defect. What they do catch is narrower and still worth
+ * having: they fail if the facade stops driving the published call that
+ * flips a given boolean, which is a real regression guard on the order
+ * above. **Do not read them as evidence that an incomplete chain is unsafe
+ * in the library.** `verified_sender.rs`'s
+ * `omitting_the_second_key_fetch_leaves_the_sender_below_verified` is what
+ * holds that, against real cryptography.
+ *
+ * # Why the model is a model and not a constant
+ *
+ * The M3 ruling this file already carries -- restated at
+ * `matrix_crypto_core::SenderVerification` as **nothing except the real
+ * chain produces `verified`** -- forbids a fixture that simply hands back
+ * the value, because such a fixture teaches the belief the ruling exists to
+ * prevent. So the model does not. It holds the five facts the real gate
+ * holds, each set by a different published call resolving a different
+ * request, and reports `Verified` only when all five are true. That keeps
+ * the fixture honest about the *shape* of the rule even though it can
+ * prove nothing about the rule's implementation.
+ *
+ * The sharpest of the five is step six. Nothing caches the signature a
+ * comparison produces, so uploading it and not fetching it back leaves
+ * every event reading `'unverified_identity'` while every call in the flow
+ * returned success and the device reads `'verified'`. The model reproduces
+ * that shape so this file's reader meets it; `verified_sender.rs` is what
+ * proves it.
+ *
+ * # What the model deliberately does not reproduce at all
+ *
+ * Response-body validation, which `markRequestSent` performs in Rust over
+ * each endpoint's declared fields and which the core's own tests cover
+ * (this file reports `'{}'` for a `keys_upload`, which the real core
+ * rejects); the within-a-batch ordering rule, which the verification arc
+ * above covers; and the eviction rule, which is documented at
+ * `takeOutgoingRequests` and belongs to the pump rather than to this
+ * chain. A model that reproduced everything would be the thing under test.
+ */
+describe('the signing identity chain, driven through the public surface', () => {
+  const PEER = '@bob:example.org'
+
+  interface Chain {
+    /** Step 1a: a key query naming our own account was reported sent. */
+    accountKeysFetched: boolean
+    /** Steps 1 and 2: we hold the private identity, and published it. */
+    identityPublished: boolean
+    /** Step 5: a comparison completed, which is what makes the signature. */
+    comparisonDone: boolean
+    /** Step 6: that signature reached the server. */
+    signatureUploaded: boolean
+    /** Step 7: and came back into our own store on a later key query. */
+    signatureFetchedBack: boolean
+  }
+
+  interface Fake {
+    chain: Chain
+    /** The peer's acknowledgement arrives and the flow closes. */
+    finishTheFlow(): void
+    /** A later `/sync` says the peer's devices changed. */
+    peerDevicesChanged(): Promise<void>
+    /**
+     * The account gains an identity this device does not hold the private
+     * keys for, which no call in this file can otherwise produce.
+     */
+    anotherDeviceOfOursPublishedAnIdentity(): void
+  }
+
+  function installFake(): Fake {
+    const chain: Chain = {
+      accountKeysFetched: false,
+      identityPublished: false,
+      comparisonDone: false,
+      signatureUploaded: false,
+      signatureFetchedBack: false,
+    }
+    // Everything the library owes the product right now, and everything it
+    // is waiting to hear back about. Ids are opaque and the facade parses
+    // nothing out of one, so a counter is enough.
+    let owed: Array<{ id: string; kind: string; body: string }> = []
+    const pending = new Map<string, string>()
+    let nextId = 0
+    let identityKnown = false
+    let privateKeysHeld = false
+    let stage = NativeVerificationStage.Requested
+    let keyReported = false
+
+    const queue = (kind: string, body = '{}'): void => {
+      owed.push({ id: `request-${++nextId}`, kind, body })
+    }
+
+    vi.mocked(nativeIdentityStatus).mockImplementation(async () => ({
+      accountKeysFetched: chain.accountKeysFetched,
+      identityKnown,
+      privateKeysHeld,
+    }))
+
+    vi.mocked(nativeBootstrapIdentity).mockImplementation(async () => {
+      if (!chain.accountKeysFetched) {
+        // Queued *by* the refusal, exactly as the core does it, so the
+        // refusal is recoverable rather than a dead end.
+        queue('keys_query')
+        throw new MachineFfiError.AccountKeysNotFetched()
+      }
+      if (identityKnown && !privateKeysHeld) throw new MachineFfiError.IdentityAlreadyExists()
+      identityKnown = true
+      privateKeysHeld = true
+      // Upstream's order, and the batch is longer than the four requests
+      // that belong to the bootstrap. See `bootstrapCrossSigning`.
+      queue('keys_upload', '{"device_keys":{}}')
+      queue('signing_keys_upload', '{"master_key":{}}')
+      queue('signature_upload', '{"signed_keys":{}}')
+      queue('keys_upload', '{"device_keys":{}}')
+      queue('keys_query')
+    })
+
+    vi.mocked(nativeTakeOutgoingRequests).mockImplementation(async () => {
+      const batch = owed
+      owed = []
+      for (const request of batch) pending.set(request.id, request.kind)
+      return batch
+    })
+
+    vi.mocked(nativeMarkRequestSent).mockImplementation(async (id: string) => {
+      const kind = pending.get(id)
+      if (kind === undefined) throw new SessionFfiError.UnknownRequest()
+      pending.delete(id)
+      if (kind === 'keys_query') {
+        // The first answered query is about our own account and is what
+        // lifts the bootstrap gate. Every later one is about the peer, and
+        // one of those is step seven -- but only once there is a signature
+        // of ours for it to bring back.
+        if (!chain.accountKeysFetched) chain.accountKeysFetched = true
+        else if (chain.signatureUploaded) chain.signatureFetchedBack = true
+      }
+      if (kind === 'signing_keys_upload') chain.identityPublished = true
+      if (kind === 'signature_upload' && chain.comparisonDone) chain.signatureUploaded = true
+      if (kind === 'to_device' && stage === NativeVerificationStage.Started) {
+        keyReported = true
+        stage = NativeVerificationStage.KeysExchanged
+      }
+    })
+
+    vi.mocked(nativeMarkRequestFailed).mockImplementation(async (id: string) => {
+      if (!pending.has(id)) throw new SessionFfiError.UnknownRequest()
+      // A refusal teaches the library nothing and consumes nothing: the
+      // entry stays, which is what lets a product loop on a 401.
+    })
+
+    vi.mocked(nativeReceiveSyncChanges).mockImplementation(async () => {
+      queue('keys_query')
+      return { toDeviceEventCount: 0, newSessionCount: 0 }
+    })
+
+    const chainComplete = (): boolean =>
+      chain.accountKeysFetched &&
+      chain.identityPublished &&
+      chain.comparisonDone &&
+      chain.signatureUploaded &&
+      chain.signatureFetchedBack
+
+    vi.mocked(nativeDecryptEvent).mockImplementation(async () => ({
+      scope: '!native-scope:example.org',
+      algorithm: 'm.native.algorithm',
+      eventType: 'm.native.event',
+      ciphertext: toArrayBuffer('native-plaintext'),
+      sender: PEER,
+      // The peer runs a mainstream client, so their device carries their
+      // own identity's signature from the start. What our side has to earn
+      // is the second gate, and until every step of the chain is done the
+      // value sits one rung below it.
+      senderVerification: chainComplete()
+        ? NativeSenderVerification.Verified
+        : NativeSenderVerification.UnverifiedIdentity,
+    }))
+
+    vi.mocked(nativeDeviceStatuses).mockImplementation(async () => [
+      {
+        // The device a person actually compared a string with. Locally
+        // trusted the moment the flow closes, with no signature round trip
+        // needed for that half.
+        deviceId: 'BOBDEVICE',
+        trust:
+          stage === NativeVerificationStage.Done
+            ? NativeTrustState.Verified
+            : NativeTrustState.Unverified,
+      },
+      {
+        // A second device of the same person. Nobody has compared anything
+        // with it and nobody ever will; it moves when their *identity*
+        // becomes trusted, which is the point of cross-signing and the
+        // behaviour change this release ships.
+        deviceId: 'BOBPHONE',
+        trust: chainComplete() ? NativeTrustState.Verified : NativeTrustState.Unverified,
+      },
+    ])
+
+    vi.mocked(nativeRequestVerification).mockImplementation(async () => {
+      stage = NativeVerificationStage.Requested
+      return 'chain-flow-id'
+    })
+    vi.mocked(nativeAcceptVerification).mockImplementation(async () => {
+      if (stage !== NativeVerificationStage.Requested) throw new MachineFfiError.WrongStage()
+      stage = NativeVerificationStage.Ready
+    })
+    vi.mocked(nativeStartVerificationComparison).mockImplementation(async () => {
+      if (stage !== NativeVerificationStage.Ready) throw new MachineFfiError.WrongStage()
+      stage = NativeVerificationStage.Started
+      // The key message. Reporting it sent is what produces a string, and
+      // reporting is the only thing that advances this flow.
+      queue('to_device')
+    })
+    vi.mocked(nativeVerificationStage).mockImplementation(async () => stage)
+    vi.mocked(nativeVerificationMaterial).mockImplementation(async () => {
+      if (stage === NativeVerificationStage.Started && !keyReported) {
+        throw new MachineFfiError.MaterialNotReady()
+      }
+      if (stage !== NativeVerificationStage.KeysExchanged) throw new MachineFfiError.WrongStage()
+      return { emoji: undefined, decimalOne: 4444, decimalTwo: 5555, decimalThree: 6666 }
+    })
+    vi.mocked(nativeConfirmVerification).mockImplementation(async () => {
+      if (stage !== NativeVerificationStage.KeysExchanged) throw new MachineFfiError.WrongStage()
+      stage = NativeVerificationStage.Confirmed
+    })
+
+    return {
+      chain,
+      finishTheFlow() {
+        stage = NativeVerificationStage.Done
+        chain.comparisonDone = true
+        // Step 5's output. A completed comparison signs the peer's master
+        // key with our user-signing key, and the resulting signature reaches
+        // the pump as an ordinary outgoing request.
+        queue('signature_upload', '{"signed_keys":{}}')
+      },
+      async peerDevicesChanged() {
+        await receiveSyncChanges({ changed_devices: { changed: [PEER] } })
+      },
+      anotherDeviceOfOursPublishedAnIdentity() {
+        // The row a fresh login on an old account lands on, and the only
+        // way to reach it: everywhere else in this file `identityKnown` and
+        // `privateKeysHeld` move together, because a bootstrap this device
+        // performs sets both. The account can have an identity this device
+        // does not hold the keys for, and that is the state the second
+        // refusal exists for.
+        identityKnown = true
+      },
+    }
+  }
+
+  /**
+   * The declared parameter list of a function, read out of its own source.
+   *
+   * Exists because `Function.length` is not the guard it looks like: it
+   * stops counting at the first parameter with a default, so a
+   * `bootstrapCrossSigning(auth = {})` reads as length zero and slips
+   * through. This returns the raw text between the first parentheses, which
+   * is empty only when there is genuinely nothing declared. It is used to
+   * assert emptiness and nothing else, so a default containing a bracket of
+   * its own would still produce a non-empty string and still fail, which is
+   * the direction that matters.
+   */
+  function declaredParameters(fn: (...args: never[]) => unknown): string {
+    const source = fn.toString()
+    const open = source.indexOf('(')
+    const close = source.indexOf(')', open)
+    return source.slice(open + 1, close).trim()
+  }
+
+  /** Sends and reports everything the pump is currently holding. */
+  async function pump(): Promise<string[]> {
+    const batch = await takeOutgoingRequests()
+    for (const request of batch) await markRequestSent(request.id, '{}')
+    return batch.map((request) => request.kind)
+  }
+
+  it('drives every published call of the chain, in order, and translates what it is handed', async () => {
+    const fake = installFake()
+
+    // ---- Step 1: nothing is known, and the refusal says which nothing ----
+    expect(await getIdentityStatus()).toEqual({
+      accountKeysFetched: false,
+      identityKnown: false,
+      privateKeysHeld: false,
+    })
+
+    // Refused, and refused as its own kind rather than as 'unknown'. Both
+    // halves matter: a product told 'unknown' cannot tell this apart from a
+    // failure, and this one has a remedy.
+    await expect(bootstrapCrossSigning()).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'account_keys_not_fetched',
+    )
+
+    // The refusal queued the question that lifts it.
+    expect(await pump()).toEqual(['keys_query'])
+    expect((await getIdentityStatus()).accountKeysFetched).toBe(true)
+
+    // ---- Step 2: now it is served, and the status says it took effect ----
+    await expect(bootstrapCrossSigning()).resolves.toBeUndefined()
+    expect(await getIdentityStatus()).toEqual({
+      accountKeysFetched: true,
+      identityKnown: true,
+      privateKeysHeld: true,
+    })
+
+    // The batch is longer than the four requests the bootstrap owns, and
+    // it is in the order that lets a signature follow the key it names.
+    const batch = await takeOutgoingRequests()
+    expect(batch.map((request) => request.kind)).toEqual([
+      'keys_upload',
+      'signing_keys_upload',
+      'signature_upload',
+      'keys_upload',
+      'keys_query',
+    ])
+
+    // ---- The authentication loop this library refuses to run for you ----
+    const signingKeys = batch.find((request) => request.kind === 'signing_keys_upload')
+    if (signingKeys === undefined) throw new Error('the bootstrap queued no signing keys upload')
+
+    // `bootstrapCrossSigning` takes no argument, and these are the two
+    // assertions that fail the day someone adds one: the challenge is only
+    // known after this very request has been refused, so a credential
+    // parameter would have to be guessed before the server had spoken.
+    //
+    // Both, because neither is sufficient. `Function.length` stops counting
+    // at the first parameter carrying a default, so `auth: T = {}` reads as
+    // zero -- and that is the *more* likely accident of the two, since a
+    // default is what someone reaches for to keep a call backwards
+    // compatible. `declaredParameters` reads the text instead and catches
+    // it. Kept alongside rather than instead: `length` is the cheaper
+    // check and does not depend on a bundler leaving the parameter list in
+    // the emitted source.
+    expect(bootstrapCrossSigning.length).toBe(0)
+    expect(declaredParameters(bootstrapCrossSigning)).toBe('')
+    // The read side takes nothing either, and never should.
+    expect(declaredParameters(getIdentityStatus)).toBe('')
+
+    // The server refuses the first attempt with a challenge. Reported as a
+    // failure, which teaches the library nothing and consumes nothing.
+    await markRequestFailed(signingKeys.id, 401)
+    // No identity is published on the strength of a challenge.
+    expect(fake.chain.identityPublished).toBe(false)
+    // The same id, and the same body with an `auth` object merged into it
+    // by the product, sent again. The id survived the refusal.
+    await markRequestSent(signingKeys.id, '{}')
+    expect(fake.chain.identityPublished).toBe(true)
+
+    for (const request of batch.filter((r) => r.kind !== 'signing_keys_upload')) {
+      await markRequestSent(request.id, '{}')
+    }
+
+    // ---- Steps 3 and 4: their identity, and our copy of their keys ----
+    await fake.peerDevicesChanged()
+    expect(await pump()).toEqual(['keys_query'])
+
+    // We have an identity and they have one, and we have no opinion of
+    // theirs. The ordinary value for a peer running a mainstream client,
+    // and also where an incomplete chain lands.
+    expect((await decryptEvent(scope, { type: 'm.room.encrypted' })).senderVerification).toEqual({
+      state: 'unverified',
+      reason: 'unverified_identity',
+    })
+    expect(await getDeviceStatuses(PEER)).toEqual([
+      { deviceId: 'BOBDEVICE', trust: 'unverified' },
+      { deviceId: 'BOBPHONE', trust: 'unverified' },
+    ])
+
+    // ---- Step 5: a person compares a string ----
+    const id = await requestVerification(PEER, 'BOBDEVICE')
+    await acceptVerification(id)
+    await startVerificationComparison(id)
+    // No report, no string: the state machine advances on markRequestSent
+    // and on nothing else, and this is the one way the flow could fail
+    // silently if it were not reported.
+    await expect(getVerificationMaterial(id)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'material_not_ready',
+    )
+    expect(await pump()).toEqual(['to_device'])
+    expect(await getVerificationStage(id)).toBe('keys-exchanged')
+
+    const material = await getVerificationMaterial(id)
+    expect(material).toEqual({ decimals: [4444, 5555, 6666] })
+    await confirmVerification(id, material)
+    fake.finishTheFlow()
+    expect(await getVerificationStage(id)).toBe('done')
+
+    // The compared device is verified. The event is not, and that
+    // combination is not a defect: it is a comparison whose signature has
+    // not come back yet.
+    expect(await getDeviceStatuses(PEER)).toEqual([
+      { deviceId: 'BOBDEVICE', trust: 'verified' },
+      { deviceId: 'BOBPHONE', trust: 'unverified' },
+    ])
+    expect((await decryptEvent(scope, { type: 'm.room.encrypted' })).senderVerification).toEqual({
+      state: 'unverified',
+      reason: 'unverified_identity',
+    })
+
+    // ---- Step 6: upload the signature the comparison produced ----
+    expect(await pump()).toEqual(['signature_upload'])
+
+    // **Still not verified.** Every call so far returned success, the
+    // comparison finished, the device reads verified and the signature
+    // really did reach the server; nothing anywhere reports a problem, and
+    // the sender sits one rung below where a product would put it.
+    //
+    // Read this for what it is: the model reproducing that shape, so a
+    // reader of this file meets it. It fails if the facade stops driving
+    // the call that flips `signatureFetchedBack`, and it cannot fail on a
+    // library defect, because the value it reads is this file's own
+    // conjunction. What proves the library behaves this way is
+    // `verified_sender.rs`'s
+    // `omitting_the_second_key_fetch_leaves_the_sender_below_verified`.
+    expect((await decryptEvent(scope, { type: 'm.room.encrypted' })).senderVerification).toEqual({
+      state: 'unverified',
+      reason: 'unverified_identity',
+    })
+
+    // ---- Step 7: fetch their keys again, so that our own signature is in
+    // our own store, which is the only place the gate underneath reads ----
+    await fake.peerDevicesChanged()
+    expect(await pump()).toEqual(['keys_query'])
+
+    // Only now.
+    expect((await decryptEvent(scope, { type: 'm.room.encrypted' })).senderVerification).toEqual({
+      state: 'verified',
+    })
+
+    // And the second device, which nobody compared anything with and
+    // nobody ever will. This is the M4 design's section 3.2 item 1 arriving
+    // in a product: verifying one device of a user moves every device of
+    // that user, including ones that turn up afterwards. It is correct
+    // rather than a defect, and it is why `getDeviceStatuses` now says so
+    // at the call.
+    expect(await getDeviceStatuses(PEER)).toEqual([
+      { deviceId: 'BOBDEVICE', trust: 'verified' },
+      { deviceId: 'BOBPHONE', trust: 'verified' },
+    ])
+  })
+
+  /**
+   * The other refusal, which the chain above can never reach.
+   *
+   * A review found the model's `IdentityAlreadyExists` branch was dead
+   * code: everywhere in the chain, `identityKnown` and `privateKeysHeld`
+   * move together, because a bootstrap this device performs sets both. So
+   * `identityKnown && !privateKeysHeld` never held, the branch read as
+   * coverage and was not, and deleting
+   * `['IdentityAlreadyExists', 'identity_already_exists']` from
+   * `errors.ts` passed every test in this repository.
+   *
+   * That is the same defect this task fixed one variant over, seen from
+   * the other side: there the entry was missing and nothing could notice;
+   * here the entry was present and nothing defended it. Both end with a
+   * product being handed kind `'unknown'` and the message "crypto error:
+   * unknown" for a refusal it has to act on.
+   *
+   * `errors.test.ts` holds the mapping itself, walked over every generated
+   * variant so the class cannot reopen. This holds the half that file
+   * cannot: that the refusal survives the facade, arrives as its own kind
+   * rather than the *other* refusal's, and leaves nothing queued for a
+   * caller to send.
+   */
+  it('refuses to publish over an identity this device does not hold, as its own kind', async () => {
+    const fake = installFake()
+
+    // Ask first, because nothing is served before the server has been
+    // asked. This is the other refusal, and the two must not collapse.
+    await expect(bootstrapCrossSigning()).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'account_keys_not_fetched',
+    )
+    expect(await pump()).toEqual(['keys_query'])
+
+    // The answer names an identity this device does not hold: the ordinary
+    // shape of a fresh login on an account that has been in use for years.
+    fake.anotherDeviceOfOursPublishedAnIdentity()
+    expect(await getIdentityStatus()).toEqual({
+      accountKeysFetched: true,
+      identityKnown: true,
+      privateKeysHeld: false,
+    })
+
+    await expect(bootstrapCrossSigning()).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'identity_already_exists',
+    )
+
+    // Not the same kind as the first refusal, which has a remedy this one
+    // does not. A map that folded them, or lost either entry, would make
+    // both arrive as `'unknown'` and this assertion is what says so.
+    const refusal = await bootstrapCrossSigning().catch((e: unknown) => e)
+    expect(isCryptoError(refusal) && refusal.kind).toBe('identity_already_exists')
+    expect(isCryptoError(refusal) && refusal.kind).not.toBe('account_keys_not_fetched')
+    expect(isCryptoError(refusal) && refusal.retriable).toBe(false)
+
+    // And it queued nothing: unlike the first refusal, there is no request
+    // a caller could send that would change the answer.
+    expect(await takeOutgoingRequests()).toEqual([])
+  })
+})
+
+/**
+ * The mock defaults survive every describe above.
+ *
+ * **Deliberately the last describe in this file**, because that is the only
+ * position from which it can see a leak from any of the others. It is not a
+ * test of the library at all; it is a test of this file, and it exists
+ * because the file's own `beforeEach` documented a promise it had stopped
+ * keeping.
+ *
+ * The chain describe reimplements seven mocks with a stateful model. A
+ * review appended a probe after it and watched two cases fail:
+ * `decryptEvent` returned the chain's peer instead of the module-level
+ * default sender, and `takeOutgoingRequests` returned `[]` instead of the
+ * one-request default. Nothing in the suite failed, only because the chain
+ * describe was last and nothing enforced that it stay last.
+ *
+ * So the probe is kept rather than discarded. If a describe is appended
+ * after this one, it moves and this comment is what tells the next person
+ * why. A stateful mock that outlives its describe is the shape where a
+ * later test passes for a reason that has nothing to do with what it
+ * asserts.
+ */
+describe('the mock defaults survive every describe above', () => {
+  it('hands back the module-level decryptEvent envelope, not a previous test model', async () => {
+    const envelope = await decryptEvent(scope, { type: 'm.room.encrypted' })
+    expect(envelope.sender).toBe('@native-sender:example.org')
+    expect(envelope.senderVerification).toEqual({
+      state: 'unverified',
+      reason: 'unsigned_device',
+    })
+  })
+
+  it('hands back the module-level pump batch, not a drained model queue', async () => {
+    expect(await takeOutgoingRequests()).toEqual([{ id: 'req-1', kind: 'keys_upload', body: '{}' }])
+  })
+
+  it('hands back the module-level identity status and refusal', async () => {
+    expect(await getIdentityStatus()).toEqual({
+      accountKeysFetched: false,
+      identityKnown: false,
+      privateKeysHeld: false,
+    })
+    await expect(bootstrapCrossSigning()).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'account_keys_not_fetched',
+    )
   })
 })

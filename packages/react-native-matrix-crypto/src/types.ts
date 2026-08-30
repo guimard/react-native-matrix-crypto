@@ -51,29 +51,56 @@ export type CryptoAlgorithm = 'megolm' | 'olm' | (string & {})
  *   finishes. A device an administrator has blacklisted reads it too: this
  *   build exposes no call that can set that state, so folding it here says
  *   exactly as much as this build can honestly say.
- * - `'recognized'` — **not produced by this build.** Reserved for a device
- *   believable without a person having compared anything: one its owner
- *   signed with their cross-signing identity. This build does see such
- *   devices, and reports them at the event level as
- *   `senderVerification.reason === 'unverified_identity'`. What keeps this
- *   value unreachable is this call's own mapping, which asks a two-valued
- *   question with no middle answer. Cross-signing has landed since that
- *   sentence was written and the mapping did not move, so the value stays
- *   unreachable and will until a later version changes the mapping
- *   deliberately.
+ * - `'recognized'` — **not produced by this build, and that is now a
+ *   decision rather than a limit.** It is reserved for exactly one state:
+ *   a device believable without a person having compared anything, because
+ *   its owner signed it with their cross-signing identity. That state used
+ *   to be out of reach; since `bootstrapCrossSigning` it is the ordinary
+ *   one, and it arrives as `'verified'` instead. See below for why it is
+ *   folded and what it costs you.
  *   Declared now because widening a closed union later breaks every
  *   consumer that switched on it exhaustively, and would do so precisely
  *   when a product had stopped expecting the shape to move. Write the
  *   branch; it will not run yet.
- * - `'verified'` — a person compared a short authentication string on this
- *   device and on the far one, both said it matched, and the flow
- *   completed. See {@link getDeviceStatuses}, including why your own device
+ * - `'verified'` — this library has reason to trust the device, **by either
+ *   of two routes that this value does not tell apart**. A person compared
+ *   a short authentication string on this device and on the far one, both
+ *   said it matched, and the flow completed. *Or* the device is signed by
+ *   its owner's cross-signing identity and this library has verified that
+ *   identity, in which case nobody compared anything on this device at all.
+ *   The second route is new in this release and is the ordinary one from
+ *   now on. See {@link getDeviceStatuses}, including why your own device
  *   reads this from the moment it exists and therefore proves nothing.
  *
  * **This is about a device, not about an event.** A completed comparison
  * does not change what a decrypted event says about its sender, because the
  * event path consults cross-signing and a comparison sets local trust. M3
  * design, section 7, question 6.
+ *
+ * ## Why `'recognized'` stays folded into `'verified'`
+ *
+ * Recorded here rather than left silent, because a value a product was told
+ * to write a branch for and that then quietly never runs is worse than one
+ * that was never declared.
+ *
+ * The mapping underneath asks a single boolean -- locally trusted, or signed
+ * by an identity we have verified -- and there is no third answer to carry.
+ * Splitting it would mean asking a different question of the layer below,
+ * and it would mean that a device this library trusts for the second reason
+ * stopped reading `'verified'` and started reading `'recognized'`. That is a
+ * behaviour change in the direction that hurts: a product's "is this device
+ * trusted" branch would silently stop matching devices it had been matching,
+ * on the same release that changes what `'verified'` covers. One change to
+ * this value per release is the most a consumer can reasonably follow.
+ *
+ * So the fold stays, and the cost is stated instead of hidden: **you cannot
+ * ask this call whether a person compared a string with one particular
+ * device.** If your product needs that distinction, it has to record its own
+ * verifications as it performs them, or ask
+ * {@link EventEnvelope.senderVerification} the event-level question instead.
+ * If a later release does split them, `'recognized'` is already in this
+ * union, so that release adds no member and breaks no exhaustive switch --
+ * which is what declaring it early bought.
  */
 export type TrustState = 'unverified' | 'recognized' | 'verified'
 
@@ -209,27 +236,30 @@ export interface SyncDelta {
  * the *sender's* identity, not on ours: the gate underneath asks only
  * whether the sending device carries a signature from a self-signing key
  * its own owner published, and this library is not consulted. So a peer
- * whose client has cross-signing set up already produces it here, against a
- * release that has none, and that is most peers. Handle this branch. It is
+ * whose client has cross-signing set up already produces it here, whatever
+ * this library holds, and that is most peers. Handle this branch. It is
  * not a rare state and it is not a future one.
  *
- * `'verified'` and `'verification_violation'` are the two that do not
- * arrive through this surface yet, and both turn on **our** side rather
- * than the sender's. `'verified'` needs this library to hold a
- * cross-signing identity and to have signed the sender's with it;
+ * `'verified'` and `'verification_violation'` are the two that turn on
+ * **our** side rather than the sender's. `'verified'` needs this library to
+ * hold a cross-signing identity and to have signed the sender's with it;
  * `'verification_violation'` needs the sender's identity to have been
  * verified by us once and to have changed since.
  *
- * **The reason has moved, and which reason applies is worth knowing.**
- * Until M4 this library had no way to create such an identity at all, so
- * these two were unreachable by construction, and that is what this
- * paragraph used to say. The core holds one now and reaches `'verified'`
- * through the whole chain, bootstrap to decryption, in its own
- * `tests/verified_sender.rs`. What is still missing is the bridged call
- * that would let a product create that identity from TypeScript, and it is
- * the remaining step of the same milestone. So write those two branches
- * and expect them to start running: this is a gap that is closing, not a
- * property of the design. They are declared now because the union is
+ * **`'verified'` arrives through this surface from this release, and the
+ * history of why it did not is worth one paragraph.** It was unreachable by
+ * construction while this library had no way to create an identity of its
+ * own, which is what this paragraph used to say. Then the Rust core could
+ * create one and the TypeScript surface could not reach the call, which is
+ * what it said next. Both are now over: `bootstrapCrossSigning` is that
+ * call. The cryptography is proved where it can be, end to end against a
+ * counterparty the test process does not control, by the core's own
+ * `tests/verified_sender.rs`; that every step of it can be reached, in
+ * order, through the functions this package publishes is what
+ * `facade.test.ts` drives. So this branch runs. `'verification_violation'` is
+ * the one still waiting, and it waits on a situation rather than on a
+ * missing call: it needs a sender whose chain completed and whose identity
+ * then changed. Write it anyway. They are declared because the union is
  * closed, and widening a
  * closed union later is a breaking change for every consumer that switched
  * on it exhaustively, and because the alternative to a complete type is not
@@ -237,10 +267,11 @@ export interface SyncDelta {
  * that four values is all this vocabulary has, which is not true of what it
  * models.
  *
- * So four of the six arrive here today: `'unverified_identity'`,
- * `'unsigned_device'` (the ordinary case for a peer with no cross-signing
- * identity of their own), `'no_device'` in both its forms, and
- * `'mismatched_sender'`.
+ * What arrives here today, without a count over it because a count is the
+ * part of a claim most likely to go stale: `'verified'`, at the end of the
+ * chain and nowhere else; `'unverified_identity'`; `'unsigned_device'`, the
+ * ordinary case for a peer with no cross-signing identity of their own;
+ * `'no_device'` in both its forms; and `'mismatched_sender'`.
  *
  * ### This paragraph was wrong in 0.1.0, and has been rewritten twice
  *
@@ -290,14 +321,16 @@ export interface SyncDelta {
  * it as an impersonation signal, not as a weaker `'no_device'`.
  */
 export type SenderVerification =
-  // NOT YET REACHABLE THROUGH THIS SURFACE, and no longer for the reason
-  // this comment used to give. The event came from a device belonging to a
-  // user this library has verified, the only state in which authenticity
-  // is guaranteed. It needs a cross-signing identity of OUR OWN, signed
-  // over the sender's and then fetched back into our own store; completing
-  // a comparison is one step of that and does not produce it. The core can
-  // do all of it since M4; what is missing here is the bridged call that
-  // creates the identity. See the type's doc comment above.
+  // REACHABLE THROUGH THIS SURFACE, and only at the end of the whole chain.
+  // The event came from a device belonging to a user this library has
+  // verified, the only state in which authenticity is guaranteed. It needs a
+  // cross-signing identity of OUR OWN, signed over the sender's and then
+  // fetched back into our own store; completing a comparison is one step of
+  // that and does not produce it on its own. Every step is now a published
+  // call, starting at `bootstrapCrossSigning`. This said NOT YET REACHABLE
+  // through two milestones and for two different reasons, the second of
+  // which was a missing bridge rather than missing cryptography; both are
+  // over. See the type's doc comment above.
   | { state: 'verified' }
   // The sending device is known and carries no cross-signature. The ordinary
   // case for a peer whose client has no cross-signing identity, before and

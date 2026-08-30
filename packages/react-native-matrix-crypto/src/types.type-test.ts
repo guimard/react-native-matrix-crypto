@@ -77,10 +77,11 @@ const reasoned: SenderVerification = { state: 'verified', reason: 'unsigned_devi
 // 0.1.0 by any peer whose client has cross-signing set up. A list with a
 // completeness claim over it and no assertion behind it stays green forever,
 // which is how the omission survived a milestone: nothing here can fail.
-// `'verified'` is absent for a different reason, and a temporary one. The
-// core reaches it through the whole chain since M4, and the bridged call
-// that would let a product get there is the remaining step, so this list
-// gains an entry rather than losing one.
+// `'verified'` was absent for a different reason, and a temporary one: the
+// core reached it through the whole chain and the call that would let a
+// product start that chain was not bridged. It is bridged, so this list
+// gained the entry it was said to be waiting for rather than losing one.
+const authentic: SenderVerification = { state: 'verified' }
 const unsigned: SenderVerification = { state: 'unverified', reason: 'unsigned_device' }
 const crossSigned: SenderVerification = { state: 'unverified', reason: 'unverified_identity' }
 const impersonated: SenderVerification = { state: 'unverified', reason: 'mismatched_sender' }
@@ -114,4 +115,5 @@ void bad; void known; void future; void envelope; void decrypted
 void fabricatedTrust; void fabricatedStage; void trust; void stage
 void shortMaterial; void digitsOnly; void withSymbols
 void fabricatedState; void fabricatedReason; void problemless; void reasoned
-void unsigned; void crossSigned; void impersonated; void undeliverable; void undelivered
+void authentic; void unsigned; void crossSigned; void impersonated
+void undeliverable; void undelivered

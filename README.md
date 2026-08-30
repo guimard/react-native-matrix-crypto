@@ -110,6 +110,44 @@ full division.
 
 **Do not let a second drain overlap an unfinished one.** `takeOutgoingRequests` hands out three kinds that describe a standing need rather than one message, `keys_upload`, `keys_query` and `keys_claim`, and a later call that hands out a fresh request of one of those kinds retires the older id: `markRequestSent` then rejects it with `unknown_request`. That is deliberate, because the machine mints a new id for the same need each time and forgets the old one, but it means two pumps racing, or a pump on a timer alongside a pump after a write, will fail on ids you are legitimately holding. If you do see `unknown_request` for an id from an earlier batch, discard that response and pump again rather than retrying it; nothing is lost, because the need was re-derived rather than dropped. `takeOutgoingRequests`' own doc comment carries the full rule.
 
+A fourth kind, `signing_keys_upload`, is retired the same way and on a narrower trigger: a fresh one exists only after another `bootstrapCrossSigning`, so an ordinary second drain leaves it alone. It matters more than the other three because it is the one id you are meant to hold for a while, across an authentication loop with your user in the middle of it. Refused attempts never retire it; a second bootstrap followed by a drain does. `to_device`, `signature_upload` and `room_message` ids are never retired this way at all.
+
+## Creating this account's signing identity
+
+A signing identity is what lets one device vouch for another without a person comparing anything, and what lets a decrypted event say who sent it rather than only which key it arrived under. Without one, `senderVerification` can never read `verified`, however many strings your users compare.
+
+```ts
+import { bootstrapCrossSigning, getIdentityStatus } from 'react-native-matrix-crypto'
+
+try {
+  await bootstrapCrossSigning()
+} catch (e) {
+  // The first call in a process is normally refused with
+  // 'account_keys_not_fetched'. The key query that lifts it has already been
+  // queued by the refusal, so: pump, then call this again.
+  if (e.kind !== 'account_keys_not_fetched') throw e
+  await pump()
+  await bootstrapCrossSigning()
+}
+
+for (const request of await takeOutgoingRequests()) {
+  // In the order you were handed them: device keys, then signing_keys_upload,
+  // then signature_upload. A signature may reference a key that is not
+  // published yet.
+  const res = await send(request)
+  if (res.ok) await markRequestSent(request.id, await res.text())
+  else await markRequestFailed(request.id, res.status)
+}
+```
+
+**The `signing_keys_upload` request needs user-interactive authentication, and this library will not do it for you.** Expect its first send to come back `401` with a challenge. Read the challenge, ask your user, merge an `auth` object into `request.body`, which is opaque JSON this library never interprets, and send the same body again. The id survives any number of refused attempts, because only a success consumes it.
+
+**There is no `auth` parameter, and there will not be one.** The challenge is only known after the first request has been refused, so an argument on `bootstrapCrossSigning` would have to be guessed before the server had said what it wants. The cost is stated rather than hidden: you cannot complete this step without implementing an authentication flow this library gives you no help with. What you get for it is that this library has never touched an account credential.
+
+**Call it on every launch.** It republishes the identity this device already holds rather than creating a second one. What it will not do is create one over an identity the account already has: that would reset the trust of everyone who had verified the old one, and it is refused with `identity_already_exists` instead. If your device does not hold the private keys for an identity the account already has, this release has no way to join it; that is the next step of the same milestone.
+
+`getIdentityStatus` reports three separate facts, and two of them have to be read together: `identityKnown === false` means "nobody has asked" while `accountKeysFetched` is false, and "the server says there is none" once it is true. Only the second is a basis for creating one.
+
 ## Verifying a device
 
 Two people compare a seven-symbol string, read off their two screens, over a channel this library did not establish, in person or on a call they already trust. If it matches, each side records the other's device as verified. If it does not, the flow is cancelled and nothing is recorded. That refusal is the point: a comparison that can only ever agree proves nothing. A flow is named by an opaque id; hand it back verbatim and parse nothing out of it.
@@ -145,6 +183,7 @@ await receiveSyncChanges(encryptionSlice(sync))
 * **Keep the to-device events you could not act on, and the ones you did, until their flow finishes.** Feeding the same event to `receiveSyncChanges` again once you have queried the sender's devices does create the flow and announces it exactly as a first arrival would; you never open the event, you keep an opaque blob and get back the announcement. Flows also live in memory on both sides of this boundary, so a process that restarts mid-verification holds a `verificationId` that now rejects with `unknown_flow`, and the recovery is the same one. Promptly, though: an invitation expires ten minutes after it was sent.
 * **Every step goes through the queue.** Skipping `markRequestSent` is the one way this flow could fail silently, because the state machine advances on that report and on nothing else. It is reported instead: `getVerificationMaterial` rejects with kind `material_not_ready` rather than resolving empty or hanging, and that kind is deliberately **not** retriable. Retrying never resolves it; pumping does.
 * **`getDeviceStatuses` is the only place a verification becomes visible.** Your own device reads `verified` from the moment it exists, because this process holds its private keys, so "some device in this list reads verified" says nothing. What carries a claim is another user's device changing.
+* **`verified` no longer means a person compared a string with that particular device, and this release is where that changed.** The value maps from one boolean underneath: locally trusted, or signed by an identity you have verified. Once you hold a signing identity, verifying one device of a user moves *every* device of that user to `verified` at once, including devices that appear later, with nobody comparing anything on any of them. That is correct rather than a defect and it is the point of cross-signing, but if your product read this value as "a human checked this exact device", it was right before this release and is wrong from it. Read it as "trusted", and ask `senderVerification` if what you need is what one event can be said to prove.
 * **`startVerificationComparison` reports three different things.** `comparison_already_started` means the other side got there first, which is not a failure but does leave you something to do: call `acceptVerification` again, because their start is a question and the flow waits at `started` until you answer it. `verification_ended` means the flow is over and you need a new one. `wrong_stage` means it has not been agreed to yet. `getVerificationStage` is free to call and tells you which at any point.
 
 ## What works today
@@ -160,8 +199,9 @@ await receiveSyncChanges(encryptionSlice(sync))
 | Device verification by short string comparison (SAS) | working, in both flow shapes and whichever side opens the comparison, proven against a bare `matrix-sdk-crypto` machine driven directly: an agreement completing, and a genuine disagreement refusing |
 | A third-party client taking part in a verification | proven over a real homeserver, and it stops short of *completing* one for a reason in the counterparty, described in the roadmap |
 | Crypto signal channel (`onCryptoSignal`) | working for verification. `verification_requested` carries the `verificationId` that `acceptVerification` takes, and is the only way this library hands a receiving side that identifier; `trust_changed` says a comparison finished and a device belonging to that user moved, and `getDeviceStatuses` says which. `unexpected_device` and `key_missing` still have no producer: a missing key arrives as a rejected `decryptEvent` with kind `missing_key` |
-| `EventEnvelope.senderVerification` on a decrypted event | working, and it cannot read `verified` before cross-signing |
-| Sender authenticity, per event | **not provided.** It needs cross-signing, which is M4. Device verification has landed and does not give it |
+| Creating and publishing this account's cross-signing identity | working, through `bootstrapCrossSigning` and `getIdentityStatus`, with the user-interactive authentication loop left to your product because this library never sees a credential. Joining an identity the account already has, from a device that does not hold its private keys, is not in this release |
+| `EventEnvelope.senderVerification` on a decrypted event | working, and it reads `verified` once the whole chain has been driven, which it can be from TypeScript since this release |
+| Sender authenticity, per event | **provided at the end of a chain, not by a call.** Seven steps: hold a signing identity, publish it, have the sender publish and sign theirs, fetch their keys, complete a comparison, upload the signature it produces, and fetch their keys again. Omitting the last step is silent and leaves every event reading `unverified_identity` |
 | Device verification by QR code | **deferred**, see the roadmap |
 | Secret export and import | **not implemented**, see the roadmap |
 
@@ -171,13 +211,13 @@ The unimplemented functions exist today as final types that compile, and reject 
 
 **A verified device is not a verified sender.** `EventEnvelope.sender` is the value the homeserver delivered, and a successfully decrypted event does not prove who sent it. **Verifying a device does not change this.** A short string comparison establishes *local* trust in a device, and the path that decides what a decrypted event says about its sender consults *cross-signing*: upstream's `SenderData::from_device` branches on whether the sending device is cross-signed and then on whether that signature is trusted, and never consults local trust. Only the second of those two questions needs a key of ours. So a device can read `verified` from `getDeviceStatuses` while an event from that same device still carries an unauthenticated sender. Treat `sender` and `algorithm` as unauthenticated transport metadata, and not until any particular version: this said "until cross-signing lands in M4", cross-signing has landed, and neither field moved. Both are read from the incoming event and never re-derived. What cross-signing adds is `senderVerification`, a separate value rather than a promotion of those two.
 
-`EventEnvelope.senderVerification` reports what this library knew about the sender at the moment it decrypted, in its own vocabulary rather than folded into `TrustState`, because they are two subjects. It cannot read `verified` through this release's surface yet, and that is documented at the type rather than left for you to discover, at the type and at each member.
+`EventEnvelope.senderVerification` reports what this library knew about the sender at the moment it decrypted, in its own vocabulary rather than folded into `TrustState`, because they are two subjects. What each value costs to reach is documented at the type and at each member rather than left for you to discover.
 
 **Which two, and the surprising one that is not among them.** The line falls on *whose* cross-signing identity a value depends on. `verified` and `verification_violation` both need an identity of **ours**. `unverified_identity` needs one from **the sender** and nothing from us: the check underneath asks only whether the sending device carries a signature from a self-signing key its own owner published. So this release does produce it, from any peer whose client has cross-signing set up, which is most of them. Handle that branch. Version 0.1.0 documented all three as unreachable and was wrong about that one; no test in this repository had a cross-signed counterparty, so nothing contradicted it. One does now.
 
-**The other two were right when they were written, and they are on their way out.** The reason they do not arrive has changed, and it is worth knowing which reason applies to the version you are holding. It used to be that this library could not create a cross-signing identity at all. It can: the Rust core bootstraps one, signs a peer's identity with it, and reaches `verified` on a decrypted event through the whole chain in its own end-to-end test. What is not bridged to TypeScript yet is the call that lets your product create that identity, so the values stay out of reach from here for now. Write both branches.
+**The other two were right when they were written, and one of them is out.** `verified` arrives through this surface from this release. It went stale in two steps and it is worth knowing which version you are holding: first this library could not create a cross-signing identity at all, then the Rust core could and TypeScript could not reach the call, and now `bootstrapCrossSigning` is that call. Reaching the value is still a chain of seven steps rather than a setting, and the step everyone omits is the last one, but every step of it can now be driven from your product. `verification_violation` is the one still waiting, and it waits on a situation rather than on a missing call: it needs a sender whose chain completed and whose identity then changed. Write both branches.
 
-**When they do arrive, they will not arrive retroactively.** Verifying someone changes what their next messages report, not what their old ones reported. The value belongs to the Megolm session an event was encrypted with, it is computed once when that session's key arrives, and it is never recomputed for a session whose sender had already been identified. A message decrypted while its sender was merely cross-signed keeps reading `unverified_identity` until that session is replaced, however thoroughly you verify them afterwards. Design for "from here on" and not for a badge that backfills a conversation.
+**When `verified` does arrive, it does not arrive retroactively.** Verifying someone changes what their next messages report, not what their old ones reported. The value belongs to the Megolm session an event was encrypted with, it is computed once when that session's key arrives, and it is never recomputed for a session whose sender had already been identified. A message decrypted while its sender was merely cross-signed keeps reading `unverified_identity` until that session is replaced, however thoroughly you verify them afterwards. Design for "from here on" and not for a badge that backfills a conversation.
 
 What `senderVerification` can also do is tell an ordinary unsigned device apart from `mismatched_sender`, which says the sender the event claims is not the owner of the session that encrypted it. Decryption succeeded and the `sender` field is still false. That is an impersonation signal and the one value here worth reacting to on its own. It is also a **snapshot taken at decryption time**: upstream defines it as the state of the sending device then, and tells callers who persist it to mark it dirty when `device_lists.changed` arrives down the sync, which you are already passing to `receiveSyncChanges`. Nothing re-derives a stored value for you.
 
@@ -213,7 +253,7 @@ QR verification is **deferred, not rejected**. It would add a dependency absent 
 
 Next, in order:
 
-* **cross-signing**, which is what turns a verified device into a verified *sender*, and the item that turns `sender` from transport metadata into a claim you can rely on
+* the rest of **cross-signing**. Creating and publishing this account's identity has landed, which is what makes a verified *sender* reachable at all; what is still missing is joining an identity the account already has from a new login, and server-side storage of the private keys that would make that possible without a second device
 * device verification by QR code, alongside the string comparison that has landed
 * secret export and import, for recovery
 * multi participant scenarios and federation neutral test coverage

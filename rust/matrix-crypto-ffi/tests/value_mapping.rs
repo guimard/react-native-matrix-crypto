@@ -1,10 +1,10 @@
 //! Which core value becomes which FFI value.
 //!
 //! `error_mapping.rs`'s hazard, one file over and with two more shapes of
-//! it. This crate mirrors four more core types by hand -- `FlowStage`,
-//! `TrustState`, `SasMaterial` and `DeviceStatus` -- and every one of them
-//! has the property that a wrong arm compiles, passes `clippy -D warnings`,
-//! and passes every other test in this repository:
+//! it. This crate mirrors five more core types by hand -- `FlowStage`,
+//! `TrustState`, `SasMaterial`, `DeviceStatus` and `IdentityStatus` -- and
+//! every one of them has the property that a wrong arm compiles, passes
+//! `clippy -D warnings`, and passes every other test in this repository:
 //!
 //! * **Two fieldless enums.** Every variant of `FlowStage` is
 //!   interchangeable with every other as far as the compiler is concerned,
@@ -14,12 +14,17 @@
 //!   one, which is the single worst sentence this library could say.
 //!   Neither is reachable from the core's own tests, which never cross this
 //!   boundary, nor from the TypeScript tests, which mock the boundary away.
-//! * **Three same-typed fields on one record.** `SasMaterial`'s three
+//! * **Three same-typed fields on one record, twice.** `SasMaterial`'s three
 //!   decimals are `u16`, `u16`, `u16`. Swapping two of them is invisible to
 //!   the compiler and produces a short authentication string that differs
 //!   from the far side's in a way that looks exactly like a genuine
 //!   mismatch -- so the observable symptom of this defect is a verification
 //!   that a careful person correctly refuses, every time, for no reason.
+//!   `IdentityStatus`'s three fields are `bool`, `bool`, `bool`, which is
+//!   the same hazard with a smaller alphabet and a worse consequence: two of
+//!   those three exist precisely to be told apart, and reporting them the
+//!   wrong way round tells a product it may publish an identity over one the
+//!   account already has.
 //!
 //! No machine, no store and no runtime: every `From` impl under test is
 //! public, every core type is public and constructible from outside the
@@ -27,13 +32,13 @@
 //! runs in no measurable time.
 
 use matrix_crypto_core::{
-    CryptoSignal, DeviceStatus, Envelope, FlowStage, SasEmoji, SasMaterial, SenderVerification,
-    TrustState,
+    CryptoSignal, DeviceStatus, Envelope, FlowStage, IdentityStatus, SasEmoji, SasMaterial,
+    SenderVerification, TrustState,
 };
 use matrix_crypto_ffi::{
     CryptoSignal as FfiCryptoSignal, DeviceStatus as FfiDeviceStatus, Envelope as FfiEnvelope,
-    SasMaterial as FfiSasMaterial, SenderVerification as FfiSenderVerification,
-    TrustState as FfiTrustState, VerificationStage,
+    IdentityStatus as FfiIdentityStatus, SasMaterial as FfiSasMaterial,
+    SenderVerification as FfiSenderVerification, TrustState as FfiTrustState, VerificationStage,
 };
 
 /// All seven stages, each to its own. One assertion per variant rather than
@@ -537,5 +542,68 @@ fn an_inbound_announcement_keeps_its_three_strings_apart() {
         verification_id, "the-flow-identifier",
         "the core calls this a flow id and this crate calls it a verification id; they \
          must be the same value, because it is the one a product hands back"
+    );
+}
+
+/// The signing identity's three booleans stay in their own fields.
+///
+/// The file's opening hazard again, with the smallest alphabet it has: three
+/// `bool` fields, so all thirty-six permutations of the mapping compile,
+/// pass `clippy -D warnings` and pass every other test in this repository.
+///
+/// It is not the cosmetic member of the set. The core's own doc comment
+/// exists to keep `account_keys_fetched` and `identity_known` apart, because
+/// `identity_known == false` means "nobody has asked" under one and "the
+/// server says there is none" under the other, and only the second is a
+/// basis for minting an identity. A product reading them the wrong way round
+/// is a product that believes it may publish a new identity over one the
+/// account already has, which resets the trust of every device and every
+/// user who had verified the old one. That is the exact destruction
+/// `signing.rs`'s gate exists to prevent, arrived at by crossing a boundary
+/// rather than by asking the wrong question.
+///
+/// One assertion per field, each with the other two false, so that no
+/// permutation can make any of the three look right: a swap moves a `true`
+/// to a field this test expects `false` in, and both halves of that fail.
+#[test]
+fn an_identity_status_keeps_its_three_facts_apart() {
+    let asked_only = FfiIdentityStatus::from(IdentityStatus {
+        account_keys_fetched: true,
+        identity_known: false,
+        private_keys_held: false,
+    });
+    assert!(
+        asked_only.account_keys_fetched,
+        "asking the server must not arrive as anything else -- it is the one \
+         fact that authorises minting"
+    );
+    assert!(!asked_only.identity_known);
+    assert!(!asked_only.private_keys_held);
+
+    let known_only = FfiIdentityStatus::from(IdentityStatus {
+        account_keys_fetched: false,
+        identity_known: true,
+        private_keys_held: false,
+    });
+    assert!(!known_only.account_keys_fetched);
+    assert!(
+        known_only.identity_known,
+        "the account having an identity must not arrive as having asked \
+         about one"
+    );
+    assert!(!known_only.private_keys_held);
+
+    let holding_only = FfiIdentityStatus::from(IdentityStatus {
+        account_keys_fetched: false,
+        identity_known: false,
+        private_keys_held: true,
+    });
+    assert!(!holding_only.account_keys_fetched);
+    assert!(!holding_only.identity_known);
+    assert!(
+        holding_only.private_keys_held,
+        "holding the private keys must not arrive as either of the other two: \
+         it is the field that says this device can sign rather than only \
+         recognise"
     );
 }
