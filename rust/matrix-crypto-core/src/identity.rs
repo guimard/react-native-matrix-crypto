@@ -78,11 +78,17 @@ pub enum TrustState {
     /// absence of the signature. [`device_statuses`] asks upstream's
     /// `Device::is_verified`, which is `is_locally_trusted() ||
     /// is_cross_signing_trusted()`: two inputs, one boolean, no middle
-    /// value to carry a "signed by its owner, owner unverified" answer. So
-    /// this stays unreachable **after** cross-signing lands as well, unless
-    /// a later milestone deliberately changes that mapping. Folding it is
-    /// defensible; folding it silently is not, which is why this paragraph
-    /// is here rather than a milestone name.
+    /// value to carry a "signed by its owner, owner unverified" answer.
+    ///
+    /// This said the value would stay unreachable **after** cross-signing
+    /// landed as well. Cross-signing has landed, in M4, and the mapping did
+    /// not move, so it is still unreachable and the sentence is now a
+    /// statement about the present rather than a prediction. What did
+    /// change is the other side of that same boolean: see
+    /// [`TrustState::Verified`], which now has two ways of arriving instead
+    /// of one. Folding this value is defensible; folding it silently is
+    /// not, which is why this paragraph is here rather than a milestone
+    /// name.
     ///
     /// Declared now rather than added later because the set is closed:
     /// widening a closed union is a breaking change for every consumer that
@@ -91,15 +97,31 @@ pub enum TrustState {
     /// unreachable at the type itself, in both languages, so its presence
     /// is never read as a claim that it happens.
     Recognized,
-    /// A person compared a short authentication string on this device and
-    /// on the far one, both said it matched, and the flow completed.
+    /// This machine has reason to trust the device, by either of two
+    /// routes that this value does not tell apart.
     ///
-    /// The only value with cryptographic weight, and today the only one a
-    /// comparison produces: see [`crate::verification`]. Upstream would
-    /// also report it for a cross-signature this machine could follow,
-    /// which is why the mapping below asks `is_verified` rather than
-    /// `is_locally_trusted` -- the day cross-signing lands, that answer is
-    /// already the right one.
+    /// **A person compared a short authentication string** on this device
+    /// and on the far one, both said it matched, and the flow completed:
+    /// see [`crate::verification`]. That was the only route until M4, and
+    /// this comment described only it.
+    ///
+    /// **Or the device is signed by its owner's cross-signing identity and
+    /// this machine has verified that identity.** Nobody compares anything
+    /// on the second route. The mapping below asks upstream's
+    /// `Device::is_verified`, which is `is_locally_trusted() ||
+    /// is_cross_signing_trusted()`, and the second half of that had no way
+    /// to be true before this machine could hold a signing identity of its
+    /// own. It can since [`crate::bootstrap_identity`], so verifying one
+    /// device of a user can move **every** device of that user to this
+    /// value at once, including devices that appear afterwards.
+    ///
+    /// That is correct rather than a defect, and it is the point of
+    /// cross-signing. It is also a behaviour change a caller cannot see
+    /// coming: anything that read this value as "a human compared a string
+    /// with this exact device" was right until M4 and is wrong from it.
+    /// Read it as "trusted", and read [`crate::SenderVerification`] for
+    /// what an individual event can be said to prove, which is a different
+    /// question with a different and more expensive answer.
     ///
     /// **This machine's own device reads `Verified` from the moment it is
     /// created, before anything has been compared.** That is upstream's own

@@ -87,13 +87,29 @@ fn decryption_settings() -> DecryptionSettings {
     // `TrustRequirement` has three tiers and none of them is local trust
     // (`matrix-sdk-crypto-0.18.0/src/lib.rs`: `Untrusted`,
     // `CrossSignedOrLegacy`, `CrossSigned`). A short-string comparison sets
-    // local trust, so tightening this to either cross-signed tier would
-    // reject essentially every event in a deployment that has verified
-    // devices by comparison and published no cross-signing identity --
-    // which is every deployment this build supports. `Untrusted` is
-    // upstream's own most permissive option, explicitly documented as "not
-    // recommended", and it stays as a deliberate, named placeholder for a
-    // decision that becomes makeable when cross-signing does, not before.
+    // local trust, so tightening this to either cross-signed tier rejects
+    // every event from a peer whose device carries no cross-signature,
+    // however carefully a person compared strings with it.
+    //
+    // This used to add "which is every deployment this build supports",
+    // and to call the decision one that "becomes makeable when
+    // cross-signing does, not before". Cross-signing landed in M4, so the
+    // second half is spent: the decision is makeable now, and this
+    // milestone deliberately does not take it. What is left is a real
+    // trade rather than an absence, with two sides worth naming before
+    // anyone moves this line.
+    //
+    // Tightening it would refuse events this call returns today, from any
+    // peer without cross-signing, which is a product decision and not a
+    // library one. And it would make
+    // `MegolmError::SenderIdentityNotTrusted` reachable for the first
+    // time, which folds two conditions a product must tell apart into one
+    // `SessionError::UnknownDevice`: "verify this person to read this" and
+    // "this event's provenance is broken, never trust it". See that
+    // variant's own doc comment. So this is not the one-line change it
+    // looks like. `Untrusted` is upstream's own most permissive option,
+    // explicitly documented as "not recommended", and it stays as a
+    // deliberate, named placeholder.
     DecryptionSettings {
         sender_device_trust_requirement: TrustRequirement::Untrusted,
     }
@@ -232,13 +248,19 @@ pub enum SessionError {
     /// (fixable by the user verifying the device). The second reason is
     /// unreachable in M2, which always decrypts with the most permissive
     /// trust requirement -- see `decryption_settings()` -- so only the
-    /// unfixable case is reachable today, and still is: this said M3 would
-    /// make the trust requirement configurable and split the two reasons
-    /// apart, and M3 did neither. It could not. `TrustRequirement` has no
-    /// local-trust tier, so the requirement cannot be tightened before
-    /// cross-signing without refusing nearly every event -- see
-    /// `decryption_settings()` above. Splitting these two reasons therefore
-    /// waits on the same thing. Until then, do not assume this kind is
+    /// unfixable case is reachable today, and still is.
+    ///
+    /// The reason it is still unreachable has changed, and the change is
+    /// the part worth reading. This said M3 would make the trust
+    /// requirement configurable and split the two reasons apart, that M3
+    /// did neither, and that it could not, because `TrustRequirement` has
+    /// no local-trust tier and cross-signing did not exist here yet.
+    /// Cross-signing exists here now. Nothing blocks tightening the
+    /// requirement any more; it simply has not been tightened, and
+    /// `decryption_settings()` records why leaving it is a decision rather
+    /// than an oversight. Splitting these two reasons is therefore no
+    /// longer waiting on a capability, it is waiting on the day the second
+    /// reason can occur at all. Until then, do not assume this kind is
     /// always fixable by verification.
     #[error("the device that encrypted this event is not trusted")]
     UnknownDevice,
@@ -984,10 +1006,14 @@ fn classify_megolm_error(error: MegolmError) -> SessionError {
         // unreachable today, unlike the arm above it. Matched anyway, with
         // no wildcard, for whenever that requirement is tightened and this
         // becomes reachable. **This said "for when M3 tightens that
-        // requirement", and M3 did not**: `TrustRequirement` has no
-        // local-trust tier, so the requirement cannot be tightened before
-        // cross-signing, which is M4. No milestone is named here now, for
-        // the reason `decryption_settings()` gives.
+        // requirement", and M3 did not**, because `TrustRequirement` has no
+        // local-trust tier and the requirement could not be tightened
+        // before cross-signing. M4 landed cross-signing and did not tighten
+        // it either, so this arm is still unreachable; what changed is that
+        // it is no longer unreachable for want of anything. It is a
+        // decision `decryption_settings()` states and deliberately leaves
+        // standing. No milestone is named here now, for the reason that
+        // comment gives.
         //
         // Grouped with `MismatchedIdentityKeys` above under the same kind
         // for now, but the two are not the same shape of failure: this one
@@ -1001,10 +1027,12 @@ fn classify_megolm_error(error: MegolmError) -> SessionError {
         // apart from "this event's provenance is broken, never trust it",
         // and one shared kind cannot say which. That is B8 in the M3
         // design's own deferred list, and it stays inert exactly as long as
-        // this arm stays unreachable -- which the comment above says is
-        // until cross-signing. This said "Revisit this merge in M3", which
-        // M3 read and did not act on, because there was nothing yet to
-        // split.
+        // this arm stays unreachable, which is now a matter of the trust
+        // requirement this crate chooses rather than of anything it lacks.
+        // This said "Revisit this merge in M3", which M3 read and did not
+        // act on because there was nothing yet to split; the same held
+        // through M4, and the trigger to watch for is the day
+        // `decryption_settings()` stops passing `Untrusted`.
         MegolmError::SenderIdentityNotTrusted(_) => SessionError::UnknownDevice,
 
         // The event or its decrypted content was malformed, or the
@@ -1211,12 +1239,20 @@ pub async fn share_scope_key(scope: &str, users: &[String]) -> Result<(), Sessio
                     // `SessionRecipientCollectionError::CrossSigningNotSetup`
                     // before it looks at a single recipient
                     // (`session_manager/group_sessions/share_strategy.rs`).
-                    // Cross-signing is **M4**, settled as such by the M3
-                    // design's 2026-08-29 amendment; this said "M3's work",
-                    // which the same document contradicts. So the strategy
-                    // stays where M2 put it, and moving it before
-                    // cross-signing would not share room keys selectively, it
-                    // would fail every send.
+                    //
+                    // This then said the strategy could not move "before
+                    // cross-signing, which is M4". M4 has landed, so the
+                    // absence that sentence named is gone: a machine that
+                    // has called `bootstrap_identity` holds an identity and
+                    // clears that refusal. The absence became a
+                    // *condition*, and that is why the strategy still does
+                    // not move here. Bootstrapping is the product's call
+                    // and not this library's, so a machine that never
+                    // bootstraps still has none, and an identity-based
+                    // strategy would fail every send such a product makes
+                    // rather than sharing selectively. Moving this line
+                    // means deciding what that product should see, which is
+                    // a decision M4 does not take.
                     EncryptionSettings::default(),
                 )
                 .await;

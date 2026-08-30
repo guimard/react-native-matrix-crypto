@@ -57,8 +57,10 @@ export type CryptoAlgorithm = 'megolm' | 'olm' | (string & {})
  *   devices, and reports them at the event level as
  *   `senderVerification.reason === 'unverified_identity'`. What keeps this
  *   value unreachable is this call's own mapping, which asks a two-valued
- *   question with no middle answer, so it stays unreachable after
- *   cross-signing lands unless a later version changes that deliberately.
+ *   question with no middle answer. Cross-signing has landed since that
+ *   sentence was written and the mapping did not move, so the value stays
+ *   unreachable and will until a later version changes the mapping
+ *   deliberately.
  *   Declared now because widening a closed union later breaks every
  *   consumer that switched on it exhaustively, and would do so precisely
  *   when a product had stopped expecting the shape to move. Write the
@@ -211,33 +213,52 @@ export interface SyncDelta {
  * release that has none, and that is most peers. Handle this branch. It is
  * not a rare state and it is not a future one.
  *
- * `'verified'` and `'verification_violation'` are the two that cannot
- * occur, and both are blocked on **our** side. `'verified'` needs this
- * library to hold a cross-signing identity and to have signed the sender's
- * with it; `'verification_violation'` needs the sender's identity to have
- * been verified by us once and to have changed since. Nothing in this
- * release publishes such an identity, so neither can arrive however
- * cross-signed the sender is. Write those two branches; they will not run
- * yet. They are declared now because the union is closed, and widening a
+ * `'verified'` and `'verification_violation'` are the two that do not
+ * arrive through this surface yet, and both turn on **our** side rather
+ * than the sender's. `'verified'` needs this library to hold a
+ * cross-signing identity and to have signed the sender's with it;
+ * `'verification_violation'` needs the sender's identity to have been
+ * verified by us once and to have changed since.
+ *
+ * **The reason has moved, and which reason applies is worth knowing.**
+ * Until M4 this library had no way to create such an identity at all, so
+ * these two were unreachable by construction, and that is what this
+ * paragraph used to say. The core holds one now and reaches `'verified'`
+ * through the whole chain, bootstrap to decryption, in its own
+ * `tests/verified_sender.rs`. What is still missing is the bridged call
+ * that would let a product create that identity from TypeScript, and it is
+ * the remaining step of the same milestone. So write those two branches
+ * and expect them to start running: this is a gap that is closing, not a
+ * property of the design. They are declared now because the union is
+ * closed, and widening a
  * closed union later is a breaking change for every consumer that switched
  * on it exhaustively, and because the alternative to a complete type is not
  * a smaller true one but a different false one: a four-value type would say
  * that four values is all this vocabulary has, which is not true of what it
  * models.
  *
- * So four of the six occur: `'unverified_identity'`, `'unsigned_device'`
- * (the ordinary case for a peer with no cross-signing identity of their
- * own), `'no_device'` in both its forms, and `'mismatched_sender'`.
+ * So four of the six arrive here today: `'unverified_identity'`,
+ * `'unsigned_device'` (the ordinary case for a peer with no cross-signing
+ * identity of their own), `'no_device'` in both its forms, and
+ * `'mismatched_sender'`.
  *
- * ### This paragraph was wrong in 0.1.0
+ * ### This paragraph was wrong in 0.1.0, and has been rewritten twice
  *
  * It said all three of `'verified'`, `'unverified_identity'` and
  * `'verification_violation'` were "NOT PRODUCED BY THIS RELEASE".
- * `'unverified_identity'` always was produced. The claim survived review
+ * `'unverified_identity'` always was produced. That claim survived review
  * because no test in the repository had a cross-signed counterparty, so
  * nothing could contradict it, and it sounded like the two true sentences
- * standing next to it. If you read that sentence and skipped the branch,
- * that branch is reachable and this is the correction.
+ * standing next to it. If you read it and skipped the branch, that branch
+ * is reachable and this is the correction.
+ *
+ * The other two sentences were true when they were written, and stopped
+ * being true for a different reason: the library improved. That is the
+ * lesson worth carrying rather than the specific mistake. A claim about
+ * what a build cannot produce is a claim about every peer it might meet
+ * and about every version of itself, so it needs re-reading whenever
+ * either changes, and it will not fail a test on its own when it goes
+ * stale.
  *
  * ## `'verified'` in particular
  *
@@ -245,10 +266,20 @@ export interface SyncDelta {
  * `'verified'`.** It makes their *device* read `'verified'` from
  * {@link getDeviceStatuses}, which is a different question with a different
  * answer. The decrypted-event path consults cross-signing; a short-string
- * comparison sets local trust. If your product needs "did this specific
- * event come from a device we have verified", the honest answer today is
- * assembled from two calls, and this field alone is not it. M3 design,
- * section 7, questions 3 and 6.
+ * comparison sets local trust.
+ *
+ * That stays true now that the library can cross-sign, and the gap it
+ * leaves is wider than it looks. A comparison is one step of seven. The
+ * signature it produces has to be uploaded and then fetched back before
+ * any event can read `'verified'`, because nothing caches the signature
+ * locally and the check underneath reads the store. A chain that stops one
+ * step short returns success from every call, leaves the device reading
+ * `'verified'`, and leaves every event from that device reading
+ * `'unverified_identity'`, which is indistinguishable from never having
+ * verified the sender at all. If your product needs "did this specific
+ * event come from a device we have verified", it is this field that
+ * answers, and the device-level one that will mislead you. M3 design,
+ * section 7, questions 3 and 6; M4 design, section 3.1.
  *
  * ## `'mismatched_sender'` in particular
  *
@@ -259,11 +290,14 @@ export interface SyncDelta {
  * it as an impersonation signal, not as a weaker `'no_device'`.
  */
 export type SenderVerification =
-  // NOT PRODUCED BY THIS RELEASE. The event came from a device belonging to
-  // a user this library has verified, the only state in which authenticity
-  // is guaranteed. Needs a cross-signing identity of OUR OWN, signed over
-  // the sender's; completing a comparison does not produce it. See the
-  // type's doc comment above.
+  // NOT YET REACHABLE THROUGH THIS SURFACE, and no longer for the reason
+  // this comment used to give. The event came from a device belonging to a
+  // user this library has verified, the only state in which authenticity
+  // is guaranteed. It needs a cross-signing identity of OUR OWN, signed
+  // over the sender's and then fetched back into our own store; completing
+  // a comparison is one step of that and does not produce it. The core can
+  // do all of it since M4; what is missing here is the bridged call that
+  // creates the identity. See the type's doc comment above.
   | { state: 'verified' }
   // The sending device is known and carries no cross-signature. The ordinary
   // case for a peer whose client has no cross-signing identity, before and
@@ -274,9 +308,11 @@ export type SenderVerification =
   // from THE SENDER and nothing from us, so it arrives from any peer whose
   // client has cross-signing set up. Handle this branch.
   | { state: 'unverified'; reason: 'unverified_identity' }
-  // NOT PRODUCED BY THIS RELEASE. The device is cross-signed, that identity
-  // was verified once, and it is not the same identity now. Needs a previous
-  // verification by us, which needs a cross-signing identity of our own.
+  // NOT YET REACHABLE THROUGH THIS SURFACE. The device is cross-signed,
+  // that identity was verified once, and it is not the same identity now.
+  // It sits one step PAST `'verified'` rather than beside it: it needs a
+  // previous verification by us, so a sender has to have been fully
+  // verified once before any event of theirs can read it.
   | { state: 'unverified'; reason: 'verification_violation' }
   // The claimed sender is not the owner of the session that encrypted the
   // event. An impersonation signal; decryption succeeded regardless.
@@ -296,9 +332,12 @@ export interface EventEnvelope {
    * does not authenticate their senders. This value is read from the
    * incoming event, not independently verified, and is **unauthenticated
    * transport metadata** — treat it accordingly, not as a claim this
-   * library has confirmed. Not scoped to a milestone, because the milestone
-   * a reader would infer from it has passed and the property has not: it
-   * holds until cross-signing lands, which is M4.
+   * library has confirmed. This carried a milestone twice, and both have
+   * now passed without the property changing: cross-signing has landed and
+   * this value is still read from the incoming event and never re-derived.
+   * It is not scoped to a milestone at all, so there is no version to wait
+   * for. What cross-signing adds is {@link EventEnvelope.senderVerification},
+   * a separate value, and not a promotion of this one.
    */
   algorithm: CryptoAlgorithm
   eventType: string
@@ -345,9 +384,11 @@ export interface EventEnvelope {
   sender: string
   /**
    * What this library knew about the sender of this event **at the moment
-   * it decrypted it** -- see {@link SenderVerification}, including which
-   * three of its values cannot occur yet and why completing a verification
-   * does not change this one.
+   * it decrypted it** -- see {@link SenderVerification}, including which of
+   * its values cannot arrive here yet and why completing a verification
+   * does not change this one. That said "which three of its values" until
+   * M4, and the count is the kind of detail that goes stale in silence, so
+   * there is no count here now.
    *
    * **Present on every successful `decryptEvent`. Absent from
    * `encryptEvent`.** The same one-type-two-directions caveat `algorithm`
@@ -356,10 +397,16 @@ export interface EventEnvelope {
    * encrypt path rather than missing from it. The layer underneath does
    * receive a value when it encrypts, and that value is `'verified'` --
    * upstream reporting on this device's own keys, which is a statement
-   * about a *device*, true of a machine that has never verified anything,
-   * and the one word this release cannot honestly attach to an event. It is
-   * dropped rather than forwarded onto the field a decrypted event reads.
-   * Absent here means "this question was not asked of this event".
+   * about a *device* and is true of a machine that has never verified
+   * anything. It is dropped rather than forwarded onto the field a
+   * decrypted event reads. This used to add "the one word this release
+   * cannot honestly attach to an event", which stopped being true when the
+   * core learned to cross-sign; the asymmetry it was pointing at is real
+   * and survives the correction. On the encrypt path the word costs
+   * nothing and means nothing. On the decrypt path it costs the whole
+   * seven-step chain, which is why forwarding the free one would be a
+   * fabrication rather than a shortcut. Absent here means "this question
+   * was not asked of this event".
    *
    * **It is a snapshot, and it can go stale.** Upstream defines it as the
    * state of the sending device at the time of decryption: it "may change
@@ -370,6 +417,22 @@ export interface EventEnvelope {
    * `/sync` response you pass to {@link receiveSyncChanges} -- and nothing
    * in this library re-derives a stored value for you. A record that looks
    * static is not the same as a fact that stays true.
+   *
+   * **Going stale is the only direction it moves. It does not improve.**
+   * Verifying someone changes what their *next* messages say, not what
+   * their old ones said. The value belongs to the session the event was
+   * encrypted with, it is computed once when that session's key arrives,
+   * and nothing recomputes it for a session whose sender was already
+   * identified: so a message decrypted while its sender was merely
+   * cross-signed keeps reading `'unverified_identity'` until that session
+   * is replaced, however thoroughly you verify them afterwards. Design a
+   * badge that says "from here on" rather than one that backfills a
+   * conversation, because the backfill will not arrive. Asserted end to
+   * end, not inferred: the core's
+   * `tests/verified_sender.rs::history_does_not_improve_when_the_sender_is_verified_later`
+   * decrypts one event before a full verification and the same event after
+   * it, and then a message on a session created afterwards to show that
+   * the verification really did take effect.
    */
   senderVerification?: SenderVerification
 }

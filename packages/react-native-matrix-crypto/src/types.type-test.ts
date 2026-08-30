@@ -54,8 +54,10 @@ const stage: VerificationStage = 'keys-exchanged'
 // `SenderVerification` is CLOSED too, and closed in two places at once: the
 // `state` tag and the `reason` behind it. A product switching on both
 // exhaustively must be told by the compiler when a later version adds a
-// case, which is the entire argument for declaring the three values this
-// release cannot produce rather than adding them later.
+// case, which is the entire argument for declaring values a product cannot
+// meet yet rather than adding them later. This said "the three values this
+// release cannot produce"; the count was wrong before 0.1.0 shipped and is
+// wrong again since M4, which is the argument for not carrying one.
 // @ts-expect-error SenderVerification is closed: a fabricated state is not assignable
 const fabricatedState: SenderVerification = { state: 'x-fabricated-state' }
 // @ts-expect-error SenderVerification is closed: a fabricated reason is not assignable
@@ -69,13 +71,28 @@ const problemless: SenderVerification = { state: 'unverified', reason: 'no_devic
 // @ts-expect-error a verified sender has no reason to give
 const reasoned: SenderVerification = { state: 'verified', reason: 'unsigned_device' }
 
-// The values this release can actually produce.
+// The values a decrypted event actually arrives with. This said "the values
+// this release can actually produce" while listing three of them, and the
+// omission was `'unverified_identity'`, which has been produced since before
+// 0.1.0 by any peer whose client has cross-signing set up. A list with a
+// completeness claim over it and no assertion behind it stays green forever,
+// which is how the omission survived a milestone: nothing here can fail.
+// `'verified'` is absent for a different reason, and a temporary one. The
+// core reaches it through the whole chain since M4, and the bridged call
+// that would let a product get there is the remaining step, so this list
+// gains an entry rather than losing one.
 const unsigned: SenderVerification = { state: 'unverified', reason: 'unsigned_device' }
+const crossSigned: SenderVerification = { state: 'unverified', reason: 'unverified_identity' }
 const impersonated: SenderVerification = { state: 'unverified', reason: 'mismatched_sender' }
 const undeliverable: SenderVerification = {
   state: 'unverified',
   reason: 'no_device',
   problem: 'insecure_source',
+}
+const undelivered: SenderVerification = {
+  state: 'unverified',
+  reason: 'no_device',
+  problem: 'missing',
 }
 
 // The digits are a fixed-length tuple, not an array: a caller cannot index
@@ -97,4 +114,4 @@ void bad; void known; void future; void envelope; void decrypted
 void fabricatedTrust; void fabricatedStage; void trust; void stage
 void shortMaterial; void digitsOnly; void withSymbols
 void fabricatedState; void fabricatedReason; void problemless; void reasoned
-void unsigned; void impersonated; void undeliverable
+void unsigned; void crossSigned; void impersonated; void undeliverable; void undelivered

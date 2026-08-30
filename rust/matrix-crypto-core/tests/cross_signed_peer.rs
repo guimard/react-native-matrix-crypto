@@ -20,7 +20,17 @@
 //! and with none it returns `false` -- which is what makes the answer
 //! `SenderUnverified` rather than `SenderVerified`. So a peer who has set
 //! cross-signing up, which is every Element user, already produces this
-//! value against a build that has none.
+//! value against a machine that has no identity of its own.
+//!
+//! **This file's machine is such a machine, and that is now a property of
+//! this fixture rather than of the build.** M4 gave the library
+//! `bootstrap_identity`, so a machine that calls it does hold an identity,
+//! and `tests/verified_sender.rs` drives one all the way to `Verified`.
+//! Nothing here calls it, deliberately: what this file measures is the
+//! value a peer produces against a machine that has not bootstrapped,
+//! which is every product before its first bootstrap and every product
+//! that never bootstraps at all. The premise is asserted against the
+//! machine below rather than left to the reader.
 //!
 //! # Two counterparties, and why one would not do
 //!
@@ -530,21 +540,28 @@ fn a_cross_signed_peer_produces_unverified_identity_against_a_library_with_no_id
         // ---- The premise, read rather than assumed ---------------------
         //
         // The claim under test is that this value arrives at a library that
-        // has no cross-signing identity of its own. Nothing in this crate
-        // calls `bootstrap_cross_signing`, but "nothing calls it" is a
-        // property of the source and this is the machine. Asserted here, at
-        // the top, so a future milestone that does bootstrap turns this
-        // test's premise red rather than quietly changing what the
-        // assertion at the bottom means.
+        // has no cross-signing identity of its own. This said "nothing in
+        // this crate calls `bootstrap_cross_signing`, but 'nothing calls
+        // it' is a property of the source and this is the machine", and M4
+        // is exactly the milestone that sentence was hedging against: the
+        // crate does call it now, from `bootstrap_identity`. Reading the
+        // machine instead of trusting the source is what kept this premise
+        // honest through that change, and it is why the assertion below
+        // exists rather than a comment. It stays green because nothing in
+        // *this* file bootstraps, and it turns red the moment something
+        // does, rather than quietly changing what the assertion at the
+        // bottom means.
         let status =
             with_machine(|machine| Box::pin(async move { machine.cross_signing_status().await }))
                 .await
                 .expect("the machine must be reachable");
         assert!(
             !status.has_master && !status.has_self_signing && !status.has_user_signing,
-            "this build publishes no cross-signing identity, and the value this \
-             test is about is reachable precisely because it does not depend on \
-             one: {status:?}"
+            "this machine has published no cross-signing identity, and the \
+             value this test is about is reachable precisely because it does \
+             not depend on one. Red here means something in this file \
+             bootstrapped, and every assertion below it is now measuring a \
+             different question: {status:?}"
         );
 
         // ---- The cross-signed peer -------------------------------------
@@ -620,9 +637,12 @@ fn a_cross_signed_peer_produces_unverified_identity_against_a_library_with_no_id
                 .iter()
                 .any(|status| status.device_id == BOB_DEVICE
                     && status.trust == TrustState::Unverified),
-            "a device cross-signed by its own owner is not thereby verified by \
-             us: that needs our user-signing key over their master key, which \
-             this build has no way to produce"
+            "a device cross-signed by its own owner is not thereby verified \
+             by us: that needs our user-signing key over their master key, \
+             and this machine has not bootstrapped one. This said \"which \
+             this build has no way to produce\", which M4 made false; the \
+             assertion is unchanged because what it rests on was always \
+             this fixture, not the build"
         );
     }));
 }
