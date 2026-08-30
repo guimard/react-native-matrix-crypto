@@ -191,6 +191,7 @@ interface NativeModuleInterface {
   ubrn_uniffi_matrix_crypto_ffi_fn_func_accept_verification(
     verificationId: Uint8Array
   ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_bootstrap_identity(): bigint;
   ubrn_uniffi_matrix_crypto_ffi_fn_func_cancel_verification(
     verificationId: Uint8Array
   ): bigint;
@@ -219,6 +220,7 @@ interface NativeModuleInterface {
     eventType: Uint8Array,
     payloadJson: Uint8Array
   ): bigint;
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_identity_status(): bigint;
   ubrn_uniffi_matrix_crypto_ffi_fn_func_mark_request_failed(
     id: Uint8Array,
     status: number
@@ -276,6 +278,7 @@ interface NativeModuleInterface {
   ): void;
   ubrn_ffi_matrix_crypto_ffi_uniffi_contract_version(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_accept_verification(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_bootstrap_identity(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_cancel_verification(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_clear_crypto_observer(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_confirm_verification(): number;
@@ -284,6 +287,7 @@ interface NativeModuleInterface {
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_device_identity_keys(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_device_statuses(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_encrypt_event(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_identity_status(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_mark_request_failed(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_mark_request_sent(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_open_crypto_store(): number;

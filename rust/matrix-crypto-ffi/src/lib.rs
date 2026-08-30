@@ -156,13 +156,15 @@ pub enum MachineFfiError {
     // reason. These two mirror the pair the core's `MachineError` grew for
     // the identity bootstrap's ordering gate.
     //
-    // No function on this surface returns either of them yet: the core call
-    // that produces them is not bridged in this task. They are here because
-    // the `From` impl below is exhaustive by rule, and folding two refusals
-    // that mean different things onto some existing variant to avoid
-    // declaring them would put a wrong error on the wire the moment that
-    // bridge lands -- silently, since folding is what an exhaustive match
-    // with no wildcard is meant to prevent.
+    // `bootstrap_identity`, at the end of this file, returns both of them.
+    // They were declared one task before that bridge existed and returned
+    // by nothing in between, because the `From` impl below is exhaustive by
+    // rule, and folding two refusals that mean different things onto some
+    // existing variant to avoid declaring them would have put a wrong error
+    // on the wire the moment the bridge landed -- silently, since folding is
+    // what an exhaustive match with no wildcard is meant to prevent. The
+    // bridge has landed and neither ordinal moved, which is what declaring
+    // them early bought.
     #[error("the account's keys have not been fetched yet")]
     AccountKeysNotFetched,
     #[error("this account already has a signing identity this device does not hold")]
@@ -955,6 +957,95 @@ pub fn clear_crypto_observer() {
 #[uniffi::export]
 pub async fn mark_request_failed(id: String, status: u16) -> Result<(), SessionFfiError> {
     matrix_crypto_core::mark_request_failed(&id, status)
+        .await
+        .map_err(Into::into)
+}
+
+/// What this library will say about the account's signing identity. Mirror
+/// of the core's `IdentityStatus`.
+///
+/// Appended after `mark_request_failed`, which is after everything else in
+/// this file, for the ordinal reason `CryptoSignal`'s own comment gives.
+/// This addition moves no ordinal: it declares a record and two functions
+/// and no enum variant anywhere, so every existing wire number is where it
+/// was.
+///
+/// `Debug` is derived, unlike `Envelope` and `CryptoMachineConfig` above:
+/// three booleans about this account's own publication state carry no
+/// identifier and no key material, so there is nothing here the global
+/// no-secret rule forbids from a `{:?}`.
+///
+/// The core's own `IdentityStatus` documents what each field means, and in
+/// particular why the pair that looks redundant is the pair that matters;
+/// this mirror deliberately repeats none of it, so the two cannot drift
+/// into saying different things.
+#[derive(Debug, Clone, Copy, uniffi::Record)]
+pub struct IdentityStatus {
+    pub account_keys_fetched: bool,
+    pub identity_known: bool,
+    pub private_keys_held: bool,
+}
+
+/// Three `bool` fields, so every wrong pairing compiles, passes
+/// `clippy -D warnings` and passes every other test in this repository --
+/// `SasMaterial`'s hazard with a smaller alphabet, and a worse consequence
+/// than a mismatched short string: `account_keys_fetched` and
+/// `identity_known` swapped is the exact pair whose meaning the core's own
+/// doc comment exists to keep apart, and reporting them the wrong way round
+/// tells a product it may mint an identity when the truth is that nobody
+/// has asked. Public and stateless, so `tests/value_mapping.rs` can pin it.
+impl From<matrix_crypto_core::IdentityStatus> for IdentityStatus {
+    fn from(value: matrix_crypto_core::IdentityStatus) -> Self {
+        // Destructured, not field-accessed: a field added to the core
+        // record later must fail this build rather than being silently
+        // dropped. See Global Constraints.
+        let matrix_crypto_core::IdentityStatus {
+            account_keys_fetched,
+            identity_known,
+            private_keys_held,
+        } = value;
+        Self {
+            account_keys_fetched,
+            identity_known,
+            private_keys_held,
+        }
+    }
+}
+
+/// What this library will say about the account's signing identity right
+/// now. Reads only; asks the server nothing and mints nothing.
+///
+/// Mirrors `identity_status`; see its own doc comment in
+/// `matrix-crypto-core::signing`, including why `identity_known == false`
+/// means two completely different things depending on
+/// `account_keys_fetched` and why both are reported rather than one
+/// collapsed answer.
+#[uniffi::export]
+pub async fn identity_status() -> Result<IdentityStatus, MachineFfiError> {
+    matrix_crypto_core::identity_status()
+        .await
+        .map(Into::into)
+        .map_err(Into::into)
+}
+
+/// Publishes this account's signing identity, minting one first if the
+/// account provably has none.
+///
+/// Mirrors `bootstrap_identity`; see its own doc comment in
+/// `matrix-crypto-core::signing` for the gate, for the two refusals it
+/// keeps apart, and for the order the requests this queues must be sent in.
+///
+/// **No parameter, and in particular no credential.** Publishing the
+/// identity needs user-interactive authentication at the homeserver, and
+/// the product owns that loop rather than this library: the challenge is
+/// only known *after* the first request is refused, so an argument here
+/// would have to be guessed before the server has said what it wants. The
+/// absence is the design and not an omission to be filled in later; the
+/// core's module documentation says the same at more length, and the M4
+/// design's section 1.1 is where it was decided.
+#[uniffi::export]
+pub async fn bootstrap_identity() -> Result<(), MachineFfiError> {
+    matrix_crypto_core::bootstrap_identity()
         .await
         .map_err(Into::into)
 }
