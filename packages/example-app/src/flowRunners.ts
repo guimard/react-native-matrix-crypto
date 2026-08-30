@@ -313,7 +313,7 @@ export async function runSigningIdentity(_ctx: RunContext, commit: Commit): Prom
         kind === 'account_keys_not_fetched'
           ? {
               status: 'ok',
-              headline: 'Refused, as it must be -- kind: "account_keys_not_fetched"',
+              headline: 'Refused, as it must be, with kind "account_keys_not_fetched"',
               detail: `${shape}\nThe key query that lifts this refusal is already queued: drain takeOutgoingRequests, send it, report it, call again.`,
             }
           : { status: 'unexpected', headline: `Unexpected error shape: ${String(e)}`, detail: shape },
