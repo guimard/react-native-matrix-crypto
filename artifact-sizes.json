@@ -216,5 +216,51 @@
     ],
     "tarballIncludesXcframework": true,
     "tarballIncludesAar": false
+  },
+  {
+    "label": "release-v0.1.1",
+    "xcframeworkKB": 153576,
+    "aarKB": 0,
+    "tarballKB": 66226,
+    "tarballUnpackedKB": 193565,
+    "tarballLargestContributors": [
+      {
+        "component": "MatrixCryptoFramework.xcframework",
+        "unpackedKB": 153558
+      },
+      {
+        "component": "android",
+        "unpackedKB": 39428
+      },
+      {
+        "component": "src",
+        "unpackedKB": 256
+      }
+    ],
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": false,
+    "provenance": {
+      "method": "build-stamp",
+      "treeCommit": "e1e6f72eb5a1690986ec955dc7a85d4034f0f805",
+      "checks": [
+        {
+          "leg": "ios",
+          "method": "build-stamp",
+          "path": "packages/react-native-matrix-crypto/MatrixCryptoFramework.xcframework",
+          "evidence": "e1e6f72eb5a1690986ec955dc7a85d4034f0f805"
+        },
+        {
+          "leg": "android",
+          "method": "build-stamp",
+          "path": "packages/react-native-matrix-crypto/android/src/main/jniLibs",
+          "evidence": "e1e6f72eb5a1690986ec955dc7a85d4034f0f805"
+        }
+      ]
+    },
+    "recordedFrom": {
+      "run": "33292050069",
+      "artifact": "artifact-sizes-release",
+      "note": "Taken from the artifact the release run uploads, not from its log. The measurement ran on the runner with REQUIRE_BUILD_PROVENANCE set, both legs read IDENTITY against the tagged commit, and the row is byte-identical to the uploaded file. It is copied here by hand because the release workflow holds contents:read and cannot commit."
+    }
   }
 ]
