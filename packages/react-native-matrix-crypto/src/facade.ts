@@ -1402,18 +1402,35 @@ export async function acceptVerification(verificationId: string): Promise<void> 
  *   used to say "wait for `'keys-exchanged'`", which was wrong: waiting
  *   alone never produced one. Then read
  *   {@link getVerificationMaterial} as usual.
+ *
+ *   **A flow that went to a scanned code arrives at this same kind, and
+ *   wants none of that done about it.** This kind is derived from
+ *   {@link getVerificationStage} reading `'started'`, and a code flow reads
+ *   `'started'` too, so the kind cannot tell the two apart. On a code flow
+ *   {@link acceptVerification} answers `'wrong_stage'` and so does
+ *   {@link getVerificationMaterial}, because there is no comparison and
+ *   there will be no string: carry on with {@link getVerificationCode} and
+ *   {@link confirmScan}, or with {@link submitScannedCode}. **What tells
+ *   the two apart is your own state, not anything this library reports**: a
+ *   build that never called {@link offerScannableCodes} can only be in the
+ *   first case, and one that asked this flow for a code knows it is in the
+ *   second.
  * - `'verification_ended'` -- the flow is over, whether it finished or was
  *   refused. There is nothing to carry on with; ask again with
  *   {@link requestVerification} if you still want to.
- * - `'wrong_stage'` -- anything else, which means the flow is not at
- *   `'ready'`. Usually it has not been accepted by both sides yet: wait, or
- *   call {@link acceptVerification} if the invitation was yours to answer.
- *   It also covers a flow that has already gone to a scanned code, where
- *   both sides did accept and there is no comparison left to start; that
- *   flow finishes through {@link confirmScan} or
- *   {@link submitScannedCode} instead. This bullet said "which today means
- *   the flow has not been accepted by both sides yet", and the residual
- *   bucket grew without the sentence noticing.
+ * - `'wrong_stage'` -- the flow reads `'requested'` or `'ready'`. At
+ *   `'requested'` it has not been accepted by both sides yet: wait, or call
+ *   {@link acceptVerification} if the invitation was yours to answer. At
+ *   `'ready'` the stage moved between this call and the stage read that
+ *   followed it, so try again.
+ *
+ * This bullet list carried a fourth claim for one commit, that a code flow
+ * lands on `'wrong_stage'`. It lands on the first bullet, and the advice
+ * there sent a caller to {@link getVerificationMaterial}, which answers a
+ * code flow with `'wrong_stage'`, so following the documentation was a
+ * loop. `a flow that went to a scanned code is reported as
+ * comparison_already_started` in `facade.test.ts` is the assertion that
+ * would have caught it.
  */
 export async function startVerificationComparison(verificationId: string): Promise<void> {
   try {

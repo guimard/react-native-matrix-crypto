@@ -1758,6 +1758,29 @@ describe('startVerificationComparison, and the two conditions its own native err
     )
   })
 
+  /**
+   * The same kind, from a flow that has no comparison behind it at all.
+   *
+   * A flow that went to a scanned code reports `'started'`, so it is
+   * indistinguishable here from a comparison the peer opened, and the two
+   * want opposite things done about them: on a code flow neither
+   * `acceptVerification` nor `getVerificationMaterial` is the next call.
+   * Asserted separately from the `it.each` above even though the stage is
+   * the same value, because the name is the claim, and the doc comment on
+   * `startVerificationComparison` said this landed on `wrong_stage` for one
+   * commit.
+   */
+  it('reports comparison_already_started for a flow that went to a scanned code', async () => {
+    vi.mocked(nativeStartVerificationComparison).mockRejectedValue(new MachineFfiError.WrongStage())
+    // What a code flow reports: the core maps a transitioned request with
+    // no comparison behind it to this stage, and says so at `stage_of`.
+    vi.mocked(nativeVerificationStage).mockResolvedValue(NativeVerificationStage.Started)
+
+    await expect(startVerificationComparison(FLOW)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'comparison_already_started',
+    )
+  })
+
   it.each([[NativeVerificationStage.Done], [NativeVerificationStage.Cancelled]])(
     'reports verification_ended when the flow is over (stage %i)',
     async (stage) => {
