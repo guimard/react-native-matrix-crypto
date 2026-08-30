@@ -1916,6 +1916,80 @@ mod tests {
         damaged
     }
 
+    /// Every `DecodeError` this build can construct, classified one by one.
+    ///
+    /// # Why this exists, and what it replaces
+    ///
+    /// [`classify_decode_error`] is an exhaustive ten-arm match, and an
+    /// exhaustive match reads as decided. It was not: the fixtures in this
+    /// file reach four of the ten, so moving `Parity` alone onto the
+    /// malformed arm left the whole suite green. A match that looks settled
+    /// and is untested is worse than the wildcard it replaced, because it
+    /// no longer invites anybody to check.
+    ///
+    /// No machine, no store, no runtime and no fixture: `DecodeError`'s
+    /// variants are public tuple variants of a type that is not
+    /// `#[non_exhaustive]`, so most of them can simply be built and handed
+    /// over. That is why this runs in no measurable time.
+    ///
+    /// # The three that are missing, and where they are covered instead
+    ///
+    /// `Mac`, `Base58` and `Base64` wrap types from crates this one does
+    /// not depend on (`digest`'s `MacError`, `bs58`'s decode error, and
+    /// vodozemac's base64 error), so they cannot be named here. Taking a
+    /// dependency in order to construct a test fixture would be the wrong
+    /// trade for this repository. `Mac` and `Base58` are both reached by
+    /// [`a_wrong_secret_is_told_apart_from_a_recovery_that_cannot_be_read`],
+    /// whose own fixtures say which reaches which. `Base64` is reached by
+    /// nothing, here or upstream: `matrix-sdk-crypto` 0.18.0 constructs it
+    /// nowhere on this path, and its arm exists so that a version which
+    /// starts constructing it fails this build rather than silently picking
+    /// a side.
+    #[test]
+    fn every_decode_failure_is_classified_by_what_it_describes() {
+        // The typed secret. Every one of these comes out of
+        // `parse_base58_key`, which sees the user's input and nothing else,
+        // so a user meeting any of them fixes it by typing again.
+        for (name, failure) in [
+            ("Prefix", DecodeError::Prefix([0x8b, 0x01], [0x00, 0x00])),
+            ("Parity", DecodeError::Parity(0x11, 0x22)),
+            ("KeyLength", DecodeError::KeyLength(35, 36)),
+        ] {
+            assert_eq!(
+                classify_decode_error(failure),
+                MachineError::RecoveryKeyIncorrect,
+                "DecodeError::{name} describes the string the user typed, so reporting it \
+                 as unreadable stored data tells somebody whose recovery is intact to set \
+                 it up again"
+            );
+        }
+
+        // The stored key description. Every one of these comes out of
+        // `check_zero_message` or the passphrase derivation, both of which
+        // read what the server returned, so no secret a user types will
+        // change the answer.
+        for (name, failure) in [
+            ("IvLength", DecodeError::IvLength(16, 17)),
+            ("MacLength", DecodeError::MacLength(32, 33)),
+            (
+                "UnsupportedAlgorithm",
+                DecodeError::UnsupportedAlgorithm("m.secret_storage.v1.something-else".to_owned()),
+            ),
+            (
+                "KdfIterationCount",
+                DecodeError::KdfIterationCount(UInt::MAX),
+            ),
+        ] {
+            assert_eq!(
+                classify_decode_error(failure),
+                MachineError::RecoveryDataMalformed,
+                "DecodeError::{name} describes the account data, not the secret, so \
+                 reporting it as a wrong secret leaves a user retyping something that was \
+                 already right"
+            );
+        }
+    }
+
     /// A copy of `account_data` whose key description carries no
     /// `passphrase` block.
     ///
@@ -1951,10 +2025,27 @@ mod tests {
     /// The same recovery key with one character replaced by another from
     /// the same alphabet.
     ///
-    /// A typo, not a truncation: the result is still a base58 string of the
-    /// right length, so what rejects it is the key's own parity or MAC
-    /// check rather than a length test, which is the shape a real mistyping
-    /// takes.
+    /// A typo, not a truncation: the string handed to upstream is base58
+    /// throughout and the same number of characters long, which is the
+    /// shape a real mistyping takes and is what keeps this a statement
+    /// about the secret rather than about the length of the input.
+    ///
+    /// **Which failure it lands on was measured, not assumed**, because
+    /// this comment used to claim the opposite. The character replaced is
+    /// the leading one, which carries the high-order bits, so the decoded
+    /// value comes out a byte longer and upstream answers
+    /// `DecodeError::KeyLength(35, 36)`. That is still one of the five that
+    /// describe the typed secret, and it was one of the four the old
+    /// wildcard swallowed, so the assertion is a real regression case; it
+    /// is simply not the parity check this said it was.
+    ///
+    /// Between them the fixtures in this file reach four of the ten
+    /// variants: `Mac` from a wrong passphrase against a description that
+    /// has a passphrase block, `KeyLength` from here, `Base58` from a
+    /// passphrase typed at a description that has none, and
+    /// `UnsupportedAlgorithm` from [`with_an_unsupported_algorithm`]. The
+    /// arm-by-arm coverage is
+    /// [`every_decode_failure_is_classified_by_what_it_describes`]'s job.
     fn mistyped(recovery_key: &str) -> String {
         let mut wrong = String::with_capacity(recovery_key.len());
         let mut swapped = false;
