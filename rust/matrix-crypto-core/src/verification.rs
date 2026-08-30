@@ -1918,15 +1918,60 @@ pub async fn confirm_scan(flow: &FlowId) -> Result<(), MachineError> {
 ///
 /// The one call in this module a product must be able to make at any point
 /// a person can look at a screen and say "that is not what I see". It
-/// cancels the comparison if there is one -- which also cancels the request
-/// behind it -- and the request otherwise.
+/// cancels the comparison if there is one, the code if the flow became one,
+/// and the request otherwise. Each of the first two also cancels the request
+/// behind it, because upstream's own handle does that: both
+/// `Sas::cancel_with_code` and `QrVerification::cancel_with_code` open by
+/// cancelling their `RequestHandle`.
+///
+/// # Why the code arm exists, and what its absence cost a person
+///
+/// Reading the comparison and the request was enough for as long as a flow
+/// could only become a comparison. It is not enough for one that became a
+/// code, and the gap was not cosmetic:
+///
+/// * upstream allows **one live verification per person**. Inserting a
+///   second while an older uncancelled one with the same user is in its
+///   cache cancels *both* (`verification/cache.rs:86-104`, "Received a new
+///   verification whilst another one with the same user is ongoing.
+///   Cancelling both verifications"), and its sweep keeps everything that is
+///   neither done nor cancelled (`retain(|_, s| !(s.is_done() ||
+///   s.is_cancelled()))`, same file);
+/// * a code a peer scanned and this side never confirmed is neither of
+///   those, so it stays in that cache and takes the **next two**
+///   verifications with that person down with it, silently, before anybody
+///   has refused anything. `tests/qr_halt_recovery.rs` measures both, and
+///   why it is two rather than one or than all of them;
+/// * and the request behind such a flow is already `Done`, because upstream
+///   advances the two unalike from one `m.key.verification.done`:
+///   `VerificationRequest::receive_done` moves a `Transitioned` request
+///   unconditionally (`verification/requests.rs:934-940`) while
+///   `QrVerification::receive_done` leaves a `Scanned` code exactly where it
+///   is (`verification/qrcode.rs:392-440`). So the request arm has nothing
+///   left to cancel and answers `None`.
+///
+/// Together those made this call answer [`MachineError::WrongStage`] to the
+/// one situation a product most needs it for. A person whose scan went
+/// wrong then had no call that freed them to try that contact again, and
+/// their next attempt died with no error attached to it. Cancelling the code
+/// is what puts the cache entry into the state upstream's own sweep removes.
+/// `tests/qr_halt_recovery.rs` drives the whole sequence, halt then abandon
+/// then verify again, rather than asserting that this call returned success,
+/// and it measures the silent casualty first so that the recovery has
+/// something to be measured against.
+///
+/// **The order is [`stage_of`]'s order and means the same thing.** A flow is
+/// a comparison or a code and never both, because upstream's `Verification`
+/// is one enum over the two, so these are alternatives rather than a
+/// precedence rule to reason about.
 pub async fn cancel_flow(flow: &FlowId) -> Result<(), MachineError> {
     let handles = handles(flow).await?;
-    let outgoing = match (&handles.comparison, &handles.request) {
-        (Some(comparison), _) => comparison.cancel(),
-        (None, Some(request)) => request.cancel(),
+    let outgoing = match (&handles.comparison, &handles.code, &handles.request) {
+        (Some(comparison), _, _) => comparison.cancel(),
+        (None, Some(code), _) => code.cancel(),
+        (None, None, Some(request)) => request.cancel(),
         // Unreachable, for the reason `accept_flow` gives.
-        (None, None) => None,
+        (None, None, None) => None,
     }
     // Upstream returns `None` when the flow is already cancelled. Reported
     // rather than treated as success: "already refused" and "refused by

@@ -1534,9 +1534,9 @@ export async function confirmVerification(verificationId: string, data: SasMater
  * at a screen and say "that is not what I see".** Refusing is not a failure
  * of this library; a comparison that can only ever agree proves nothing.
  *
- * Cancels the comparison if one has started -- which cancels the invitation
- * behind it -- and the invitation otherwise. Nothing is verified, on either
- * side.
+ * Cancels the comparison if one has started, the scannable code if the flow
+ * became one, and the invitation otherwise. The first two also cancel the
+ * invitation behind them. Nothing is verified, on either side.
  *
  * Rejects with `'wrong_stage'` for a flow that was already cancelled.
  * "Already refused" and "refused by this call" are the same outcome, but a
@@ -1546,6 +1546,28 @@ export async function confirmVerification(verificationId: string, data: SasMater
  * **Skipping this does not fail silently, but it does fail slowly.** A flow
  * nobody cancels sits open until the protocol's own ten-minute timeout
  * retires it.
+ *
+ * # The one screen this is the only way off
+ *
+ * A flow that reaches `'code-scanned'` is waiting for a person to answer
+ * {@link confirmScan}, and some clients will already have declared
+ * themselves finished by then. When that happens the flow never moves again:
+ * the stage stays `'code-scanned'` however long you pump, and
+ * {@link confirmScan} cannot end it because the other side has stopped
+ * listening.
+ *
+ * **This is the call that ends it, and it matters more than it looks.** A
+ * verification left in that state is still live as far as the layer
+ * underneath is concerned, and it allows one live verification per person,
+ * so it takes the next two attempts with that person down with it. Those two
+ * die quietly: no rejection, no error, just a flow that reads `'cancelled'`
+ * from the start. Cancel the stuck one, sync once (see
+ * {@link requestVerification} for why), and the next verification with that
+ * person behaves normally.
+ *
+ * A product that shows a code should therefore offer a way out of that
+ * screen rather than only a way forward, and call this when a person takes
+ * it.
  */
 export async function cancelVerification(verificationId: string): Promise<void> {
   try {
@@ -1659,6 +1681,26 @@ export function offerScannableCodes(enabled: boolean): void {
  * call {@link confirmScan} when they say yes. That is the step this method's
  * security rests on, exactly as {@link confirmVerification} is for a short
  * string.
+ *
+ * # One thing that can go wrong here and is not yours
+ *
+ * **A flow where you show the code will not complete against a client that
+ * announces itself finished as soon as it has scanned.** The specification
+ * puts that message last, after the person on the showing side has confirmed
+ * the scan, and that confirmation is the entire security argument of this
+ * method. A client that sends it early spends it while this side is still
+ * waiting for a person, and the layer underneath correctly ignores it. The
+ * flow then sits at `'confirmed'` for ever.
+ *
+ * This has been measured against a real third-party client rather than
+ * inferred: its own source calls the message "immediately", the two events
+ * arrive in one sync batch before any confirmation could exist, and the
+ * repository's `rust/matrix-crypto-core/tests/level_two_scanned.rs` asserts
+ * exactly that off the wire. **The deviation is that client's**, and
+ * nothing in this library can make such a flow finish. Scanning *their*
+ * code with {@link submitScannedCode} completes normally against the same
+ * client, and giving a person a way out with {@link cancelVerification} is
+ * what makes the failure recoverable.
  *
  * # Refusals
  *
@@ -1788,6 +1830,18 @@ export async function submitScannedCode(verificationId: string, payload: Uint8Ar
  *
  * **Skipping it does not fail loudly, but it does fail.** A flow nobody
  * confirms sits open until the protocol's own ten-minute timeout retires it.
+ *
+ * **And calling it does not always end the flow, through no fault of yours.**
+ * Some clients declare themselves finished the instant they accept a scan,
+ * before you have been asked anything. That is a deviation from the
+ * specification on their side, which puts that message after the
+ * confirmation you are being asked for; the message that would have
+ * completed this flow was spent then and no second one is coming. This call
+ * still succeeds, the stage moves to `'confirmed'`, and it stays there. See
+ * {@link getVerificationCode} for the measurement behind that. Give the
+ * person a way out of that screen and call {@link cancelVerification} when
+ * they take it, which is the only thing that frees them to verify that
+ * contact again.
  */
 export async function confirmScan(verificationId: string): Promise<void> {
   try {
