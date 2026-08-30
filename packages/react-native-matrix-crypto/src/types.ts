@@ -62,20 +62,25 @@ export type CryptoAlgorithm = 'megolm' | 'olm' | (string & {})
  *   consumer that switched on it exhaustively, and would do so precisely
  *   when a product had stopped expecting the shape to move. Write the
  *   branch; it will not run yet.
- * - `'verified'` — this library has reason to trust the device, **by either
- *   of two routes that this value does not tell apart**. A person compared
+ * - `'verified'` — this library has reason to trust the device, **by any of
+ *   three routes that this value does not tell apart**. A person compared
  *   a short authentication string on this device and on the far one, both
- *   said it matched, and the flow completed. *Or* the device is signed by
- *   its owner's cross-signing identity and this library has verified that
- *   identity, in which case nobody compared anything on this device at all.
- *   The second route is new in this release and is the ordinary one from
- *   now on. See {@link getDeviceStatuses}, including why your own device
- *   reads this from the moment it exists and therefore proves nothing.
+ *   said it matched, and the flow completed. *Or* a person pointed one
+ *   device's camera at the other's screen and the side showing the code
+ *   confirmed the scan, which is the same act with a camera in place of a
+ *   comparison. *Or* the device is signed by its owner's cross-signing
+ *   identity and this library has verified that identity, in which case
+ *   nobody compared or scanned anything on this device at all. The last two
+ *   are new in this release and the third is the ordinary one from now on.
+ *   This said "either of two routes" while the second was being added, which
+ *   is the second time the count here has gone stale. See
+ *   {@link getDeviceStatuses}, including why your own device reads this from
+ *   the moment it exists and therefore proves nothing.
  *
- * **This is about a device, not about an event.** A completed comparison
- * does not change what a decrypted event says about its sender, because the
- * event path consults cross-signing and a comparison sets local trust. M3
- * design, section 7, question 6.
+ * **This is about a device, not about an event.** A completed verification
+ * does not change what a decrypted event says about its sender, by either
+ * method, because the event path consults cross-signing and a verification
+ * sets local trust. M3 design, section 7, question 6.
  *
  * ## Why `'recognized'` stays folded into `'verified'`
  *
@@ -94,8 +99,8 @@ export type CryptoAlgorithm = 'megolm' | 'olm' | (string & {})
  * this value per release is the most a consumer can reasonably follow.
  *
  * So the fold stays, and the cost is stated instead of hidden: **you cannot
- * ask this call whether a person compared a string with one particular
- * device.** If your product needs that distinction, it has to record its own
+ * ask this call whether a person compared a string with, or scanned a code
+ * off, one particular device.** If your product needs that distinction, it has to record its own
  * verifications as it performs them, or ask
  * {@link EventEnvelope.senderVerification} the event-level question instead.
  * If a later release does split them, `'recognized'` is already in this
@@ -117,10 +122,21 @@ export type TrustState = 'unverified' | 'recognized' | 'verified'
  * is one this surface would be inviting a product to branch on for no
  * reason.
  *
+ * **These seven are the short string's vocabulary, and a flow that went to
+ * a scannable code is described in it for want of one of its own.** Such a
+ * flow passes through states none of these name, so it is reported as the
+ * nearest one and {@link confirmScan} cannot tell a caller whether to wait
+ * or to start again. That is a limit of this release rather than of the
+ * design, and it is being lifted: read {@link getVerificationStage}'s own
+ * answer rather than this list for what the copy you hold reports.
+ *
  * - `'requested'` — asked for, by one side or the other, and not yet
  *   answered. The other side must call {@link acceptVerification}.
  * - `'ready'` — both sides have agreed, and either may now call
- *   {@link startVerificationComparison}.
+ *   {@link startVerificationComparison}. On a flow that negotiated codes,
+ *   either may instead call {@link getVerificationCode} or
+ *   {@link submitScannedCode}; nothing has to choose between the two, and
+ *   the first move settles it.
  * - `'started'` — the comparison has begun and the keys are not exchanged
  *   yet, so there is nothing to show. **A flow that stays here has one of
  *   two causes, and they need opposite things done about them.** If the
@@ -131,15 +147,24 @@ export type TrustState = 'unverified' | 'recognized' | 'verified'
  *   in follows from who started: a side that never called
  *   {@link startVerificationComparison} and finds itself here is in the
  *   first. See {@link getVerificationMaterial}, which reports both as
- *   `'material_not_ready'`.
+ *   `'material_not_ready'`. **A flow that became a code also reports this**,
+ *   and neither cause applies to it: it is the nearest stage rather than a
+ *   description, which is the gap named above. That flow is not stuck, and
+ *   {@link getVerificationMaterial} tells it apart from the two by kind
+ *   rather than by stage: it answers a code flow with `'wrong_stage'`.
  * - `'keys-exchanged'` — the short authentication string is available.
- *   Show it, and ask.
+ *   Show it, and ask. Not reached by a flow proceeding by a code, because
+ *   there is no string on one.
  * - `'confirmed'` — this side has said the strings match; the other side
- *   has not yet.
- * - `'done'` — both sides said so. The other device now reads `'verified'`
- *   from {@link getDeviceStatuses}.
+ *   has not yet. Not reached by a flow proceeding by a code, for the same
+ *   reason.
+ * - `'done'` — the flow finished and the other device now reads
+ *   `'verified'` from {@link getDeviceStatuses}, whether both sides said
+ *   the strings matched or one scanned the other's code and the side
+ *   showing it confirmed. This said "both sides said so", which a scanned
+ *   flow reaches this value without anybody doing.
  * - `'cancelled'` — over without a verification, whether a side refused, a
- *   side abandoned it, or it timed out.
+ *   side abandoned it, a scanned code was refused, or it timed out.
  */
 export type VerificationStage =
   | 'requested'

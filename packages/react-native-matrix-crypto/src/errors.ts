@@ -15,11 +15,13 @@ export type CryptoErrorKind =
   // retriable.
   | 'session_refused'
   | 'unknown_device'
-  // Forward scaffolding, not dead: nothing produces this. M3 landed device
-  // verification and did not, because revoking a device is an identity
-  // operation and identity waits on cross-signing, which is M4. **No
-  // milestone is named here on purpose**, since the last one named came and
-  // went with the comment unchanged: this kind stays declared and unproduced
+  // Forward scaffolding, not dead: nothing produces this. Device
+  // verification landed and did not produce it, and neither did
+  // cross-signing, which was the blocker this comment used to name and
+  // which has since landed too; a second method of verifying, by a scanned
+  // code, has landed since and did not produce it either. **No milestone is
+  // named here on purpose**, since every one named so far came and went
+  // with the comment unchanged: this kind stays declared and unproduced
   // until something produces it, and it stays in the union rather than being
   // silently dropped or silently absent -- the same treatment
   // 'not_implemented' gets in KIND_BY_NAME. If it turns out never to be
@@ -75,6 +77,14 @@ export type CryptoErrorKind =
   // `getVerificationStage` says which stage that is; `startVerification-
   // Comparison` reads it for you and reports the two conditions below
   // instead where they apply.
+  //
+  // **On a flow proceeding by a scanned code, the stage does not say which
+  // stage that is**, because the stage vocabulary describes a short-string
+  // comparison and a code flow passes through states it does not name. So
+  // `confirmScan` answers both "nobody has scanned this yet" and "this flow
+  // is over" with this kind, and those want opposite things done about
+  // them. That is a limit of this tree rather than of the design, and the
+  // stage vocabulary grows to carry a scanned flow's own states.
   | 'wrong_stage'
   // The keys are not exchanged, so there is no string to show yet. **Two
   // causes, and they need opposite things done about them** -- read
@@ -87,6 +97,11 @@ export type CryptoErrorKind =
   //   - otherwise, the outbound pump was drained and never resolved: the
   //     underlying state machine advances on `markRequestSent`, so a caller
   //     that skips it parks the flow here permanently.
+  //
+  // Still two after verification by a scannable code arrived, and that was
+  // checked rather than assumed: a flow proceeding by a code holds no
+  // comparison at all, so `getVerificationMaterial` refuses it with
+  // 'wrong_stage' before it can reach either cause above.
   //
   // Deliberately absent from RETRIABLE below: retrying the same call
   // changes nothing at all under either cause.
@@ -104,6 +119,13 @@ export type CryptoErrorKind =
   // `confirmVerification` was handed material that is not the material the
   // flow currently holds. See that function's own doc comment: the argument
   // exists so a product cannot confirm a comparison it never showed.
+  //
+  // **That guard belongs to this one call and not to the surface.**
+  // `confirmScan` is the other confirmation here and takes no material,
+  // because a code flow has none to hand back: what a person recognised is
+  // a device that scanned, and nothing crosses this boundary that could
+  // stand for it. The obligation to ask a person first is identical; only
+  // the mechanical check is absent.
   | 'material_mismatch'
   // ---- the signing identity ----------------------------------------------
   // Both cross the FFI boundary, and both are `bootstrapCrossSigning`
@@ -259,10 +281,15 @@ export interface CryptoError extends Error {
    * metadata, and **completing a device verification does not change
    * that.** This used to say "until device verification lands", which
    * named a condition that has since been met and is not the one that
-   * matters: a short string comparison sets *local* trust in a device, and
-   * the path that decides what an event says about its sender consults
-   * cross-signing, which nothing here publishes yet. The README retracts
-   * the same claim in the same terms; cross-signing is M4.
+   * matters: a verification sets *local* trust in a device, whether the two
+   * people compared a short string or one of them scanned a code, and the
+   * path that decides what an event says about its sender consults
+   * cross-signing instead. It then said cross-signing was still to come and
+   * that the README retracted the claim in the same terms. Both halves have
+   * been overtaken: `bootstrapCrossSigning` publishes an identity from this
+   * surface, and a second method of verifying arrived after that. Neither
+   * moved this field, which is the point the paragraph was making and the
+   * reason it is corrected rather than struck.
    */
   sender?: string
   /** The bridge reports transience. The product layer decides what to do. */
@@ -277,8 +304,11 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   // in TypeScript by facade.ts's `notImplemented` helper for every
   // still-stubbed function, so it never crosses the FFI boundary at all.
   // Not dead scaffolding like the `RevokedDevice`/`StoreCorrupt` entries two
-  // reviews found and removed -- this one is reachable today, from every
-  // M3-deferred function.
+  // reviews found and removed -- this one is reachable today, from the three
+  // functions that still refuse in JavaScript. That set has shrunk to
+  // `exportSecrets`, `importSecrets` and `restoreCryptoMachine`, and the
+  // first two are refused on purpose rather than pending, so calling them
+  // "deferred" would say the wrong thing about why.
   ['NotImplemented', 'not_implemented'],
   ['MissingKey', 'missing_key'],
   ['UnsharedSession', 'unshared_session'],
@@ -387,13 +417,17 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   // 'unknown' on the one refusal whose whole purpose is to make it stop and
   // look.
   ['RecoveryAlreadyExists', 'recovery_already_exists'],
-  // The three `MachineFfiError` variants verification by a scannable code
-  // added. The core produces all three today and nothing on this side calls
-  // the functions that return them yet; they are mapped anyway, for the
-  // reason the recovery block above gives. An entry missing here is not a
-  // compile error and no test on the Rust side can see it -- the type test
-  // in `errors.test.ts` that walks every generated variant is the only thing
-  // that can, and it is what caught these.
+  // The first three `MachineFfiError` variants verification by a scannable
+  // code added. This said the core produced all three and that nothing on
+  // this side called the functions that return them yet, which was true for
+  // as long as it took the facade to catch up: `getVerificationCode`,
+  // `submitScannedCode` and `confirmScan` are exported now and every one of
+  // these arrives from a real call. They were mapped ahead of that for the
+  // reason the recovery block above gives, and the reason still holds for
+  // whatever is mapped ahead of its caller next. An entry missing here is
+  // not a compile error and no test on the Rust side can see it -- the type
+  // test in `errors.test.ts` that walks every generated variant is the only
+  // thing that can, and it is what caught these.
   ['PeerIdentityNotKnown', 'peer_identity_not_known'],
   ['CodeNotOffered', 'code_not_offered'],
   ['ScannedCodeRefused', 'scanned_code_refused'],

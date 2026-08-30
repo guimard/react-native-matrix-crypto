@@ -229,7 +229,13 @@ function trustStateOf(trust: NativeTrustState): TrustState {
  *   `user` changed. **Two things produce it and they are indistinguishable
  *   from the value alone**, which is why the rule for this variant is to
  *   read rather than to count. A comparison finished and a device belonging
- *   to `user` moved: {@link getDeviceStatuses} for that user says which. Or,
+ *   to `user` moved: {@link getDeviceStatuses} for that user says which.
+ *   **A verification finished by a scanned code moves the same device and
+ *   produces no signal at all**, so a product that waits on this after
+ *   {@link confirmScan} or {@link submitScannedCode} waits forever; read
+ *   {@link getDeviceStatuses}, which is what this variant tells you to do
+ *   anyway. That gap is named rather than hidden and it is being closed, so
+ *   read the release you hold rather than this paragraph. Or,
  *   when `user` is **your own** user id, the account's private signing keys
  *   arrived on this device by gossip from another of your devices, after
  *   {@link requestSelfVerification}: {@link getIdentityStatus} says so, with
