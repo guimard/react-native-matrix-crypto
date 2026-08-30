@@ -118,7 +118,7 @@ const SYNC_TIMEOUT_MS = 5_000
  * send them" rule was got wrong the first time. `levelTwoTransport.ts` says
  * the same thing at more length for the suite's own copy.
  */
-export function endpointFor(kind: string, id: string): { method: string; path: string } {
+export function endpointFor(kind: string): { method: string; path: string } {
   switch (kind) {
     case 'keys_upload':
       return { method: 'POST', path: '/_matrix/client/v3/keys/upload' }
@@ -130,10 +130,10 @@ export function endpointFor(kind: string, id: string): { method: string; path: s
       return { method: 'POST', path: '/_matrix/client/v3/keys/signatures/upload' }
     case 'signing_keys_upload':
       return { method: 'POST', path: '/_matrix/client/v3/keys/device_signing/upload' }
-    case 'to_device':
-      // The transaction id has to be unique per request and this is the one
-      // the library already stamped, so the two cannot drift apart.
-      return { method: 'PUT', path: `/_matrix/client/v3/sendToDevice/PLACEHOLDER/${id}` }
+    // `to_device` is deliberately absent: its path carries the event type and
+    // the transaction id, both of which live in the request the library
+    // handed over, so `pump` builds it there rather than passing them in
+    // here for this function to reassemble.
     default:
       throw new Error(`no endpoint for an outgoing request of kind ${kind}`)
   }
@@ -159,7 +159,7 @@ export async function pump(plan: ScannedCodePlan, http: HttpJson): Promise<numbe
       method = 'PUT'
       path = `/_matrix/client/v3/sendToDevice/${encodeURIComponent(eventType)}/${encodeURIComponent(request.id)}`
     } else {
-      const endpoint = endpointFor(request.kind, request.id)
+      const endpoint = endpointFor(request.kind)
       method = endpoint.method
       path = endpoint.path
     }
@@ -205,7 +205,15 @@ export async function syncOnce(
 export interface ScannedCodeRun {
   /** Resolves when the run is over, either way. */
   finished: Promise<void>
-  /** Called by the confirm button. Safe to call when nothing is waiting. */
+  /**
+   * Called by the confirm button. Safe to call when nothing is waiting.
+   *
+   * A confirmation set before anyone has scanned is **held**, not dropped,
+   * and acted on the moment the flow reaches that stage. On the screen that
+   * cannot happen, because the button is only rendered while a confirmation
+   * is being asked for; it is written this way so the host test can make the
+   * person's decision without racing the flow.
+   */
   confirm: () => void
   /** Asks this account's other devices to verify, from this side. */
   askOtherDevices: () => void
