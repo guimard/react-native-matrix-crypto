@@ -736,9 +736,14 @@ fn every_refusal_a_scannable_code_can_give_is_named() {
         // One pass with nothing in it first, and it is not decoration. This
         // account minted a signing identity above, and M4's arrival latch
         // fires on the first announcement pass that has somebody to announce
-        // to -- so without this the very next assertion reads a
-        // `TrustChanged` for this account ahead of what it is about. Watched:
-        // removing these two lines fails with exactly that pair.
+        // to -- so without this the very next assertion sees a `TrustChanged`
+        // for this account in the same vector as the invitation it is about.
+        // Watched: removing these two lines fails with exactly that pair.
+        //
+        // **Where in the vector is deliberately not stated.** `emit_crypto`
+        // detaches every signal into its own task, so two signals from one
+        // pass have no ordering relationship at all; both orders have been
+        // observed. An earlier version of this comment named one of them.
         harness::deliver_to_library(Vec::new()).await;
         drain_to_quiet();
 

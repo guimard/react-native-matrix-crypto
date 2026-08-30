@@ -309,6 +309,18 @@ pub enum CryptoSignal {
     /// short-string flows M3 and M4 settled and tested, and re-settling
     /// those belongs to a change that can carry them.
     ///
+    /// **One thing whoever writes it will walk into.** Making a completed
+    /// comparison announce both variants is the first time an announcement
+    /// pass legitimately produces two signals for one flow, and there is no
+    /// order between them: `emit_crypto` detaches each into its own task.
+    /// Every signal assertion in the test suite today compares a vector with
+    /// `assert_eq!`, which every one of them can do because every one of
+    /// those vectors has a single element. The day a pass produces two, that
+    /// comparison is order-dependent and will go red intermittently. Both
+    /// orders have already been observed in one session. Sort, or compare as
+    /// a set, before adding the second producer rather than after the first
+    /// flake.
+    ///
     /// **A flow that was refused or timed out announces nothing**, here or
     /// anywhere else. That gap is older than codes and is the same for both
     /// shapes; a product watching a flow it wants to give up on still has
