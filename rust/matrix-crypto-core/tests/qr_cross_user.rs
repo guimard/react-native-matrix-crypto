@@ -267,6 +267,12 @@ fn another_user_verifies_by_scanning_a_code_this_library_showed() {
             "the shared secret in a code must not reach a debug line: {rendered}"
         );
 
+        // ---- The stages a scanned flow passes through ---------------------
+        //
+        // One sequence, compared once, for the reason
+        // `qr_self_established_shows.rs` gives at the same place.
+        let mut stages = vec![flow_stage(&flow).await.expect("the flow exists")];
+
         // ---- Bob scans it -------------------------------------------------
         let scanned = QrVerificationData::from_bytes(&code.payload)
             .expect("what this library produced must decode as what the format defines");
@@ -284,11 +290,24 @@ fn another_user_verifies_by_scanning_a_code_this_library_showed() {
             .reciprocate()
             .expect("a scanner must tell the other side it scanned");
         deliver_verification_request(&reciprocation, BOB, ALICE, ALICE_DEVICE).await;
+        stages.push(flow_stage(&flow).await.expect("the flow exists"));
 
         // ---- Alice says it really was him ---------------------------------
         confirm_scan(&flow)
             .await
             .expect("a code somebody has scanned can be confirmed");
+        stages.push(flow_stage(&flow).await.expect("the flow exists"));
+        assert_eq!(
+            stages,
+            vec![
+                FlowStage::Started,
+                FlowStage::CodeScanned,
+                FlowStage::Confirmed
+            ],
+            "the screen a person is looking at while verifying another user passes \
+             through the same three situations it does while verifying a device of \
+             their own, and the middle one is the only moment either asks a question"
+        );
         let crossed = pump_to_bare(&bob.peer, ALICE, BOB, BOB_DEVICE).await;
         assert!(
             crossed.contains(&"m.key.verification.done".to_string()),
@@ -443,9 +462,23 @@ fn another_user_verifies_by_scanning_a_code_this_library_showed() {
             "a code shown by another user carries both master keys"
         );
 
+        // The stages the *scanning* side passes through, which are not the
+        // ones the showing side passes through and are the half a product
+        // gets whenever its user points their own phone at somebody else's.
+        // Nothing is ever asked of this person after the scan: there is no
+        // `CodeScanned` here, because nobody scanned *this* screen.
+        let mut scanning = vec![flow_stage(&next).await.expect("the flow exists")];
         submit_scanned_code(&next, &shown)
             .await
             .expect("a payload read off another user's screen must be accepted");
+        scanning.push(flow_stage(&next).await.expect("the flow exists"));
+        assert_eq!(
+            scanning,
+            vec![FlowStage::Ready, FlowStage::Confirmed],
+            "a side that has scanned has done everything asked of it and is waiting \
+             on the other, which is what `Confirmed` says. Reporting `Started` there \
+             would tell a product the flow had not moved at all"
+        );
         let crossed = pump_to_bare(&bob.peer, ALICE, BOB, BOB_DEVICE).await;
         assert!(
             crossed.contains(&"m.key.verification.start".to_string()),

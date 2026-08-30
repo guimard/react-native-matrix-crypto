@@ -152,8 +152,8 @@ use matrix_sdk_crypto::matrix_sdk_qrcode::qrcode::Color;
 use matrix_sdk_crypto::matrix_sdk_qrcode::{DecodingError, QrVerificationData};
 use matrix_sdk_crypto::types::requests::OutgoingRequest as UpstreamOutgoingRequest;
 use matrix_sdk_crypto::{
-    QrVerification, Sas, SasState, ScanError, Verification, VerificationRequest,
-    VerificationRequestState,
+    QrVerification, QrVerificationState, Sas, SasState, ScanError, Verification,
+    VerificationRequest, VerificationRequestState,
 };
 
 use crate::identity::TrustState;
@@ -323,19 +323,42 @@ pub enum FlowStage {
     /// Both sides have agreed to verify and one of them may now start the
     /// comparison.
     Ready,
-    /// The comparison has started; the keys are not exchanged yet, so there
-    /// is nothing to show.
+    /// The flow has begun and nothing is waiting on this side yet.
+    ///
+    /// For a comparison, the keys are not exchanged, so there is nothing to
+    /// show. For a flow that became a code, the code exists and nobody has
+    /// scanned it: keep it on the screen. Neither asks anything of a person.
     Started,
     /// The short authentication string is available and waiting to be
     /// compared.
     KeysExchanged,
-    /// This side has said the strings match; the other side has not yet.
+    /// This side has done what was asked of it; the other side has not
+    /// finished.
+    ///
+    /// Said the strings match, for a comparison. For a flow that became a
+    /// code, either scanned the other device's code and told it so, or
+    /// confirmed that the other device scanned this one's. All three are
+    /// the same situation for a person looking at a screen: wait.
     Confirmed,
     /// Both sides said the strings match. The other device is now verified.
     Done,
     /// Over without a verification, whether because a side refused, a side
     /// abandoned it, or it timed out.
     Cancelled,
+    /// The other device has scanned the code this one is showing, and a
+    /// person must say whether that was really them.
+    ///
+    /// The one moment a flow with no string to compare asks a person
+    /// anything, and the counterpart of [`FlowStage::KeysExchanged`] for a
+    /// flow that became a code: something is waiting on this side, and
+    /// [`confirm_scan`] is what answers it. Reached only on the side that
+    /// showed a code; the side that scanned one is never scanned in turn.
+    ///
+    /// **Last rather than in its logical place, and the position is not a
+    /// preference.** The FFI mirror assigns wire ordinals by declaration
+    /// order and may only be appended to, so this enum keeps the mirror's
+    /// order to make the `From` between them checkable by eye.
+    CodeScanned,
 }
 
 /// One flow this process is taking part in.
@@ -497,13 +520,24 @@ fn comparison_of(record: &mut FlowRecord) -> Option<&Sas> {
 /// handle: upstream's `Verification` is one enum over both, and a
 /// transitioned request carries whichever the flow became.
 ///
-/// **It is deliberately not consulted by [`stage_of`].** A flow that became
-/// a code therefore still reports [`FlowStage::Started`] for as long as the
-/// request says `Transitioned`, which is a defect and is named as one: the
-/// design's section 5 makes it reachable and the task that grows the stage
-/// vocabulary is what closes it. Teaching `stage_of` to read this handle
-/// without first having a stage for *scanned* and *reciprocated* to be
-/// reported as would replace one wrong answer with another.
+/// **It is what [`stage_of`] reads for a flow that became a code**, which it
+/// did not always: until [`FlowStage::CodeScanned`] existed there was no
+/// stage a scanned code could honestly be reported as, so such a flow said
+/// [`FlowStage::Started`] for as long as the request said `Transitioned` --
+/// from the moment a code was built until the moment the flow finished.
+/// Reading the handle before there was a vocabulary for what it says would
+/// have replaced one wrong answer with another; the design's section 5 is
+/// where the vocabulary was granted.
+///
+/// # Why the cache is enough on its own
+///
+/// Filled from a `Transitioned` request, and a finished flow's request is
+/// `Done` rather than `Transitioned`, so this cannot fill it at the moment
+/// a completion is collected. It does not have to: a code only exists on
+/// this side because [`read_code`] or [`submit_scanned_code`] built one,
+/// and both call [`remember_code`] before they return. There is no flow
+/// shape that reaches `Done` as a code without one of those two having run
+/// here first.
 fn code_of(record: &mut FlowRecord) -> Option<&QrVerification> {
     if record.code.is_none() {
         if let Some(VerificationRequestState::Transitioned { verification, .. }) =
@@ -518,6 +552,16 @@ fn code_of(record: &mut FlowRecord) -> Option<&QrVerification> {
 fn stage_of(record: &mut FlowRecord) -> FlowStage {
     if let Some(comparison) = comparison_of(record) {
         return stage_of_comparison(comparison);
+    }
+    // The comparison first and the code second, and never both: upstream's
+    // `Verification` is one enum over the two, so a transitioned request
+    // carries whichever the flow became and the second lookup returns
+    // `None` whenever the first returned `Some`. The order is therefore not
+    // a precedence rule to reason about; it is written this way round so
+    // the flow shape that predates codes is read by the same line it always
+    // was.
+    if let Some(code) = code_of(record) {
+        return stage_of_code(code);
     }
     let Some(request) = record.request.as_ref() else {
         // Neither handle. Not reachable through either of `FlowRecord`'s
@@ -539,9 +583,10 @@ fn stage_of(record: &mut FlowRecord) -> FlowStage {
             FlowStage::Requested
         }
         VerificationRequestState::Ready { .. } => FlowStage::Ready,
-        // Unreachable: `comparison_of` above returns `Some` for exactly
-        // this state, and returned before this match if it did. Mapped
-        // truthfully anyway rather than left to a wildcard.
+        // Unreachable: one of the two lookups above returns `Some` for
+        // exactly this state -- a transitioned request carries either a
+        // comparison or a code -- and returned before this match if it did.
+        // Mapped truthfully anyway rather than left to a wildcard.
         VerificationRequestState::Transitioned { .. } => FlowStage::Started,
         VerificationRequestState::Done => FlowStage::Done,
         VerificationRequestState::Cancelled(_) => FlowStage::Cancelled,
@@ -560,6 +605,35 @@ fn stage_of_comparison(comparison: &Sas) -> FlowStage {
         SasState::Confirmed => FlowStage::Confirmed,
         SasState::Done { .. } => FlowStage::Done,
         SasState::Cancelled(_) => FlowStage::Cancelled,
+    }
+}
+
+/// The stage a flow that became a code is at.
+///
+/// [`stage_of_comparison`]'s sibling, and the two answer the same question
+/// about the two shapes a flow can take. Where they agree they say the same
+/// thing on purpose: a person is being asked to wait, or to act, or told it
+/// is over, and which of upstream's nineteen states produced that is not a
+/// distinction a product should be invited to branch on.
+///
+/// **`Reciprocated` and `Confirmed` are one stage here, and that is not a
+/// fold made to save a variant.** They are the same side of the same
+/// situation: this device scanned and said so, or this device was scanned
+/// and said so. Either way it has done everything asked of it and the other
+/// side has not finished, which is precisely what [`FlowStage::Confirmed`]
+/// says for a comparison.
+///
+/// Exhaustive, no wildcard, like every other upstream match in this crate.
+fn stage_of_code(code: &QrVerification) -> FlowStage {
+    match code.state() {
+        // A code exists and nobody has read it off the screen yet. Nothing
+        // is waiting on this side, which is what `Started` means.
+        QrVerificationState::Started => FlowStage::Started,
+        // The one moment a code flow asks a person anything.
+        QrVerificationState::Scanned => FlowStage::CodeScanned,
+        QrVerificationState::Confirmed | QrVerificationState::Reciprocated => FlowStage::Confirmed,
+        QrVerificationState::Done { .. } => FlowStage::Done,
+        QrVerificationState::Cancelled(_) => FlowStage::Cancelled,
     }
 }
 

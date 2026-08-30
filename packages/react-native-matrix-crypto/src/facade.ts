@@ -1369,9 +1369,12 @@ export async function acceptVerification(verificationId: string): Promise<void> 
  * - `'verification_ended'` -- the flow is over, whether it finished or was
  *   refused. There is nothing to carry on with; ask again with
  *   {@link requestVerification} if you still want to.
- * - `'wrong_stage'` -- anything else, which today means the flow has not
- *   been accepted by both sides yet. Wait, or call
- *   {@link acceptVerification} if the invitation was yours to answer.
+ * - `'wrong_stage'` -- anything else, which means either that the flow has
+ *   not been accepted by both sides yet, or that it became a code rather
+ *   than a comparison. Read {@link getVerificationStage}: `'requested'` or
+ *   `'ready'` is the first, and it wants a wait or an
+ *   {@link acceptVerification} if the invitation was yours to answer;
+ *   `'code-scanned'` is the second, and it wants {@link confirmScan}.
  */
 export async function startVerificationComparison(verificationId: string): Promise<void> {
   try {
@@ -1575,10 +1578,11 @@ export async function cancelVerification(verificationId: string): Promise<void> 
  *
  * # After it is drawn
  *
- * The other device scans it and this side learns nothing about that by
- * itself: ask a person, and call {@link confirmScan} when they say yes.
- * That is the step this method's security rests on, exactly as
- * {@link confirmVerification} is for a short string.
+ * The other device scans it and no call returns to tell you: watch
+ * {@link getVerificationStage} for `'code-scanned'`, then ask a person and
+ * call {@link confirmScan} when they say yes. That is the step this method's
+ * security rests on, exactly as {@link confirmVerification} is for a short
+ * string.
  *
  * # Refusals
  *
@@ -1671,7 +1675,10 @@ export async function getVerificationCode(verificationId: string): Promise<Scann
  *
  * **Scanning is not verifying.** When this resolves, nothing is verified
  * yet: the other side has still to confirm, and messages have to cross.
- * Pump, and watch {@link getVerificationStage}.
+ * Pump, and watch {@link getVerificationStage}: it reads `'confirmed'` from
+ * here, meaning this side has done everything asked of it, and `'done'` once
+ * the other side has finished. It never reads `'code-scanned'` on this side,
+ * because that stage belongs to whoever held up a screen.
  */
 export async function submitScannedCode(verificationId: string, payload: Uint8Array): Promise<void> {
   try {
@@ -1693,9 +1700,12 @@ export async function submitScannedCode(verificationId: string, payload: Uint8Ar
  *
  * Rejects with `'wrong_stage'` when nobody has scanned this device's code
  * yet, and also when the flow is over. Those want opposite things done --
- * wait, versus start again -- and this release cannot tell them apart here;
- * {@link getVerificationStage} does not yet distinguish the states a code
- * flow passes through, which is named as a limit rather than hidden.
+ * wait, versus start again -- and this call still cannot tell them apart on
+ * its own. **{@link getVerificationStage} now can**, which it could not when
+ * this rejection was first written: `'started'` is nobody has scanned yet,
+ * `'code-scanned'` is the one stage this call succeeds at, and `'done'` or
+ * `'cancelled'` is over. Read it before calling this rather than after, and
+ * the rejection stops being reachable for anything but a race.
  *
  * **Skipping it does not fail loudly, but it does fail.** A flow nobody
  * confirms sits open until the protocol's own ten-minute timeout retires it.
@@ -1727,6 +1737,8 @@ function verificationStageOf(stage: NativeVerificationStage): VerificationStage 
       return 'started'
     case NativeVerificationStage.KeysExchanged:
       return 'keys-exchanged'
+    case NativeVerificationStage.CodeScanned:
+      return 'code-scanned'
     case NativeVerificationStage.Confirmed:
       return 'confirmed'
     case NativeVerificationStage.Done:
@@ -1887,6 +1899,25 @@ async function unfoldStartRejection(raw: unknown, verificationId: string): Promi
       return toCryptoError({ name: 'VerificationEnded' })
     case 'requested':
     case 'ready':
+      return original
+    // A flow that became a code, and a comparison cannot be started on one.
+    // Deliberately *not* `'comparison_already_started'`: that kind tells a
+    // caller the other side opened a comparison and to answer it with
+    // another {@link acceptVerification}, which here would be a sentence
+    // about a comparison that does not exist and an instruction that moves
+    // nothing. The unfolded rejection is passed through instead, and its own
+    // documentation sends a caller to {@link getVerificationStage}, which is
+    // the call that says `'code-scanned'` and therefore says
+    // {@link confirmScan}.
+    //
+    // **The residue this leaves is named rather than hidden.** `'started'`
+    // and `'confirmed'` are reached by both flow shapes and this function
+    // cannot tell which it is in, so a flow that became a code and is sitting
+    // at either still gets the comparison-flavoured explanation above. That
+    // predates this stage existing; what closes it for a caller is reading
+    // the stage, which no longer answers `'started'` for every state a code
+    // passes through.
+    case 'code-scanned':
       return original
   }
 }

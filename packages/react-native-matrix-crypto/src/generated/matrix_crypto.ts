@@ -4556,6 +4556,7 @@ export enum VerificationStage {
   Confirmed,
   Done,
   Cancelled,
+  CodeScanned,
 }
 
 const FfiConverterTypeVerificationStage = (() => {
@@ -4577,6 +4578,8 @@ const FfiConverterTypeVerificationStage = (() => {
           return VerificationStage.Done;
         case 7:
           return VerificationStage.Cancelled;
+        case 8:
+          return VerificationStage.CodeScanned;
         default:
           throw new UniffiInternalError.UnexpectedEnumCase();
       }
@@ -4597,6 +4600,8 @@ const FfiConverterTypeVerificationStage = (() => {
           return c.writeI32(6);
         case VerificationStage.Cancelled:
           return c.writeI32(7);
+        case VerificationStage.CodeScanned:
+          return c.writeI32(8);
       }
     }
     allocationSize(value: TypeName): number {

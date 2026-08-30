@@ -404,6 +404,7 @@ pub enum VerificationStage {
     Confirmed,
     Done,
     Cancelled,
+    CodeScanned,
 }
 
 impl From<matrix_crypto_core::FlowStage> for VerificationStage {
@@ -417,6 +418,7 @@ impl From<matrix_crypto_core::FlowStage> for VerificationStage {
             matrix_crypto_core::FlowStage::Confirmed => Self::Confirmed,
             matrix_crypto_core::FlowStage::Done => Self::Done,
             matrix_crypto_core::FlowStage::Cancelled => Self::Cancelled,
+            matrix_crypto_core::FlowStage::CodeScanned => Self::CodeScanned,
         }
     }
 }

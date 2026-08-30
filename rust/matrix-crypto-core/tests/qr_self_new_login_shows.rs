@@ -219,6 +219,15 @@ fn a_new_login_shows_a_code_and_the_account_verifies_it() {
             "the symbol must be a square of its own declared side"
         );
 
+        // ---- The stages a scanned flow passes through -------------------------
+        //
+        // One sequence, compared once, for the reason
+        // `qr_self_established_shows.rs` gives at the same place: three
+        // assertions taken one at a time all pass against a stage that
+        // answers every question the same way, which is the defect being
+        // measured.
+        let mut stages = vec![flow_stage(&flow).await.expect("the flow exists")];
+
         // ---- The established device scans it ---------------------------------
         let scanned = QrVerificationData::from_bytes(&code.payload)
             .expect("what this library produced must decode as what the format defines");
@@ -236,11 +245,24 @@ fn a_new_login_shows_a_code_and_the_account_verifies_it() {
             .reciprocate()
             .expect("a scanner must tell the other side it scanned");
         deliver_verification_request(&reciprocation, ACCOUNT, ACCOUNT, NEW_DEVICE).await;
+        stages.push(flow_stage(&flow).await.expect("the flow exists"));
 
         // ---- The person says it really was their other phone ------------------
         confirm_scan(&flow)
             .await
             .expect("a code somebody has scanned can be confirmed");
+        stages.push(flow_stage(&flow).await.expect("the flow exists"));
+        assert_eq!(
+            stages,
+            vec![
+                FlowStage::Started,
+                FlowStage::CodeScanned,
+                FlowStage::Confirmed
+            ],
+            "the mode a person gets is decided by which phone they picked up, so the \
+             stage has to be as truthful for the new login holding up its screen as \
+             it is for the established device holding up its own"
+        );
         let crossed = pump_to_bare(&first.peer, ACCOUNT, ACCOUNT, OLD_DEVICE).await;
         assert!(
             crossed.contains(&"m.key.verification.done".to_string()),

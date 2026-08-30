@@ -111,6 +111,20 @@ export type TrustState = 'unverified' | 'recognized' | 'verified'
  * branches on this to decide what to show, and a stage it has never seen
  * must be a compile error rather than a silent default.
  *
+ * **`'code-scanned'` was added after `0.1.1`, and the compile error an
+ * exhaustive `switch` gets from it is the feature rather than the cost.**
+ * Adding a member to a closed union is a minor version bump: nothing
+ * already decoded changes meaning, because the value behind each of these
+ * strings is a wire ordinal and the new one was appended rather than
+ * inserted. What a consumer gets is the compiler pointing at every place
+ * that has to decide what to show for it, which is precisely what closing
+ * this union bought and why the alternative -- a silent default -- was
+ * rejected when it was closed.
+ *
+ * The members are listed in the order a flow meets them, which is not the
+ * order the wire numbers them in: the layer underneath may only be appended
+ * to, and says so at its own declaration.
+ *
  * Deliberately coarser than the nineteen states the underlying protocol
  * distinguishes. What a caller has to decide is which of a small set of
  * things to do next, and every distinction that does not change that answer
@@ -121,9 +135,11 @@ export type TrustState = 'unverified' | 'recognized' | 'verified'
  *   answered. The other side must call {@link acceptVerification}.
  * - `'ready'` — both sides have agreed, and either may now call
  *   {@link startVerificationComparison}.
- * - `'started'` — the comparison has begun and the keys are not exchanged
- *   yet, so there is nothing to show. **A flow that stays here has one of
- *   two causes, and they need opposite things done about them.** If the
+ * - `'started'` — the flow has begun and nothing is waiting on this side.
+ *   For a comparison the keys are not exchanged yet, so there is nothing to
+ *   show; for a flow that became a code the code exists and nobody has read
+ *   it off the screen, so keep it up. **A comparison that stays here has one
+ *   of two causes, and they need opposite things done about them.** If the
  *   *other* side opened the comparison, their start is a question this side
  *   has not answered: call {@link acceptVerification} again, and only then
  *   wait. Otherwise the flow's requests were drained and never reported
@@ -134,8 +150,17 @@ export type TrustState = 'unverified' | 'recognized' | 'verified'
  *   `'material_not_ready'`.
  * - `'keys-exchanged'` — the short authentication string is available.
  *   Show it, and ask.
- * - `'confirmed'` — this side has said the strings match; the other side
- *   has not yet.
+ * - `'code-scanned'` — the other device has read the code this one is
+ *   showing. Ask the person whether that was really their other device, and
+ *   call {@link confirmScan} when they say yes. **The one moment a flow with
+ *   no string to compare asks a person anything**, and the counterpart of
+ *   `'keys-exchanged'` for a code. Only the side that showed a code ever
+ *   reads it: the side that scanned one is never scanned in turn.
+ * - `'confirmed'` — this side has done what was asked of it and the other
+ *   side has not finished. Said the strings match, or scanned the other
+ *   device's code and told it so, or confirmed that the other device
+ *   scanned this one's. All three mean the same thing to a person looking
+ *   at a screen: wait.
  * - `'done'` — both sides said so. The other device now reads `'verified'`
  *   from {@link getDeviceStatuses}.
  * - `'cancelled'` — over without a verification, whether a side refused, a
@@ -146,6 +171,7 @@ export type VerificationStage =
   | 'ready'
   | 'started'
   | 'keys-exchanged'
+  | 'code-scanned'
   | 'confirmed'
   | 'done'
   | 'cancelled'

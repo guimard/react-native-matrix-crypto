@@ -227,6 +227,19 @@ fn the_device_that_holds_the_identity_shows_a_code_and_a_new_login_scans_it() {
             "the symbol must be a square of its own declared side"
         );
 
+        // ---- The stages a scanned flow passes through ---------------------------
+        //
+        // Collected as one sequence and compared once at the end rather than
+        // asserted one at a time. Three separate assertions would all pass
+        // against a mapping that answered every question with whatever it
+        // was handed, and answering every question the same way is exactly
+        // the defect this measures: before the code handle was read, a flow
+        // that had become a code reported `Started` from the moment it
+        // transitioned until the moment it finished, so a product could not
+        // tell "nobody has scanned this yet" from "somebody has, and a
+        // person must now say whether it was them".
+        let mut stages = vec![flow_stage(&flow).await.expect("the flow exists")];
+
         // ---- The new login scans it ---------------------------------------------
         let scanned = QrVerificationData::from_bytes(&code.payload)
             .expect("what this library produced must decode as what the format defines");
@@ -244,11 +257,25 @@ fn the_device_that_holds_the_identity_shows_a_code_and_a_new_login_scans_it() {
             .reciprocate()
             .expect("a scanner must tell the other side it scanned");
         deliver_verification_request(&reciprocation, ACCOUNT, ACCOUNT, MAIN_DEVICE).await;
+        stages.push(flow_stage(&flow).await.expect("the flow exists"));
 
         // ---- The person says it really was their new phone -----------------------
         confirm_scan(&flow)
             .await
             .expect("a code somebody has scanned can be confirmed");
+        stages.push(flow_stage(&flow).await.expect("the flow exists"));
+        assert_eq!(
+            stages,
+            vec![
+                FlowStage::Started,
+                FlowStage::CodeScanned,
+                FlowStage::Confirmed
+            ],
+            "showing a code, having it scanned and confirming the scan are three \
+             different situations for the person holding this phone: wait, answer, \
+             and wait again. The middle one is the only moment a code flow asks \
+             anything of a person, and it is the one `confirm_scan` may be called at"
+        );
         let crossed = pump_to_bare(&new_login, ACCOUNT, ACCOUNT, NEW_DEVICE).await;
         assert!(
             crossed.contains(&"m.key.verification.done".to_string()),
