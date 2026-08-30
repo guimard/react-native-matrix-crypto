@@ -1,4 +1,22 @@
 import { asCryptoScopeId } from './types'
+// **From the published entry point, not from the module each name lives in,
+// and type-only on purpose.** Nothing in this package imports `./index` at
+// runtime: doing so installs the native module, and there is none under
+// vitest. A type-only import is erased before anything runs, so this is the
+// one check in the repository that a name reached the *public* surface rather
+// than merely existing. Without it, a facade function nobody exported passes
+// every test in the suite while being unreachable by any product, and
+// `gate:agility` would not notice either: it only forbids what a public name
+// may be called, never asserts that a name is there.
+//
+// The list is the code-scanning surface, which is what added the gap. Extend
+// it when a call is added, or leave the next one to be found by a consumer.
+import type {
+  confirmScan,
+  getVerificationCode,
+  ScannableCode as PublishedScannableCode,
+  submitScannedCode,
+} from './index'
 import type {
   CryptoAlgorithm,
   CryptoScopeId,
@@ -138,7 +156,13 @@ const code: ScannableCode = {
 }
 
 void bad; void known; void future; void envelope; void decrypted
-void rawBuffer; void nestedGrid; void code
+// Referenced so the type-only imports above are not merely present but used;
+// an unused import is the shape a later edit deletes as dead.
+const published: PublishedScannableCode = code
+const surface: [typeof getVerificationCode, typeof submitScannedCode, typeof confirmScan] | undefined =
+  undefined
+
+void rawBuffer; void nestedGrid; void code; void published; void surface
 void fabricatedTrust; void fabricatedStage; void trust; void stage
 void shortMaterial; void digitsOnly; void withSymbols
 void fabricatedState; void fabricatedReason; void problemless; void reasoned
