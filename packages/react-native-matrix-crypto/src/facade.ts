@@ -57,7 +57,20 @@ function notImplemented(name: string): Promise<never> {
  * that stringifies an `unknown` payload.
  */
 function stringifyOrMalformed(value: unknown): string {
-  const json = JSON.stringify(value)
+  let json: string | undefined
+  try {
+    json = JSON.stringify(value)
+  } catch {
+    // `JSON.stringify` has two failure modes and this one was missed until
+    // server-side recovery's own tests hit it: a value it cannot represent
+    // returns `undefined`, and a value that *refers to itself* throws a
+    // `TypeError` instead. Uncaught, that leaves the boundary as a raw
+    // `TypeError` rather than a `CryptoError`, so `isCryptoError` is false
+    // and a product's error handling has nothing to read. A cycle is an
+    // ordinary shape for an object a product assembled itself, which is
+    // what every caller of this helper is handed.
+    throw toCryptoError({ name: 'MalformedPayload' })
+  }
   if (json === undefined) {
     throw toCryptoError({ name: 'MalformedPayload' })
   }

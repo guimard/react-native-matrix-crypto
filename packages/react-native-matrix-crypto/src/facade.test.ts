@@ -631,6 +631,31 @@ describe('decryptEvent wiring to the native layer', () => {
   })
 
   /**
+   * The other half of the same rule, and it did not hold until M4's
+   * server-side recovery work tripped over it.
+   *
+   * `JSON.stringify` has two failure modes. The test above covers the one
+   * that returns `undefined`; a value that refers to itself **throws** a
+   * `TypeError` instead, which escaped this boundary uncaught. A product
+   * caught something for which `isCryptoError` is false and `kind` does not
+   * exist, on a call whose documentation says it rejects with
+   * `'malformed_payload'` before touching native. A cycle is an ordinary
+   * shape for an object a product assembled itself, so this is not an exotic
+   * input.
+   */
+  it('rejects with malformed_payload before ever calling native, when rawEvent refers to itself', async () => {
+    vi.mocked(nativeDecryptEvent).mockClear()
+    const cyclic: Record<string, unknown> = { type: 'm.room.encrypted' }
+    cyclic.itself = cyclic
+
+    await expect(decryptEvent(scope, cyclic)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
+    )
+
+    expect(nativeDecryptEvent).not.toHaveBeenCalled()
+  })
+
+  /**
    * The distinguishing test, at the public surface.
    *
    * Two decryptions whose native verification state genuinely differs must
