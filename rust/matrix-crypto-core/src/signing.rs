@@ -58,22 +58,26 @@
 //! # What the gate cannot check
 //!
 //! Fact (1) is "a key query was reported to us as having succeeded". No HTTP
-//! status crosses this library's boundary, so a caller that reports a
-//! failed query's body as a success supplies that fact falsely and the gate
-//! believes it. `session::mark_request_sent` refuses the two failure shapes
-//! a body can carry -- a standard Matrix error and an authentication
-//! challenge -- and the key query's own response parse rejects anything
-//! that is not that endpoint's shape, so a proxy's HTML page does not get
-//! through either.
+//! status crosses this library's boundary on that call, so a caller that
+//! reports a failed query's body as a success supplies that fact falsely and
+//! the gate believes it. `session::mark_request_sent` refuses every body it
+//! can prove is not an answer: a standard Matrix error, an authentication
+//! challenge, a gateway's `{"error":"Bad Gateway"}` carrying no `errcode`,
+//! and anything that is not a JSON object at all, which covers a proxy's
+//! HTML page and the JSON array that serde would otherwise read as an
+//! all-defaulted success.
 //!
-//! What does still lift the gate, all of it a body no conformant homeserver
-//! sends: `{}`, an empty body (ruma substitutes `{}` for it before
-//! parsing), a JSON error object carrying no top-level `errcode` such as a
-//! gateway's `{"error":"Bad Gateway"}`, and a JSON array. Each is something
-//! serde can read as an all-optional response shape, and only the HTTP
-//! status separates them from a real answer. Fact (1) is also "asked at some point in this
-//! process", not "asked recently": a bootstrap long after the answer
-//! decides on stale information.
+//! **What still lifts the gate is `{}` and an empty body** (ruma substitutes
+//! `{}` for it before parsing), and no body-based check will ever refuse
+//! them, because they are the genuine answer for an account the server knows
+//! no identity for. Only the HTTP status separates that answer from a 502
+//! that carried nothing, and no status crosses this boundary, so a caller
+//! that got a non-2xx must report nothing at all. That is safe: the gate
+//! needs a positive mark to open, so silence leaves it shut.
+//!
+//! Fact (1) is also "asked at some point in this process", not "asked
+//! recently": a bootstrap long after the answer decides on stale
+//! information.
 //!
 //! # This library never sees a credential
 //!
@@ -281,24 +285,27 @@ pub async fn identity_status() -> Result<IdentityStatus, MachineError> {
 ///
 /// **Never report a non-2xx body through [`crate::mark_request_sent`]**,
 /// and that includes the 401 challenge above. Report nothing for the
-/// challenge and report the eventual success. This matters more here than
-/// anywhere else on the surface: a failed key query reported as a success
-/// is read by the gate below as "the server answered and this account has
-/// no identity", which is the one fact that authorises a mint; and the
-/// signing-keys upload's success response is an empty object, so a reported
-/// challenge would mark an identity published that never was.
+/// challenge and report the eventual success. This matters
+/// more here than anywhere else on the surface: a failed key query reported
+/// as a success is read by the gate below as "the server answered and this
+/// account has no identity", which is the one fact that authorises a mint;
+/// and the signing-keys upload's success response is an empty object, so a
+/// reported challenge would mark an identity published that never was.
 ///
-/// That call refuses a standard error body and a challenge on sight, and
-/// how much else it catches differs by request. For the key query, whose
-/// response type has fields, a body that is not that endpoint's shape --
-/// a proxy's HTML page, a truncated response -- is rejected by the parse
-/// behind it. For the signing-keys upload, whose success response is
-/// `Response {}`, ruma emits no body parse at all, so **anything that is
-/// not a Matrix error or a challenge is accepted**, including bytes that
-/// are not JSON. No HTTP status crosses this library's boundary, so what
-/// gets past that is yours to prevent by branching on the status. See
-/// `session::refuse_a_non_response` for the mechanism and the exact
-/// division.
+/// `mark_request_sent` refuses on sight every body it can prove is not an
+/// answer: a standard Matrix error, a challenge, a gateway error carrying
+/// `error` without `errcode`, and anything that is not a JSON object, which
+/// is what now protects the signing-keys upload. That endpoint's success
+/// response is `Response {}` and ruma emits no body parse for it, so this
+/// check is the only one it gets, and it used to accept bytes that were not
+/// JSON at all.
+///
+/// **What no check can refuse is `{}` and a completely empty body**, since
+/// those are the real answers here: `{}` is what the key query returns for
+/// an account with no identity, and it is the signing-keys upload's entire
+/// success response. Only the status tells those from a refusal, and the
+/// status is yours. See `session::refuse_a_non_response` for the mechanism
+/// and the exact division.
 ///
 /// # Refusals
 ///
