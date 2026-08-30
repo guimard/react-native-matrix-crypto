@@ -59,8 +59,11 @@
 //!
 //! Both directions read the pointer, and they read it through one function,
 //! [`pointed_key_id`], rather than through one shared paragraph. That is
-//! deliberate. This rule was already written down once, on
-//! [`names_a_recovery`]'s ancestor, and [`restore`] four hundred lines away
+//! deliberate. This rule was already written down once, on the ancestor of
+//! `names_a_recovery` (removed in `923e68e`, when [`pointed_key_id`] took
+//! its place; a plain code span and not a doc link, because linking to
+//! something that no longer exists is the same defect one level down), and
+//! [`restore`] four hundred lines away
 //! read the same bytes the other way and reported a cleared pointer as
 //! `RecoveryDataMalformed`, whose remedy is to set recovery up again. A
 //! user whose recovery was intact and reversibly cleared was told to

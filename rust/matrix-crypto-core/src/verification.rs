@@ -446,12 +446,25 @@ impl std::fmt::Debug for ScannableCode {
 
 /// How far along a flow is.
 ///
-/// Deliberately coarser than upstream's two state enums, which between them
-/// distinguish nineteen states. What a caller has to decide is which of a
-/// small set of things to do next -- wait, accept, show the string, show
-/// the code, confirm a scan, or tell the user it is over -- and every
-/// distinction upstream draws that does not change that answer is one this
-/// surface would be inviting a product to branch on for no reason.
+/// Deliberately coarser than upstream's **three** state enums, which
+/// between them distinguish **nineteen** states: `VerificationRequestState`
+/// 6, `SasState` 7, `QrVerificationState` 6, counted in
+/// `matrix-sdk-crypto-0.18.0`. This said "two enums ... nineteen states",
+/// which is no pairing of the three: two of them distinguish thirteen. The
+/// third is the one the `qrcode` feature brought into this build, so
+/// turning that feature on made the number right and left the noun wrong,
+/// and the sentence was corrected once for what follows the number without
+/// the number in front of it being counted.
+///
+/// **`stage_of` reads two of the three**, and the one it does not read is
+/// `QrVerificationState`. That is not a coarsening, it is the gap named at
+/// [`code_of`]: six states of a real flow with no stage of their own.
+///
+/// What a caller has to decide is which of a small set of things to do next
+/// -- wait, accept, show the string, show the code, confirm a scan, or tell
+/// the user it is over -- and every distinction upstream draws that does not
+/// change that answer is one this surface would be inviting a product to
+/// branch on for no reason.
 ///
 /// **This vocabulary is the short string's, and a flow that became a code
 /// is described in it for want of one of its own.** A scanned flow passes
@@ -1107,11 +1120,27 @@ pub async fn request_flow(user_id: &str, device_id: &str) -> Result<FlowId, Mach
 ///
 /// # After it returns
 ///
-/// The flow is driven exactly like [`request_flow`]'s: pump, wait for
-/// [`FlowStage::Ready`], [`begin_comparison`], read the string with
-/// [`read_material`], show it to a person, and [`confirm_flow`] or
-/// [`cancel_flow`]. The person is comparing two of their own screens rather
-/// than talking to somebody else, which changes nothing about the calls.
+/// The flow is driven exactly like [`request_flow`]'s, **by either method**.
+///
+/// By short string: pump, wait for [`FlowStage::Ready`],
+/// [`begin_comparison`], read the string with [`read_material`], show it to
+/// a person, and [`confirm_flow`] or [`cancel_flow`]. The person is
+/// comparing two of their own screens rather than talking to somebody else,
+/// which changes nothing about the calls.
+///
+/// By scanned code, if [`offer_scanning`] is on: from the same
+/// [`FlowStage::Ready`], [`read_code`] and [`confirm_scan`] on the side
+/// showing, or [`submit_scanned_code`] on the side reading. **Two of the
+/// three modes a code has are self modes and both start here**, so this
+/// call is where they are reached from and this paragraph described only
+/// the string until the sweep that is correcting it.
+/// `tests/qr_self_new_login_shows.rs` drives this exact call and then
+/// [`read_code`], touching none of the short-string calls above.
+///
+/// Showing a code to verify this account's own new login needs none of the
+/// account's private signing keys, which is what makes it reachable from
+/// the device that is joining rather than only from the one already
+/// holding them.
 ///
 /// # Refusals
 ///
@@ -2348,18 +2377,34 @@ mod tests {
     /// Every refusal this module can produce is its own `MachineError`
     /// variant, none of them folded onto another.
     ///
-    /// **This said "three distinct conditions" and pinned three.** Three
-    /// was the whole of what this module refused with when it was written.
-    /// It refuses with fourteen now: `UnknownDevice` and
-    /// `AccountKeysNotFetched` arrived with self-verification, and
-    /// verifying by a scannable code brought eight more. The name and the
-    /// list went on agreeing with each other while agreeing with nothing
-    /// else. Extended rather than replaced, and pairwise over a list, so
-    /// that a variant added later and forgotten here is the only way it
-    /// goes stale again. `NotInitialised` and `Store` are left out
-    /// deliberately: they say the machine is not there or the store failed,
-    /// which is true of every call in this crate and is not a condition of
-    /// a flow.
+    /// **This said "three distinct conditions" and pinned three, and the
+    /// module refused with four on the day it was written.** The count and
+    /// the list have been recounted against the code rather than carried
+    /// forward, because the first correction of this comment got the
+    /// arithmetic wrong in the commit whose whole purpose was to stop
+    /// counts going stale.
+    ///
+    /// Counted at three commits, excluding `NotInitialised` and `Store`
+    /// throughout, and excluding `IdentityAlreadyExists`, which appears in
+    /// this module only as a doc link to `signing::bootstrap_identity`:
+    ///
+    /// * `cff97e3`, where the three-variant test was written: **four**
+    ///   (`MalformedIdentifier`, `MaterialNotReady`, `UnknownFlow`,
+    ///   `WrongStage`).
+    /// * `bdf0545`, the last commit before verification by a scannable
+    ///   code: **seven**. Self-verification added `UnknownDevice`,
+    ///   `AccountKeysNotFetched` and `IdentityNotKnown`.
+    /// * here: **fourteen**. A scannable code added six variants of its own
+    ///   and made this module the second producer of `PrivateKeysNotHeld`,
+    ///   which existed for `create_recovery` and which a cross-user code
+    ///   now needs too.
+    ///
+    /// The name and the list went on agreeing with each other while
+    /// agreeing with nothing else. Extended rather than replaced, and
+    /// pairwise over a list, so that a variant added later and forgotten
+    /// here is the only way it goes stale again. **The list below is the
+    /// authority and this paragraph is not**: if they disagree, the list is
+    /// what the test asserts.
     ///
     /// **What this defends, said plainly, because it is less than it
     /// looks.** `MachineError` derives `PartialEq`, so distinctness is
@@ -2367,9 +2412,21 @@ mod tests {
     /// it catches is exactly that: a hand-written `PartialEq`, or a variant
     /// quietly re-pointed at another. The heavier work is elsewhere and
     /// stays there: `matrix-crypto-ffi/tests/error_mapping.rs` asserts that
-    /// each of these crosses to its own kind, and
-    /// `tests/qr_refusals.rs` drives each of the eight code refusals to a
-    /// real condition rather than asserting them against each other.
+    /// each of these crosses to its own kind, and `tests/qr_refusals.rs`
+    /// drives **eleven** of the fourteen to a real condition rather than
+    /// asserting them against each other. Counted rather than carried
+    /// forward: this said eight, and eight was never any of the numbers in
+    /// front of it.
+    ///
+    /// The three `qr_refusals.rs` leaves, checked one at a time rather than
+    /// grouped by a guess: `MaterialNotReady` is driven in
+    /// `tests/sas_two_party.rs`; `AccountKeysNotFetched` in
+    /// `tests/self_verification_unasked.rs` and its siblings; and
+    /// **`UnknownDevice` in no test of this crate at all**, only across the
+    /// boundary in `matrix-crypto-ffi/tests/delegate_order.rs`. That last
+    /// one is a gap rather than a division of labour, and it is left named
+    /// rather than quietly filled, because it belongs to `request_flow`
+    /// rather than to anything a scannable code changed.
     #[test]
     fn every_refusal_this_module_produces_is_its_own_error() {
         let refusals = [

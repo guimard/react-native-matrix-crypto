@@ -215,15 +215,23 @@ pub async fn device_statuses(user_id: &str) -> Result<Vec<DeviceStatus>, Machine
                 .map(|device| DeviceStatus {
                     device_id: device.device_id().to_string(),
                     // `is_verified`, which is local trust OR a cross
-                    // signature this machine can follow. Only the first can
-                    // be true today, and the reason is our own missing
-                    // identity rather than the sender's: upstream's
-                    // `is_cross_signing_trusted` needs our user-signing key
-                    // over the owner's master key, so it is `false` even for
-                    // a device its owner has genuinely signed. Asking the
-                    // broader question means this answer does not have to
-                    // change when the second can. See `TrustState::Recognized`
-                    // for what this two-valued mapping costs.
+                    // signature this machine can follow. **Both can be true
+                    // today.** This said only the first could, because
+                    // upstream's `is_cross_signing_trusted` needs our
+                    // user-signing key over the owner's master key and this
+                    // machine could not mint one; `signing::bootstrap_identity`
+                    // is what made it able to, and asking the broader question
+                    // is what let this line survive that change unedited.
+                    // Which is exactly why the sentence was wrong for two
+                    // milestones without anything failing.
+                    //
+                    // `tests/verified_sender.rs` reaches the second route by
+                    // a short-string comparison and `tests/qr_cross_user.rs`
+                    // reaches it by a scan, both ending in a signature upload
+                    // and a re-query rather than in local trust. See
+                    // `TrustState::Verified` in this file, which now names
+                    // all three routes, and `TrustState::Recognized` for what
+                    // this two-valued mapping costs.
                     trust: if device.is_verified() {
                         TrustState::Verified
                     } else {

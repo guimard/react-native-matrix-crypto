@@ -1769,7 +1769,10 @@ struct RequestState {
     /// it, so a process holds at most one account for its whole life.
     /// `machine::reset_for_test` is the one place that swaps the held
     /// account, and it clears this through
-    /// [`forget_account_keys_answered_for_test`] for exactly that reason.
+    /// `forget_account_keys_answered_for_test` for exactly that reason.
+    /// A plain code span rather than a doc link: that function is
+    /// `#[cfg(test)]`, so a doc build cannot resolve it and a link would be
+    /// broken in exactly the way `scripts/assert-doc-links.sh` refuses.
     account_keys_answered: bool,
     next_sequence: u64,
 }
