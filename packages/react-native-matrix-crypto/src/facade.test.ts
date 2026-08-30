@@ -977,9 +977,20 @@ const NATIVE_MATERIAL: SasMaterial = {
 }
 
 /**
- * Restores every verification mock to the stateless default declared at the
- * top of this file, so a test that installs its own implementation cannot
- * leak it into the next one. Vitest's mocks are module-level and shared.
+ * Restores every mock any test in this file reimplements, to the stateless
+ * default declared at the top, so a test that installs its own
+ * implementation cannot leak it into the next one. Vitest's mocks are
+ * module-level and shared.
+ *
+ * **The list has to cover what `installFake` touches, not just the
+ * verification surface.** A review found it did not: the chain describe
+ * reimplemented seven mocks this hook restored none of, and a probe
+ * appended after it saw `decryptEvent` return the chain's peer and
+ * `takeOutgoingRequests` return `[]`. Nothing failed, only because that
+ * describe happens to be last in the file, which nothing enforces and which
+ * `--sequence.shuffle` does not respect. `the mock defaults survive every
+ * describe above` at the bottom of this file is the guard that now does
+ * enforce it; this list is what makes that guard pass.
  */
 beforeEach(() => {
   vi.mocked(nativeDeviceStatuses).mockReset()
@@ -1005,6 +1016,41 @@ beforeEach(() => {
   vi.mocked(nativeConfirmVerification).mockResolvedValue(undefined)
   vi.mocked(nativeCancelVerification).mockReset()
   vi.mocked(nativeCancelVerification).mockResolvedValue(undefined)
+  // The seven the signing-identity chain reimplements. Same defaults as the
+  // module-level factory declares, restated here rather than shared with it
+  // because that factory runs once and this runs before every test.
+  vi.mocked(nativeIdentityStatus).mockReset()
+  vi.mocked(nativeIdentityStatus).mockResolvedValue({
+    accountKeysFetched: false,
+    identityKnown: false,
+    privateKeysHeld: false,
+  })
+  vi.mocked(nativeBootstrapIdentity).mockReset()
+  vi.mocked(nativeBootstrapIdentity).mockImplementation(async () => {
+    throw new MachineFfiError.AccountKeysNotFetched()
+  })
+  vi.mocked(nativeTakeOutgoingRequests).mockReset()
+  vi.mocked(nativeTakeOutgoingRequests).mockResolvedValue([
+    { id: 'req-1', kind: 'keys_upload', body: '{}' },
+  ])
+  vi.mocked(nativeMarkRequestSent).mockReset()
+  vi.mocked(nativeMarkRequestSent).mockResolvedValue(undefined)
+  vi.mocked(nativeMarkRequestFailed).mockReset()
+  vi.mocked(nativeMarkRequestFailed).mockResolvedValue(undefined)
+  vi.mocked(nativeReceiveSyncChanges).mockReset()
+  vi.mocked(nativeReceiveSyncChanges).mockResolvedValue({
+    toDeviceEventCount: 0,
+    newSessionCount: 0,
+  })
+  vi.mocked(nativeDecryptEvent).mockReset()
+  vi.mocked(nativeDecryptEvent).mockResolvedValue({
+    scope: '!native-scope:example.org',
+    algorithm: 'm.native.algorithm',
+    eventType: 'm.native.event',
+    ciphertext: toArrayBuffer('native-plaintext'),
+    sender: '@native-sender:example.org',
+    senderVerification: NativeSenderVerification.UnsignedDevice,
+  })
 })
 
 describe('getDeviceStatuses', () => {
@@ -2045,5 +2091,53 @@ describe('the signing identity chain, driven through the public surface', () => 
     // And it queued nothing: unlike the first refusal, there is no request
     // a caller could send that would change the answer.
     expect(await takeOutgoingRequests()).toEqual([])
+  })
+})
+
+/**
+ * The mock defaults survive every describe above.
+ *
+ * **Deliberately the last describe in this file**, because that is the only
+ * position from which it can see a leak from any of the others. It is not a
+ * test of the library at all; it is a test of this file, and it exists
+ * because the file's own `beforeEach` documented a promise it had stopped
+ * keeping.
+ *
+ * The chain describe reimplements seven mocks with a stateful model. A
+ * review appended a probe after it and watched two cases fail:
+ * `decryptEvent` returned the chain's peer instead of the module-level
+ * default sender, and `takeOutgoingRequests` returned `[]` instead of the
+ * one-request default. Nothing in the suite failed, only because the chain
+ * describe was last and nothing enforced that it stay last.
+ *
+ * So the probe is kept rather than discarded. If a describe is appended
+ * after this one, it moves and this comment is what tells the next person
+ * why. A stateful mock that outlives its describe is the shape where a
+ * later test passes for a reason that has nothing to do with what it
+ * asserts.
+ */
+describe('the mock defaults survive every describe above', () => {
+  it('hands back the module-level decryptEvent envelope, not a previous test model', async () => {
+    const envelope = await decryptEvent(scope, { type: 'm.room.encrypted' })
+    expect(envelope.sender).toBe('@native-sender:example.org')
+    expect(envelope.senderVerification).toEqual({
+      state: 'unverified',
+      reason: 'unsigned_device',
+    })
+  })
+
+  it('hands back the module-level pump batch, not a drained model queue', async () => {
+    expect(await takeOutgoingRequests()).toEqual([{ id: 'req-1', kind: 'keys_upload', body: '{}' }])
+  })
+
+  it('hands back the module-level identity status and refusal', async () => {
+    expect(await getIdentityStatus()).toEqual({
+      accountKeysFetched: false,
+      identityKnown: false,
+      privateKeysHeld: false,
+    })
+    await expect(bootstrapCrossSigning()).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'account_keys_not_fetched',
+    )
   })
 })
