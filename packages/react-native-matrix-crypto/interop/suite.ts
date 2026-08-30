@@ -201,12 +201,35 @@ export interface InteropSuiteOptions {
  * the script used to read the log once, immediately, so a delivery landing one
  * second after the summary was absent from the artifact and read as lost.
  */
-const SIGNAL_WAIT_MS = 10000
+export const SIGNAL_WAIT_MS = 10000
 const SIGNAL_POLL_MS = 20
 
-async function waitUntil(predicate: () => boolean, budgetMs: number): Promise<void> {
+/**
+ * Waits, bounded, for an observer callback that may still be in flight, and
+ * reports whether it arrived. Resolves as soon as `hasArrived` is true.
+ *
+ * Exported, rather than kept private to this file, because it had two
+ * callers and only one of them had it. The bounded wait below was added to
+ * this suite's `signal` check when a release build was seen reading the
+ * observer's array before the callback reached the JavaScript thread. The
+ * example app's guided walkthrough reads its own copy of the same array,
+ * for the same reason, and was left reading it immediately. The suite then
+ * passed on a device while the screen beside it showed the same callback as
+ * missing. One implementation and one budget is what keeps the two from
+ * disagreeing again; a second copy is exactly what went stale the first
+ * time.
+ *
+ * Costs nothing when the callback has already landed: `hasArrived` is
+ * checked before anything is scheduled, so the common case does not yield
+ * at all. The budget is only ever spent by a caller that is genuinely not
+ * going to get its signal.
+ */
+export async function awaitSignalDelivery(
+  hasArrived: () => boolean,
+  budgetMs: number = SIGNAL_WAIT_MS,
+): Promise<boolean> {
   const deadline = Date.now() + budgetMs
-  while (!predicate() && Date.now() < deadline) {
+  while (!hasArrived() && Date.now() < deadline) {
     // `setTimeout(resolve, ms)` is the idiomatic form and does not compile
     // here. React Native types `setTimeout`'s callback as `() => void`, while
     // `Promise`'s resolve is `(value: unknown) => void`, so passing it
@@ -217,6 +240,7 @@ async function waitUntil(predicate: () => boolean, budgetMs: number): Promise<vo
       setTimeout(() => resolve(), SIGNAL_POLL_MS)
     })
   }
+  return hasArrived()
 }
 
 /**
@@ -331,11 +355,18 @@ export async function runInteropSuite(
     //
     // Bounded, so it cannot turn the check into a no-op: a binding that never
     // calls the observer still fails, it just takes the budget to say so.
-    await waitUntil(() => signals.includes('probe_started'), options.signalWaitMs ?? SIGNAL_WAIT_MS)
+    // The check reports what the wait concluded, rather than asking the
+    // array a second question of its own. The two cannot then be changed
+    // apart: a predicate that starts waiting for something else takes the
+    // verdict with it.
+    const arrived = await awaitSignalDelivery(
+      () => signals.includes('probe_started'),
+      options.signalWaitMs ?? SIGNAL_WAIT_MS,
+    )
 
     checks.push({
       name: 'signal',
-      ok: signals.includes('probe_started'),
+      ok: arrived,
       detail: signals.join(',') || '(none)',
     })
   } catch (e) {
