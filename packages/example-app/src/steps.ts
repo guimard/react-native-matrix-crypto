@@ -25,8 +25,8 @@ export const FLOW_STEPS: FlowStep[] = [
     title: '1. Subscribe to signals',
     call: "import { onCryptoSignal } from 'react-native-matrix-crypto';\n\nconst unsubscribe = onCryptoSignal(signal => {\n  console.log(signal.kind);\n});",
     crosses:
-      'Nothing yet. This registers a listener for state changes that belong to no call in flight -- a real consumer subscribes before making calls, not after.',
-    why: "The channel that will carry trust changes and key gaps once that logic lands. Nothing arrives on it in this walkthrough -- this milestone has no trust logic yet -- and it never carries a single call's own diagnostic either: step 3 uses a different channel, on purpose.",
+      "The first subscriber installs this process's one native observer across the boundary, so the native side has somewhere to deliver to. No signal is in flight yet: this registers a listener for state changes that belong to no call, which is what a real consumer does before making calls, not after.",
+    why: "The channel that carries trust changes and verification invitations. It is live: that logic landed, and this card said otherwise for a milestone after it did. Nothing arrives on it during this walkthrough for a narrower reason, which is that every signal on it is produced while sync changes are applied, and this walkthrough applies none. It never carries a single call's own diagnostic either: step 3 uses a different channel, on purpose.",
   },
   {
     id: 'call',
@@ -63,10 +63,10 @@ export const FLOW_STEPS: FlowStep[] = [
   {
     id: 'notYet',
     title: '6. Not implemented yet -- on purpose',
-    call: "import { getDeviceStatuses } from 'react-native-matrix-crypto';\n\nawait getDeviceStatuses('@alice:example.org');",
+    call: "import { exportSecrets } from 'react-native-matrix-crypto';\n\nawait exportSecrets(passphrase);",
     crosses:
       'Nothing crosses to native code at all. The facade rejects before making a call, with a typed not_implemented error.',
-    why: "Five more functions in this library's product surface share this shape: final, compiling types with the implementation still to come. Shown as a feature, not a gap -- product code can be written against the real shape today, and starts working the moment the native side lands. This card used to demonstrate encryptEvent; that one now works, which the diagnostics below prove on this device, so the example moved to a function still genuinely waiting on trust establishment.",
+    why: "A few functions in this library's product surface are final, compiling types with the implementation still to come. Shown as a feature, not a gap: product code can be written against the real shape today, and starts working the moment the native side lands. This card has pointed at two other functions before this one, encryptEvent and then getDeviceStatuses, and each time the library implemented what the card called missing and this card went on claiming it for a milestone. What has changed is not the wording, which had been corrected before and rotted anyway: a host-side test now calls this exact function on every CI run, so the next time it stops rejecting the build turns red before anyone sees this card turn red on a phone.",
   },
   {
     id: 'layers',

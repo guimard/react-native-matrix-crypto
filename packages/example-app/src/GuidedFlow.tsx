@@ -2,8 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import {
   createCryptoMachine,
+  exportSecrets,
   getDeviceIdentityKeys,
-  getDeviceStatuses,
   isCryptoError,
   onCryptoSignal,
   runProbe,
@@ -53,8 +53,10 @@ type Commit = (id: FlowStep['id'], outcome: Outcome) => void
  * between runs.
  *
  * `unsubscribe` is step 1's subscription to the real, product-facing
- * `onCryptoSignal` channel (spec section 7.3: `trust_changed`,
- * `unexpected_device`, `key_missing`). `probeSignals` is unrelated: it is
+ * `onCryptoSignal` channel (spec section 7.3). Its union is open to
+ * additions, so this comment names none of the variants: it used to list
+ * three, and M3 added a fourth without touching this file.
+ * `probeSignals` is unrelated: it is
  * fed only by step 2's own call to `runProbe`, via the per-call callback
  * `runProbe` accepts directly -- never by step 1's listener. The two are
  * deliberately different channels; step 3 explains why.
@@ -89,9 +91,12 @@ function bytesToText(bytes: Uint8Array): string {
 
 // Step 1: subscribe to the real crypto-signal channel. Registered before any
 // call is made, the way a real consumer would. Nothing arrives on it during
-// this walkthrough -- no trust logic exists yet in this milestone -- so this
-// step is left running to show the API's shape; step 3 demonstrates a
-// different channel entirely, not this one.
+// this walkthrough, and the reason is no longer the one this comment used to
+// give. It said no trust logic existed yet; M3 landed it, and the channel
+// carries `trust_changed` and `verification_requested` today. What keeps this
+// walkthrough silent is that both are produced while a sync is applied
+// (`receiveSyncChanges`), and this walkthrough applies none. Step 3
+// demonstrates a different channel entirely, not this one.
 async function runSubscribe(ctx: RunContext, commit: Commit): Promise<void> {
   try {
     ctx.unsubscribe?.()
@@ -238,14 +243,29 @@ async function runIdentity(ctx: RunContext, commit: Commit): Promise<void> {
 
 // Step 6: deliberately triggers the not-implemented path.
 //
-// `getDeviceStatuses`, not `encryptEvent`: M2 implemented encryption, so
-// this step's whole point -- a final type whose behaviour is scheduled
-// rather than missing -- moved to a function that is still waiting for M3.
-// Left pointing at `encryptEvent`, this card would have claimed something
-// untrue about the shipped surface on every launch.
+// THIS STEP HAS NOW GONE STALE TWICE, and the reason is structural rather
+// than careless. The card asserts an implementation detail of the library,
+// so every milestone that improves the library can falsify it, and nothing
+// in this package runs on a machine that could notice. It pointed at
+// `encryptEvent` until M2 implemented encryption, then at
+// `getDeviceStatuses` until M3 implemented that, and the M3 breakage sat on
+// screen reporting "unexpected" on every launch of a library that was
+// working correctly.
+//
+// The card is not what is wrong. A walkthrough that ends honestly on what is
+// not built yet is worth having, and it can only do that by naming a
+// function. What is wrong is that the naming is unchecked, which is a defect
+// in this package rather than in this sentence.
+//
+// `exportSecrets` is the current choice out of the three the facade still
+// rejects in JavaScript before any native call (`restoreCryptoMachine`,
+// `exportSecrets`, `importSecrets`). Do not repoint it without moving the
+// card in `steps.ts` with it.
 async function runNotYet(_ctx: RunContext, commit: Commit): Promise<void> {
   try {
-    await getDeviceStatuses(DEMO_USER_ID)
+    // Not a secret and not protecting anything: the facade rejects this call
+    // before it reads the argument, which is the whole point of the step.
+    await exportSecrets('example-app-not-implemented-probe')
     commit('notYet', { status: 'unexpected', headline: 'Unexpected: resolved instead of rejecting' })
   } catch (e) {
     const kind = isCryptoError(e) ? e.kind : undefined
