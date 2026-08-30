@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# A stand-in for `xcrun simctl`, answering exactly the calls
+# scripts/measure-signal-latency-ios.sh makes.
+#
+# It exists so scripts/assert-measure-guards-ios.sh can face that harness's
+# guards with the cases they refuse, on any machine, with no simulator, no
+# Xcode and no Rust. What it fakes is the simulator and the bytes `log
+# stream` produces; the harness's own readiness proof, its extraction, its
+# `LAST_BUILD` return and its comparisons are untouched, and those are the
+# parts that decide whether a measurement is an A/B at all.
+#
+# THE ONE PART WORTH READING TWICE is `log stream`. It prints the header
+# `log stream` really prints, which echoes the predicate back and therefore
+# contains the word "installd", and it prints a timestamped installd line
+# only once the harness has actually called `uninstall`. That is what lets
+# the gate tell a readiness check that examines the log from one satisfied
+# by the text of its own query.
+#
+# Knobs, all read from the environment:
+#   FAKE_BUILD          the emission build id reported for any arm
+#   FAKE_BUILD_<label>  the same, for the arm whose bundle basename is <label>
+#   FAKE_OMIT           comma-separated PROBE_ line kinds to leave out, so a
+#                       launch that never printed one can be reproduced:
+#                       EMIT_BUILD, SIGNAL_MS, SIGNAL_NTH, SIGNAL2_MS,
+#                       PROMISE_MS, SUMMARY
+#   FAKE_SIGNAL_MS, FAKE_SIGNAL_NTH, FAKE_SIGNAL2_MS, FAKE_PROMISE_MS
+#                       the four numbers the harness sorts into four
+#                       different columns. THE DEFAULTS ARE DELIBERATELY ALL
+#                       DIFFERENT, so a row carrying any three of them in the
+#                       wrong order cannot still look right.
+#   FAKE_NO_BEACON      if set, `uninstall` logs nothing, which is a stream
+#                       that never proves itself live
+#   FAKE_STATE          directory where the run's state is remembered
+set -u
+STATE=${FAKE_STATE:-/tmp/fake-xcrun.state}
+mkdir -p "$STATE"
+
+omitted() {
+  case ",${FAKE_OMIT:-}," in
+    *",$1,"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+stamp() { date '+%Y-%m-%d %H:%M:%S.000'; }
+
+[ "${1:-}" = "simctl" ] || exit 0
+shift
+
+case "${1:-}" in
+  bootstatus|terminate) exit 0 ;;
+
+  list)
+    echo "    Fake Simulator (${FAKE_UDID:-00000000-0000-0000-0000-000000000000}) (Booted)"
+    exit 0
+    ;;
+
+  uninstall)
+    [ -n "${FAKE_NO_BEACON:-}" ] || : > "$STATE/beacon"
+    rm -f "$STATE/launched"
+    exit 0
+    ;;
+
+  install)
+    shift 2
+    basename "${1:-unknown}" .app > "$STATE/label"
+    exit 0
+    ;;
+
+  launch)
+    : > "$STATE/launched"
+    echo "${3:-org.example.fake}: 1234"
+    exit 0
+    ;;
+
+  spawn)
+    shift 2
+    case "${1:-}" in
+      */sw_vers|sw_vers) echo "26.5"; exit 0 ;;
+      log)
+        pred=""
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = "--predicate" ]; then pred=${2:-}; fi
+          shift
+        done
+        # A capture starts empty. Whatever the simulator did before this
+        # stream attached is not in it, and modelling that is the whole
+        # point of the exercise: the first draft of this stub let a stream
+        # started for arm B see the marker arm A's launch had left behind,
+        # so both arms reported arm A's emission build. The gate refused
+        # it, which is what the gate is for.
+        rm -f "$STATE/beacon" "$STATE/launched"
+        # The real header. It contains "installd" whenever the predicate
+        # does, which is the trap the harness's beacon pattern must not fall
+        # into.
+        echo "Filtering the log data using \"$pred\""
+        beaconed=""
+        launched=""
+        while :; do
+          if [ -z "$beaconed" ] && [ -f "$STATE/beacon" ]; then
+            beaconed=1
+            echo "$(stamp) Df installd[123:abc] (MobileSystemServices) Uninstall requested for identity [${FAKE_BUNDLE_ID:-org.example.fake}/x]"
+          fi
+          if [ -z "$launched" ] && [ -f "$STATE/launched" ]; then
+            launched=1
+            label=$(cat "$STATE/label" 2>/dev/null || echo unknown)
+            var="FAKE_BUILD_${label}"
+            build=$(eval "printf '%s' \"\${$var:-\${FAKE_BUILD:-deadbeef}}\"")
+            pre="$(stamp) I  ExampleApp[1234:abc] [com.facebook.react.log:javascript]"
+            omitted PROMISE_MS || echo "$pre PROBE_PROMISE_MS ${FAKE_PROMISE_MS:-44}"
+            omitted EMIT_BUILD || echo "$pre PROBE_EMIT_BUILD 0.1.0+emit.${build}"
+            omitted SIGNAL_MS || echo "$pre PROBE_SIGNAL_MS ${FAKE_SIGNAL_MS:-41}"
+            omitted SIGNAL_NTH || echo "$pre PROBE_SIGNAL_NTH ${FAKE_SIGNAL_NTH:-42}"
+            omitted SIGNAL2_MS || echo "$pre PROBE_SIGNAL2_MS ${FAKE_SIGNAL2_MS:-43}"
+            omitted SUMMARY || echo "$pre PROBE_SUMMARY 12/12"
+          fi
+          sleep 0.2
+        done
+        ;;
+      *) exit 0 ;;
+    esac
+    ;;
+esac
+exit 0

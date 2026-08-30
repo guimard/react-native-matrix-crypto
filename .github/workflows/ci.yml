@@ -249,16 +249,29 @@ jobs:
     # either, and reading that absence as success is the failure this
     # milestone has now found repeatedly.
     #
-    # Two practical notes for whoever writes it. React Native does forward JS
-    # console output to the iOS system log, at info level under subsystem
+    # Three practical notes for whoever writes it. React Native does forward
+    # JS console output to the iOS system log, at info level under subsystem
     # com.facebook.react.log, category javascript -- but `log stream` and
     # `log show` exclude info-level messages unless asked (measured on a
     # booted iOS 26.5 simulator, 2026-08-28: no level flag, zero PROBE_ lines;
-    # `--level info`, all fourteen including the summary). And it is not built
-    # here because of cost rather than feasibility: a release `ubrn build ios`
-    # plus pod install, xcodebuild, boot, install and launch is roughly an
-    # hour of macos-15 minutes per PR, against ubuntu minutes for
-    # probe-android, which already runs the same chain end to end.
+    # `--level info`, all fourteen including the summary).
+    #
+    # A booted simulator also keeps NO log archive: `log show --last 2m`
+    # inside one returns nothing, it does not accept `--level` there at all,
+    # and the host's own log does not carry the simulator's messages either.
+    # So there is no `logcat -d` to read after the fact. A live `log stream`
+    # is the only route, it has to be attached before the app emits anything,
+    # and a leg that does not prove it was attached will read a launch it
+    # captured late as an app that printed nothing.
+    # scripts/measure-signal-latency-ios.sh carries a worked answer to that:
+    # its own `simctl uninstall` makes `installd` log the bundle identifier,
+    # and it launches nothing until that line is in the capture.
+    #
+    # And it is not built here because of cost rather than feasibility: a
+    # release `ubrn build ios` plus pod install, xcodebuild, boot, install and
+    # launch is roughly an hour of macos-15 minutes per PR, against ubuntu
+    # minutes for probe-android, which already runs the same chain end to
+    # end.
     needs: gates
     runs-on: macos-15
     steps:
@@ -266,6 +279,13 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version-file: '.nvmrc', cache: yarn }
       - run: yarn install --frozen-lockfile
+      # The iOS sibling of gate:measure-guards, which runs in `gates`. It
+      # lives here rather than there because it needs `plutil` to read a
+      # bundle's Info.plist, and `plutil` is macOS only, as is the harness
+      # it faces. It needs nothing else this job provides: no simulator, no
+      # Xcode project, no Rust, a few hundred milliseconds on fixtures it
+      # builds itself. It runs before the long build for that reason.
+      - run: yarn gate:measure-guards-ios
       # rust-toolchain.toml pins the channel and lists this target, and
       # rustup auto-installs both from the toolchain file on first use --
       # this is belt-and-suspenders, cheap, and a no-op if already present.

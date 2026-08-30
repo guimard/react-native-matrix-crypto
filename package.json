@@ -14,6 +14,7 @@
     "gate:readme": "./scripts/assert-readme-sync.sh",
     "gate:stubs": "./scripts/assert-generated-not-stubbed.sh",
     "gate:measure-guards": "./scripts/assert-measure-guards.sh",
+    "gate:measure-guards-ios": "./scripts/assert-measure-guards-ios.sh",
     "gate:artifact-provenance": "./scripts/assert-artifact-provenance.sh"
   }
 }
