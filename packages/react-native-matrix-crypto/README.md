@@ -140,7 +140,72 @@ for (const request of await takeOutgoingRequests()) {
 }
 ```
 
-**The `signing_keys_upload` request needs user-interactive authentication, and this library will not do it for you.** Expect its first send to come back `401` with a challenge. Read the challenge, ask your user, merge an `auth` object into `request.body`, which is opaque JSON this library never interprets, and send the same body again. The id survives any number of refused attempts, because only a success consumes it.
+**The `signing_keys_upload` request needs user-interactive authentication, and this library will not do it for you.** Send it. If it comes back `401`, that body is a challenge: read the session out of it, ask your user, merge an `auth` object into `request.body`, which is opaque JSON this library never interprets, and send the same body again. The id survives any number of refused attempts, because only a success consumes it.
+
+**A first publication is normally not challenged, and that is not a bug in your code.** Both mainstream homeservers decide it the same way: the upload is accepted outright when the account holds no cross-signing key yet, and challenged only when it would replace one. Measured on continuwuity v26.7.2, and read off Synapse 1.159.0's own handler, which allows first-time setup without authentication per MSC3967. So a fresh account's first publication normally answers `200` with no challenge at all, and the challenge is what you meet when an identity is already there. Write both branches: a loop that only handles `401` never finishes on a fresh account, and one that only handles `200` fails the first time it matters.
+
+Here is the whole loop, both branches. It is the code `rust/matrix-crypto-core/tests/level_two_identity_challenge.rs` runs against a real homeserver's real refusal, step for step; `gate:uia-example` holds this block and that test to the same ordered steps, so it cannot drift from what is actually proven.
+
+<!-- uia-example:begin -->
+```ts
+for (const request of await takeOutgoingRequests()) {
+  if (request.kind !== 'signing_keys_upload') {
+    const res = await send(request)
+    if (res.ok) await markRequestSent(request.id, await res.text())
+    else await markRequestFailed(request.id, res.status)
+    continue
+  }
+
+  // uia-step: send
+  let res = await post('/_matrix/client/v3/keys/device_signing/upload', request.body)
+
+  // uia-step: accepted
+  // The ordinary answer on an account that has no identity yet. Nothing to
+  // ask your user, nothing to retry.
+  if (res.ok) {
+    await markRequestSent(request.id, await res.text())
+    continue
+  }
+
+  // uia-step: refusal
+  if (res.status !== 401) throw new Error(`signing keys refused with ${res.status}`)
+  await markRequestFailed(request.id, res.status)
+
+  // uia-step: challenge
+  // The session is the homeserver's, and knowable only from here. That is
+  // why bootstrapCrossSigning has no auth parameter to pass one in through.
+  const challenge = await res.json()
+  const flows = challenge.flows ?? []
+  if (!flows.some((flow) => flow.stages?.includes('m.login.password'))) {
+    throw new Error('this homeserver asked for a flow this code cannot answer')
+  }
+  const password = await askYourUserForTheirPassword()
+
+  // uia-step: merge
+  // request.body is opaque. Parse it, add one member, serialise it back. Do
+  // not rebuild it: the keys in it are the ones already minted, and a body
+  // you construct yourself is a different identity.
+  const body = JSON.parse(request.body)
+  body.auth = {
+    type: 'm.login.password',
+    identifier: { type: 'm.id.user', user: myUserId },
+    password,
+    session: challenge.session,
+  }
+
+  // uia-step: resend
+  // The same id and the same keys. markRequestFailed left the request
+  // pending, so this is a second send of it rather than a new request.
+  res = await post('/_matrix/client/v3/keys/device_signing/upload', JSON.stringify(body))
+  if (!res.ok) throw new Error(`challenge answered and still refused: ${res.status}`)
+
+  // uia-step: sent
+  await markRequestSent(request.id, await res.text())
+}
+```
+<!-- uia-example:end -->
+
+**A `200` from the second send is the only evidence you get.** `getIdentityStatus` reads the same before and after: holding the account's private signing keys is a local fact, and publishing nothing does not change it. A run of the test above with the retry deleted still reports `identityKnown` and `privateKeysHeld`, and the homeserver still serves somebody else's identity. If you need to know the identity is really on the server, ask the server.
 
 **There is no `auth` parameter, and there will not be one.** The challenge is only known after the first request has been refused, so an argument on `bootstrapCrossSigning` would have to be guessed before the server had said what it wants. The cost is stated rather than hidden: you cannot complete this step without implementing an authentication flow this library gives you no help with. What you get for it is that this library has never touched an account credential.
 
@@ -170,7 +235,7 @@ const id = await requestSelfVerification()
 
 **The seeds arrive after the comparison, on a later sync, and nothing returns to you when they do.** Once both sides have confirmed, this library asks your other devices for the cross-signing seeds this one lacks. They go out as ordinary entries in `takeOutgoingRequests`, and the encrypted answer comes back in a `receiveSyncChanges` you feed it. `getIdentityStatus().privateKeysHeld` then reads `true`, which is the moment this device can sign with the account's identity rather than only recognise it. `trust_changed` for your own user id is what tells you to look; do not poll for it. It is the same signal a completed comparison produces, which is why the handler above reads the status rather than counting signals.
 
-**After the join, `bootstrapCrossSigning` stops being refused and starts being served.** This device now holds the account's private keys, so it republishes the identity it holds rather than creating a second one, which is correct and is what "call it on every launch" is for. What it also means is that the batch carries a `signing_keys_upload` again, and that request needs the same user-interactive authentication as the first time. A joined device that calls it on the next launch meets an authentication challenge, so ask your user for it rather than treating it as a failure.
+**After the join, `bootstrapCrossSigning` stops being refused and starts being served.** This device now holds the account's private keys, so it republishes the identity it holds rather than creating a second one, which is correct and is what "call it on every launch" is for. What it also means is that the batch carries a `signing_keys_upload` again, and you still send it through the loop above. It will normally be accepted without a challenge, because the keys in it are the ones the account already has and neither continuwuity nor Synapse challenges an upload that changes nothing: Synapse short-circuits an identical re-upload to `200` before it considers authentication at all. Do not treat that as the request having been skipped, and do not assume the challenge either. Send it and handle both answers.
 
 Two refusals, and they want opposite things done about them. `account_keys_not_fetched` means nobody has asked the server about this account yet, and this call queues that key query as it refuses: drain the pump, send, report sent, and call again. `identity_not_known` means the server answered and this account has no identity at all, so there is nothing to join and `bootstrapCrossSigning` is the call you want.
 
@@ -316,7 +381,7 @@ The layers, top to bottom: the TypeScript facade in `src/*.ts` holds the branded
 python3 packages/example-app/level-two/run_level_two.py  # the published TypeScript API
 ```
 
-The first starts a throwaway [Continuwuity](https://continuwuity.org) homeserver in a container, creates the one account the test needs with a password generated for that run, installs a pinned `matrix-nio[e2e]` into a temporary virtualenv, runs the level 2 test, and destroys all of it. It needs Docker, a Rust toolchain and a Python 3, and nothing else. No credential is read from anywhere and none is left behind. CI runs the same script, so what you run and what stands behind the claim are the same code path. A run that never reaches the assertions fails: the script requires cargo's own output to name the test as passed, because `cargo test` exits successfully when it matches no test at all. The same script runs the third-party verification proof. To point it at a homeserver you already have an account on, set `MATRIX_INTEROP_HOMESERVER`, `MATRIX_INTEROP_USER` and `MATRIX_INTEROP_PASSWORD` and it starts no container.
+The first starts a throwaway [Continuwuity](https://continuwuity.org) homeserver in a container, creates the two accounts the tests need with a password generated for that run, installs a pinned `matrix-nio[e2e]` into a temporary virtualenv, runs the four level 2 proofs, and destroys all of it. It needs Docker, a Rust toolchain and a Python 3, and nothing else. No credential is read from anywhere and none is left behind. CI runs the same script, so what you run and what stands behind the claim are the same code path. A run that never reaches the assertions fails: the script requires cargo's own output to name each test as passed, because `cargo test` exits successfully when it matches no test at all. The four are encryption against a third-party client, device verification against one, a signing identity published to a real homeserver, and the authentication loop that publishing one needs, driven against a refusal the homeserver wrote. To point it at a homeserver you already have accounts on, set `MATRIX_INTEROP_HOMESERVER`, `MATRIX_INTEROP_USER`, `MATRIX_INTEROP_PASSWORD` and `MATRIX_INTEROP_CHALLENGE_USER` and it starts no container. The fourth variable names a second account, sharing the password, that has never published a cross-signing identity; the authentication proof needs one, because it begins by asserting the account has none.
 
 The second drives the same exchange through the UniFFI scaffolding, the JSI binding, the generated TypeScript and the facade, on an Android emulator. It needs Docker, an emulator `adb` can see, a release APK already built, and a Python with `matrix-nio[e2e]`, and no Rust toolchain. It stands up its own homeserver, creates two accounts and an encrypted room, drives `matrix-nio` as the counterparty, installs and launches the example app, and reads the app's own `LEVEL2_SUMMARY 13/13` back out of the system log. Every call the app makes is the published API and nothing else. Everything it creates lives inside the container, which is destroyed from a `finally`, an `atexit` hook and a signal handler. `--mutation <name>` sabotages exactly one assertion to check that assertion can fail, and a mutated run prints a different summary line, so it can never be read as a clean one.
 
@@ -333,6 +398,7 @@ Every one of these runs in CI. Each has been observed rejecting a real violation
 | `gate:agility` | no Megolm, Olm, room or Matrix specific identifier reaches the public API |
 | `gate:stubs` | the committed turbo module is really wired up, not an empty shell |
 | `gate:readme` | the README npm shows is the README GitHub shows, and every gate here runs in CI |
+| `gate:uia-example` | the worked example for the signing-keys authentication loop runs the same steps as the test that proves it |
 | `gate:measure-guards` | the B2 measurement harness still refuses the runs it documents refusing |
 | `gate:measure-guards-ios` | the same, for the iOS harness, including its refusal to launch into a log stream it cannot show was already attached |
 | `gate:artifact-provenance` | an artifact size is only ever recorded from a binary this tree built |
