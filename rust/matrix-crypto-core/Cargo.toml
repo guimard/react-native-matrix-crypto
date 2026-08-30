@@ -13,7 +13,18 @@ repository.workspace = true
 # re-export instead of adding a second, independently versioned `ruma`. See the
 # comment in src/machine.rs.
 matrix-sdk-common = "0.18.0"
-matrix-sdk-crypto = "0.18.0"
+# `qrcode`, and nothing else beyond the default set: it is the off-by-default
+# feature that gates upstream's whole QR verification module
+# (`matrix-sdk-crypto-0.18.0/Cargo.toml`, `qrcode = ["dep:matrix-sdk-qrcode"]`),
+# and turning it on is what makes `VerificationRequest::generate_qr_code` and
+# `::scan_qr_code` exist at all. Measured rather than assumed before it was
+# turned on: it adds exactly two entries to `rust/Cargo.lock`,
+# `matrix-sdk-qrcode 0.18.0` and `qrcode 0.14.1`. `qrcode` has no dependencies
+# of its own and every dependency of `matrix-sdk-qrcode` was already in the
+# tree, so the dependency cost of this milestone is those two lines. If a
+# later version of either grows a dependency, that is worth re-measuring
+# rather than inheriting.
+matrix-sdk-crypto = { version = "0.18.0", features = ["qrcode"] }
 # `crypto-store` and nothing else beyond `bundled`: `crypto-store` is the
 # feature that provides the crypto store and declares `matrix-sdk-crypto` as
 # its own dependency. Enabling more of `matrix-sdk-sqlite`'s *other* features
