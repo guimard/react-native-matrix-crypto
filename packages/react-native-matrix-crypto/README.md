@@ -45,7 +45,8 @@ This library performs no network requests. It hands you a list of requests to se
 
 ```ts
 import {
-  createCryptoMachine, shareScopeKey, takeOutgoingRequests, markRequestSent,
+  createCryptoMachine, shareScopeKey, takeOutgoingRequests,
+  markRequestSent, markRequestFailed,
   encryptEvent, decryptEvent, asCryptoScopeId,
 } from 'react-native-matrix-crypto'
 
@@ -60,10 +61,15 @@ const scope = asCryptoScopeId('!s:example.org')
 
 // Drain and send after every call that changes crypto state. Send in the
 // order given, one at a time, and never overlap two drains: see Limits.
+//
+// Branch on the status. `markRequestSent` means the homeserver accepted this
+// request, and the library cannot tell a refused response from a real one by
+// its body alone: see Reporting a request that failed.
 async function pump() {
   for (const request of await takeOutgoingRequests()) {
-    const response = await yourHomeserverClient.send(request)  // your transport
-    await markRequestSent(request.id, response)
+    const { ok, status, body } = await yourHomeserverClient.send(request)  // your transport
+    if (ok) await markRequestSent(request.id, body)
+    else await markRequestFailed(request.id, status)
   }
 }
 
@@ -81,6 +87,26 @@ const recovered = await decryptEvent(scope, incomingEvent)
 ```
 
 **The first `shareScopeKey` for a user you have never encrypted to delivers nothing, and that is correct.** It starts tracking them and queues a query about their devices. That query only reaches your homeserver when you drain the queue, so nobody is known to share with yet. Call it again after pumping. The library cannot collapse these steps, because it sends nothing itself and therefore cannot wait for a reply.
+
+### Reporting a request that failed
+
+**`markRequestSent` means the homeserver accepted the request.** Reporting
+anything else through it tells the library a falsehood, and the shape of that
+falsehood is the reason `markRequestFailed` exists: pass it the HTTP status you
+received, or `0` if nothing came back at all.
+
+The library rejects a body it can show is not a response, which covers a Matrix
+error, an authentication challenge, a gateway page and a bare
+`{"message":"Internal server error"}`. What it accepts is any body shaped like
+that endpoint's answer, and the one that matters is an empty object: `{}` is
+what a key query returns for an account with no signing identity, and a 503
+that carried no body arrives as the same bytes. No HTTP status crosses this
+boundary on `markRequestSent`, so only your branch can tell them apart.
+
+Reporting nothing at all is as safe as reporting a failure. Both leave the
+request outstanding and nothing recorded as answered, so a retry is an ordinary
+second send of the same id. `markRequestFailed`'s own doc comment carries the
+full division.
 
 **Do not let a second drain overlap an unfinished one.** `takeOutgoingRequests` hands out three kinds that describe a standing need rather than one message, `keys_upload`, `keys_query` and `keys_claim`, and a later call that hands out a fresh request of one of those kinds retires the older id: `markRequestSent` then rejects it with `unknown_request`. That is deliberate, because the machine mints a new id for the same need each time and forgets the old one, but it means two pumps racing, or a pump on a timer alongside a pump after a write, will fail on ids you are legitimately holding. If you do see `unknown_request` for an id from an earlier batch, discard that response and pump again rather than retrying it; nothing is lost, because the need was re-derived rather than dropped. `takeOutgoingRequests`' own doc comment carries the full rule.
 
