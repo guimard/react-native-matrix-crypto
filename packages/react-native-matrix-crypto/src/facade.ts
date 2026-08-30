@@ -941,6 +941,37 @@ export async function bootstrapCrossSigning(): Promise<void> {
  * cross-signing and a short-string comparison sets local trust. See
  * {@link TrustState}.
  *
+ * # `'verified'` no longer means a person compared a string with this device
+ *
+ * **Read it as "trusted", and read nothing more into it.** This call maps
+ * from one boolean underneath, which is "locally trusted OR signed by an
+ * identity we have verified". The second half of that had no way to be true
+ * until this library could hold a signing identity of its own. It can, from
+ * {@link bootstrapCrossSigning}, and the consequence is immediate and
+ * deliberate: **verifying one device of a user moves every device of that
+ * user to `'verified'` at once, including devices that appear afterwards,
+ * with nobody comparing anything on any of them.**
+ *
+ * That is correct rather than a defect. It is the entire point of
+ * cross-signing: you verify a person once instead of once per device they
+ * own. But it is a behaviour change a caller cannot see coming, so it is
+ * said here rather than left to be discovered. **Anything that read this
+ * value as "a human compared a string with this exact device" was right
+ * before this release and is wrong from it.** If that is the question your
+ * product is really asking, this call has never been the one to ask, and it
+ * is now further from it than it was: what an individual event can be said
+ * to prove is {@link EventEnvelope.senderVerification}, which is a different
+ * question with a different and more expensive answer.
+ *
+ * # `'recognized'` stays folded into `'verified'`, deliberately
+ *
+ * {@link TrustState} declares a third value for exactly the state the
+ * paragraph above creates -- a device believed because its owner's identity
+ * signed it, with no person having compared anything -- and this call does
+ * not produce it. That is a decision taken in this release rather than an
+ * absence left over from an earlier one, and the reasoning is at
+ * {@link TrustState} so a product reading the union meets it there too.
+ *
  * **An empty array does not mean the user has no devices.** It means this
  * library has been told about none of them. Devices arrive through the
  * outbound pump: {@link receiveSyncChanges} flags a user as changed, that

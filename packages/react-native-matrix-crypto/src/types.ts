@@ -51,29 +51,56 @@ export type CryptoAlgorithm = 'megolm' | 'olm' | (string & {})
  *   finishes. A device an administrator has blacklisted reads it too: this
  *   build exposes no call that can set that state, so folding it here says
  *   exactly as much as this build can honestly say.
- * - `'recognized'` — **not produced by this build.** Reserved for a device
- *   believable without a person having compared anything: one its owner
- *   signed with their cross-signing identity. This build does see such
- *   devices, and reports them at the event level as
- *   `senderVerification.reason === 'unverified_identity'`. What keeps this
- *   value unreachable is this call's own mapping, which asks a two-valued
- *   question with no middle answer. Cross-signing has landed since that
- *   sentence was written and the mapping did not move, so the value stays
- *   unreachable and will until a later version changes the mapping
- *   deliberately.
+ * - `'recognized'` — **not produced by this build, and that is now a
+ *   decision rather than a limit.** It is reserved for exactly one state:
+ *   a device believable without a person having compared anything, because
+ *   its owner signed it with their cross-signing identity. That state used
+ *   to be out of reach; since `bootstrapCrossSigning` it is the ordinary
+ *   one, and it arrives as `'verified'` instead. See below for why it is
+ *   folded and what it costs you.
  *   Declared now because widening a closed union later breaks every
  *   consumer that switched on it exhaustively, and would do so precisely
  *   when a product had stopped expecting the shape to move. Write the
  *   branch; it will not run yet.
- * - `'verified'` — a person compared a short authentication string on this
- *   device and on the far one, both said it matched, and the flow
- *   completed. See {@link getDeviceStatuses}, including why your own device
+ * - `'verified'` — this library has reason to trust the device, **by either
+ *   of two routes that this value does not tell apart**. A person compared
+ *   a short authentication string on this device and on the far one, both
+ *   said it matched, and the flow completed. *Or* the device is signed by
+ *   its owner's cross-signing identity and this library has verified that
+ *   identity, in which case nobody compared anything on this device at all.
+ *   The second route is new in this release and is the ordinary one from
+ *   now on. See {@link getDeviceStatuses}, including why your own device
  *   reads this from the moment it exists and therefore proves nothing.
  *
  * **This is about a device, not about an event.** A completed comparison
  * does not change what a decrypted event says about its sender, because the
  * event path consults cross-signing and a comparison sets local trust. M3
  * design, section 7, question 6.
+ *
+ * ## Why `'recognized'` stays folded into `'verified'`
+ *
+ * Recorded here rather than left silent, because a value a product was told
+ * to write a branch for and that then quietly never runs is worse than one
+ * that was never declared.
+ *
+ * The mapping underneath asks a single boolean -- locally trusted, or signed
+ * by an identity we have verified -- and there is no third answer to carry.
+ * Splitting it would mean asking a different question of the layer below,
+ * and it would mean that a device this library trusts for the second reason
+ * stopped reading `'verified'` and started reading `'recognized'`. That is a
+ * behaviour change in the direction that hurts: a product's "is this device
+ * trusted" branch would silently stop matching devices it had been matching,
+ * on the same release that changes what `'verified'` covers. One change to
+ * this value per release is the most a consumer can reasonably follow.
+ *
+ * So the fold stays, and the cost is stated instead of hidden: **you cannot
+ * ask this call whether a person compared a string with one particular
+ * device.** If your product needs that distinction, it has to record its own
+ * verifications as it performs them, or ask
+ * {@link EventEnvelope.senderVerification} the event-level question instead.
+ * If a later release does split them, `'recognized'` is already in this
+ * union, so that release adds no member and breaks no exhaustive switch --
+ * which is what declaring it early bought.
  */
 export type TrustState = 'unverified' | 'recognized' | 'verified'
 
