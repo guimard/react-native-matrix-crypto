@@ -43,8 +43,8 @@
 use matrix_crypto_core::{
     bootstrap_identity, confirm_scan, create_machine, device_statuses, flow_stage, identity_status,
     in_runtime, mark_request_sent, read_code, receive_sync_changes, request_flow, share_scope_key,
-    submit_scanned_code, take_outgoing_requests, FlowStage, MachineConfig, MachineError,
-    TrustState,
+    submit_scanned_code, take_outgoing_requests, CryptoSignal, FlowStage, MachineConfig,
+    MachineError, TrustState,
 };
 use matrix_sdk_common::ruma::OwnedUserId;
 use matrix_sdk_crypto::matrix_sdk_qrcode::QrVerificationData;
@@ -53,9 +53,9 @@ use matrix_sdk_crypto::QrVerificationState;
 #[path = "scanned/harness.rs"]
 mod harness;
 use harness::{
-    cross_signed_machine, deliver_verification_request, every_method, mode_of, one_of,
-    pump_bare_to_library, pump_to_bare, queried_users, uploaded_signatures, with_our_signature,
-    MODE_CROSS_USER,
+    cross_signed_machine, deliver_verification_request, drain_signals, drain_to_quiet,
+    every_method, mode_of, one_of, pump_bare_to_library, pump_to_bare, queried_users, subscribe,
+    uploaded_signatures, with_our_signature, MODE_CROSS_USER,
 };
 
 /// The library.
@@ -79,6 +79,9 @@ fn another_user_verifies_by_scanning_a_code_this_library_showed() {
     let store_path = dir.path().join("store").to_string_lossy().into_owned();
 
     futures::executor::block_on(in_runtime(async move {
+        // Before anything syncs. See `qr_self_established_shows.rs` at the
+        // same place.
+        subscribe();
         let alice_user: OwnedUserId = ALICE.parse().expect("a literal user id parses");
 
         // ---- The other user ---------------------------------------------
@@ -313,10 +316,44 @@ fn another_user_verifies_by_scanning_a_code_this_library_showed() {
             crossed.contains(&"m.key.verification.done".to_string()),
             "confirming a scan must reach the other side through the pump: {crossed:?}"
         );
+        drain_to_quiet();
         let crossed = pump_bare_to_library(&bob.peer, BOB, ALICE, ALICE_DEVICE).await;
         assert!(
             crossed.contains(&"m.key.verification.done".to_string()),
             "the other side's acknowledgement must reach the library: {crossed:?}"
+        );
+
+        // ---- What a product is told, and why it is not a trust change ------
+        //
+        // Verifying another user signs their master key. Nothing about a
+        // *device* changes here at all -- upstream's own completed code
+        // names no device in this mode -- and the identity it does name will
+        // not read verified until our signature comes back on a later key
+        // query, which is the step this file performs a few lines below and
+        // calls the homeserver's other half. So a `TrustChanged` saying
+        // `Verified` at this moment would be contradicted by the very call a
+        // product is told to read when one arrives. The assertion under this
+        // one measures that rather than asserting it from a distance.
+        let signals = drain_signals("a code this library showed another user was scanned");
+        assert_eq!(
+            signals,
+            vec![CryptoSignal::VerificationCompleted {
+                flow_id: flow.0.clone(),
+            }],
+            "the flow finished, and that is the only thing that is true of all three \
+             modes at this moment"
+        );
+        let statuses = device_statuses(BOB)
+            .await
+            .expect("reading device statuses must not fail");
+        assert!(
+            !statuses.iter().any(
+                |status| status.device_id == BOB_DEVICE && status.trust == TrustState::Verified
+            ),
+            "the other user's device must NOT read verified yet: this is what makes a \
+             trust change the wrong signal here, and if it ever becomes true on its \
+             own then the reasoning above has to be revisited rather than quietly \
+             outlived: {statuses:?}"
         );
 
         // ---- It finished --------------------------------------------------
@@ -489,8 +526,23 @@ fn another_user_verifies_by_scanning_a_code_this_library_showed() {
         let confirmation = bob_code
             .confirm_scanning()
             .expect("the side that was scanned confirms it");
+        drain_to_quiet();
         deliver_verification_request(&confirmation, BOB, ALICE, ALICE_DEVICE).await;
         pump_to_bare(&bob.peer, ALICE, BOB, BOB_DEVICE).await;
+
+        // The fourth position, and the one a product reaches whenever its
+        // user points their own phone at somebody else's screen: this side
+        // scanned rather than showed, and it is told the flow finished on
+        // the same terms.
+        let signals = drain_signals("a code this library scanned was confirmed by its owner");
+        assert_eq!(
+            signals,
+            vec![CryptoSignal::VerificationCompleted {
+                flow_id: next.0.clone(),
+            }],
+            "which screen was held up decides nothing about who needs telling: both \
+             sides of a scanned flow have a person waiting on an answer"
+        );
 
         assert!(
             bob_code.is_done(),

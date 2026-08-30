@@ -2676,6 +2676,7 @@ const FfiConverterTypeSyncOutcome = (() => {
 export enum CryptoSignal_Tags {
   TrustChanged = "TrustChanged",
   VerificationRequested = "VerificationRequested",
+  VerificationCompleted = "VerificationCompleted",
 }
 /**
  * Mirror of the core's `CryptoSignal`, carrying the UniFFI enum derive.
@@ -2758,6 +2759,35 @@ export const CryptoSignal = (() => {
     }
   }
 
+  type VerificationCompleted__interface = {
+    tag: CryptoSignal_Tags.VerificationCompleted;
+    inner: Readonly<{ verificationId: string }>;
+  };
+  class VerificationCompleted_
+    extends UniffiEnum
+    implements VerificationCompleted__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "CryptoSignal";
+    readonly tag = CryptoSignal_Tags.VerificationCompleted;
+    readonly inner: Readonly<{ verificationId: string }>;
+    constructor(inner: { verificationId: string }) {
+      super("CryptoSignal", "VerificationCompleted");
+
+      this.inner = Object.freeze(inner);
+    }
+    static new(inner: { verificationId: string }): VerificationCompleted_ {
+      return new VerificationCompleted_(inner);
+    }
+
+    static instanceOf(obj: any): obj is VerificationCompleted_ {
+      return obj.tag === CryptoSignal_Tags.VerificationCompleted;
+    }
+  }
+
   function instanceOf(obj: any): obj is CryptoSignal {
     return obj[uniffiTypeNameSymbol] === "CryptoSignal";
   }
@@ -2766,6 +2796,7 @@ export const CryptoSignal = (() => {
     instanceOf,
     TrustChanged: TrustChanged_,
     VerificationRequested: VerificationRequested_,
+    VerificationCompleted: VerificationCompleted_,
   });
 })();
 /**
@@ -2782,7 +2813,10 @@ export const CryptoSignal = (() => {
  * asking a product to work out that the two are the same value.
  */
 export type CryptoSignal = InstanceType<
-  (typeof CryptoSignal)["TrustChanged" | "VerificationRequested"]
+  (typeof CryptoSignal)[
+    | "TrustChanged"
+    | "VerificationRequested"
+    | "VerificationCompleted"]
 >;
 
 // FfiConverter for enum CryptoSignal
@@ -2800,6 +2834,10 @@ const FfiConverterTypeCryptoSignal = (() => {
           return new CryptoSignal.VerificationRequested({
             user: FfiConverterString.readFromCursor(c),
             deviceId: FfiConverterString.readFromCursor(c),
+            verificationId: FfiConverterString.readFromCursor(c),
+          });
+        case 3:
+          return new CryptoSignal.VerificationCompleted({
             verificationId: FfiConverterString.readFromCursor(c),
           });
         default:
@@ -2823,6 +2861,12 @@ const FfiConverterTypeCryptoSignal = (() => {
           FfiConverterString.writeIntoCursor(inner.verificationId, c);
           return;
         }
+        case CryptoSignal_Tags.VerificationCompleted: {
+          c.writeI32(3);
+          const inner = value.inner;
+          FfiConverterString.writeIntoCursor(inner.verificationId, c);
+          return;
+        }
         default:
           // Throwing from here means that CryptoSignal_Tags hasn't matched an ordinal.
           throw new UniffiInternalError.UnexpectedEnumCase();
@@ -2842,6 +2886,12 @@ const FfiConverterTypeCryptoSignal = (() => {
           let size = 4;
           size += FfiConverterString.allocationSize(inner.user);
           size += FfiConverterString.allocationSize(inner.deviceId);
+          size += FfiConverterString.allocationSize(inner.verificationId);
+          return size;
+        }
+        case CryptoSignal_Tags.VerificationCompleted: {
+          const inner = value.inner;
+          let size = 4;
           size += FfiConverterString.allocationSize(inner.verificationId);
           return size;
         }

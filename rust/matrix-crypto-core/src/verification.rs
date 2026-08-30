@@ -1748,14 +1748,37 @@ pub async fn cancel_flow(flow: &FlowId) -> Result<(), MachineError> {
 
 // ------------------------------------------------- the crypto signal channel
 
-/// Every device a completed comparison verified, for flows whose completion
+/// What one announcement pass owes, read out of the registry in a single
+/// critical section.
+///
+/// Two fields rather than two functions, because the two are collected under
+/// one lock and by one walk: splitting them would mean two passes over the
+/// registry that could disagree about which records they had already marked.
+struct Pending {
+    /// Every device a completed comparison verified.
+    verified: Vec<(OwnedUserId, OwnedDeviceId)>,
+    /// The identifier of every flow that finished by scanning a code.
+    scanned: Vec<String>,
+}
+
+/// What a completed flow owes its subscribers, for flows whose completion
 /// has not been announced yet, marking them announced on the way out.
 ///
-/// Read from `SasState::Done`'s own `verified_devices` rather than from the
-/// flow merely having finished. Upstream sets local trust only for the
-/// devices that list names (`verification/mod.rs:710-719`), so a flow that
-/// reached `Done` is not by itself a claim that anything became verified,
-/// and a signal saying otherwise would be a false one.
+/// **A comparison's devices** are read from `SasState::Done`'s own
+/// `verified_devices` rather than from the flow merely having finished.
+/// Upstream sets local trust only for the devices that list names
+/// (`verification/mod.rs:710-719`), so a flow that reached `Done` is not by
+/// itself a claim that anything became verified, and a signal saying
+/// otherwise would be a false one.
+///
+/// **A scanned flow's own completion** is the other thing collected here,
+/// and it is a different kind of fact. What is announced for one is that it
+/// finished, not that anything became verified, and the two are not the
+/// same sentence: in two of the three modes a code can be shown in,
+/// upstream's completed code names no device at all, and for another user
+/// nothing this library will say about them changes until a later key query
+/// brings our own signature back. [`CryptoSignal::VerificationCompleted`]
+/// is where that is argued and where the measurements behind it are named.
 ///
 /// Marks inside the same critical section that collects, so two callers
 /// cannot both take the same completion. The cost is that a caller which
@@ -1768,9 +1791,12 @@ pub async fn cancel_flow(flow: &FlowId) -> Result<(), MachineError> {
 /// whose completion has not been taken, so a record this function looked at
 /// and found nothing in must still come away marked, or it would be exempt
 /// from eviction for the life of the process.
-fn take_pending_completions() -> Vec<(OwnedUserId, OwnedDeviceId)> {
+fn take_pending_completions() -> Pending {
     let mut flows = FLOWS.lock().expect("verification registry poisoned");
-    let mut completions = Vec::new();
+    let mut pending = Pending {
+        verified: Vec::new(),
+        scanned: Vec::new(),
+    };
 
     for record in flows.values_mut() {
         if record.completion_announced {
@@ -1792,18 +1818,44 @@ fn take_pending_completions() -> Vec<(OwnedUserId, OwnedDeviceId)> {
 
         // `state()` returns by value, which ends the borrow on `record`.
         let state = comparison_of(record).map(|comparison| comparison.state());
-        let Some(SasState::Done {
+        if let Some(SasState::Done {
             verified_devices, ..
         }) = state
-        else {
+        {
+            for device in verified_devices {
+                pending
+                    .verified
+                    .push((device.user_id().to_owned(), device.device_id().to_owned()));
+            }
             continue;
-        };
-        for device in verified_devices {
-            completions.push((device.user_id().to_owned(), device.device_id().to_owned()));
+        }
+
+        // A flow that finished by scanning, which is the other shape a
+        // record can have and is announced as itself rather than as a
+        // trust change. [`CryptoSignal::VerificationCompleted`] carries the
+        // measurements behind that; the short version is that in two of the
+        // three modes this state names no device, so a `verified_devices`
+        // walk here would announce nothing at all for them.
+        //
+        // Asked of the code's own `Done` rather than of the stage, which
+        // would say the same thing today: this is the precise question, the
+        // way `SasState::Done` above is for a comparison, and a flow whose
+        // request reached `Done` without its code doing so is not one that
+        // finished by scanning.
+        //
+        // The identifier is read off the handle upstream built, never off
+        // the registry's key, for the reason `announce_state_changes` gives
+        // about never handing a product a name no call of this module
+        // answers to.
+        let finished_by_scanning = code_of(record)
+            .filter(|code| matches!(code.state(), QrVerificationState::Done { .. }))
+            .map(|code| code.flow_id().as_str().to_string());
+        if let Some(flow_id) = finished_by_scanning {
+            pending.scanned.push(flow_id);
         }
     }
 
-    completions
+    pending
 }
 
 /// The `(sender, transaction id)` of every `m.key.verification.start` among
@@ -1947,7 +1999,10 @@ pub(crate) async fn announce_state_changes(processed: &[ProcessedToDeviceEvent])
         return;
     }
 
-    let completions = take_pending_completions();
+    let Pending {
+        verified: completions,
+        scanned,
+    } = take_pending_completions();
     let candidates = bare_start_candidates(processed);
 
     let collected = with_machine(move |machine| {
@@ -1976,6 +2031,17 @@ pub(crate) async fn announce_state_changes(processed: &[ProcessedToDeviceEvent])
                     user,
                     state: TrustState::Verified,
                 });
+            }
+
+            // Flows that finished by scanning a code. Nothing is read back
+            // off the machine for these, and there is nothing to read back:
+            // the fact announced is that the flow finished, which is read
+            // off the handle upstream advanced rather than off anything
+            // this side decided. What a product does about it is read the
+            // durable trust answer, exactly as for a `TrustChanged`, and
+            // the variant says so at its own declaration.
+            for flow_id in scanned {
+                signals.push(CryptoSignal::VerificationCompleted { flow_id });
             }
 
             // The account's own private signing keys arriving, which is a
@@ -2171,6 +2237,11 @@ pub(crate) async fn announce_state_changes(processed: &[ProcessedToDeviceEvent])
 /// missed invitation is not. `signals.ts` says the same thing to a product
 /// in the same words.
 ///
+/// A `VerificationCompleted` is consumed on exactly the same terms and for
+/// exactly the same reason. What a product is told to do about one is read
+/// the durable answer, so what a missed one costs is the same: a question
+/// it has to ask rather than a state it can never recover.
+///
 /// # What it still does not close
 ///
 /// [`crate::observer::emit_crypto`] reports whether an observer was
@@ -2187,11 +2258,19 @@ fn announce(signals: Vec<CryptoSignal>) {
         // did not go anywhere.
         let registered = match &signal {
             CryptoSignal::VerificationRequested { flow_id, .. } => Some(flow_id.clone()),
-            // The only other variant, and the one whose consumption is
-            // recoverable; see this function's header. Matched by name
-            // rather than by `_` so a variant added later has to be ruled
-            // on here instead of silently joining it.
-            CryptoSignal::TrustChanged { .. } => None,
+            // The two whose consumption is recoverable; see this function's
+            // header. Matched by name rather than by `_` so a variant added
+            // later has to be ruled on here instead of silently joining
+            // them.
+            //
+            // A completion is put back no more than a trust change is, and
+            // for the same reason: [`take_pending_completions`] has already
+            // marked the record, and un-marking it would re-exempt the
+            // record from eviction. The loss is also the same one. What a
+            // product does with either is read the durable answer, which
+            // `device_statuses` and `identity_status` give whether or not
+            // anything was delivered.
+            CryptoSignal::TrustChanged { .. } | CryptoSignal::VerificationCompleted { .. } => None,
         };
         if crate::observer::emit_crypto(signal) {
             continue;

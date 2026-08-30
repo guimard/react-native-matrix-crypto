@@ -1095,6 +1095,9 @@ pub enum CryptoSignal {
         device_id: String,
         verification_id: String,
     },
+    VerificationCompleted {
+        verification_id: String,
+    },
 }
 
 /// A `From` impl rather than a match buried in the adapter below, for the
@@ -1121,6 +1124,11 @@ impl From<matrix_crypto_core::CryptoSignal> for CryptoSignal {
                 device_id,
                 verification_id: flow_id,
             },
+            matrix_crypto_core::CryptoSignal::VerificationCompleted { flow_id } => {
+                Self::VerificationCompleted {
+                    verification_id: flow_id,
+                }
+            }
         }
     }
 }
