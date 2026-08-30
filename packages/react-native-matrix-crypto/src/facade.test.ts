@@ -4,6 +4,7 @@ import { asCryptoScopeId } from './types'
 import { isCryptoError } from './errors'
 import {
   acceptVerification,
+  bootstrapCrossSigning,
   cancelVerification,
   confirmVerification,
   createCryptoMachine,
@@ -13,6 +14,7 @@ import {
   exportSecrets,
   getDeviceIdentityKeys,
   getDeviceStatuses,
+  getIdentityStatus,
   getVerificationMaterial,
   getVerificationStage,
   markRequestFailed,
@@ -26,6 +28,7 @@ import {
 } from './facade'
 import {
   acceptVerification as nativeAcceptVerification,
+  bootstrapIdentity as nativeBootstrapIdentity,
   cancelVerification as nativeCancelVerification,
   confirmVerification as nativeConfirmVerification,
   createCryptoMachine as nativeCreateCryptoMachine,
@@ -33,6 +36,7 @@ import {
   deviceIdentityKeys as nativeDeviceIdentityKeys,
   deviceStatuses as nativeDeviceStatuses,
   encryptEvent as nativeEncryptEvent,
+  identityStatus as nativeIdentityStatus,
   MachineFfiError,
   markRequestFailed as nativeMarkRequestFailed,
   markRequestSent as nativeMarkRequestSent,
@@ -40,6 +44,7 @@ import {
   receiveSyncChanges as nativeReceiveSyncChanges,
   requestVerification as nativeRequestVerification,
   SenderVerification as NativeSenderVerification,
+  SessionFfiError,
   shareScopeKey as nativeShareScopeKey,
   startVerificationComparison as nativeStartVerificationComparison,
   takeOutgoingRequests as nativeTakeOutgoingRequests,
@@ -138,6 +143,18 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
     })),
     confirmVerification: vi.fn(async () => undefined),
     cancelVerification: vi.fn(async () => undefined),
+    // The signing identity. Stateless defaults, and deliberately the
+    // "nobody has asked" row rather than a served one: a test that forgot
+    // to install the chain fake below gets the refusal the real core would
+    // give it, not a bootstrap that silently succeeds.
+    identityStatus: vi.fn(async () => ({
+      accountKeysFetched: false,
+      identityKnown: false,
+      privateKeysHeld: false,
+    })),
+    bootstrapIdentity: vi.fn(async () => {
+      throw new actual.MachineFfiError.AccountKeysNotFetched()
+    }),
   }
 })
 
@@ -1474,6 +1491,406 @@ describe('a verification driven end to end through the public surface', () => {
     expect(await getVerificationStage(id)).toBe('done')
     expect(await getDeviceStatuses('@bob:example.org')).toEqual([
       { deviceId: 'BOBDEVICE', trust: 'verified' },
+    ])
+  })
+})
+
+/**
+ * The seven-step chain that makes a decrypted event read `'verified'`,
+ * driven from end to end through the functions this package publishes and
+ * through nothing else.
+ *
+ * # What this proves and, carefully, what it does not
+ *
+ * The cryptography is not on trial here and could not be: there is no JSI
+ * host object under vitest, so no test in this directory has ever executed
+ * a line of Rust. `matrix-crypto-core/tests/verified_sender.rs` is where
+ * the chain is proved, against a counterparty that process does not
+ * control, and it is the only thing entitled to say the value is earned.
+ *
+ * What was missing until this release is the other half, and it is the half
+ * a product lives in: **that every step of that chain can be reached, in
+ * order, through the published TypeScript surface.** The core has reached
+ * `Verified` since M4 and no product could get there, because the call that
+ * creates this account's identity was not bridged. This test is what says
+ * it is, and it is the first time the value has been read off an
+ * `EventEnvelope` anywhere in this repository.
+ *
+ * # Why the fake is a model and not a constant
+ *
+ * The M3 ruling this file already carries -- restated at
+ * `matrix_crypto_core::SenderVerification` as **nothing except the real
+ * chain produces `verified`** -- forbids a fixture that simply hands back
+ * the value. So the fake below does not. It holds the five facts the real
+ * gate holds and reports `Verified` only when all five are true, each
+ * having been set by a *different* published call resolving a *different*
+ * request. Skip any one of them and this test fails on the assertion
+ * naming that step, which is what the interleaved negative assertions are
+ * for: three of them sit at points where the chain looks finished from the
+ * outside and the value is still one rung below.
+ *
+ * The sharpest is step six. Nothing caches the signature a comparison
+ * produces, so uploading it and not fetching it back leaves every event
+ * reading `'unverified_identity'` while every call in the flow returned
+ * success and the device reads `'verified'`. That is asserted here
+ * explicitly rather than passed over.
+ *
+ * # What the fake deliberately does not model
+ *
+ * Response-body validation, which `markRequestSent` performs in Rust over
+ * each endpoint's declared fields and which the core's own tests cover;
+ * the within-a-batch ordering rule, which the verification arc above
+ * covers; and the eviction rule, which is documented at
+ * `takeOutgoingRequests` and belongs to the pump rather than to this
+ * chain. A fake that modelled everything would be the thing under test.
+ */
+describe('a signing identity driven end to end through the public surface', () => {
+  const PEER = '@bob:example.org'
+
+  interface Chain {
+    /** Step 1a: a key query naming our own account was reported sent. */
+    accountKeysFetched: boolean
+    /** Steps 1 and 2: we hold the private identity, and published it. */
+    identityPublished: boolean
+    /** Step 5: a comparison completed, which is what makes the signature. */
+    comparisonDone: boolean
+    /** Step 6: that signature reached the server. */
+    signatureUploaded: boolean
+    /** Step 7: and came back into our own store on a later key query. */
+    signatureFetchedBack: boolean
+  }
+
+  interface Fake {
+    chain: Chain
+    /** The peer's acknowledgement arrives and the flow closes. */
+    finishTheFlow(): void
+    /** A later `/sync` says the peer's devices changed. */
+    peerDevicesChanged(): Promise<void>
+  }
+
+  function installFake(): Fake {
+    const chain: Chain = {
+      accountKeysFetched: false,
+      identityPublished: false,
+      comparisonDone: false,
+      signatureUploaded: false,
+      signatureFetchedBack: false,
+    }
+    // Everything the library owes the product right now, and everything it
+    // is waiting to hear back about. Ids are opaque and the facade parses
+    // nothing out of one, so a counter is enough.
+    let owed: Array<{ id: string; kind: string; body: string }> = []
+    const pending = new Map<string, string>()
+    let nextId = 0
+    let identityKnown = false
+    let privateKeysHeld = false
+    let stage = NativeVerificationStage.Requested
+    let keyReported = false
+
+    const queue = (kind: string, body = '{}'): void => {
+      owed.push({ id: `request-${++nextId}`, kind, body })
+    }
+
+    vi.mocked(nativeIdentityStatus).mockImplementation(async () => ({
+      accountKeysFetched: chain.accountKeysFetched,
+      identityKnown,
+      privateKeysHeld,
+    }))
+
+    vi.mocked(nativeBootstrapIdentity).mockImplementation(async () => {
+      if (!chain.accountKeysFetched) {
+        // Queued *by* the refusal, exactly as the core does it, so the
+        // refusal is recoverable rather than a dead end.
+        queue('keys_query')
+        throw new MachineFfiError.AccountKeysNotFetched()
+      }
+      if (identityKnown && !privateKeysHeld) throw new MachineFfiError.IdentityAlreadyExists()
+      identityKnown = true
+      privateKeysHeld = true
+      // Upstream's order, and the batch is longer than the three requests
+      // that belong to the bootstrap. See `bootstrapCrossSigning`.
+      queue('keys_upload', '{"device_keys":{}}')
+      queue('signing_keys_upload', '{"master_key":{}}')
+      queue('signature_upload', '{"signed_keys":{}}')
+      queue('keys_upload', '{"device_keys":{}}')
+      queue('keys_query')
+    })
+
+    vi.mocked(nativeTakeOutgoingRequests).mockImplementation(async () => {
+      const batch = owed
+      owed = []
+      for (const request of batch) pending.set(request.id, request.kind)
+      return batch
+    })
+
+    vi.mocked(nativeMarkRequestSent).mockImplementation(async (id: string) => {
+      const kind = pending.get(id)
+      if (kind === undefined) throw new SessionFfiError.UnknownRequest()
+      pending.delete(id)
+      if (kind === 'keys_query') {
+        // The first answered query is about our own account and is what
+        // lifts the bootstrap gate. Every later one is about the peer, and
+        // one of those is step seven -- but only once there is a signature
+        // of ours for it to bring back.
+        if (!chain.accountKeysFetched) chain.accountKeysFetched = true
+        else if (chain.signatureUploaded) chain.signatureFetchedBack = true
+      }
+      if (kind === 'signing_keys_upload') chain.identityPublished = true
+      if (kind === 'signature_upload' && chain.comparisonDone) chain.signatureUploaded = true
+      if (kind === 'to_device' && stage === NativeVerificationStage.Started) {
+        keyReported = true
+        stage = NativeVerificationStage.KeysExchanged
+      }
+    })
+
+    vi.mocked(nativeMarkRequestFailed).mockImplementation(async (id: string) => {
+      if (!pending.has(id)) throw new SessionFfiError.UnknownRequest()
+      // A refusal teaches the library nothing and consumes nothing: the
+      // entry stays, which is what lets a product loop on a 401.
+    })
+
+    vi.mocked(nativeReceiveSyncChanges).mockImplementation(async () => {
+      queue('keys_query')
+      return { toDeviceEventCount: 0, newSessionCount: 0 }
+    })
+
+    const chainComplete = (): boolean =>
+      chain.accountKeysFetched &&
+      chain.identityPublished &&
+      chain.comparisonDone &&
+      chain.signatureUploaded &&
+      chain.signatureFetchedBack
+
+    vi.mocked(nativeDecryptEvent).mockImplementation(async () => ({
+      scope: '!native-scope:example.org',
+      algorithm: 'm.native.algorithm',
+      eventType: 'm.native.event',
+      ciphertext: toArrayBuffer('native-plaintext'),
+      sender: PEER,
+      // The peer runs a mainstream client, so their device carries their
+      // own identity's signature from the start. What our side has to earn
+      // is the second gate, and until every step of the chain is done the
+      // value sits one rung below it.
+      senderVerification: chainComplete()
+        ? NativeSenderVerification.Verified
+        : NativeSenderVerification.UnverifiedIdentity,
+    }))
+
+    vi.mocked(nativeDeviceStatuses).mockImplementation(async () => [
+      {
+        // The device a person actually compared a string with. Locally
+        // trusted the moment the flow closes, with no signature round trip
+        // needed for that half.
+        deviceId: 'BOBDEVICE',
+        trust:
+          stage === NativeVerificationStage.Done
+            ? NativeTrustState.Verified
+            : NativeTrustState.Unverified,
+      },
+      {
+        // A second device of the same person. Nobody has compared anything
+        // with it and nobody ever will; it moves when their *identity*
+        // becomes trusted, which is the point of cross-signing and the
+        // behaviour change this release ships.
+        deviceId: 'BOBPHONE',
+        trust: chainComplete() ? NativeTrustState.Verified : NativeTrustState.Unverified,
+      },
+    ])
+
+    vi.mocked(nativeRequestVerification).mockImplementation(async () => {
+      stage = NativeVerificationStage.Requested
+      return 'chain-flow-id'
+    })
+    vi.mocked(nativeAcceptVerification).mockImplementation(async () => {
+      if (stage !== NativeVerificationStage.Requested) throw new MachineFfiError.WrongStage()
+      stage = NativeVerificationStage.Ready
+    })
+    vi.mocked(nativeStartVerificationComparison).mockImplementation(async () => {
+      if (stage !== NativeVerificationStage.Ready) throw new MachineFfiError.WrongStage()
+      stage = NativeVerificationStage.Started
+      // The key message. Reporting it sent is what produces a string, and
+      // reporting is the only thing that advances this flow.
+      queue('to_device')
+    })
+    vi.mocked(nativeVerificationStage).mockImplementation(async () => stage)
+    vi.mocked(nativeVerificationMaterial).mockImplementation(async () => {
+      if (stage === NativeVerificationStage.Started && !keyReported) {
+        throw new MachineFfiError.MaterialNotReady()
+      }
+      if (stage !== NativeVerificationStage.KeysExchanged) throw new MachineFfiError.WrongStage()
+      return { emoji: undefined, decimalOne: 4444, decimalTwo: 5555, decimalThree: 6666 }
+    })
+    vi.mocked(nativeConfirmVerification).mockImplementation(async () => {
+      if (stage !== NativeVerificationStage.KeysExchanged) throw new MachineFfiError.WrongStage()
+      stage = NativeVerificationStage.Confirmed
+    })
+
+    return {
+      chain,
+      finishTheFlow() {
+        stage = NativeVerificationStage.Done
+        chain.comparisonDone = true
+        // Step 5's output. A completed comparison signs the peer's master
+        // key with our user-signing key, and the resulting signature reaches
+        // the pump as an ordinary outgoing request.
+        queue('signature_upload', '{"signed_keys":{}}')
+      },
+      async peerDevicesChanged() {
+        await receiveSyncChanges({ changed_devices: { changed: [PEER] } })
+      },
+    }
+  }
+
+  /** Sends and reports everything the pump is currently holding. */
+  async function pump(): Promise<string[]> {
+    const batch = await takeOutgoingRequests()
+    for (const request of batch) await markRequestSent(request.id, '{}')
+    return batch.map((request) => request.kind)
+  }
+
+  it('reaches verified on a decrypted event, and not one step earlier', async () => {
+    const fake = installFake()
+
+    // ---- Step 1: nothing is known, and the refusal says which nothing ----
+    expect(await getIdentityStatus()).toEqual({
+      accountKeysFetched: false,
+      identityKnown: false,
+      privateKeysHeld: false,
+    })
+
+    // Refused, and refused as its own kind rather than as 'unknown'. Both
+    // halves matter: a product told 'unknown' cannot tell this apart from a
+    // failure, and this one has a remedy.
+    await expect(bootstrapCrossSigning()).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'account_keys_not_fetched',
+    )
+
+    // The refusal queued the question that lifts it.
+    expect(await pump()).toEqual(['keys_query'])
+    expect((await getIdentityStatus()).accountKeysFetched).toBe(true)
+
+    // ---- Step 2: now it is served, and the status says it took effect ----
+    await expect(bootstrapCrossSigning()).resolves.toBeUndefined()
+    expect(await getIdentityStatus()).toEqual({
+      accountKeysFetched: true,
+      identityKnown: true,
+      privateKeysHeld: true,
+    })
+
+    // The batch is longer than the three requests the bootstrap owns, and
+    // it is in the order that lets a signature follow the key it names.
+    const batch = await takeOutgoingRequests()
+    expect(batch.map((request) => request.kind)).toEqual([
+      'keys_upload',
+      'signing_keys_upload',
+      'signature_upload',
+      'keys_upload',
+      'keys_query',
+    ])
+
+    // ---- The authentication loop this library refuses to run for you ----
+    const signingKeys = batch.find((request) => request.kind === 'signing_keys_upload')
+    if (signingKeys === undefined) throw new Error('the bootstrap queued no signing keys upload')
+
+    // `bootstrapCrossSigning` takes no argument, and this is the assertion
+    // that fails the day someone adds one: the challenge is only known
+    // after this very request has been refused, so a credential parameter
+    // would have to be guessed before the server had spoken.
+    expect(bootstrapCrossSigning.length).toBe(0)
+
+    // The server refuses the first attempt with a challenge. Reported as a
+    // failure, which teaches the library nothing and consumes nothing.
+    await markRequestFailed(signingKeys.id, 401)
+    // No identity is published on the strength of a challenge.
+    expect(fake.chain.identityPublished).toBe(false)
+    // The same id, and the same body with an `auth` object merged into it
+    // by the product, sent again. The id survived the refusal.
+    await markRequestSent(signingKeys.id, '{}')
+    expect(fake.chain.identityPublished).toBe(true)
+
+    for (const request of batch.filter((r) => r.kind !== 'signing_keys_upload')) {
+      await markRequestSent(request.id, '{}')
+    }
+
+    // ---- Steps 3 and 4: their identity, and our copy of their keys ----
+    await fake.peerDevicesChanged()
+    expect(await pump()).toEqual(['keys_query'])
+
+    // We have an identity and they have one, and we have no opinion of
+    // theirs. The ordinary value for a peer running a mainstream client,
+    // and also where an incomplete chain lands.
+    expect((await decryptEvent(scope, { type: 'm.room.encrypted' })).senderVerification).toEqual({
+      state: 'unverified',
+      reason: 'unverified_identity',
+    })
+    expect(await getDeviceStatuses(PEER)).toEqual([
+      { deviceId: 'BOBDEVICE', trust: 'unverified' },
+      { deviceId: 'BOBPHONE', trust: 'unverified' },
+    ])
+
+    // ---- Step 5: a person compares a string ----
+    const id = await requestVerification(PEER, 'BOBDEVICE')
+    await acceptVerification(id)
+    await startVerificationComparison(id)
+    // No report, no string: the state machine advances on markRequestSent
+    // and on nothing else, and this is the one way the flow could fail
+    // silently if it were not reported.
+    await expect(getVerificationMaterial(id)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'material_not_ready',
+    )
+    expect(await pump()).toEqual(['to_device'])
+    expect(await getVerificationStage(id)).toBe('keys-exchanged')
+
+    const material = await getVerificationMaterial(id)
+    expect(material).toEqual({ decimals: [4444, 5555, 6666] })
+    await confirmVerification(id, material)
+    fake.finishTheFlow()
+    expect(await getVerificationStage(id)).toBe('done')
+
+    // The compared device is verified. The event is not, and that
+    // combination is not a defect: it is a comparison whose signature has
+    // not come back yet.
+    expect(await getDeviceStatuses(PEER)).toEqual([
+      { deviceId: 'BOBDEVICE', trust: 'verified' },
+      { deviceId: 'BOBPHONE', trust: 'unverified' },
+    ])
+    expect((await decryptEvent(scope, { type: 'm.room.encrypted' })).senderVerification).toEqual({
+      state: 'unverified',
+      reason: 'unverified_identity',
+    })
+
+    // ---- Step 6: upload the signature the comparison produced ----
+    expect(await pump()).toEqual(['signature_upload'])
+
+    // **Still not verified**, and this is the assertion the whole test is
+    // for. Every call so far returned success, the comparison finished, the
+    // device reads verified and the signature really did reach the server.
+    // Nothing anywhere reports a problem, and the sender sits one rung
+    // below where a product would put it.
+    expect((await decryptEvent(scope, { type: 'm.room.encrypted' })).senderVerification).toEqual({
+      state: 'unverified',
+      reason: 'unverified_identity',
+    })
+
+    // ---- Step 7: fetch their keys again, so that our own signature is in
+    // our own store, which is the only place the gate underneath reads ----
+    await fake.peerDevicesChanged()
+    expect(await pump()).toEqual(['keys_query'])
+
+    // Only now.
+    expect((await decryptEvent(scope, { type: 'm.room.encrypted' })).senderVerification).toEqual({
+      state: 'verified',
+    })
+
+    // And the second device, which nobody compared anything with and
+    // nobody ever will. This is the M4 design's section 3.2 item 1 arriving
+    // in a product: verifying one device of a user moves every device of
+    // that user, including ones that turn up afterwards. It is correct
+    // rather than a defect, and it is why `getDeviceStatuses` now says so
+    // at the call.
+    expect(await getDeviceStatuses(PEER)).toEqual([
+      { deviceId: 'BOBDEVICE', trust: 'verified' },
+      { deviceId: 'BOBPHONE', trust: 'verified' },
     ])
   })
 })
