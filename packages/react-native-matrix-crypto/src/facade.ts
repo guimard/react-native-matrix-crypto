@@ -1113,9 +1113,17 @@ export async function requestVerification(userId: string, deviceId: string): Pro
  *
  * `'account_keys_not_fetched'` means this process has not yet asked the
  * server about this account, so it cannot know whether there is an identity
- * to join. Drain the pump, send, report sent, and call again;
- * {@link bootstrapCrossSigning} is what queues that key query, and calling it
- * first is the ordinary way a product gets here at all.
+ * to join. **This call queues that key query before returning the refusal**,
+ * so the remedy is the ordinary loop: drain the pump, send, report sent, and
+ * call this again. You do not have to reach for
+ * {@link bootstrapCrossSigning} to get unstuck, and on a device that is
+ * joining you should not: it is the call that would create a second identity
+ * if the state ever moved under you.
+ *
+ * Expect this refusal on **every** launch, not only the first. Whether the
+ * server has been asked is not persisted, and the layer underneath will not
+ * volunteer the question for an account it already knows about, so a
+ * relaunched store starts out having asked nothing.
  *
  * `'identity_not_known'` means the server was asked and said this account has
  * no identity. There is nothing to join, and the answer is

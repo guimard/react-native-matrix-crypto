@@ -20,6 +20,21 @@
 //! made to un-answer it, and an integration test cannot reset the registry.
 //! `tests/identity_bootstrap_*.rs` are split the same way for the same
 //! reason.
+//!
+//! # What this file deliberately does not assert
+//!
+//! **That the refusal is recoverable.** This runs on a fresh machine, where
+//! upstream volunteers an own-account key query of its own accord, so an
+//! assertion here that merely found one in the pump would pass with the
+//! refusal's own queueing deleted. That is not a hypothetical: the identical
+//! assertion for `bootstrap_identity` did exactly that for a whole round of
+//! its task, which is why `tests/identity_bootstrap_recovery.rs` exists and
+//! says so in its own header.
+//!
+//! `tests/self_verification_recovery.rs` is the file that asserts recovery,
+//! in the state where upstream volunteers nothing, which is every relaunch of
+//! an existing store. Read the two together: this one says the refusal is
+//! returned and changes nothing, that one says it can be got out of.
 
 use matrix_crypto_core::{
     create_machine, identity_status, request_self_flow, MachineConfig, MachineError,

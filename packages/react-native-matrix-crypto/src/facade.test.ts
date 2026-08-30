@@ -1771,6 +1771,19 @@ describe('the signing identity chain, driven through the public surface', () => 
       owed.push({ id: `request-${++nextId}`, kind, body })
     }
 
+    /**
+     * The account key query both refusals queue as they refuse.
+     *
+     * One slot in the core, not one entry per refusal, so a caller that met
+     * both refusals sends one query rather than two. Modelled that way here
+     * because a model that queued twice would let a test assert an ordering
+     * the library does not have.
+     */
+    const queueAccountQuery = (): void => {
+      if (owed.some((request) => request.kind === 'keys_query')) return
+      queue('keys_query')
+    }
+
     vi.mocked(nativeIdentityStatus).mockImplementation(async () => ({
       accountKeysFetched: chain.accountKeysFetched,
       identityKnown,
@@ -1781,7 +1794,7 @@ describe('the signing identity chain, driven through the public surface', () => 
       if (!chain.accountKeysFetched) {
         // Queued *by* the refusal, exactly as the core does it, so the
         // refusal is recoverable rather than a dead end.
-        queue('keys_query')
+        queueAccountQuery()
         throw new MachineFfiError.AccountKeysNotFetched()
       }
       if (identityKnown && !privateKeysHeld) throw new MachineFfiError.IdentityAlreadyExists()
@@ -1898,7 +1911,14 @@ describe('the signing identity chain, driven through the public surface', () => 
       // The same two refusals the core keeps apart, in the same order and
       // for the same reasons: nobody has asked, versus the answer named no
       // identity to join.
-      if (!chain.accountKeysFetched) throw new MachineFfiError.AccountKeysNotFetched()
+      if (!chain.accountKeysFetched) {
+        // The same queue-as-you-refuse the bootstrap does, and the same slot.
+        // Without it this refusal is permanent on any relaunch of an existing
+        // store, because nothing underneath volunteers the query for an
+        // account it already tracks.
+        queueAccountQuery()
+        throw new MachineFfiError.AccountKeysNotFetched()
+      }
       if (!identityKnown) throw new MachineFfiError.IdentityNotKnown()
       stage = NativeVerificationStage.Requested
       return 'self-flow-id'
@@ -2243,13 +2263,15 @@ describe('the signing identity chain, driven through the public surface', () => 
     const unsubscribe = onCryptoSignal((signal) => seen.push(signal))
 
     // ---- Where a second login starts ----------------------------------
-    await expect(bootstrapCrossSigning()).rejects.toSatisfy(
-      (e: unknown) => isCryptoError(e) && e.kind === 'account_keys_not_fetched',
-    )
+    //
     // Asked before joining, for the same reason as before publishing: a
     // device that has not asked cannot know there is an identity to join.
-    // Asserted here as well, because it is the refusal a product meets first
-    // whichever of the two calls it reaches for.
+    // **Reached through this call and nothing else**, so the query below is
+    // attributable to it. Calling `bootstrapCrossSigning` first would queue
+    // one too and the assertion would pass without this call contributing
+    // anything, which is the shape the core's own
+    // `self_verification_recovery.rs` exists to avoid.
+    expect(await takeOutgoingRequests()).toEqual([])
     await expect(requestSelfVerification()).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'account_keys_not_fetched',
     )

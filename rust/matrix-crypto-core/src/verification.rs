@@ -736,10 +736,22 @@ pub async fn request_flow(user_id: &str, device_id: &str) -> Result<FlowId, Mach
 ///
 /// [`MachineError::AccountKeysNotFetched`] means this process has not asked
 /// the server about this account yet, so it cannot know whether the account
-/// has an identity to join. Same remedy as everywhere else this appears:
-/// drain the pump, send, report sent, call again.
-/// [`crate::bootstrap_identity`] queues that key query as it refuses, which
-/// is the ordinary way a product reaches this point at all.
+/// has an identity to join. **This call queues that key query before
+/// returning the refusal**, exactly as [`crate::bootstrap_identity`] does and
+/// for the same reason, so the remedy is the ordinary loop: drain the pump,
+/// send, report sent, call this again.
+///
+/// It has to queue it itself, and this is not defensive. Upstream volunteers
+/// an own-account key query only while the account is not yet tracked
+/// ("We always want to track our own user",
+/// `identities/manager.rs:836-852`), and `update_tracked_users` re-flags only
+/// accounts it did not already know (`store/mod.rs:258-273`). So on any
+/// relaunch of an existing store, and on any process that shared a key before
+/// asking, nothing would ever volunteer the query and this refusal would be
+/// permanent on this call. The one escape would be
+/// [`crate::bootstrap_identity`], which is precisely the call a joining device
+/// must not reach for. `tests/self_verification_recovery.rs` constructs that
+/// state, which a fresh machine cannot.
 ///
 /// [`MachineError::IdentityNotKnown`] means the server was asked and named
 /// no identity for this account. There is nothing to join, and the answer is
@@ -763,11 +775,20 @@ pub async fn request_self_flow() -> Result<FlowId, MachineError> {
                 // `signing::may_mint` asks first, read from the same place,
                 // so this call and the bootstrap gate cannot come to
                 // disagree about whether anybody has asked.
-                return Err(if crate::session::account_keys_answered() {
-                    MachineError::IdentityNotKnown
-                } else {
-                    MachineError::AccountKeysNotFetched
-                });
+                if crate::session::account_keys_answered() {
+                    return Err(MachineError::IdentityNotKnown);
+                }
+                // Queued *by* the refusal, so the refusal is recoverable
+                // rather than a dead end. The reasoning is
+                // `signing::bootstrap_identity`'s, unchanged and not
+                // repeated here: upstream will not volunteer this query for
+                // an account it is already tracking, which is every relaunch
+                // of an existing store. The same single slot, so a caller
+                // that reached both calls sends one query rather than two.
+                let (id, request) =
+                    machine.query_keys_for_users(std::iter::once(machine.user_id()));
+                crate::session::queue_account_key_query(id, request);
+                return Err(MachineError::AccountKeysNotFetched);
             };
 
             // One method advertised, not upstream's default list, for
