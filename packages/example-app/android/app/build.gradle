@@ -137,6 +137,28 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0"
+
+        // Off unless a build asks for it, so an ordinary build of this app is
+        // exactly what it was: an example app that shows over the lock screen
+        // is not what anyone wants installed on their phone.
+        //
+        // `scripts/run-fold-test.sh` asks for it. That test drives fold states
+        // with `adb shell cmd device_state` and reads what the app reports
+        // across the configuration change, and Android defers configuration
+        // changes for an activity it has stopped. A device sitting on a desk
+        // behind a secure lock screen stops the activity, so the fold reaches
+        // nothing and the test reads silence -- which looks exactly like a
+        // fold that changed nothing. It was watched doing precisely that
+        // before this flag existed: a density change, which this activity does
+        // not declare and therefore cannot survive, also produced no
+        // recreation while the lock screen was up.
+        //
+        // A test that cannot be run without someone unlocking the phone is not
+        // a test a reviewer can re-run, which is the whole point of scripting
+        // it.
+        manifestPlaceholders = [
+            showWhenLocked: (project.findProperty("showWhenLocked") ?: "false").toString()
+        ]
     }
     signingConfigs {
         debug {
