@@ -42,11 +42,13 @@ export type { ProbeResult, ProbeSignal } from './probe'
 export { runProbe } from './probe'
 
 export type {
+  AccountDataEntry,
   CryptoMachineConfig,
   DeviceStatus,
   IdentityKeys,
   IdentityStatus,
   OutgoingRequest,
+  RecoverySetup,
 } from './facade'
 export {
   acceptVerification,
@@ -54,6 +56,7 @@ export {
   cancelVerification,
   confirmVerification,
   createCryptoMachine,
+  createRecovery,
   decryptEvent,
   encryptEvent,
   encryptionSlice,
@@ -69,6 +72,7 @@ export {
   markRequestSent,
   openCryptoStore,
   receiveSyncChanges,
+  recoverIdentity,
   requestSelfVerification,
   requestVerification,
   restoreCryptoMachine,
