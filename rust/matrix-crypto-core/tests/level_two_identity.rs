@@ -228,7 +228,10 @@ fn transaction_id(label: &str) -> String {
 /// is one wire tag for every key query, and the only thing that makes one
 /// of them the *account* key query the bootstrap gate waits on is which
 /// users it asks about.
-fn account_key_queries<'a>(batch: &'a [OutgoingRequest], user_id: &str) -> Vec<&'a OutgoingRequest> {
+fn account_key_queries<'a>(
+    batch: &'a [OutgoingRequest],
+    user_id: &str,
+) -> Vec<&'a OutgoingRequest> {
     batch
         .iter()
         .filter(|request| request.kind == "keys_query")
@@ -252,10 +255,7 @@ fn account_key_queries<'a>(batch: &'a [OutgoingRequest], user_id: &str) -> Vec<&
 /// product is free to send its requests in any order and to have one of
 /// them fail, which is exactly the state this reproduces; withholding here
 /// is a choice about sequencing, not a change to what the library is asked.
-fn pump_and_send_holding_key_queries(
-    homeserver: &Homeserver,
-    token: &str,
-) -> Vec<OutgoingRequest> {
+fn pump_and_send_holding_key_queries(homeserver: &Homeserver, token: &str) -> Vec<OutgoingRequest> {
     let batch = run(take_outgoing_requests()).expect("the pump must be drainable");
     for request in &batch {
         if request.kind == "keys_query" {
@@ -456,7 +456,8 @@ fn a_signing_identity_published_to_a_real_homeserver_and_what_a_sender_then_read
         "a machine on a fresh store knows no identity and holds no private keys: {status:?}"
     );
     assert_eq!(
-        run(bootstrap_identity()).expect_err("nothing may be minted before the server has been asked"),
+        run(bootstrap_identity())
+            .expect_err("nothing may be minted before the server has been asked"),
         MachineError::AccountKeysNotFetched,
         "the first refusal is the recoverable one, and it must be this one rather than \
          the destructive-mint refusal"
@@ -526,8 +527,8 @@ fn a_signing_identity_published_to_a_real_homeserver_and_what_a_sender_then_read
         "a request carrying a logged-out device's token must be refused; the \
          homeserver answered {status_code}"
     );
-    let refusal_json: Value = serde_json::from_str(&refusal_body)
-        .expect("a Matrix error response is a JSON object");
+    let refusal_json: Value =
+        serde_json::from_str(&refusal_body).expect("a Matrix error response is a JSON object");
     assert!(
         refusal_json.get("errcode").is_some(),
         "the refusal must be a standard Matrix error, or the library's own refusal of \
@@ -680,7 +681,9 @@ fn a_signing_identity_published_to_a_real_homeserver_and_what_a_sender_then_read
     let after = homeserver_view(&homeserver, &library.token, &library.user_id);
     let master = after["master_keys"]
         .get(&library.user_id)
-        .unwrap_or_else(|| panic!("the homeserver must serve this account's master key back: {after}"));
+        .unwrap_or_else(|| {
+            panic!("the homeserver must serve this account's master key back: {after}")
+        });
     let self_signing = after["self_signing_keys"]
         .get(&library.user_id)
         .unwrap_or_else(|| panic!("and its self-signing key: {after}"));
@@ -690,7 +693,9 @@ fn a_signing_identity_published_to_a_real_homeserver_and_what_a_sender_then_read
          itself: {after}"
     );
     assert!(
-        master["keys"].as_object().is_some_and(|keys| !keys.is_empty()),
+        master["keys"]
+            .as_object()
+            .is_some_and(|keys| !keys.is_empty()),
         "a published master key carries a key: {master}"
     );
 
@@ -701,8 +706,8 @@ fn a_signing_identity_published_to_a_real_homeserver_and_what_a_sender_then_read
         .as_object()
         .and_then(|keys| keys.keys().next().cloned())
         .unwrap_or_else(|| panic!("a published self-signing key carries a key: {self_signing}"));
-    let device_signatures = after["device_keys"][&library.user_id][&library.device_id]["signatures"]
-        [&library.user_id]
+    let device_signatures = after["device_keys"][&library.user_id][&library.device_id]
+        ["signatures"][&library.user_id]
         .as_object()
         .cloned()
         .unwrap_or_else(|| panic!("this device must still be published: {after}"));
@@ -788,8 +793,10 @@ fn a_signing_identity_published_to_a_real_homeserver_and_what_a_sender_then_read
         Some(&library.token),
         None,
     );
-    run(receive_sync_changes(&encryption_slice(&initial).to_string()))
-        .expect("a real /sync payload must be accepted");
+    run(receive_sync_changes(
+        &encryption_slice(&initial).to_string(),
+    ))
+    .expect("a real /sync payload must be accepted");
     pump_and_send(&homeserver, &library.token);
     let mut since = initial["next_batch"]
         .as_str()
@@ -1014,7 +1021,13 @@ fn a_signing_identity_published_to_a_real_homeserver_and_what_a_sender_then_read
     );
 
     // ---- 14. A fresh login, in a genuinely separate process ---------------
-    a_second_device_refuses_to_mint_over_this(&homeserver, &user, &password, dir.path(), &mut teardown);
+    a_second_device_refuses_to_mint_over_this(
+        &homeserver,
+        &user,
+        &password,
+        dir.path(),
+        &mut teardown,
+    );
 
     // ---- Tidy up ---------------------------------------------------------
     nio.call(json!({ "op": "quit" }));
@@ -1135,8 +1148,8 @@ fn phase_two_a_fresh_login_refuses_to_mint() {
     // The recovery loop `bootstrap_identity` documents: refused once with
     // the key query it needs already queued, then drained, sent, reported,
     // and called again.
-    let first_refusal = run(bootstrap_identity())
-        .expect_err("a fresh process has asked this server nothing yet");
+    let first_refusal =
+        run(bootstrap_identity()).expect_err("a fresh process has asked this server nothing yet");
     let batch = pump_and_send(&homeserver, &token);
     assert!(
         !account_key_queries(&batch, &user_id).is_empty(),
