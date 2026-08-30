@@ -24,11 +24,19 @@
 
 import React from 'react';
 import { SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, useColorScheme } from 'react-native';
+import { FoldWatch } from './src/FoldWatch';
 import { GuidedFlow } from './src/GuidedFlow';
 import { LevelTwoHarness } from './src/LevelTwoHarness';
 import { ProbeHarness } from './src/ProbeHarness';
 import { fetchLevelTwoPlan, type LevelTwoPlan } from './src/levelTwoTransport';
 
+// FoldWatch is rendered outside the conditional below, and before the answer
+// about a conductor has arrived, because what it reports is how many times
+// this tree has been built in this JavaScript context. A component that only
+// mounts once the plan has settled would miss a rebuild that happened while
+// the question was still open, and would report a count that is about the
+// conditional rather than about the tree. It renders nothing.
+//
 // Both GuidedFlow and ProbeHarness are rendered unconditionally, in the same
 // tree, every time this component mounts -- neither lives behind a tab or
 // any other interaction. ProbeHarness's mount effect is what CI scrapes
@@ -76,6 +84,7 @@ function App({ storeDir = '' }: { storeDir?: string }) {
       <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
       <ScrollView contentInsetAdjustmentBehavior="automatic" style={styles.container}>
         <Text style={styles.heading}>react-native-matrix-crypto</Text>
+        <FoldWatch />
         {plan === undefined ? null : plan === null ? (
           <>
             <GuidedFlow storeDir={storeDir} />

@@ -137,6 +137,50 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0"
+
+        // Off unless a build asks for it, so an ordinary build of this app is
+        // exactly what it was: an example app that shows over the lock screen
+        // is not what anyone wants installed on their phone.
+        //
+        // `scripts/run-fold-test.sh` asks for it. That test drives fold states
+        // with `adb shell cmd device_state` and reads what the app reports
+        // across the configuration change, and Android defers configuration
+        // changes for an activity it has stopped. A device sitting on a desk
+        // behind a secure lock screen stops the activity, so the fold reaches
+        // nothing and the test reads silence -- which looks exactly like a
+        // fold that changed nothing. It was watched doing precisely that
+        // before this flag existed: a density change, which this activity does
+        // not declare and therefore cannot survive, also produced no
+        // recreation while the lock screen was up.
+        //
+        // A test that cannot be run without someone unlocking the phone is not
+        // a test a reviewer can re-run, which is the whole point of scripting
+        // it.
+        // The set this activity declares it can absorb without being
+        // recreated. The default is exactly what the React Native template
+        // ships and what this app has always declared, so an ordinary build
+        // is unchanged.
+        //
+        // It is a placeholder so that `scripts/run-fold-test.sh` can build the
+        // other case. On a Pixel 10 Pro Fold the default absorbs a fold
+        // completely -- both panels report the same density, and every other
+        // dimension a fold changes is in the list -- so a fold never recreates
+        // the activity and never exercises the unsubscribe and resubscribe
+        // path this library's signal channel depends on. That is a true result
+        // about this manifest and a misleading one about folding: a product
+        // that does not declare these is recreated on every fold, and that
+        // product is the one at risk.
+        //
+        // Building the reduced set is how the fold test observes that case
+        // directly, rather than inferring it from a density change that stands
+        // in for a fold.
+        def defaultConfigChanges =
+            "keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+        manifestPlaceholders = [
+            showWhenLocked: (project.findProperty("showWhenLocked") ?: "false").toString(),
+            activityConfigChanges:
+                (project.findProperty("activityConfigChanges") ?: defaultConfigChanges).toString()
+        ]
     }
     signingConfigs {
         debug {
