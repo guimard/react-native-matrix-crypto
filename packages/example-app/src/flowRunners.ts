@@ -1,5 +1,5 @@
 /**
- * The seven steps of the guided walkthrough, and nothing else.
+ * The steps of the guided walkthrough, and nothing else.
  *
  * Split out of `GuidedFlow.tsx` so that these functions, the real ones the
  * screen runs, can be run by a test on a host machine. They were private to
