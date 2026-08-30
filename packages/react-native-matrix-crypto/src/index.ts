@@ -41,9 +41,16 @@ export { onCryptoSignal } from './signals'
 export type { ProbeResult, ProbeSignal } from './probe'
 export { runProbe } from './probe'
 
-export type { CryptoMachineConfig, DeviceStatus, IdentityKeys, OutgoingRequest } from './facade'
+export type {
+  CryptoMachineConfig,
+  DeviceStatus,
+  IdentityKeys,
+  IdentityStatus,
+  OutgoingRequest,
+} from './facade'
 export {
   acceptVerification,
+  bootstrapCrossSigning,
   cancelVerification,
   confirmVerification,
   createCryptoMachine,
@@ -53,6 +60,7 @@ export {
   exportSecrets,
   getDeviceIdentityKeys,
   getDeviceStatuses,
+  getIdentityStatus,
   getSupportedAlgorithms,
   getVerificationMaterial,
   getVerificationStage,

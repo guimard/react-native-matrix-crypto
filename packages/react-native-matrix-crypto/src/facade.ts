@@ -13,6 +13,7 @@ import { asCryptoScopeId } from './types'
 import { toCryptoError } from './errors'
 import {
   acceptVerification as nativeAcceptVerification,
+  bootstrapIdentity as nativeBootstrapIdentity,
   cancelVerification as nativeCancelVerification,
   confirmVerification as nativeConfirmVerification,
   createCryptoMachine as nativeCreateCryptoMachine,
@@ -20,6 +21,7 @@ import {
   deviceIdentityKeys as nativeDeviceIdentityKeys,
   deviceStatuses as nativeDeviceStatuses,
   encryptEvent as nativeEncryptEvent,
+  identityStatus as nativeIdentityStatus,
   markRequestFailed as nativeMarkRequestFailed,
   markRequestSent as nativeMarkRequestSent,
   openCryptoStore as nativeOpenCryptoStore,
@@ -93,10 +95,13 @@ export interface DeviceStatus {
  * same reason `CryptoAlgorithm` is open (the set grows upstream, and a
  * consumer must already handle a value it does not recognise).
  *
- * Today's six values, the endpoint each addresses, and what
+ * Today's values, the endpoint each addresses, and what
  * {@link markRequestSent}'s own `responseJson` must contain to report one
  * sent -- that endpoint's response body, unwrapped, exactly as the
- * homeserver returned it, and nothing this library adds or removes.
+ * homeserver returned it, and nothing this library adds or removes. No
+ * count stands over the table: the tag is open, the table grew by a row in
+ * this release, and a count is the part of a claim most likely to go stale
+ * and least likely to be re-read.
  *
  * **A wrong `responseJson` is not reliably rejected**, so do not treat the
  * column below as validated input. A body that is *not* shaped like that
@@ -119,6 +124,7 @@ export interface DeviceStatus {
  * | `'to_device'` | `PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}` | `{}`, and only `{}`. The machine ignores the contents and the response type declares no fields, so there is no field that could widen the shape: an object with any key at all is rejected here |
  * | `'signature_upload'` | `POST /_matrix/client/v3/keys/signatures/upload` | `{ failures? }` (optional; `{}` is valid) |
  * | `'room_message'` | `PUT /_matrix/client/v3/rooms/{roomId}/send/{eventType}/{txnId}` | `{ event_id: string }` |
+ * | `'signing_keys_upload'` | `POST /_matrix/client/v3/keys/device_signing/upload` | `{}`, and only `{}`, for the reason `'to_device'` gives: the response type declares no fields, so no key could widen the shape. **This is the row where that costs you something.** The endpoint is user-interactive, its refusal is a `401` with a challenge, and `{}` is also what a 502 with no body arrives as. Branch on the status and send anything that is not a 2xx to {@link markRequestFailed}: reporting a challenge here would mark an identity published that never was |
  *
  * `'to_device'` and `'room_message'` carry their own path segments
  * (`eventType`/`txnId`, and for the latter `roomId` too) inside `body`
@@ -741,6 +747,164 @@ export async function markRequestSent(id: string, responseJson: string): Promise
 export async function markRequestFailed(id: string, status: number): Promise<void> {
   try {
     await nativeMarkRequestFailed(id, status)
+  } catch (e) {
+    throw toCryptoError(e)
+  }
+}
+
+/**
+ * What this library will say about this account's signing identity, as
+ * returned by {@link getIdentityStatus}.
+ *
+ * Three independent facts, none of which implies another. **The pair that
+ * looks redundant is the pair that matters:** `identityKnown === false`
+ * means something completely different depending on `accountKeysFetched`.
+ * With that false it means "nobody has asked". With it true it means "the
+ * server says there is none", and only the second is a basis for creating
+ * one. That is why both are reported instead of one collapsed answer.
+ */
+export interface IdentityStatus {
+  /**
+   * Whether a key query naming this account has been sent **and answered**
+   * in this process.
+   *
+   * Not persisted. A process that has just reopened a store has asked
+   * nothing yet, whatever the process before it did, and the account may
+   * have gained an identity in between. `false` is not a claim that the
+   * account has no identity; it is a refusal to guess.
+   */
+  accountKeysFetched: boolean
+  /**
+   * Whether this library holds a public signing identity for the account.
+   *
+   * Read only alongside `accountKeysFetched`. A successful
+   * {@link bootstrapCrossSigning} sets this true as a side effect, so it is
+   * also how a caller sees that its own bootstrap took effect.
+   */
+  identityKnown: boolean
+  /**
+   * Whether this device holds the account's complete private signing keys,
+   * and can therefore sign with the identity rather than only recognise
+   * it.
+   *
+   * **True does not mean the server agrees.** Until `accountKeysFetched` is
+   * also true, these keys may belong to an identity the account has since
+   * replaced: a restored backup holds a complete set that is simply out of
+   * date. So this field is only trustworthy alongside that one.
+   */
+  privateKeysHeld: boolean
+}
+
+/**
+ * What this library will say about this account's signing identity right
+ * now. Reads only: it asks the server nothing and creates nothing.
+ *
+ * See {@link IdentityStatus} for why two of the three fields have to be
+ * read together, and {@link bootstrapCrossSigning} for the call that
+ * changes them.
+ */
+export async function getIdentityStatus(): Promise<IdentityStatus> {
+  try {
+    const status = await nativeIdentityStatus()
+    // Destructured, not returned directly. See encryptEvent above.
+    const { accountKeysFetched, identityKnown, privateKeysHeld } = status
+    return { accountKeysFetched, identityKnown, privateKeysHeld }
+  } catch (e) {
+    throw toCryptoError(e)
+  }
+}
+
+/**
+ * Publishes this account's cross-signing identity, creating one first if
+ * the account provably has none.
+ *
+ * This is the call the rest of M4 hangs off. Until an account has a signing
+ * identity of its own, a decrypted event can never report
+ * `senderVerification.state === 'verified'`, however many people compare
+ * however many strings: that value needs **our** user-signing key over the
+ * sender's master key, read back out of our own store. See
+ * {@link SenderVerification}.
+ *
+ * **Safe to call on every launch.** The first call in a process is normally
+ * refused once, with the key query that lifts the refusal already queued by
+ * the refusal itself; the call after that answer is served. Further calls in
+ * the same process republish the identity this device already holds rather
+ * than creating a second one.
+ *
+ * # Nothing here reaches the network
+ *
+ * This library performs no request, here or anywhere. On success, drain
+ * {@link takeOutgoingRequests} and send what it hands back **in the order it
+ * hands it back**, reporting each with {@link markRequestSent}. The order
+ * matters here more than anywhere else on this surface, because a signature
+ * may reference a key that is not published yet: device keys, then
+ * `'signing_keys_upload'`, then `'signature_upload'`.
+ *
+ * **Four of the batch's entries come from this call, and the batch is
+ * longer than four. Do not assert a length.** Observed after a served
+ * bootstrap on a fresh machine: `['keys_upload', 'signing_keys_upload',
+ * 'signature_upload', 'keys_upload', 'keys_query']`. The second
+ * `'keys_upload'` carries the same device keys under a different id and is
+ * harmless to send twice; the endpoint is idempotent.
+ *
+ * # The part your product has to write, and why this call cannot
+ *
+ * **The `'signing_keys_upload'` request needs user-interactive
+ * authentication.** Expect the first attempt to be refused with a `401`
+ * carrying a challenge, merge an `auth` object into `body`, and send the
+ * same body again. `body` is opaque JSON this library never interprets, so
+ * adding a field to it is an ordinary edit.
+ *
+ * **There is deliberately no `auth` parameter on this function, and there
+ * will not be one.** The challenge is only known *after* the first request
+ * is refused, so an argument here would have to be guessed before the
+ * server has said what it wants. This library has never touched an account
+ * credential and this is where that property would have gone if it were
+ * going to. The cost is real and is named rather than hidden: a product
+ * cannot complete this step without implementing an authentication flow
+ * this library gives it no help with.
+ *
+ * **The id survives any number of refused attempts.** {@link markRequestSent}
+ * removes an entry only on success, so loop on the `401` for as long as your
+ * user needs. What retires the id is calling this function again and
+ * draining again, because a second bootstrap re-derives the same three keys
+ * and supersedes the pending publication: the held id then reports
+ * `'unknown_request'`, and the recovery is to drain again and use the newer
+ * id for the identical body. If an authentication loop is in flight, do not
+ * call this again until it finishes. See {@link takeOutgoingRequests} for
+ * the general rule this is one case of.
+ *
+ * # Report only what a success returned
+ *
+ * **Never report a non-2xx body through {@link markRequestSent}, and that
+ * includes the `401` challenge.** Send it to {@link markRequestFailed}, or
+ * report nothing at all, and report the eventual success through
+ * `markRequestSent`. This matters more here than anywhere else on the
+ * surface, in two different ways. A failed `'keys_query'` reported as a
+ * success is read as "the server answered and this account has no identity",
+ * which is the one fact that authorises creating one over whatever the
+ * account already had. And the signing-keys upload's success response is
+ * `{}`, so a reported challenge would mark an identity published that never
+ * was.
+ *
+ * # Refusals
+ *
+ * `'account_keys_not_fetched'` means this process has not yet asked the
+ * server about this account, so it cannot know whether publishing would
+ * destroy an existing identity. **This call queues that key query before
+ * returning the refusal**, so the remedy is the ordinary loop: drain, send,
+ * report sent, call this again. Holding the private keys is not an
+ * exemption, because a store restored from a backup holds a complete
+ * identity the server may already have replaced.
+ *
+ * `'identity_already_exists'` means the answer named an identity this device
+ * does not hold the private keys for. There is no remedy through this call
+ * and there should not be: this device joins that identity, it does not
+ * replace it. Joining is a later release.
+ */
+export async function bootstrapCrossSigning(): Promise<void> {
+  try {
+    await nativeBootstrapIdentity()
   } catch (e) {
     throw toCryptoError(e)
   }

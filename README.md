@@ -110,6 +110,42 @@ full division.
 
 **Do not let a second drain overlap an unfinished one.** `takeOutgoingRequests` hands out three kinds that describe a standing need rather than one message, `keys_upload`, `keys_query` and `keys_claim`, and a later call that hands out a fresh request of one of those kinds retires the older id: `markRequestSent` then rejects it with `unknown_request`. That is deliberate, because the machine mints a new id for the same need each time and forgets the old one, but it means two pumps racing, or a pump on a timer alongside a pump after a write, will fail on ids you are legitimately holding. If you do see `unknown_request` for an id from an earlier batch, discard that response and pump again rather than retrying it; nothing is lost, because the need was re-derived rather than dropped. `takeOutgoingRequests`' own doc comment carries the full rule.
 
+## Creating this account's signing identity
+
+A signing identity is what lets one device vouch for another without a person comparing anything, and what lets a decrypted event say who sent it rather than only which key it arrived under. Without one, `senderVerification` can never read `verified`, however many strings your users compare.
+
+```ts
+import { bootstrapCrossSigning, getIdentityStatus } from 'react-native-matrix-crypto'
+
+try {
+  await bootstrapCrossSigning()
+} catch (e) {
+  // The first call in a process is normally refused with
+  // 'account_keys_not_fetched'. The key query that lifts it has already been
+  // queued by the refusal, so: pump, then call this again.
+  if (e.kind !== 'account_keys_not_fetched') throw e
+  await pump()
+  await bootstrapCrossSigning()
+}
+
+for (const request of await takeOutgoingRequests()) {
+  // In the order you were handed them: device keys, then signing_keys_upload,
+  // then signature_upload. A signature may reference a key that is not
+  // published yet.
+  const res = await send(request)
+  if (res.ok) await markRequestSent(request.id, await res.text())
+  else await markRequestFailed(request.id, res.status)
+}
+```
+
+**The `signing_keys_upload` request needs user-interactive authentication, and this library will not do it for you.** Expect its first send to come back `401` with a challenge. Read the challenge, ask your user, merge an `auth` object into `request.body`, which is opaque JSON this library never interprets, and send the same body again. The id survives any number of refused attempts, because only a success consumes it.
+
+**There is no `auth` parameter, and there will not be one.** The challenge is only known after the first request has been refused, so an argument on `bootstrapCrossSigning` would have to be guessed before the server had said what it wants. The cost is stated rather than hidden: you cannot complete this step without implementing an authentication flow this library gives you no help with. What you get for it is that this library has never touched an account credential.
+
+**Call it on every launch.** It republishes the identity this device already holds rather than creating a second one. What it will not do is create one over an identity the account already has: that would reset the trust of everyone who had verified the old one, and it is refused with `identity_already_exists` instead. If your device does not hold the private keys for an identity the account already has, this release has no way to join it; that is the next step of the same milestone.
+
+`getIdentityStatus` reports three separate facts, and two of them have to be read together: `identityKnown === false` means "nobody has asked" while `accountKeysFetched` is false, and "the server says there is none" once it is true. Only the second is a basis for creating one.
+
 ## Verifying a device
 
 Two people compare a seven-symbol string, read off their two screens, over a channel this library did not establish, in person or on a call they already trust. If it matches, each side records the other's device as verified. If it does not, the flow is cancelled and nothing is recorded. That refusal is the point: a comparison that can only ever agree proves nothing. A flow is named by an opaque id; hand it back verbatim and parse nothing out of it.
@@ -160,8 +196,9 @@ await receiveSyncChanges(encryptionSlice(sync))
 | Device verification by short string comparison (SAS) | working, in both flow shapes and whichever side opens the comparison, proven against a bare `matrix-sdk-crypto` machine driven directly: an agreement completing, and a genuine disagreement refusing |
 | A third-party client taking part in a verification | proven over a real homeserver, and it stops short of *completing* one for a reason in the counterparty, described in the roadmap |
 | Crypto signal channel (`onCryptoSignal`) | working for verification. `verification_requested` carries the `verificationId` that `acceptVerification` takes, and is the only way this library hands a receiving side that identifier; `trust_changed` says a comparison finished and a device belonging to that user moved, and `getDeviceStatuses` says which. `unexpected_device` and `key_missing` still have no producer: a missing key arrives as a rejected `decryptEvent` with kind `missing_key` |
-| `EventEnvelope.senderVerification` on a decrypted event | working, and it cannot read `verified` before cross-signing |
-| Sender authenticity, per event | **not provided.** It needs cross-signing, which is M4. Device verification has landed and does not give it |
+| Creating and publishing this account's cross-signing identity | working, through `bootstrapCrossSigning` and `getIdentityStatus`, with the user-interactive authentication loop left to your product because this library never sees a credential. Joining an identity the account already has, from a device that does not hold its private keys, is not in this release |
+| `EventEnvelope.senderVerification` on a decrypted event | working, and it reads `verified` once the whole chain has been driven, which it can be from TypeScript since this release |
+| Sender authenticity, per event | **provided at the end of a chain, not by a call.** Seven steps: hold a signing identity, publish it, have the sender publish and sign theirs, fetch their keys, complete a comparison, upload the signature it produces, and fetch their keys again. Omitting the last step is silent and leaves every event reading `unverified_identity` |
 | Device verification by QR code | **deferred**, see the roadmap |
 | Secret export and import | **not implemented**, see the roadmap |
 
@@ -213,7 +250,7 @@ QR verification is **deferred, not rejected**. It would add a dependency absent 
 
 Next, in order:
 
-* **cross-signing**, which is what turns a verified device into a verified *sender*, and the item that turns `sender` from transport metadata into a claim you can rely on
+* the rest of **cross-signing**. Creating and publishing this account's identity has landed, which is what makes a verified *sender* reachable at all; what is still missing is joining an identity the account already has from a new login, and server-side storage of the private keys that would make that possible without a second device
 * device verification by QR code, alongside the string comparison that has landed
 * secret export and import, for recovery
 * multi participant scenarios and federation neutral test coverage

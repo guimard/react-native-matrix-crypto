@@ -105,6 +105,24 @@ export type CryptoErrorKind =
   // flow currently holds. See that function's own doc comment: the argument
   // exists so a product cannot confirm a comparison it never showed.
   | 'material_mismatch'
+  // ---- the signing identity ----------------------------------------------
+  // Both cross the FFI boundary, and both are `bootstrapCrossSigning`
+  // refusing rather than failing. They are kept apart because their remedies
+  // are opposite: one is a round of the ordinary pump loop, the other is a
+  // thing this release cannot do at all.
+  //
+  // This process has not yet asked the server what identity this account
+  // has, so it cannot know whether publishing would destroy one. The call
+  // queues that key query as it refuses, so the remedy is drain, send,
+  // report sent, call again. Deliberately absent from RETRIABLE below, for
+  // 'material_not_ready''s reason: calling again without pumping in between
+  // returns this forever.
+  | 'account_keys_not_fetched'
+  // The account has a signing identity whose private keys this device does
+  // not hold. There is no remedy through that call and there should not be:
+  // this device joins that identity, it does not replace it, and replacing
+  // it would reset the trust of everyone who had verified the old one.
+  | 'identity_already_exists'
   | 'not_implemented'
   | 'not_initialised'
   | 'already_initialised'
@@ -237,6 +255,16 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   ['ComparisonAlreadyStarted', 'comparison_already_started'],
   ['VerificationEnded', 'verification_ended'],
   ['MaterialMismatch', 'material_mismatch'],
+  // The two `MachineFfiError` variants the signing identity added. They were
+  // declared on the Rust side one task before anything returned them, so
+  // until `bootstrapCrossSigning` was bridged there was no way to notice
+  // they were missing here -- and the symptom would have been the one this
+  // map exists to prevent: both refusals arriving as kind 'unknown' with the
+  // message "crypto error: unknown", indistinguishable from each other and
+  // from every unmapped failure, on the one call whose two refusals need
+  // opposite things done about them.
+  ['AccountKeysNotFetched', 'account_keys_not_fetched'],
+  ['IdentityAlreadyExists', 'identity_already_exists'],
 ])
 
 // 'session_refused' is deliberately not here: see its own doc comment on
