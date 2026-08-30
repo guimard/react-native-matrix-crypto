@@ -104,11 +104,20 @@ pub fn subscribe() {
     set_crypto_observer(Arc::new(Recorder { tx }));
 }
 
-/// Every signal delivered so far, having waited for at least one.
+/// Every signal one announcement pass delivered, having waited for the pass
+/// to fall quiet.
 ///
 /// Delivery is detached, so a `try_recv` sweep alone would race the producer
 /// and report an empty channel on a machine that had announced perfectly
-/// well.
+/// well. **The tail waits too, and that is not symmetry for its own sake.**
+/// What callers do with this value is compare it as a whole vector, so a
+/// second signal from the same pass arriving a moment after the first would
+/// be missed and the comparison would pass with one element where two were
+/// produced -- a check reporting success without having examined its target,
+/// which is the failure this repository keeps finding. The first arrival
+/// gets the long bound because nothing may have happened yet; everything
+/// after it gets the short one, because the pass that produced the first is
+/// already running.
 pub fn drain_signals(expected: &str) -> Vec<CryptoSignal> {
     let held = SIGNALS
         .lock()
@@ -117,7 +126,7 @@ pub fn drain_signals(expected: &str) -> Vec<CryptoSignal> {
     let mut signals = vec![received
         .recv_timeout(DELIVERY_BOUND)
         .unwrap_or_else(|e| panic!("{expected}: nothing reached the signal channel ({e})"))];
-    while let Ok(signal) = received.try_recv() {
+    while let Ok(signal) = received.recv_timeout(QUIET_BOUND) {
         signals.push(signal);
     }
     signals
