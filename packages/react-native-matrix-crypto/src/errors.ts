@@ -111,12 +111,23 @@ export type CryptoErrorKind =
   // are opposite: one is a round of the ordinary pump loop, the other is a
   // thing this release cannot do at all.
   //
-  // This process has not yet asked the server what identity this account
-  // has, so it cannot know whether publishing would destroy one. The call
-  // queues that key query as it refuses, so the remedy is drain, send,
-  // report sent, call again. Deliberately absent from RETRIABLE below, for
+  // This library cannot yet say what identity this account has, so it cannot
+  // know whether publishing would destroy one. The call queues a key query
+  // as it refuses, so the usual remedy is drain, send, report sent, call
+  // again. Deliberately absent from RETRIABLE below, for
   // 'material_not_ready''s reason: calling again without pumping in between
   // returns this forever.
+  //
+  // **That remedy has a case where it never terminates, and
+  // `getIdentityStatus` is what says so.** This kind covers two situations:
+  // nobody has asked, and the query was asked and answered by a server whose
+  // answer settled nothing. The second is what a homeserver sends for a user
+  // it does not know, which the Matrix specification prescribes, and what a
+  // real Synapse sends when the server-name half of the account id differs
+  // in case from its own. Read `accountKeysAnswerUnsettled`: false means
+  // pump and call again, true means stop pumping and check the account id
+  // against the canonical `user_id` your login returned. Nothing is
+  // destroyed while it is true.
   | 'account_keys_not_fetched'
   // The account has a signing identity whose private keys this device does
   // not hold. There is no remedy through that call and there should not be:

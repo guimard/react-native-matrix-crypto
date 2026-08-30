@@ -38,13 +38,21 @@
 //!
 //! The gate here is two different facts, and both are needed:
 //!
-//! 1. **Have we asked?** Has a `/keys/query` naming this account been sent
-//!    and answered in this process. Tracked by `session.rs`, which is the
-//!    only place that can know it, and recorded when the *response* is
-//!    accepted rather than when the request is handed out.
+//! 1. **Have we asked, and does upstream now know?** Has a `/keys/query`
+//!    naming this account been sent and answered in this process, and did
+//!    the answer leave upstream's store able to say whether the account has
+//!    an identity. Tracked by `session.rs`, which is the only place that can
+//!    know it, and recorded when the *response* is accepted rather than when
+//!    the request is handed out.
 //! 2. **What did the answer say?** Does this machine now hold a public
 //!    identity for the account. Read from the store, where the answer to (1)
 //!    put it.
+//!
+//! Fact (1) used to stop at "and was answered", then at "and the answer
+//! named this account", and both were defeated by answers upstream had
+//! dropped. It is the same store read in both facts now, asked at two
+//! different moments and for two different reasons, which is why they are
+//! still two facts and not one.
 //!
 //! Nothing is served before (1), **including a republication by a device
 //! that holds the private keys**, because that is exactly the restored-backup
@@ -71,14 +79,33 @@
 //! arrived with.
 //!
 //! **Accepted is no longer the same as lifting this gate**, and that is the
-//! narrower thing to know. `session::answer_speaks_about` additionally
-//! requires the accepted body to **name this account** in one of the maps a
-//! key query answer keys by user id. So an answer about other users, a body
-//! whose only substance is a `failures` map, and the empty object all pass
-//! `mark_request_sent` and leave this gate shut. Three homeservers were
-//! measured to settle that the empty object belongs on that list: none of
-//! them answers a key query about a local account with `{}`, however little
-//! it has to report about that account.
+//! narrower thing to know. `session::answer_about_this_account` additionally
+//! requires that, once upstream has consumed the accepted body, upstream's
+//! own store **says whether this account has an identity**. Either the
+//! answer asserted a cross-signing key for the account and upstream now
+//! holds the identity it asserted, or the answer asserted none and named the
+//! account under `device_keys`. So an answer about other users, a body whose
+//! only substance is a `failures` map, the empty object, and an answer
+//! carrying this account's own published master key that upstream could not
+//! assemble into an identity all pass `mark_request_sent` and leave this
+//! gate shut.
+//!
+//! That last one is why the rule reads upstream rather than the body.
+//! Upstream needs a master key **and** a self-signing key to store an
+//! identity, and a user-signing key too when the user is our own; anything
+//! short of that it drops with a `warn!` and no error. Measured against a
+//! live Synapse 1.159.0: an account that had published a master key alone
+//! answered its own key query with a body carrying that key, a rule that
+//! read the body's map keys lifted this gate, and the bootstrap minted a
+//! second identity over the published one. Flipping one character of one
+//! base64 signature in an otherwise correct answer did the same.
+//!
+//! Fact (1) can also be **unsettled**: the answer arrived, was accepted, and
+//! left upstream still not knowing. `IdentityStatus`'s
+//! `account_keys_answer_unsettled` is what says so, and its own doc comment
+//! says what a product does about it. Without it the refusal below is
+//! indistinguishable from "nobody has asked", whose remedy is to ask again,
+//! which against a server that omits the account is a loop with no end.
 //!
 //! Reporting nothing at all is equally safe here: the gate needs a positive
 //! mark to open, so silence leaves it shut. A caller that got a non-2xx
@@ -195,6 +222,37 @@ pub struct IdentityStatus {
     /// contradicts them (`identities/manager.rs:418-443`), so this field is
     /// only trustworthy alongside that one.
     pub private_keys_held: bool,
+    /// Whether a key query about this account was answered, and the answer
+    /// left the library still unable to say whether the account has an
+    /// identity.
+    ///
+    /// **Read this when `account_keys_fetched` is false, and only then.**
+    /// The two together say which of two situations a refusal is in, and
+    /// they have different remedies:
+    ///
+    /// * Both false: nobody has asked yet. The remedy is the documented one
+    ///   -- drain `crate::take_outgoing_requests`, send what it hands back,
+    ///   report each with `crate::mark_request_sent`, call again.
+    /// * This true: a key query naming this account was sent, the server
+    ///   answered, the answer was accepted, and upstream still does not know
+    ///   whether the account has an identity. **Asking again will do the
+    ///   same thing.** Either the answer did not cover this account -- which
+    ///   the Matrix specification prescribes for a user a reachable server
+    ///   does not know, and which a mixed-case server name in this machine's
+    ///   own account id also produces, because a homeserver then treats the
+    ///   account as remote -- or it asserted cross-signing keys for the
+    ///   account that upstream could not read.
+    ///
+    /// So the action on this field is to stop looping and look at the
+    /// account id: compare the `user_id` this machine was created with
+    /// against the canonical one `/login` returned. Nothing is destroyed
+    /// while this is true, and nothing will be: a refusal to mint is the
+    /// safe direction, and this field is what stops the refusal from being
+    /// silent.
+    ///
+    /// Never true alongside `account_keys_fetched`. Once upstream knows, a
+    /// later answer that settles nothing does not un-know it.
+    pub account_keys_answer_unsettled: bool,
 }
 
 /// Errors must not carry an identifier or key material, so an upstream store
@@ -222,6 +280,7 @@ pub(crate) async fn read_status(machine: &OlmMachine) -> Result<IdentityStatus, 
         account_keys_fetched: crate::session::account_keys_answered(),
         identity_known,
         private_keys_held: machine.cross_signing_status().await.is_complete(),
+        account_keys_answer_unsettled: crate::session::account_keys_answer_unsettled(),
     })
 }
 
@@ -364,12 +423,25 @@ pub async fn identity_status() -> Result<IdentityStatus, MachineError> {
 ///
 /// # Refusals
 ///
-/// [`MachineError::AccountKeysNotFetched`] means this process has not yet
-/// asked the server about this account, so it cannot know whether minting
-/// or republishing would destroy an existing identity. **This call queues
-/// that key query before returning it**, so the remedy is the ordinary
-/// loop: drain the pump, send, report sent, call this again. Holding the
-/// private keys is not an exemption; `may_mint` says why.
+/// [`MachineError::AccountKeysNotFetched`] means this process cannot yet say
+/// what identity this account has, so it cannot know whether minting or
+/// republishing would destroy an existing one. **This call queues that key
+/// query before returning it**, so the usual remedy is the ordinary loop:
+/// drain the pump, send, report sent, call this again. Holding the private
+/// keys is not an exemption; `may_mint` says why.
+///
+/// **That loop has a case where it never terminates, and this variant alone
+/// does not say which case you are in.** Read
+/// [`IdentityStatus::account_keys_answer_unsettled`]: false means nobody has
+/// asked and the loop works; true means a query was sent, the server
+/// answered, and the answer settled nothing, so the next round will do
+/// exactly what the last one did. That field's own doc comment says what to
+/// do instead, and `tests/identity_bootstrap_unsettled_answer.rs` drives
+/// five rounds of the loop to show it. Splitting the two into separate
+/// variants would be the better surface; it is not done here because the
+/// wire ordinals after `MachineError`'s last variant are reserved by work in
+/// flight, and a variant appended into that range would be misdecoded by
+/// bindings generated before it.
 ///
 /// [`MachineError::IdentityAlreadyExists`] means the answer named an
 /// identity this device does not hold the private keys for. There is no
@@ -440,25 +512,33 @@ mod tests {
     /// covers what those cannot reach cheaply: that **holding the private
     /// keys overrides neither refusal**, so a device whose store predates an
     /// identity reset elsewhere is still made to ask before it republishes;
-    /// and that no combination of the three flags produces a fourth outcome.
+    /// that no combination of the flags produces a fourth outcome; and that
+    /// `account_keys_answer_unsettled` **decides nothing**. That last one is
+    /// the point of running the fourth flag through the loop rather than
+    /// leaving it out: it is a diagnosis for a caller, not a second gate,
+    /// and a rule that let it serve a mint would be the whole defect back
+    /// again under a new name.
     #[test]
     fn minting_is_served_only_when_the_account_provably_has_no_identity() {
         for account_keys_fetched in [false, true] {
             for identity_known in [false, true] {
                 for private_keys_held in [false, true] {
-                    let status = IdentityStatus {
-                        account_keys_fetched,
-                        identity_known,
-                        private_keys_held,
-                    };
-                    let expected = if !account_keys_fetched {
-                        Err(MachineError::AccountKeysNotFetched)
-                    } else if identity_known && !private_keys_held {
-                        Err(MachineError::IdentityAlreadyExists)
-                    } else {
-                        Ok(())
-                    };
-                    assert_eq!(may_mint(&status), expected, "for {status:?}");
+                    for account_keys_answer_unsettled in [false, true] {
+                        let status = IdentityStatus {
+                            account_keys_fetched,
+                            identity_known,
+                            private_keys_held,
+                            account_keys_answer_unsettled,
+                        };
+                        let expected = if !account_keys_fetched {
+                            Err(MachineError::AccountKeysNotFetched)
+                        } else if identity_known && !private_keys_held {
+                            Err(MachineError::IdentityAlreadyExists)
+                        } else {
+                            Ok(())
+                        };
+                        assert_eq!(may_mint(&status), expected, "for {status:?}");
+                    }
                 }
             }
         }
@@ -473,6 +553,22 @@ mod tests {
                 account_keys_fetched: false,
                 identity_known: false,
                 private_keys_held: false,
+                account_keys_answer_unsettled: false,
+            }),
+            Err(MachineError::AccountKeysNotFetched)
+        );
+
+        // Asked, answered, and the answer settled nothing: the row a server
+        // that omits a user it does not know produces, and the one a
+        // mixed-case server name in this machine's own account id produces
+        // against a real Synapse. The refusal is the same and must be: the
+        // field says which situation it is, and authorises nothing.
+        assert_eq!(
+            may_mint(&IdentityStatus {
+                account_keys_fetched: false,
+                identity_known: false,
+                private_keys_held: false,
+                account_keys_answer_unsettled: true,
             }),
             Err(MachineError::AccountKeysNotFetched)
         );
@@ -486,6 +582,7 @@ mod tests {
                 account_keys_fetched: false,
                 identity_known: false,
                 private_keys_held: true,
+                account_keys_answer_unsettled: false,
             }),
             Err(MachineError::AccountKeysNotFetched)
         );

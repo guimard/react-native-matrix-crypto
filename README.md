@@ -139,6 +139,11 @@ try {
   // queued by the refusal, so: pump, then call this again.
   if (e.kind !== 'account_keys_not_fetched') throw e
   await pump()
+  const { accountKeysAnswerUnsettled } = await getIdentityStatus()
+  // The server answered and the answer settled nothing, so calling again
+  // does exactly this again. Check the user id you passed to initCrypto
+  // against the canonical user_id your login returned. See below.
+  if (accountKeysAnswerUnsettled) throw new Error('the homeserver said nothing about this account')
   await bootstrapCrossSigning()
 }
 
@@ -223,7 +228,13 @@ for (const request of await takeOutgoingRequests()) {
 
 **Call it on every launch.** It republishes the identity this device already holds rather than creating a second one. What it will not do is create one over an identity the account already has: that would reset the trust of everyone who had verified the old one, and it is refused with `identity_already_exists` instead. That refusal is where a second login belongs, and the next section is what it does instead.
 
-`getIdentityStatus` reports three separate facts, and two of them have to be read together: `identityKnown === false` means "nobody has asked" while `accountKeysFetched` is false, and "the server says there is none" once it is true. Only the second is a basis for creating one.
+`getIdentityStatus` reports four separate facts, and two of them have to be read together: `identityKnown === false` means "nobody has asked" while `accountKeysFetched` is false, and "the server says there is none" once it is true. Only the second is a basis for creating one.
+
+**`accountKeysAnswerUnsettled` is the field to read when a refusal will not go away.** `account_keys_not_fetched` covers two situations, and the pump loop above only fixes one of them. With this field false, nobody has asked and pumping is the whole remedy. With it true, the query was sent, the server answered, the answer was accepted, and this library still cannot say whether the account has an identity, so the next round of the loop does what the last one did.
+
+The reachable cause is the account id. A homeserver compares the server name half of a user id against its own case-sensitively, so `@you:Example.org` where the server calls itself `example.org` is treated as a remote account: the server federates to itself, fails, and answers about nobody. A sign-in form where the user types their own address produces exactly that. Compare the `userId` you passed to `initCrypto` against the canonical `user_id` your `/login` returned. The Matrix specification also prescribes omitting a user a reachable server does not know, so a conformant server can answer this way about an account that genuinely does not exist.
+
+Nothing is destroyed while this field is true and nothing will be. Refusing to create a second identity is the safe direction; this field is what stops the refusal from also being silent.
 
 ## Joining an identity from a second device
 
@@ -249,7 +260,7 @@ const id = await requestSelfVerification()
 
 **After the join, `bootstrapCrossSigning` stops being refused and starts being served.** This device now holds the account's private keys, so it republishes the identity it holds rather than creating a second one, which is correct and is what "call it on every launch" is for. What it also means is that the batch carries a `signing_keys_upload` again, and you still send it through the loop above. It will normally be accepted without a challenge, because the keys in it are the ones the account already has and neither continuwuity nor Synapse challenges an upload that changes nothing: Synapse short-circuits an identical re-upload to `200` before it considers authentication at all. Do not treat that as the request having been skipped, and do not assume the challenge either. Send it and handle both answers.
 
-Two refusals, and they want opposite things done about them. `account_keys_not_fetched` means nobody has asked the server about this account yet, and this call queues that key query as it refuses: drain the pump, send, report sent, and call again. `identity_not_known` means the server answered and this account has no identity at all, so there is nothing to join and `bootstrapCrossSigning` is the call you want.
+Two refusals, and they want opposite things done about them. `account_keys_not_fetched` means this library cannot yet say what identity this account has, and this call queues that key query as it refuses: drain the pump, send, report sent, and call again, checking `accountKeysAnswerUnsettled` as above before you loop. `identity_not_known` means the server answered and this account has no identity at all, so there is nothing to join and `bootstrapCrossSigning` is the call you want.
 
 ## Verifying a device
 

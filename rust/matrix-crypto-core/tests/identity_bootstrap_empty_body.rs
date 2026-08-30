@@ -28,9 +28,10 @@
 //! local user that does not exist on the server. So the case this file was
 //! protecting is not a case any measured homeserver produces, while the
 //! bytes it was accepting are exactly the bytes a 503 that carried no body
-//! arrives as. `session::answer_speaks_about` now requires an answer that
-//! names this account, and this file pins both halves of what that means
-//! here.
+//! arrives as. `session::answer_about_this_account` now requires that, once
+//! upstream has consumed the answer, upstream's own store says whether this
+//! account has an identity; the empty object leaves it saying nothing at
+//! all. This file pins both halves of what that means here.
 //!
 //! **Acceptance is unchanged, and that separation is deliberate.** `""` is
 //! still a well-formed thing to report: `mark_request_sent` returns `Ok`,
@@ -131,7 +132,7 @@ fn a_completely_empty_body_does_not_answer_the_account_key_query() {
                 .await
                 .expect("reading the identity status must not fail")
                 .account_keys_fetched,
-            "an answer that names this account must lift the gate"
+            "an answer upstream could read must lift the gate"
         );
         bootstrap_identity()
             .await

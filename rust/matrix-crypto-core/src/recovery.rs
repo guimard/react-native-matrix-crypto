@@ -837,7 +837,7 @@ mod tests {
     /// `"failures":{}` and the three empty cross-signing maps beside it. The
     /// account is **named**, which the `{"device_keys":{}}` this constant used to
     /// hold was not, and which no measured homeserver omits. A body that names
-    /// nobody is silent about this account, and `session::answer_speaks_about`
+    /// nobody is silent about this account, and `session::answer_about_this_account`
     /// has why silence does not lift the gate.
     const NO_IDENTITY: &str = r#"{"device_keys":{"@alice:example.org":{}}}"#;
 

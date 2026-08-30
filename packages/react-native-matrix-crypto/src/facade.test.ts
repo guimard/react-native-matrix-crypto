@@ -194,6 +194,7 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
       accountKeysFetched: false,
       identityKnown: false,
       privateKeysHeld: false,
+      accountKeysAnswerUnsettled: false,
     })),
     bootstrapIdentity: vi.fn(async () => {
       throw new actual.MachineFfiError.AccountKeysNotFetched()
@@ -1103,6 +1104,7 @@ beforeEach(() => {
     accountKeysFetched: false,
     identityKnown: false,
     privateKeysHeld: false,
+    accountKeysAnswerUnsettled: false,
   })
   vi.mocked(nativeBootstrapIdentity).mockReset()
   vi.mocked(nativeBootstrapIdentity).mockImplementation(async () => {
@@ -1828,6 +1830,13 @@ describe('the signing identity chain, driven through the public surface', () => 
       accountKeysFetched: chain.accountKeysFetched,
       identityKnown,
       privateKeysHeld,
+      // The chain fake models a homeserver that answers about this
+      // account, which is the case every other step here is about, so an
+      // answer never settles nothing. The field's own case is driven
+      // against the real core in
+      // `rust/matrix-crypto-core/tests/identity_bootstrap_unsettled_answer.rs`;
+      // what is checked on this side is that it crosses at all, below.
+      accountKeysAnswerUnsettled: false,
     }))
 
     vi.mocked(nativeBootstrapIdentity).mockImplementation(async () => {
@@ -2056,6 +2065,7 @@ describe('the signing identity chain, driven through the public surface', () => 
       accountKeysFetched: false,
       identityKnown: false,
       privateKeysHeld: false,
+      accountKeysAnswerUnsettled: false,
     })
 
     // Refused, and refused as its own kind rather than as 'unknown'. Both
@@ -2075,6 +2085,7 @@ describe('the signing identity chain, driven through the public surface', () => 
       accountKeysFetched: true,
       identityKnown: true,
       privateKeysHeld: true,
+      accountKeysAnswerUnsettled: false,
     })
 
     // The batch is longer than the four requests the bootstrap owns, and
@@ -2253,6 +2264,7 @@ describe('the signing identity chain, driven through the public surface', () => 
       accountKeysFetched: true,
       identityKnown: true,
       privateKeysHeld: false,
+      accountKeysAnswerUnsettled: false,
     })
 
     await expect(bootstrapCrossSigning()).rejects.toSatisfy(
@@ -2333,6 +2345,7 @@ describe('the signing identity chain, driven through the public surface', () => 
       accountKeysFetched: true,
       identityKnown: true,
       privateKeysHeld: false,
+      accountKeysAnswerUnsettled: false,
     })
 
     // ---- Joining -------------------------------------------------------
@@ -2375,6 +2388,7 @@ describe('the signing identity chain, driven through the public surface', () => 
       // The whole point: this device can now sign with the account's
       // identity rather than only recognise it.
       privateKeysHeld: true,
+      accountKeysAnswerUnsettled: false,
     })
 
     // And it was told, rather than having to ask on a timer. Announced for
@@ -2382,6 +2396,39 @@ describe('the signing identity chain, driven through the public surface', () => 
     expect(seen).toEqual([{ kind: 'trust_changed', user: OUR_USER, state: 'verified' }])
 
     unsubscribe()
+  })
+})
+
+/**
+ * The one status field a product reads only when something has gone wrong.
+ *
+ * `getIdentityStatus` destructures the native record field by field, so a
+ * field the facade forgets to name is silently dropped and every other
+ * assertion in this file still passes. That matters more for this one than
+ * for the other three, because it is the field that exists to be read when a
+ * refusal will not go away: dropped, a product is back in a
+ * drain-send-report loop that cannot terminate and is told nothing about it.
+ *
+ * The behaviour it reports is driven against the real core in
+ * `rust/matrix-crypto-core/tests/identity_bootstrap_unsettled_answer.rs`,
+ * five rounds of that loop against two bodies a real homeserver sends. What
+ * is checked here is the other half: that the value crosses this boundary.
+ */
+describe('an answer that settled nothing crosses the facade', () => {
+  it('reports the unsettled answer alongside the shut gate, not instead of it', async () => {
+    vi.mocked(nativeIdentityStatus).mockResolvedValue({
+      accountKeysFetched: false,
+      identityKnown: false,
+      privateKeysHeld: false,
+      accountKeysAnswerUnsettled: true,
+    })
+
+    expect(await getIdentityStatus()).toEqual({
+      accountKeysFetched: false,
+      identityKnown: false,
+      privateKeysHeld: false,
+      accountKeysAnswerUnsettled: true,
+    })
   })
 })
 
@@ -2426,6 +2473,7 @@ describe('the mock defaults survive every describe above', () => {
       accountKeysFetched: false,
       identityKnown: false,
       privateKeysHeld: false,
+      accountKeysAnswerUnsettled: false,
     })
     await expect(bootstrapCrossSigning()).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'account_keys_not_fetched',

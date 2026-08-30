@@ -1041,7 +1041,7 @@ pub async fn mark_request_failed(id: String, status: u16) -> Result<(), SessionF
 /// was.
 ///
 /// `Debug` is derived, unlike `Envelope` and `CryptoMachineConfig` above:
-/// three booleans about this account's own publication state carry no
+/// four booleans about this account's own publication state carry no
 /// identifier and no key material, so there is nothing here the global
 /// no-secret rule forbids from a `{:?}`.
 ///
@@ -1049,35 +1049,50 @@ pub async fn mark_request_failed(id: String, status: u16) -> Result<(), SessionF
 /// particular why the pair that looks redundant is the pair that matters;
 /// this mirror deliberately repeats none of it, so the two cannot drift
 /// into saying different things.
+///
+/// `account_keys_answer_unsettled` is **appended**, after the three this
+/// record shipped with, and the reason is the same wire-ordinal reason the
+/// error enums above state at length: UniFFI lays a record's fields out in
+/// declaration order, so inserting one shifts every field after it and a
+/// binding generated before the insert reads the wrong value out of each.
+/// Appending costs a stale binding one field it does not know about, which
+/// is the failure mode that fails cleanly.
 #[derive(Debug, Clone, Copy, uniffi::Record)]
 pub struct IdentityStatus {
     pub account_keys_fetched: bool,
     pub identity_known: bool,
     pub private_keys_held: bool,
+    pub account_keys_answer_unsettled: bool,
 }
 
-/// Three `bool` fields, so every wrong pairing compiles, passes
+/// Four `bool` fields, so every wrong pairing compiles, passes
 /// `clippy -D warnings` and passes every other test in this repository --
 /// `SasMaterial`'s hazard with a smaller alphabet, and a worse consequence
 /// than a mismatched short string: `account_keys_fetched` and
 /// `identity_known` swapped is the exact pair whose meaning the core's own
 /// doc comment exists to keep apart, and reporting them the wrong way round
 /// tells a product it may mint an identity when the truth is that nobody
-/// has asked. Public and stateless, so `tests/value_mapping.rs` can pin it.
+/// has asked. The fourth widens the alphabet again rather than being
+/// harmless: swapped with `account_keys_fetched` it says the gate is open
+/// when what happened is that an answer settled nothing. Public and
+/// stateless, so `tests/value_mapping.rs` can pin it.
 impl From<matrix_crypto_core::IdentityStatus> for IdentityStatus {
     fn from(value: matrix_crypto_core::IdentityStatus) -> Self {
         // Destructured, not field-accessed: a field added to the core
         // record later must fail this build rather than being silently
-        // dropped. See Global Constraints.
+        // dropped. See Global Constraints. It did: this field was added to
+        // the core first and this build is where it was caught.
         let matrix_crypto_core::IdentityStatus {
             account_keys_fetched,
             identity_known,
             private_keys_held,
+            account_keys_answer_unsettled,
         } = value;
         Self {
             account_keys_fetched,
             identity_known,
             private_keys_held,
+            account_keys_answer_unsettled,
         }
     }
 }
