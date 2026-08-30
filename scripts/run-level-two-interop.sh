@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Runs all three level 2 interoperability proofs (design doc section 8)
+# Runs all four level 2 interoperability proofs (design doc section 8)
 # against a Matrix homeserver this script starts, provisions, and destroys.
 #
 #   * `level_two_interop` -- a third-party client decrypts what this library
@@ -93,10 +93,17 @@ set -euo pipefail
 #
 # POINTING IT AT A REAL HOMESERVER INSTEAD
 #
-# Set MATRIX_INTEROP_HOMESERVER, MATRIX_INTEROP_USER and
-# MATRIX_INTEROP_PASSWORD and no container is started: the test runs against
-# what they name, exactly as it did before this script existed. That path is
-# unchanged and still supported; it is simply no longer the only one.
+# Set MATRIX_INTEROP_HOMESERVER, MATRIX_INTEROP_USER,
+# MATRIX_INTEROP_PASSWORD and MATRIX_INTEROP_CHALLENGE_USER and no container
+# is started: the tests run against what they name, exactly as they did before
+# this script existed. That path is unchanged and still supported; it is
+# simply no longer the only one.
+#
+# The fourth variable names a SECOND account, sharing the one password, that
+# has never published a cross-signing identity. `level_two_identity_challenge`
+# needs it and says why in its own header. It is required rather than
+# optional: a proof this script would otherwise decline to run is the failure
+# this milestone keeps finding.
 
 # --- what a run is made of -------------------------------------------------
 
@@ -123,6 +130,14 @@ CONTINUWUITY_IMAGE=${CONTINUWUITY_IMAGE:-forgejo.ellis.link/continuwuation/conti
 # confused with anybody's real deployment.
 SERVER_NAME=localhost
 LOCALPART=interop
+
+# A second account, for `level_two_identity_challenge` alone. It needs one to
+# itself and the reason is structural: it has to begin on an account holding no
+# cross-signing identity, and `level_two_identity` leaves the shared account
+# holding one. An account's identity cannot be deleted afterwards, so sharing
+# would make the two proofs order-dependent in a way no reader of either could
+# see. Same generated password, so a run still has exactly one secret in it.
+LOCALPART_CHALLENGE=interop-challenge
 
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 REQUIREMENTS="$REPO_ROOT/rust/matrix-crypto-core/tests/interop/requirements.txt"
@@ -205,6 +220,16 @@ if [ -n "${MATRIX_INTEROP_HOMESERVER:-}" ]; then
     || fail "MATRIX_INTEROP_HOMESERVER is set but MATRIX_INTEROP_PASSWORD is not.
       Set all three of HOMESERVER, USER and PASSWORD to run against a real
       homeserver, or none of them to run against a throwaway container."
+  [ -n "${MATRIX_INTEROP_CHALLENGE_USER:-}" ] \
+    || fail "MATRIX_INTEROP_HOMESERVER is set but MATRIX_INTEROP_CHALLENGE_USER is not.
+      level_two_identity_challenge needs a SECOND account, sharing the password
+      in MATRIX_INTEROP_PASSWORD, and it must be one that has never published a
+      cross-signing identity: it starts by asserting the account has none. The
+      other proofs' account is not usable, because level_two_identity leaves it
+      holding one and an identity cannot be deleted afterwards.
+      Refusing to run rather than skipping that proof, because a proof this
+      script quietly declines to run is the failure this milestone keeps
+      finding."
   echo "Using the homeserver named by MATRIX_INTEROP_HOMESERVER; starting no container."
 else
   command -v docker >/dev/null 2>&1 \
@@ -309,7 +334,8 @@ EOF
     -e CONDUWUIT_ALLOW_REGISTRATION=false \
     -e CONDUWUIT_ALLOW_CHECK_FOR_UPDATES=false \
     "$CONTINUWUITY_IMAGE" \
-    --execute "users create-user $LOCALPART $PASSWORD" >/dev/null \
+    --execute "users create-user $LOCALPART $PASSWORD" \
+    --execute "users create-user $LOCALPART_CHALLENGE $PASSWORD" >/dev/null \
     || fail "the homeserver container could not be started."
 
   HOST_PORT=$(docker port "$CONTAINER" 8008/tcp 2>/dev/null | head -1 | sed 's/.*://')
@@ -318,6 +344,7 @@ EOF
 
   export MATRIX_INTEROP_HOMESERVER="http://127.0.0.1:$HOST_PORT"
   export MATRIX_INTEROP_USER="@$LOCALPART:$SERVER_NAME"
+  export MATRIX_INTEROP_CHALLENGE_USER="@$LOCALPART_CHALLENGE:$SERVER_NAME"
   export MATRIX_INTEROP_PASSWORD="$PASSWORD"
 
   echo "Homeserver: $MATRIX_INTEROP_HOMESERVER (container $CONTAINER)"
@@ -328,50 +355,57 @@ EOF
   # exists. Requiring a real login here means a provisioning failure is
   # reported as itself, rather than surfacing several minutes later as an
   # unexplained test failure.
-  DEADLINE=$(( $(date +%s) + HOMESERVER_TIMEOUT_SECONDS ))
-  READY=""
-  while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-    if ! docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null | grep -q true; then
-      RUN_FAILED=1
-      fail "the homeserver container exited before it was ready."
-    fi
-    LOGIN=$(curl -s -m 5 -X POST \
-      -H 'Content-Type: application/json' \
-      --data-binary @- \
-      "$MATRIX_INTEROP_HOMESERVER/_matrix/client/v3/login" <<JSON || true
+  # Both accounts, because `--execute` runs them one after another and the
+  # second can fail on its own. Checking only the first would leave a missing
+  # challenge account to surface several minutes later as a login failure
+  # inside a test.
+  wait_for_login() {
+    local who="$1"
+    local deadline=$(( $(date +%s) + HOMESERVER_TIMEOUT_SECONDS ))
+    local login token
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+      if ! docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null | grep -q true; then
+        RUN_FAILED=1
+        fail "the homeserver container exited before it was ready."
+      fi
+      login=$(curl -s -m 5 -X POST \
+        -H 'Content-Type: application/json' \
+        --data-binary @- \
+        "$MATRIX_INTEROP_HOMESERVER/_matrix/client/v3/login" <<JSON || true
 {"type":"m.login.password",
- "identifier":{"type":"m.id.user","user":"$MATRIX_INTEROP_USER"},
+ "identifier":{"type":"m.id.user","user":"$who"},
  "password":"$MATRIX_INTEROP_PASSWORD",
  "initial_device_display_name":"level-two-readiness-probe"}
 JSON
 )
-    # Matched on the field name rather than on any value: the token is a live
-    # credential for as long as the next two lines take, and must not be
-    # echoed, compared against a pattern that could print it, or kept.
-    if printf '%s' "$LOGIN" | grep -q '"access_token"'; then
-      READY=1
-      # Log the probe device straight out again. The library shares its room
-      # key with every device on the account, so a stray device left here
-      # would be one more withheld notice in the test's own batches for no
-      # reason.
-      TOKEN=$(printf '%s' "$LOGIN" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
-      curl -s -m 5 -o /dev/null -X POST \
-        -H "Authorization: Bearer $TOKEN" \
-        -H 'Content-Type: application/json' \
-        -d '{}' \
-        "$MATRIX_INTEROP_HOMESERVER/_matrix/client/v3/logout" || true
-      unset TOKEN
-      break
-    fi
-    sleep 2
-  done
-  if [ -z "$READY" ]; then
+      # Matched on the field name rather than on any value: the token is a live
+      # credential for as long as the next two lines take, and must not be
+      # echoed, compared against a pattern that could print it, or kept.
+      if printf '%s' "$login" | grep -q '"access_token"'; then
+        # Log the probe device straight out again. The library shares its room
+        # key with every device on the account, so a stray device left here
+        # would be one more withheld notice in the test's own batches for no
+        # reason.
+        token=$(printf '%s' "$login" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+        curl -s -m 5 -o /dev/null -X POST \
+          -H "Authorization: Bearer $token" \
+          -H 'Content-Type: application/json' \
+          -d '{}' \
+          "$MATRIX_INTEROP_HOMESERVER/_matrix/client/v3/logout" || true
+        unset token
+        return 0
+      fi
+      sleep 2
+    done
     RUN_FAILED=1
-    fail "the homeserver never accepted a login as $MATRIX_INTEROP_USER within
+    fail "the homeserver never accepted a login as $who within
       ${HOMESERVER_TIMEOUT_SECONDS}s. Either it did not finish starting, or the
       account this script told it to create was not created."
-  fi
-  echo "Homeserver ready, and the account it was told to create can log in."
+  }
+
+  wait_for_login "$MATRIX_INTEROP_USER"
+  wait_for_login "$MATRIX_INTEROP_CHALLENGE_USER"
+  echo "Homeserver ready, and both accounts it was told to create can log in."
 
   # Continuwuity does not reject a configuration key it does not recognise. It
   # logs `Config parameter "x" is unknown to conduwuit, ignoring.` and starts
@@ -430,22 +464,29 @@ PY
 
 # --- 3. the tests ----------------------------------------------------------
 #
-# THREE proofs, one homeserver. `level_two_interop` asks whether a third-party
+# FOUR proofs, one homeserver. `level_two_interop` asks whether a third-party
 # client decrypts what this library encrypts; `level_two_verification` asks
 # whether one will complete a device verification with it; `level_two_identity`
 # asks what a decrypted event says about its sender once this library has a
-# signing identity a real homeserver accepted. They are separate test binaries
-# because this library holds one crypto machine per process and Cargo gives
-# each file under tests/ its own -- see level_two_verification.rs's header.
+# signing identity a real homeserver accepted; `level_two_identity_challenge`
+# asks whether the user-interactive authentication loop that publishing an
+# identity needs can actually be driven, against a refusal this homeserver
+# wrote. They are separate test binaries because this library holds one crypto
+# machine per process and Cargo gives each file under tests/ its own -- see
+# level_two_verification.rs's header.
 #
-# Each gets its own account state on the shared container, and the third one
-# publishes a cross-signing identity for the account. That is why it runs
-# LAST: an account's identity can be minted once, and a run of it leaves the
-# account with one. The other two neither read nor write it, so the order
-# below costs them nothing, but reversing it would leave `level_two_identity`
-# facing an account whose identity a previous run had already published --
-# which is the case its own phase-two child constructs deliberately, and
-# would be an accident in its parent.
+# The first three share one account, and the third publishes a cross-signing
+# identity for it. That is why it runs LAST of the three: an account's identity
+# can be minted once, and a run of it leaves the account with one. The other
+# two neither read nor write it, so the order below costs them nothing, but
+# reversing it would leave `level_two_identity` facing an account whose
+# identity a previous run had already published -- which is the case its own
+# phase-two child constructs deliberately, and would be an accident in its
+# parent.
+#
+# The fourth has an account to itself, for that same reason taken one step
+# further: it begins by asserting the account holds no identity, which the
+# shared one no longer does by the time it would run. See LOCALPART_CHALLENGE.
 
 # --- 4. what actually happened ---------------------------------------------
 #
@@ -552,8 +593,21 @@ run_proof level_two_identity \
   2 \
   "the parent process and the phase-two child it spawns of itself as a fresh login"
 
+# The authentication proof, on its own account and with no counterparty: the
+# signing-keys upload refused by a challenge this homeserver wrote, the
+# challenge answered, and the identity then published. It spawns nothing.
+# ONE of each.
+#
+# It runs after `level_two_identity` for readability rather than necessity --
+# they are the two halves of the same publication story and this is the second
+# half -- and it could run anywhere, because it touches an account of its own.
+run_proof level_two_identity_challenge \
+  a_signing_keys_upload_refused_by_a_real_challenge_answered_and_published \
+  1 \
+  "this test spawns no child, so there is exactly one libtest process"
+
 echo
-echo "PASS: all three level 2 proofs."
+echo "PASS: all four level 2 proofs."
 echo "      A third-party matrix-nio client decrypted what this library encrypted,"
 echo "      and this library decrypted what matrix-nio sent."
 echo "      A verification matrix-nio opened was announced by this library, agreed"
@@ -568,6 +622,13 @@ echo "      unsigned_device, because matrix-nio 0.26.0 implements no cross-signi
 echo "      all; the third test establishes that from inside nio and carries a signed"
 echo "      sender in the same run as its control."
 echo "      See rust/matrix-crypto-core/tests/level_two_identity.rs."
+echo "      A signing-keys upload was refused by a user-interactive authentication"
+echo "      challenge this homeserver wrote, the challenge was read out of the refusal,"
+echo "      the same body was sent again with an auth object merged in, and the"
+echo "      identity that ended up published is the one the pump handed over. That is"
+echo "      the one path this library hands to a product whole, and it now has a run"
+echo "      behind it rather than only documentation."
+echo "      See rust/matrix-crypto-core/tests/level_two_identity_challenge.rs."
 if [ -n "$CONTAINER" ]; then
   echo "      Proven against a throwaway $SERVER_NAME homeserver this script started"
   echo "      and is about to destroy. No credential was read from anywhere."
