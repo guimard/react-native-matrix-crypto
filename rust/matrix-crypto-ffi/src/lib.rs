@@ -233,9 +233,11 @@ pub enum MachineFfiError {
     // `ScannedCodeRefused` above folded four conditions, and a product has
     // to tell three of them apart to say anything useful about a scan that
     // failed. It keeps ordinal 20 and its narrowest meaning -- a code for
-    // this flow whose keys are not this flow's -- rather than being renamed,
-    // because renaming it would change what ordinal 20 decodes to in every
-    // binding already generated. These take 21, 22 and 23 and move nothing;
+    // this flow whose keys are not this flow's -- rather than being renamed.
+    // No binding in anybody's hands decodes ordinal 20 today, since nothing
+    // released has ever carried these variants; what a rename would cost is
+    // paid by every binding generated from here on, and a stable ordinal
+    // costs nothing to keep. These take 21, 22 and 23 and move nothing;
     // confirmed against the generated TypeScript rather than reasoned about.
     //
     // The core's `MachineError` documents what each one means and what a

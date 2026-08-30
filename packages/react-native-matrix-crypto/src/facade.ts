@@ -1739,14 +1739,24 @@ export async function getVerificationCode(verificationId: string): Promise<Scann
  *   check that your scanner yields bytes rather than text.
  * - `'scanned_code_for_another_flow'` -- a real code, for a different
  *   verification. Nothing is wrong; the wrong screen was read.
- * - `'scanned_code_refused'` -- a code for this flow whose keys are not the
- *   ones expected. **The only one of the four that can mean something is
- *   wrong rather than that somebody aimed badly.** Refuse and start again
- *   from a fresh request; do not invite a retry of the same code.
+ * - `'scanned_code_refused'` -- a code for this flow carrying keys that are
+ *   not the ones this side holds for the device on the other end. **The only
+ *   one of the four that can mean something is wrong rather than that
+ *   somebody aimed badly.** Refuse and start again from a fresh request;
+ *   scanning the same code again cannot help, because the keys it carries
+ *   will not have changed.
+ *
+ * It means that and nothing else. A peer device this side has no record of
+ * is a different answer, `'unknown_device'`, precisely because the remedy is
+ * the opposite: drain {@link takeOutgoingRequests}, report the key query it
+ * hands you, and scan the very same code again.
  *
  * Scanning also needs a signing identity on both sides, so
  * `'identity_not_known'` and `'peer_identity_not_known'` are reachable here
- * too, and name which side is missing one.
+ * too, and name which side is missing one. It can also reject with
+ * `'unknown_flow'`, for an identifier naming no flow this process is taking
+ * part in, and with `'wrong_stage'`, for a flow that is not one a code can be
+ * scanned into or is already over.
  *
  * **Scanning is not verifying.** When this resolves, nothing is verified
  * yet: the other side has still to confirm, and messages have to cross.
@@ -1770,8 +1780,9 @@ export async function submitScannedCode(verificationId: string, payload: Uint8Ar
  * well-formed its arguments were, because whether a person recognised the
  * device that scanned is not observable from inside this process.
  *
- * Rejects with `'wrong_stage'` when nobody has scanned this device's code
- * yet, and also when the flow is over. Those want opposite things done --
+ * Rejects with `'unknown_flow'` for an identifier naming no flow this process
+ * is taking part in, and with `'wrong_stage'` when nobody has scanned this
+ * device's code yet, and also when the flow is over. Those want opposite things done --
  * wait, versus start again -- and this release cannot tell them apart here;
  * {@link getVerificationStage} does not yet distinguish the states a code
  * flow passes through, which is named as a limit rather than hidden.

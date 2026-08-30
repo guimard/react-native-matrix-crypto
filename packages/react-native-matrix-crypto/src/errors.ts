@@ -191,14 +191,20 @@ export type CryptoErrorKind =
   // The second cause is reachable against every client that speaks only the
   // short string, including this library's own earlier releases.
   | 'code_not_offered'
-  // A scanned payload decoded, named this flow, and carries keys this flow
-  // does not expect. **The narrowest of the four, and the only one that can
-  // mean something is wrong rather than that a camera was aimed badly**: it
-  // is what an interposed party showing their own code looks like, and also
-  // what a device whose keys were fetched before they were rotated looks
-  // like. Nothing here can tell those apart, and the answer is the same
-  // either way: refuse, and verify again from a fresh request. This kind
-  // folded the three below until the payload gained a surface to cross on.
+  // A scanned payload decoded, named this flow, and carries keys that are
+  // not the ones this side holds for the device on the other end. **The
+  // narrowest of the four, and the only one that can mean something is wrong
+  // rather than that a camera was aimed badly**: it is what an interposed
+  // party showing their own code looks like, and also what a device whose
+  // keys were fetched before they were rotated looks like. Nothing here can
+  // tell those apart, and the answer is the same either way: refuse, and
+  // verify again from a fresh request.
+  //
+  // **It means only that.** It folded the three kinds below until the
+  // payload gained a surface to cross on, and it folded a fourth condition
+  // for longer: a peer device this side has no record of at all, which is
+  // neither a mismatch nor suspicious and is fixed by the retry this kind
+  // tells a product not to attempt. That one reports 'unknown_device' now.
   | 'scanned_code_refused'
   // The scanned bytes are not one of these codes at all: no header of ours,
   // or a version or mode this library does not speak. A camera pointed at

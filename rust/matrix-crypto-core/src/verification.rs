@@ -1721,17 +1721,36 @@ pub async fn submit_scanned_code(flow: &FlowId, payload: &[u8]) -> Result<(), Ma
                     }
                     ScanError::MissingCrossSigningIdentity(_) => MachineError::PeerIdentityNotKnown,
                     ScanError::FlowIdMismatch { .. } => MachineError::ScannedCodeForAnotherFlow,
-                    // Both mean the code cannot be matched to the device
-                    // this flow is with: one because the keys inside it are
-                    // not that device's, the other because this side holds
-                    // no keys for that device to compare against. Folded on
-                    // purpose -- a product refuses and starts again in
-                    // either case -- and kept apart from
+                    // The keys in the code are not the ones this side holds
+                    // for the device on the other end. Kept apart from
                     // `ScannedCodeForAnotherFlow` above, which is a code
-                    // that never claimed to be this flow's.
-                    ScanError::KeyMismatch { .. } | ScanError::MissingDeviceKeys(..) => {
-                        MachineError::ScannedCodeRefused
-                    }
+                    // that never claimed to be this flow's, and from the arm
+                    // below, which is this side knowing nothing about the
+                    // device rather than knowing something different.
+                    ScanError::KeyMismatch { .. } => MachineError::ScannedCodeRefused,
+                    // This side holds no record of the other device, or one
+                    // with no usable key in it. **Not the same thing as a
+                    // mismatch, and it used to be folded with one.** A
+                    // mismatch is refused and started over; this is fixed by
+                    // querying that user's devices through the pump and
+                    // scanning the very same code again, which is exactly
+                    // what `UnknownDevice` already means everywhere else on
+                    // this surface. Folding them put the second under a
+                    // sentence telling a product not to retry the code,
+                    // which was the one thing that would have worked.
+                    //
+                    // **Not reachable through this library today**, and said
+                    // here rather than left as an implied claim. A code is
+                    // only ever scanned into a flow, and a flow arrives in
+                    // one of two ways: `request_flow` refuses an unknown
+                    // device before any flow exists, and an invitation from
+                    // a device this library has no record of never reaches
+                    // the registry at all. `qr_refusals.rs` measures the
+                    // second against a control, which is what makes this a
+                    // finding rather than a guess. Mapped correctly anyway,
+                    // because an arm nobody can reach is still an arm a
+                    // later upstream can start reaching.
+                    ScanError::MissingDeviceKeys(..) => MachineError::UnknownDevice,
                 })?;
 
             // `Ok(None)` here means the flow is not one a scan applies to,

@@ -69,6 +69,12 @@ const CAROL_DEVICE: &str = "CAROLDEVICE";
 /// outright with nothing noticing. A flow with this device is the only way
 /// to reach its first arm.
 const ALICE_OTHER_DEVICE: &str = "ALICESECOND";
+/// A peer whose device the library has never been told about. The control
+/// for the refusal that says so: without him, "this side holds no record of
+/// that device" and "the keys in that code are not that device's" would be
+/// the same assertion, and they call for opposite things.
+const DAVE: &str = "@dave:example.org";
+const DAVE_DEVICE: &str = "DAVEDEVICE";
 /// Somewhere for the one call on the shipped surface that tracks a user to
 /// point at. Nothing is ever encrypted to it.
 const SCOPE: &str = "!refusals:example.org";
@@ -510,6 +516,181 @@ fn every_refusal_a_scannable_code_can_give_is_named() {
              a decoding failure and this library must report as damage rather \
              than as a wrong code"
         );
+
+        // ---- The four arms that argued for themselves and were held by
+        // ---- nothing
+        //
+        // Upstream reports seven decoding failures and this library sorts
+        // them into two of the sentences above. Three of the seven were
+        // asserted: the header, the version and the keys. The other four
+        // could be moved across the boundary between "you aimed at the wrong
+        // thing" and "the bytes did not survive" **all at once**, and the
+        // whole workspace stayed green. The doc comments on the production
+        // match argue at length about two of them in particular, and an
+        // argument in a comment with nothing underneath it is the shape this
+        // repository keeps finding.
+
+        // A mode byte this library does not implement. Grouped with the
+        // header and the version, and this is the arm whose comment says
+        // why: a client speaking a revision of the format we do not have is
+        // not a damaged payload, and telling a person to scan again sends
+        // them round a loop that cannot end.
+        let mut unknown_mode = payload_naming(&flow.0);
+        unknown_mode[7] = 0x09;
+        assert_eq!(
+            submit_scanned_code(&flow, &unknown_mode)
+                .await
+                .expect_err("a mode this library does not implement cannot be scanned"),
+            MachineError::ScannedCodeUnrecognised,
+            "an unknown mode is not one of these codes, in the sense that matters: \
+             nothing a person does with the camera makes it readable"
+        );
+
+        // Bytes that stop early. The likeliest of all of these in the field,
+        // because it is what a half-read scan produces, and the arm whose
+        // comment says a payload too short to carry a header at all is
+        // damage rather than somebody else's square.
+        let cut_short = payload_naming(&flow.0)[..40].to_vec();
+        assert_eq!(
+            submit_scanned_code(&flow, &cut_short)
+                .await
+                .expect_err("a payload that stops mid-key cannot be scanned"),
+            MachineError::ScannedCodeMalformed,
+            "a truncated payload must be reported as damage: the answer is to scan \
+             the same code again, which is exactly the answer an unrecognised code \
+             must not be given"
+        );
+
+        // Two bytes short of a code, which never even reaches the header
+        // check. Asserted beside the one above because they take different
+        // routes to the same refusal, and because the comment on this arm
+        // claims this case specifically.
+        assert_eq!(
+            submit_scanned_code(&flow, b"MA")
+                .await
+                .expect_err("bytes that stop before a header cannot be scanned"),
+            MachineError::ScannedCodeMalformed,
+            "bytes that run out before the header is even read are damage rather \
+             than a code somebody else wrote"
+        );
+
+        // A flow identifier that is not text. Reachable from a payload whose
+        // header, version and mode are all ours, which is what makes it
+        // damage rather than a foreign code.
+        let mut unreadable_identifier = payload_naming(&flow.0);
+        unreadable_identifier[10] = 0xff;
+        assert_eq!(
+            submit_scanned_code(&flow, &unreadable_identifier)
+                .await
+                .expect_err("a payload whose identifier is not text cannot be scanned"),
+            MachineError::ScannedCodeMalformed,
+            "an identifier that is not text arrives inside an otherwise perfectly \
+             formed code, so it is damage to those bytes and not a different \
+             format"
+        );
+
+        // A shared secret too short to be one. The last of the seven, and
+        // the one a partial read of the tail produces.
+        let full = payload_naming(&flow.0);
+        let clipped_secret = full[..full.len() - 10].to_vec();
+        assert_eq!(
+            submit_scanned_code(&flow, &clipped_secret)
+                .await
+                .expect_err("a payload whose secret is too short cannot be scanned"),
+            MachineError::ScannedCodeMalformed,
+            "a secret shorter than the format allows is the tail of a code that did \
+             not all arrive"
+        );
+
+        // ---- The condition that is none of the four, and cannot be reached
+        //
+        // Upstream has a fifth answer for a scanned code:
+        // `ScanError::MissingDeviceKeys`, raised when this side holds no
+        // record of the other device. It needs the opposite of what
+        // `ScannedCodeRefused` tells a product to do -- a key query and the
+        // very same code again, rather than refusing and starting over -- so
+        // it is mapped to `UnknownDevice`, which is this library's existing
+        // name for exactly that remedy.
+        //
+        // **Nothing here can produce it, and this is why**, because a
+        // production arm nobody can reach is worth saying so about rather
+        // than leaving as an implied claim. A code is only scanned into a
+        // flow, and a flow only exists in one of two ways. Outbound,
+        // `request_flow` refuses an unknown device before any flow is
+        // created. Inbound, the invitation itself never becomes a flow: an
+        // event from a device this library has no record of is dropped
+        // before it reaches the registry, which is what the two deliveries
+        // below measure.
+        //
+        // Dave is the control for that. He is never taught to this library,
+        // and he knows this library's device because a peer cannot address
+        // an invitation without one.
+        let dave_user: OwnedUserId = DAVE.parse().expect("a literal user id parses");
+        let dave_device: matrix_sdk_common::ruma::OwnedDeviceId = DAVE_DEVICE.into();
+        let dave = OlmMachine::new(&dave_user, &dave_device).await;
+        settle_key_upload(&dave).await;
+        let dave_device_keys =
+            serde_json::to_value(harness::device_keys_of(&dave, &dave_user, &dave_device).await)
+                .expect("upstream device keys serialise");
+        dave.mark_request_as_sent(
+            &matrix_sdk_common::ruma::TransactionId::new(),
+            &harness::keys_query_response(
+                &serde_json::json!({
+                    "device_keys": { ALICE: { ALICE_DEVICE: alice_device_keys.clone() } },
+                })
+                .to_string(),
+            ),
+        )
+        .await
+        .expect("the bare machine must accept a keys-query response");
+
+        let library_user: OwnedUserId = ALICE.parse().expect("a literal user id parses");
+        let library_device = dave
+            .get_device(&library_user, ALICE_DEVICE.into(), None)
+            .await
+            .expect("the peer's store must be readable")
+            .expect("the peer has just been told about this library's device");
+        let (unknown_sender, invitation) =
+            library_device.request_verification_with_methods(every_method());
+        deliver_verification_request(&invitation, DAVE, ALICE, ALICE_DEVICE).await;
+        let from_a_stranger = FlowId(unknown_sender.flow_id().as_str().to_string());
+        assert_eq!(
+            flow_stage(&from_a_stranger)
+                .await
+                .expect_err("an invitation from an unknown device must not become a flow"),
+            MachineError::UnknownFlow,
+            "an invitation from a device this library has no record of never \
+             reaches the registry, which is what makes upstream's \
+             `MissingDeviceKeys` unreachable from this surface: there is no flow \
+             to scan a code into"
+        );
+
+        // The control, and the reason the assertion above is about the
+        // device record rather than about the delivery path. The same peer,
+        // the same call, the same relay: the only thing that changes is that
+        // this library has now been told what device Dave is.
+        teach_alice_about(
+            &[DAVE],
+            serde_json::json!({
+                "device_keys": { DAVE: { DAVE_DEVICE: dave_device_keys } },
+            }),
+        )
+        .await;
+        let (known_sender, invitation) =
+            library_device.request_verification_with_methods(every_method());
+        deliver_verification_request(&invitation, DAVE, ALICE, ALICE_DEVICE).await;
+        let from_a_known_device = FlowId(known_sender.flow_id().as_str().to_string());
+        assert_eq!(
+            flow_stage(&from_a_known_device)
+                .await
+                .expect("an invitation from a known device must become a flow"),
+            FlowStage::Requested,
+            "the delivery path itself works, so the refusal above is about the \
+             device record and nothing else"
+        );
+        cancel_flow(&from_a_known_device)
+            .await
+            .expect("a live flow can be refused");
 
         // Relayed, not merely drained: a refusal the peer never hears
         // leaves his side of the flow live, and the invitation below is

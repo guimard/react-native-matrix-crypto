@@ -360,6 +360,15 @@ pub enum MachineError {
     /// design's section 4 required the split; it landed with the surface that
     /// made it visible, which is the one that crosses a payload to a product.
     ///
+    /// **A fourth left later, and it left because this variant's advice was
+    /// wrong for it.** Upstream also reports a peer device this side holds
+    /// no record of, which is not a mismatch and not suspicious: the remedy
+    /// is a key query and the same code again, and it arrived here under a
+    /// sentence telling a product to refuse and start over. It reports
+    /// `UnknownDevice` now, which is this library's existing name for that
+    /// remedy. `crate::submit_scanned_code`'s own mapping records that
+    /// nothing on this surface can currently reach it, and why.
+    ///
     /// What is *not* folded in here is the one condition that already had a
     /// name: a payload refused because a cross-signing identity is missing
     /// reports `IdentityNotKnown` or `PeerIdentityNotKnown` by whose it is.
