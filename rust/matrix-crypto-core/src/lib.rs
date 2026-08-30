@@ -11,6 +11,7 @@ mod observer;
 mod probe;
 mod runtime;
 mod session;
+mod signing;
 mod verification;
 
 pub use error::ProbeError;
@@ -27,6 +28,7 @@ pub use session::{
     take_outgoing_requests, Envelope, OutgoingRequest, SenderVerification, SessionError,
     SyncOutcome,
 };
+pub use signing::{bootstrap_identity, identity_status, IdentityStatus};
 pub use verification::{
     accept_flow, begin_comparison, cancel_flow, confirm_flow, flow_stage, read_material,
     request_flow, FlowId, FlowStage, SasEmoji, SasMaterial,

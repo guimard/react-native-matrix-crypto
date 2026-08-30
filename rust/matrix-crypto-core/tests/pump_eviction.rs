@@ -1,9 +1,11 @@
 //! The pump's stale-entry eviction, and the one property it must not break.
 //!
 //! `take_outgoing_requests` evicts previously handed-out, still-unresolved
-//! ids of the three kinds `PendingKind::superseded_by_a_fresh_request`
-//! names, because upstream mints a fresh, uncorrelated id for the same
-//! standing need on every call and forgets the one it handed out last. That
+//! ids whose kind shares an eviction group with something in the fresh
+//! batch (`PendingKind::eviction_group`). For the three kinds this file is
+//! about -- `keys_upload`, `keys_query`, `keys_claim` -- the reason is that
+//! upstream mints a fresh, uncorrelated id for the same standing need on
+//! every call and forgets the one it handed out last. That
 //! much `session.rs`'s own
 //! `a_stale_keys_upload_id_does_not_accumulate_across_repeated_calls`
 //! already covers.

@@ -2070,6 +2070,8 @@ export enum MachineFfiError_Tags {
   WrongStage = "WrongStage",
   MaterialNotReady = "MaterialNotReady",
   UnknownDevice = "UnknownDevice",
+  AccountKeysNotFetched = "AccountKeysNotFetched",
+  IdentityAlreadyExists = "IdentityAlreadyExists",
 }
 /**
  * Mirror of the core's machine error, carrying the UniFFI error derive.
@@ -2342,6 +2344,64 @@ export const MachineFfiError = (() => {
     }
   }
 
+  type AccountKeysNotFetched__interface = {
+    tag: MachineFfiError_Tags.AccountKeysNotFetched;
+  };
+  class AccountKeysNotFetched_
+    extends UniffiError
+    implements AccountKeysNotFetched__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.AccountKeysNotFetched;
+    constructor() {
+      super("MachineFfiError", "AccountKeysNotFetched");
+    }
+
+    static new(): AccountKeysNotFetched_ {
+      return new AccountKeysNotFetched_();
+    }
+
+    static instanceOf(obj: any): obj is AccountKeysNotFetched_ {
+      return obj.tag === MachineFfiError_Tags.AccountKeysNotFetched;
+    }
+    static hasInner(obj: any): obj is AccountKeysNotFetched_ {
+      return false;
+    }
+  }
+
+  type IdentityAlreadyExists__interface = {
+    tag: MachineFfiError_Tags.IdentityAlreadyExists;
+  };
+  class IdentityAlreadyExists_
+    extends UniffiError
+    implements IdentityAlreadyExists__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.IdentityAlreadyExists;
+    constructor() {
+      super("MachineFfiError", "IdentityAlreadyExists");
+    }
+
+    static new(): IdentityAlreadyExists_ {
+      return new IdentityAlreadyExists_();
+    }
+
+    static instanceOf(obj: any): obj is IdentityAlreadyExists_ {
+      return obj.tag === MachineFfiError_Tags.IdentityAlreadyExists;
+    }
+    static hasInner(obj: any): obj is IdentityAlreadyExists_ {
+      return false;
+    }
+  }
+
   function instanceOf(obj: any): obj is MachineFfiError {
     return obj[uniffiTypeNameSymbol] === "MachineFfiError";
   }
@@ -2357,6 +2417,8 @@ export const MachineFfiError = (() => {
     WrongStage: WrongStage_,
     MaterialNotReady: MaterialNotReady_,
     UnknownDevice: UnknownDevice_,
+    AccountKeysNotFetched: AccountKeysNotFetched_,
+    IdentityAlreadyExists: IdentityAlreadyExists_,
   });
 })();
 /**
@@ -2376,7 +2438,9 @@ export type MachineFfiError = InstanceType<
     | "UnknownFlow"
     | "WrongStage"
     | "MaterialNotReady"
-    | "UnknownDevice"]
+    | "UnknownDevice"
+    | "AccountKeysNotFetched"
+    | "IdentityAlreadyExists"]
 >;
 
 // FfiConverter for enum MachineFfiError
@@ -2407,6 +2471,10 @@ const FfiConverterTypeMachineFfiError = (() => {
           return new MachineFfiError.MaterialNotReady();
         case 9:
           return new MachineFfiError.UnknownDevice();
+        case 10:
+          return new MachineFfiError.AccountKeysNotFetched();
+        case 11:
+          return new MachineFfiError.IdentityAlreadyExists();
         default:
           throw new UniffiInternalError.UnexpectedEnumCase();
       }
@@ -2453,6 +2521,14 @@ const FfiConverterTypeMachineFfiError = (() => {
           c.writeI32(9);
           return;
         }
+        case MachineFfiError_Tags.AccountKeysNotFetched: {
+          c.writeI32(10);
+          return;
+        }
+        case MachineFfiError_Tags.IdentityAlreadyExists: {
+          c.writeI32(11);
+          return;
+        }
         default:
           // Throwing from here means that MachineFfiError_Tags hasn't matched an ordinal.
           throw new UniffiInternalError.UnexpectedEnumCase();
@@ -2491,6 +2567,12 @@ const FfiConverterTypeMachineFfiError = (() => {
           return 4;
         }
         case MachineFfiError_Tags.UnknownDevice: {
+          return 4;
+        }
+        case MachineFfiError_Tags.AccountKeysNotFetched: {
+          return 4;
+        }
+        case MachineFfiError_Tags.IdentityAlreadyExists: {
           return 4;
         }
         default:

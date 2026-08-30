@@ -152,6 +152,21 @@ pub enum MachineFfiError {
     MaterialNotReady,
     #[error("no such device")]
     UnknownDevice,
+    // Appended last, like the four above and for the same wire-ordinal
+    // reason. These two mirror the pair the core's `MachineError` grew for
+    // the identity bootstrap's ordering gate.
+    //
+    // No function on this surface returns either of them yet: the core call
+    // that produces them is not bridged in this task. They are here because
+    // the `From` impl below is exhaustive by rule, and folding two refusals
+    // that mean different things onto some existing variant to avoid
+    // declaring them would put a wrong error on the wire the moment that
+    // bridge lands -- silently, since folding is what an exhaustive match
+    // with no wildcard is meant to prevent.
+    #[error("the account's keys have not been fetched yet")]
+    AccountKeysNotFetched,
+    #[error("this account already has a signing identity this device does not hold")]
+    IdentityAlreadyExists,
 }
 
 impl From<matrix_crypto_core::MachineError> for MachineFfiError {
@@ -169,6 +184,8 @@ impl From<matrix_crypto_core::MachineError> for MachineFfiError {
             matrix_crypto_core::MachineError::WrongStage => Self::WrongStage,
             matrix_crypto_core::MachineError::MaterialNotReady => Self::MaterialNotReady,
             matrix_crypto_core::MachineError::UnknownDevice => Self::UnknownDevice,
+            matrix_crypto_core::MachineError::AccountKeysNotFetched => Self::AccountKeysNotFetched,
+            matrix_crypto_core::MachineError::IdentityAlreadyExists => Self::IdentityAlreadyExists,
         }
     }
 }

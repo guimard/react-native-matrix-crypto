@@ -141,6 +141,40 @@ pub enum MachineError {
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("no such device")]
     UnknownDevice,
+    /// This process has not yet asked the server for this account's keys, so
+    /// it cannot know whether the account already has a signing identity --
+    /// and publishing a second one would silently invalidate every
+    /// verification every other device of this account has ever made.
+    ///
+    /// **The refusal is not "the local identity is empty".** That is the
+    /// question upstream already asks itself, and answering it again would
+    /// refuse nothing upstream does not already accept. This is the
+    /// different, stricter question: *have we asked, and did the answer say
+    /// there is none.* An empty local identity implies neither.
+    ///
+    /// Recoverable, and recoverable through the ordinary loop: the call that
+    /// returns this also queues the key query that lifts it, so a caller
+    /// drains the outbound pump, sends what it finds, reports it sent, and
+    /// calls again. Nothing else is required of the caller and no
+    /// credential is involved.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("the account's keys have not been fetched yet")]
+    AccountKeysNotFetched,
+    /// The server has been asked for this account's keys and the answer named
+    /// a signing identity whose private keys this device does not hold.
+    ///
+    /// Kept distinct from `AccountKeysNotFetched`, and the distinction is
+    /// the point of both: one says "we do not know", the other says "we know,
+    /// and the answer is yes". Only the second can be resolved by joining the
+    /// identity that already exists rather than by asking again. Minting over
+    /// it is exactly the destruction this pair of variants exists to prevent
+    /// -- it would replace the account's identity on the server and reset the
+    /// trust of every device and every user who had verified the old one.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("this account already has a signing identity this device does not hold")]
+    IdentityAlreadyExists,
 }
 
 struct Held {
