@@ -1115,6 +1115,28 @@ export async function getDeviceStatuses(userId: string): Promise<DeviceStatus[]>
  * {@link startVerificationComparison}; the other gets
  * `'comparison_already_started'`, answers the comparison with a second
  * {@link acceptVerification}, and carries on from step 4.
+ *
+ * # One sync between two verifications with the same person
+ *
+ * **Call {@link receiveSyncChanges} at least once between finishing one
+ * verification with somebody and starting the next with that same person.**
+ * Without it the new one comes back already cancelled: nothing was refused,
+ * nothing failed, and {@link getVerificationStage} simply reads
+ * `'cancelled'` from the start.
+ *
+ * This is the layer underneath, not a rule of this library, and it is not
+ * something a workaround here could remove. It allows one live verification
+ * per person, and a verification that **finished** is not a cancelled one,
+ * so a second request opened while the first is still in its map cancels
+ * both. The only thing that empties that map is the sweep it runs at the top
+ * of every sync. An ordinary product never notices, because it syncs
+ * continuously; a product that drives two verifications back to back from
+ * one screen, or from a test, walks straight into it.
+ *
+ * The same applies after a verification you gave up on with
+ * {@link cancelVerification}, and after one that ended any other way. Any
+ * sync will do and it does not have to carry anything: an empty payload is
+ * enough, because it is the sweep that matters and not the contents.
  */
 export async function requestVerification(userId: string, deviceId: string): Promise<string> {
   try {
@@ -1181,6 +1203,12 @@ export async function requestVerification(userId: string, deviceId: string): Pro
  * {@link confirmVerification} or {@link cancelVerification}. The person is
  * comparing two of their own screens instead of talking to somebody else,
  * which changes none of the calls.
+ *
+ * **Including the one sync between two verifications**, which for this call
+ * means your own account: a second self-verification opened without a
+ * {@link receiveSyncChanges} after the first comes back already cancelled.
+ * `requestVerification` says why, and the reason is the layer underneath
+ * rather than anything either call does.
  *
  * # Refusals
  *
