@@ -188,6 +188,28 @@ pub enum SessionError {
     /// nonsense".
     #[error("the request id does not match a pending request")]
     UnknownRequest,
+    /// [`mark_request_failed`] was given a `status` that is not one a
+    /// refused request can carry.
+    ///
+    /// Accepted are `0`, meaning no response reached the caller at all, and
+    /// `300` through `599`. Everything else is rejected, and the case worth
+    /// naming is a **2xx**: a caller passing one has confused this call with
+    /// [`mark_request_sent`], and since a refusal changes no state, being
+    /// told nothing would let that confusion stand.
+    ///
+    /// It is the confusion this call can see **in its own arguments**, which
+    /// is not the same as the only one the library catches: reporting a
+    /// refused response through [`mark_request_sent`] is caught too whenever
+    /// the body is not shaped like that endpoint's answer, by
+    /// [`refuse_a_non_response`]. What neither can see is a refusal whose
+    /// body *is* shaped like an answer. See [`mark_request_failed`].
+    ///
+    /// Declared next to [`UnknownRequest`](Self::UnknownRequest), which it
+    /// reads beside, rather than appended: this enum has no wire
+    /// representation, so its order is free. Its FFI mirror does have one,
+    /// and is appended last there.
+    #[error("the status is not one a refused request can carry")]
+    NotAFailureStatus,
     /// [`decrypt_event`] either found no record at all of the group
     /// session that encrypted this event, or found the session but could
     /// not use it because its ratchet has already advanced past this
@@ -1439,6 +1461,45 @@ impl PendingKind {
         }
     }
 
+    /// The top-level field names this kind's response type actually
+    /// declares, read off the vendored `ruma-client-api-0.24.0` rather than
+    /// off the specification, because it is that crate's `Response` that
+    /// `mark_sent` deserialises into.
+    ///
+    /// Used by [`refuse_a_non_response`] for the one rule that is *positive*
+    /// rather than negative. `ruma-client-api` sets `deny_unknown_fields`
+    /// nowhere, and every `/keys/query` field is `#[serde(default)]`, so
+    /// serde reads any object at all as a fully defaulted success. Listing
+    /// what a response may contain is the only way to reject what no
+    /// response contains, because the set of things a proxy might send is
+    /// unbounded and cannot be enumerated the other way round.
+    ///
+    /// **Two kinds declare nothing, and that is not an omission.**
+    /// `to_device` and `signing_keys_upload` are `Response {}`. The empty
+    /// slice is the correct answer for them and gives exactly the right
+    /// rule: no key can match, so the only object they accept is an empty
+    /// one, which is the only object their success can be. Those two get no
+    /// body parse from ruma at all, so this is the single check standing
+    /// between a proxy's error page and an identity marked published.
+    fn declared_response_fields(self) -> &'static [&'static str] {
+        match self {
+            PendingKind::KeysUpload => &["one_time_key_counts"],
+            PendingKind::KeysQuery
+            | PendingKind::AccountKeysQuery
+            | PendingKind::AccountKeysQueryOutOfBand => &[
+                "failures",
+                "device_keys",
+                "master_keys",
+                "self_signing_keys",
+                "user_signing_keys",
+            ],
+            PendingKind::KeysClaim => &["failures", "one_time_keys"],
+            PendingKind::SignatureUpload => &["failures"],
+            PendingKind::RoomMessage => &["event_id"],
+            PendingKind::ToDevice | PendingKind::SigningKeysUpload => &[],
+        }
+    }
+
     /// Which set of previously handed-out, still-unresolved ids a fresh
     /// request of this kind makes obsolete, or `None` for a kind that makes
     /// none obsolete at all.
@@ -2316,9 +2377,13 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
 /// and silently invalidates every verification anyone has ever made of that
 /// account. That was reproduced end to end, not imagined.
 ///
-/// Two shapes are refused, and both are unambiguous because the Matrix
-/// specification defines them and no success body of any endpoint this
-/// module handles declares either key at the top level:
+/// Four things are refused, and none of them can be a legitimate answer to
+/// any endpoint this module handles. That was checked against the vendored
+/// response types rather than assumed: the seven of them declare
+/// `one_time_key_counts`, `failures`, `device_keys`, `master_keys`,
+/// `self_signing_keys`, `user_signing_keys`, `one_time_keys` and `event_id`
+/// between them, two declare no fields at all, and not one declares
+/// `errcode`, `error` or `flows`.
 ///
 /// * **A standard error response**, which the specification requires to
 ///   carry a top-level `errcode`. Covers every 4xx and 5xx a conformant
@@ -2327,6 +2392,29 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
 ///   `flows` is what makes it a challenge. This is the 401 the signing-keys
 ///   upload always gets on its first attempt. Refusing it matters more than
 ///   it looks: see the next section for why nothing else would catch it.
+/// * **A non-conformant error carrying `error` without `errcode`**, which
+///   is what a gateway in front of the homeserver tends to produce:
+///   `{"error":"Bad Gateway"}` is not a Matrix error and the first rule
+///   above cannot see it. Measured as accepted before this key was added,
+///   and it lifted the bootstrap gate.
+/// * **Anything that is not a JSON object.** Every response body of every
+///   endpoint here is one. An array is the case worth naming, because
+///   reasoning gets it wrong: serde reads a struct from a sequence
+///   positionally and every `/keys/query` field is defaulted, so `[]`
+///   deserialised into a flawless empty success. A bare string, a number,
+///   `null`, a proxy's HTML page and a body of nothing but spaces are all
+///   refused by the same rule.
+/// * **An object carrying no field this endpoint's response declares**, by
+///   [`PendingKind::declared_response_fields`]. The three rules above all
+///   ask "does this look like an error", and that question cannot be
+///   finished: a proxy may answer with any object it likes, and
+///   `{"message":"Internal server error"}` (AWS API Gateway's default, and
+///   several service meshes') carries no marker of any kind. Measured
+///   before this rule existed: it, `{"detail":...}`, `{"status":"error",
+///   "code":502}` and Cloudflare's `{"success":false,...}` were all
+///   accepted for `/keys/query`, all set the gate, and `bootstrap_identity`
+///   then minted. Asking instead "does this look like *this endpoint's*
+///   response" is answerable, because that list is finite and vendored.
 ///
 /// Presence is tested, not type. `{"errcode":429}` is not a conformant
 /// error response and `{"flows":{...}}` is not a conformant challenge, but
@@ -2336,56 +2424,124 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
 /// through. Nested occurrences are untouched, which is the half that has to
 /// be right: `/keys/query`, `/keys/claim` and `/keys/signatures/upload` all
 /// carry a `failures` map whose values are real per-server errors with real
-/// `errcode`s inside them, and those are successes.
+/// `errcode`s and `error`s inside them, and those are successes.
 ///
-/// # What this does not do, and it differs by kind
+/// # What this accepts, which is a shape rather than a list
 ///
-/// **It is not a substitute for the status.** What backs it up depends
-/// entirely on whether the endpoint's response type has any fields, because
-/// ruma only emits a body parse when it does -- `BodyFields::Empty => None`
-/// at `ruma-macros-0.19.0/src/api/common.rs:329-331`:
+/// **This is the one statement of that division.** The other places that
+/// need it point here rather than restating it: [`mark_request_sent`],
+/// `signing.rs`'s module doc and `signing::bootstrap_identity`, and
+/// `markRequestFailed` in the TypeScript facade, which carries the same
+/// division in the language a product author reads.
 ///
-/// * **`keys_upload`, `keys_query`, `keys_claim`, `signature_upload` and
-///   `room_message`** have fields, so [`mark_sent`] really does parse the
-///   body and rejects anything that is not that endpoint's shape. A proxy's
-///   HTML error page or any other non-JSON body is caught there, not here,
-///   and reaches the caller as [`SessionError::MalformedPayload`] all the
-///   same, as are a bare JSON string and `null`. What still passes is a
-///   body serde can read as that shape, which for `/keys/query` is more
-///   than it sounds: every field is optional, so `{}` and any other JSON
-///   object pass, a gateway's `{"error":"Bad Gateway"}` passes, and so does
-///   a JSON *array*, because serde will read a struct from a sequence
-///   positionally. Verified by probe against the vendored crate, not
-///   reasoned about -- the reasoning said an array would be rejected and
-///   the reasoning was wrong.
-/// * **`to_device` and `signing_keys_upload`** have `Response {}` and no
-///   fields, so **no body parse is emitted at all and this function is the
-///   only check that exists**. Observed: `not json at all !!!` and an HTML
-///   502 page are both accepted for a signing-keys upload, and accepting one
-///   marks the identity *shared* when the server holds nothing. This is the
-///   weakest point on the surface and the reason the "report only a 2xx"
-///   obligation is stated in prose at [`mark_request_sent`], at
-///   `signing::bootstrap_identity` and in the facade rather than left to
-///   this check.
+/// **It is not a substitute for the status.** What it refuses is what it can
+/// show is not a response. What it accepts is everything else, and that is a
+/// shape rather than a list of literals: **an object with no keys, or an
+/// object carrying at least one field this endpoint's response really
+/// declares.**
 ///
-/// An **empty** body is not the same as an absent one and is not caught by
-/// either mechanism: ruma substitutes `b"{}"` for it before parsing ("If
+/// **Passing this function is necessary, not sufficient.** It is one of two
+/// checks, and the per-kind parse in [`mark_sent`] runs after it and refuses
+/// more: `{}` reaches that parse for every kind and is then rejected for
+/// `keys_upload`, `keys_claim` and `room_message`, whose responses each have
+/// one required field. The rules above also compose rather than partition,
+/// so a body carrying a declared field *and* an error marker is refused by
+/// the marker rule even though the shape rule would pass it. The statement
+/// below is therefore about what this function lets through, not about what
+/// `mark_request_sent` ultimately accepts.
+///
+/// Every genuine success is inside that shape, which is the point of drawing
+/// it there. So is any failure whose body happens to fall inside it, and the
+/// member that matters is the object with no keys. `{}` is what
+/// `/keys/query` answers for an account the server knows no identity for,
+/// which is the exact fact `signing.rs`'s gate mints on, and it is the
+/// entire success response of both fieldless kinds. A completely empty body
+/// is the same input: ruma substitutes `b"{}"` for it before parsing ("If
 /// the body is completely empty, pretend it is an empty JSON object
-/// instead", `ruma-macros-0.19.0/src/api/common.rs:365-371`), so a dropped
-/// connection reporting nothing looks like an empty success.
+/// instead", `ruma-macros-0.19.0/src/api/common.rs:365-371`), as does
+/// `"  {}  "`. So a 503 that carried no body and a 200 that had nothing to
+/// say arrive here as the same bytes.
 ///
-/// Closing the remainder needs the status, which is not on this signature.
-/// A body that is not JSON at all is deliberately *not* refused here, so
-/// this function can only ever turn a previously accepted body into a
-/// refusal when that body is provably an error or a challenge.
-fn refuse_a_non_response(body: &str) -> Result<(), SessionError> {
-    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) else {
+/// For the five kinds whose response type has fields, the shape is wider
+/// than that one member: `{"device_keys":{}}` reported for a refused
+/// `/keys/query` is accepted, because it is indistinguishable from the
+/// answer it is a copy of. For `to_device` and `signing_keys_upload` the
+/// shape is only the empty object, since they declare no field that could
+/// widen it, and they are also the two that get no body parse from ruma at
+/// all (`BodyFields::Empty => None`,
+/// `ruma-macros-0.19.0/src/api/common.rs:329-331`). Before this function
+/// required a JSON object they took literally any bytes,
+/// `not json at all !!!` and an HTML 502 page included.
+///
+/// Only the HTTP status separates a success from a failure inside that
+/// shape, and no status crosses this boundary through [`mark_request_sent`].
+/// That is what [`mark_request_failed`] is for.
+fn refuse_a_non_response(kind: PendingKind, body: &str) -> Result<(), SessionError> {
+    // A *completely* empty body is the same input as `{}` and is accepted on
+    // the same terms: ruma substitutes an empty object for it before
+    // parsing, so by the time anything downstream sees it, that is what it
+    // is. See the doc comment above for what an empty object can be hiding
+    // and why nothing here can tell.
+    if body.is_empty() {
         return Ok(());
+    }
+    // Every response body of every endpoint this module handles is a JSON
+    // object. Anything else is not one, so refusing it here costs no
+    // legitimate answer: an array, a bare string, a number, `null`, a
+    // proxy's HTML page, a body of nothing but spaces.
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Err(SessionError::MalformedPayload);
     };
     let Some(object) = parsed.as_object() else {
-        return Ok(());
+        return Err(SessionError::MalformedPayload);
     };
-    if object.contains_key("errcode") || object.contains_key("flows") {
+    // Presence, not type, and only at the top level. `error` joins the two
+    // the specification defines because a non-conformant gateway that
+    // answers `{"error":"Bad Gateway"}` carries no `errcode`. None of the
+    // seven response types declares any of the three, so there is no
+    // legitimate body to refuse by mistake. Kept as its own rule rather
+    // than folded into the one below, which would not catch a hybrid: an
+    // object carrying both a real field and an `errcode` is refused here
+    // and would pass there.
+    if object.contains_key("errcode")
+        || object.contains_key("error")
+        || object.contains_key("flows")
+    {
+        return Err(SessionError::MalformedPayload);
+    }
+    // The positive rule, and the only one that can bound an unbounded set.
+    // Everything above answers "does this look like an error", which cannot
+    // be finished: a proxy may send any object it likes, and
+    // `{"message":"Internal server error"}` carries no marker at all.
+    // Asking instead "does this look like *this endpoint's* response" is
+    // answerable, because that list is finite and vendored.
+    //
+    // An empty object is exempt because it has no keys to judge, and it is
+    // a real answer: `/keys/query` returns it for an account the server
+    // knows nothing about, and it is the entire success response of both
+    // fieldless kinds.
+    //
+    // For the five kinds with fields this is deliberately not
+    // `deny_unknown_fields`. A response carrying a field a later
+    // specification adds, *alongside* one this crate knows, still passes.
+    // Only a body made up exclusively of fields none of which this crate's
+    // ruma declares is refused.
+    //
+    // For `to_device` and `signing_keys_upload` it *is* `deny_unknown_fields`
+    // in every practical sense, and that is worth saying here rather than
+    // only where the empty list is defined: their declared list is empty, so
+    // no key can ever match and any key at all is refused. A field added to
+    // either endpoint's 200 response by a later specification would break
+    // them. Both are `Response {}` today and have been stable, and this is
+    // the only check either gets, so the trade is taken knowingly.
+    //
+    // Either way the residual forward-compatibility cost fails closed, with
+    // `MalformedPayload` and a gate that stays shut, rather than open.
+    if !object.is_empty()
+        && !object
+            .keys()
+            .any(|key| kind.declared_response_fields().contains(&key.as_str()))
+    {
         return Err(SessionError::MalformedPayload);
     }
     Ok(())
@@ -2542,11 +2698,16 @@ async fn mark_sent(
 /// signing-keys upload marks an identity published that never was.
 ///
 /// [`refuse_a_non_response`] enforces as much of this as a body alone can
-/// carry -- a standard Matrix error, and a user-interactive authentication
-/// challenge -- and its own doc comment states plainly which failures no
-/// body-based check can catch. No HTTP status crosses this boundary, so the
-/// remainder is the caller's obligation rather than something this module
-/// can verify.
+/// carry, and **its doc comment is the single statement of what that is**:
+/// what it refuses, what it accepts, and why the remainder cannot be closed
+/// from a body. It is not restated here, so that the two cannot drift.
+///
+/// What matters at this call is the consequence. Some bodies a refused
+/// request carries are indistinguishable from a real answer, the empty
+/// object among them, so reporting one here is reporting a success. No HTTP
+/// status crosses this boundary on *this* call, which makes the branch the
+/// caller's obligation: send a 2xx here, and send everything else to
+/// [`mark_request_failed`].
 ///
 /// A refused body leaves the request exactly as pending as before, by the
 /// same rule as any other failure here, so the ordinary
@@ -2564,8 +2725,10 @@ pub async fn mark_request_sent(id: &str, response_json: &str) -> Result<(), Sess
     // (`keys_upload`, `keys_claim` and `room_message` each have a required
     // field an error body does not carry); `keys_query` would not, and
     // `to_device`/`signing_keys_upload` have no body parse to reject
-    // anything at all. See `refuse_a_non_response` for which is which.
-    refuse_a_non_response(response_json)?;
+    // anything at all. See `refuse_a_non_response` for which is which, and
+    // for why it needs the kind: its last rule is stated in terms of the
+    // fields this endpoint's own response declares.
+    refuse_a_non_response(kind, response_json)?;
 
     let transaction_id: OwnedTransactionId = <&TransactionId>::from(id).to_owned();
     let body = response_json.as_bytes().to_vec();
@@ -2593,6 +2756,108 @@ pub async fn mark_request_sent(id: &str, response_json: &str) -> Result<(), Sess
     }
 
     result
+}
+
+/// Whether `status` is one a request that was **refused** can carry.
+///
+/// `0` is accepted and means no response reached the caller at all: a
+/// dropped connection, a DNS failure, a timeout. A product that meets one
+/// has a request it certainly did not get an answer to and no status to
+/// describe it with, and inventing a plausible 5xx to satisfy this argument
+/// would be worse than having a value that says exactly what happened.
+///
+/// `300` through `599` are accepted. A 2xx is not, and that is the whole
+/// point of the check rather than an edge of it; see
+/// [`SessionError::NotAFailureStatus`]. Above 599, and between 1 and 299,
+/// are rejected as the caller-side mistakes they are.
+fn is_a_failure_status(status: u16) -> bool {
+    status == 0 || (300..=599).contains(&status)
+}
+
+/// Reports that the request named by `id` was **refused**: it was sent, and
+/// what came back was not a success.
+///
+/// This is the counterpart to [`mark_request_sent`] and the reason that call
+/// is no longer the only thing a product can say. Before it existed, a
+/// caller that received a 502 from a proxy, or a 503 with an empty body, had
+/// one call available and reporting the failure through it read as a
+/// success.
+///
+/// # What this changes, which is deliberately nothing
+///
+/// A refused request taught this library nothing, so nothing it knows
+/// changes. The `pending` entry is looked up and left exactly where it was,
+/// by the same rule that makes a refused `response_json` retriable: the
+/// request is still outstanding, and the retry is an ordinary second send.
+/// In particular the ordering gate `signing.rs` reads is untouched, which is
+/// the property that matters. Only a *successful* mark sets it, so a request
+/// that is refused, or never reported at all, leaves the gate shut.
+///
+/// **A product that never calls this behaves exactly as it did before.**
+/// That is safe rather than merely tolerable, and the direction is worth
+/// being explicit about: silence leaves a request pending, the gate needs a
+/// positive mark to open, and [`crate::bootstrap_identity`] then refuses
+/// with `AccountKeysNotFetched` rather than minting. The failure mode of
+/// forgetting this call is a bootstrap that will not proceed, which is loud,
+/// and never an identity destroyed.
+///
+/// # What this library cannot tell, and will not pretend to
+///
+/// The unsafe case is not omission. It is calling [`mark_request_sent`] with
+/// the body of a response the server refused, and **the library cannot
+/// detect that from the body in every case.**
+///
+/// [`refuse_a_non_response`] states once what it refuses, what it accepts,
+/// and why the remainder cannot be closed from a body. That statement is not
+/// duplicated here. The short of it is that what gets through is every body
+/// shaped like that endpoint's response, and the empty object is inside that
+/// shape because it *is* the answer a fresh account's key query returns and
+/// the whole success response of the signing-keys upload.
+///
+/// So a 503 that carried no body and a 200 that had nothing to say arrive as
+/// the same bytes. Only the HTTP status separates them, and no status
+/// crosses this boundary on [`mark_request_sent`], which is why this call
+/// takes one.
+///
+/// So the obligation is real and it is the caller's: **branch on the status
+/// first.** A 2xx goes to [`mark_request_sent`] with the body; anything else
+/// comes here. `mark_request_sent(id, res.text())` without that branch is
+/// the first-draft wrapper this whole mechanism exists to survive, and on a
+/// refused `/keys/query` it tells the gate the server answered and this
+/// account has no identity, which is the one fact that authorises minting a
+/// new one over whatever the account already had.
+///
+/// # Refusals
+///
+/// [`SessionError::UnknownRequest`] if `id` names nothing outstanding, by
+/// the same rule and with the same meaning as in [`mark_request_sent`],
+/// including the eviction case that call's doc comment describes.
+///
+/// [`SessionError::NotAFailureStatus`] if `status` is not one a refused
+/// request can carry. A 2xx is the case that matters: it means this call and
+/// [`mark_request_sent`] have been swapped, and since a refusal changes no
+/// state, accepting it silently would let that confusion stand. It is the
+/// single misuse of the pair this library can see for itself, and it sees it
+/// in the argument rather than in the body.
+///
+/// The id is checked before the status, matching [`mark_request_sent`],
+/// which also answers `UnknownRequest` before it looks at anything else.
+pub async fn mark_request_failed(id: &str, status: u16) -> Result<(), SessionError> {
+    {
+        let state = STATE.lock().expect("request registry poisoned");
+        if !state.pending.contains_key(id) {
+            return Err(SessionError::UnknownRequest);
+        }
+    }
+
+    if !is_a_failure_status(status) {
+        return Err(SessionError::NotAFailureStatus);
+    }
+
+    // No machine lock, no parse, no write. The entry stays pending on
+    // purpose: see this function's own doc comment. Returning `Ok` here
+    // means "recorded that you got nothing usable", not "recorded a result".
+    Ok(())
 }
 
 #[cfg(test)]

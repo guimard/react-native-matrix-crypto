@@ -485,6 +485,57 @@ export async function encryptEvent(
 }
 
 /**
+ * Reports that the request named by `id` was refused with `status`.
+ * Mirrors `mark_request_failed`; see its own doc comment in
+ * `matrix-crypto-core::session`, which is where the reasoning about what a
+ * body can and cannot prove is written down.
+ *
+ * Appended after `clear_crypto_observer`, which is after everything else in
+ * this file, for the ordinal reason `CryptoSignal`'s own comment gives.
+ * Async like `mark_request_sent`, whose counterpart it is, even though it
+ * takes no lock a caller has to wait on: a product branches on one status
+ * and calls one or the other, and a pair that had to be awaited differently
+ * would be a trap set for no reason.
+ */
+export async function markRequestFailed(
+  id: string,
+  status: number,
+  asyncOpts_?: { signal: AbortSignal }
+): Promise<void> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_mark_request_failed(
+          FfiConverterString.lower(id, nativeModule().rustbuffer_alloc),
+          FfiConverterUInt16.lower(status, nativeModule().rustbuffer_alloc)
+        );
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_void,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_void,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_void,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_void,
+      /*liftFunc:*/ (_v) => {},
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeSessionFfiError.lift.bind(
+        FfiConverterTypeSessionFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
  * Reports that the request named by `id` was sent, handing back the
  * server's response. Mirrors `mark_request_sent`; see its own doc comment
  * in `matrix-crypto-core::session`.
@@ -2693,6 +2744,7 @@ export enum SessionFfiError_Tags {
   Undecryptable = "Undecryptable",
   SessionRefused = "SessionRefused",
   MalformedIdentifier = "MalformedIdentifier",
+  NotAFailureStatus = "NotAFailureStatus",
 }
 /**
  * Mirror of the core's session error, carrying the UniFFI error derive.
@@ -3007,6 +3059,40 @@ export const SessionFfiError = (() => {
     }
   }
 
+  type NotAFailureStatus__interface = {
+    tag: SessionFfiError_Tags.NotAFailureStatus;
+  };
+  /**
+   * Appended after `MalformedIdentifier` for the ordinal reason above,
+   * not because it belongs at the end. It reads next to `UnknownRequest`,
+   * which is where the core puts it.
+   */
+  class NotAFailureStatus_
+    extends UniffiError
+    implements NotAFailureStatus__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "SessionFfiError";
+    readonly tag = SessionFfiError_Tags.NotAFailureStatus;
+    constructor() {
+      super("SessionFfiError", "NotAFailureStatus");
+    }
+
+    static new(): NotAFailureStatus_ {
+      return new NotAFailureStatus_();
+    }
+
+    static instanceOf(obj: any): obj is NotAFailureStatus_ {
+      return obj.tag === SessionFfiError_Tags.NotAFailureStatus;
+    }
+    static hasInner(obj: any): obj is NotAFailureStatus_ {
+      return false;
+    }
+  }
+
   function instanceOf(obj: any): obj is SessionFfiError {
     return obj[uniffiTypeNameSymbol] === "SessionFfiError";
   }
@@ -3023,6 +3109,7 @@ export const SessionFfiError = (() => {
     Undecryptable: Undecryptable_,
     SessionRefused: SessionRefused_,
     MalformedIdentifier: MalformedIdentifier_,
+    NotAFailureStatus: NotAFailureStatus_,
   });
 })();
 /**
@@ -3070,7 +3157,8 @@ export type SessionFfiError = InstanceType<
     | "UnknownDevice"
     | "Undecryptable"
     | "SessionRefused"
-    | "MalformedIdentifier"]
+    | "MalformedIdentifier"
+    | "NotAFailureStatus"]
 >;
 
 // FfiConverter for enum SessionFfiError
@@ -3099,6 +3187,8 @@ const FfiConverterTypeSessionFfiError = (() => {
           return new SessionFfiError.SessionRefused();
         case 10:
           return new SessionFfiError.MalformedIdentifier();
+        case 11:
+          return new SessionFfiError.NotAFailureStatus();
         default:
           throw new UniffiInternalError.UnexpectedEnumCase();
       }
@@ -3145,6 +3235,10 @@ const FfiConverterTypeSessionFfiError = (() => {
           c.writeI32(10);
           return;
         }
+        case SessionFfiError_Tags.NotAFailureStatus: {
+          c.writeI32(11);
+          return;
+        }
         default:
           // Throwing from here means that SessionFfiError_Tags hasn't matched an ordinal.
           throw new UniffiInternalError.UnexpectedEnumCase();
@@ -3180,6 +3274,9 @@ const FfiConverterTypeSessionFfiError = (() => {
           return 4;
         }
         case SessionFfiError_Tags.MalformedIdentifier: {
+          return 4;
+        }
+        case SessionFfiError_Tags.NotAFailureStatus: {
           return 4;
         }
         default:
@@ -3737,6 +3834,14 @@ function uniffiEnsureInitialized() {
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       "uniffi_matrix_crypto_ffi_checksum_func_encrypt_event"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_mark_request_failed() !==
+    19878
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_mark_request_failed"
     );
   }
   if (

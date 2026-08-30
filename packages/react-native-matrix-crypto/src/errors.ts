@@ -34,6 +34,17 @@ export type CryptoErrorKind =
   // whose payload was fine to go and inspect it.
   | 'malformed_payload'
   | 'unknown_request'
+  // `markRequestFailed` was given a status that is not one a refused request
+  // can carry. Accepted are 0, meaning nothing came back at all, and 300
+  // through 599. The case this exists to catch is a **2xx**: it means
+  // `markRequestFailed` and `markRequestSent` have been swapped, and since
+  // reporting a refusal changes no state, saying nothing would let that
+  // stand. It is the confusion this call can see in its own arguments, not
+  // the only one the library catches: reporting a refused response through
+  // `markRequestSent` is caught too whenever the body is not shaped like
+  // that endpoint's answer. What neither can see is a refusal whose body is
+  // shaped like one.
+  | 'not_a_failure_status'
   | 'failed'
   // Reserved for genuine store corruption, which decryption work does not
   // currently detect; nothing maps to it yet. Kept distinct from
@@ -171,6 +182,10 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   ['MalformedPayload', 'malformed_payload'],
   ['Failed', 'failed'],
   ['UnknownRequest', 'unknown_request'],
+  // `markRequestFailed` handed a status that is not a refusal. See the
+  // kind's own comment in the union above for why a 2xx is the case that
+  // matters.
+  ['NotAFailureStatus', 'not_a_failure_status'],
   // `MachineError::Store` means the store could not be opened -- often a
   // wrong passphrase or a permissions problem, not damaged data. Mapping it
   // to 'store_corrupt' would send a product down a destructive recovery path

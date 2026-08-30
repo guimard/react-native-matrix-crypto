@@ -743,6 +743,11 @@ pub enum SessionFfiError {
     SessionRefused,
     #[error("an identifier could not be parsed")]
     MalformedIdentifier,
+    /// Appended after `MalformedIdentifier` for the ordinal reason above,
+    /// not because it belongs at the end. It reads next to `UnknownRequest`,
+    /// which is where the core puts it.
+    #[error("the status is not one a refused request can carry")]
+    NotAFailureStatus,
 }
 
 impl From<matrix_crypto_core::SessionError> for SessionFfiError {
@@ -759,6 +764,7 @@ impl From<matrix_crypto_core::SessionError> for SessionFfiError {
             matrix_crypto_core::SessionError::SessionRefused => Self::SessionRefused,
             matrix_crypto_core::SessionError::UnknownDevice => Self::UnknownDevice,
             matrix_crypto_core::SessionError::Undecryptable => Self::Undecryptable,
+            matrix_crypto_core::SessionError::NotAFailureStatus => Self::NotAFailureStatus,
         }
     }
 }
@@ -933,4 +939,22 @@ pub fn set_crypto_observer(observer: Arc<dyn CryptoObserver>) {
 #[uniffi::export]
 pub fn clear_crypto_observer() {
     matrix_crypto_core::clear_crypto_observer();
+}
+
+/// Reports that the request named by `id` was refused with `status`.
+/// Mirrors `mark_request_failed`; see its own doc comment in
+/// `matrix-crypto-core::session`, which is where the reasoning about what a
+/// body can and cannot prove is written down.
+///
+/// Appended after `clear_crypto_observer`, which is after everything else in
+/// this file, for the ordinal reason `CryptoSignal`'s own comment gives.
+/// Async like `mark_request_sent`, whose counterpart it is, even though it
+/// takes no lock a caller has to wait on: a product branches on one status
+/// and calls one or the other, and a pair that had to be awaited differently
+/// would be a trap set for no reason.
+#[uniffi::export]
+pub async fn mark_request_failed(id: String, status: u16) -> Result<(), SessionFfiError> {
+    matrix_crypto_core::mark_request_failed(&id, status)
+        .await
+        .map_err(Into::into)
 }

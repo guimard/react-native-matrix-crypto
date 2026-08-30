@@ -179,6 +179,15 @@ describe('toCryptoError against the real UniFFI error shape', () => {
     expect(err.retriable).toBe(false)
   })
 
+  it('maps a real UniFFI-shaped SessionFfiError.NotAFailureStatus to kind not_a_failure_status', () => {
+    const err = toCryptoError(new Error('SessionFfiError.NotAFailureStatus'))
+    expect(err.kind).toBe('not_a_failure_status')
+    // Pinned like every neighbour in this block: retrying the same call with
+    // the same status changes nothing, so this kind must stay out of
+    // RETRIABLE. A review found this the one case here asserting only half.
+    expect(err.retriable).toBe(false)
+  })
+
   it('maps a real UniFFI-shaped SessionFfiError.UnknownRequest to kind unknown_request', () => {
     const err = toCryptoError(new Error('SessionFfiError.UnknownRequest'))
     expect(err.kind).toBe('unknown_request')

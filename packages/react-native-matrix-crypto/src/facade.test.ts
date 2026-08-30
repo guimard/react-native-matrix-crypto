@@ -15,6 +15,7 @@ import {
   getDeviceStatuses,
   getVerificationMaterial,
   getVerificationStage,
+  markRequestFailed,
   markRequestSent,
   openCryptoStore,
   receiveSyncChanges,
@@ -33,6 +34,7 @@ import {
   deviceStatuses as nativeDeviceStatuses,
   encryptEvent as nativeEncryptEvent,
   MachineFfiError,
+  markRequestFailed as nativeMarkRequestFailed,
   markRequestSent as nativeMarkRequestSent,
   openCryptoStore as nativeOpenCryptoStore,
   receiveSyncChanges as nativeReceiveSyncChanges,
@@ -111,6 +113,7 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
     })),
     shareScopeKey: vi.fn(async () => undefined),
     takeOutgoingRequests: vi.fn(async () => [{ id: 'req-1', kind: 'keys_upload', body: '{}' }]),
+    markRequestFailed: vi.fn(async () => undefined),
     markRequestSent: vi.fn(async () => undefined),
     // Task 3: the verification surface. Stateless defaults again, and
     // deliberately distinguishable from anything a facade test supplies, so
@@ -783,6 +786,39 @@ describe('markRequestSent wiring to the native layer', () => {
     const call = vi.mocked(nativeMarkRequestSent).mock.calls.at(-1)
     expect(call?.[0]).toBe('req-1')
     expect(call?.[1]).toBe('{"ok":true}')
+  })
+})
+
+/**
+ * The counterpart added so a refusal has somewhere to go. The status must
+ * arrive as a number and unaltered: the core is what decides which values
+ * are a refusal, and a facade that clamped, defaulted or stringified one
+ * would take that decision away from it silently.
+ */
+describe('markRequestFailed wiring to the native layer', () => {
+  it('forwards id and status verbatim', async () => {
+    await expect(markRequestFailed('req-1', 502)).resolves.toBeUndefined()
+
+    const call = vi.mocked(nativeMarkRequestFailed).mock.calls.at(-1)
+    expect(call?.[0]).toBe('req-1')
+    expect(call?.[1]).toBe(502)
+  })
+
+  it('forwards 0, which means no response arrived at all, rather than treating it as absent', async () => {
+    await expect(markRequestFailed('req-1', 0)).resolves.toBeUndefined()
+
+    const call = vi.mocked(nativeMarkRequestFailed).mock.calls.at(-1)
+    expect(call?.[1]).toBe(0)
+  })
+
+  it('surfaces a native rejection as a CryptoError rather than the raw value', async () => {
+    vi.mocked(nativeMarkRequestFailed).mockRejectedValueOnce(
+      new Error('SessionFfiError.NotAFailureStatus'),
+    )
+
+    await expect(markRequestFailed('req-1', 200)).rejects.toMatchObject({
+      kind: 'not_a_failure_status',
+    })
   })
 })
 
