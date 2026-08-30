@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { runInteropSuite } from './suite'
+import { describe, expect, it, vi } from 'vitest'
+import { awaitSignalDelivery, runInteropSuite } from './suite'
 import { referenceBinding } from './reference'
 
 describe('interop suite', () => {
@@ -96,6 +96,50 @@ describe('interop suite', () => {
       const signal = checks.find((c) => c.name === 'signal')
       expect(signal?.ok).toBe(true)
       expect(signal?.detail).toBe('probe_started')
+    }
+  })
+})
+
+// This helper is shared, not private, because two callers need it and only
+// one of them had it: the suite above waited, and the example app's guided
+// walkthrough read the same kind of array immediately, so a device could
+// show `signal PASS` here and "no signal received" on the screen beside it
+// in the same minutes. These three pin the properties that fix rests on.
+// They test the helper, not the screen; the example app has no test runner,
+// so nothing automated covers `GuidedFlow` itself.
+describe('awaitSignalDelivery', () => {
+  it('reports a callback that lands after the caller has started waiting', async () => {
+    // The defect itself: the observer reaches JavaScript after whatever the
+    // caller awaited before it. Reading straight through returns false here.
+    let arrived = false
+    setTimeout(() => {
+      arrived = true
+    }, 50)
+
+    await expect(awaitSignalDelivery(() => arrived, 5000)).resolves.toBe(true)
+  })
+
+  it('gives up and reports false when the callback never lands', async () => {
+    // The other half. A wait that can only ever return true is not a check,
+    // and this helper backs two of them. The budget is shortened because
+    // this is about the branch, not about the number the default carries.
+    const startedAt = Date.now()
+
+    await expect(awaitSignalDelivery(() => false, 100)).resolves.toBe(false)
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(100)
+  })
+
+  it('schedules nothing when the callback has already landed', async () => {
+    // Why a screen a person is watching can afford to share the suite's
+    // ten-second budget: the budget is only ever spent by a caller that is
+    // not going to get its signal. Asserted against the scheduler rather
+    // than against a stopwatch, so it cannot pass by being merely fast.
+    const timer = vi.spyOn(globalThis, 'setTimeout')
+    try {
+      await expect(awaitSignalDelivery(() => true, 5000)).resolves.toBe(true)
+      expect(timer).not.toHaveBeenCalled()
+    } finally {
+      timer.mockRestore()
     }
   })
 })
