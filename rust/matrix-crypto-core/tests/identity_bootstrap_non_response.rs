@@ -113,6 +113,21 @@ const NO_IDENTITY_ANSWER: &str = r#"{"device_keys":{}}"#;
 /// library. This is the half of the positive rule that has to be right.
 const REAL_ANSWER_WITH_UNKNOWN_FIELD: &str = r#"{"one_time_key_counts":{},"next_spec_field":1}"#;
 
+/// **Hybrids: a real declared field carried alongside an error marker.**
+/// These are the only bodies the `errcode`/`error`/`flows` rule catches that
+/// the positive rule does not, which makes them the whole reason that rule
+/// still exists as its own step. Each carries `device_keys`, so the shape
+/// test passes them, and each is a failure. Deleting the marker block leaves
+/// the rest of this file green and lets the first of these mint an identity.
+///
+/// Not hypothetical: a homeserver behind a gateway that merges its own error
+/// envelope into an upstream 200 body produces exactly this, and so does a
+/// partial response an intermediary annotated rather than replaced.
+const HYBRID_ERRCODE: &str = r#"{"device_keys":{},"errcode":"M_LIMIT_EXCEEDED"}"#;
+const HYBRID_ERROR: &str = r#"{"device_keys":{},"error":"Bad Gateway"}"#;
+const HYBRID_FLOWS: &str =
+    r#"{"device_keys":{},"flows":[{"stages":["m.login.password"]}],"session":"s"}"#;
+
 /// A real `/keys/query` success whose per-server `failures` map carries both
 /// an `errcode` and an `error` **nested** inside it, once per unreachable
 /// server. This must be accepted: only the top level is inspected, and
@@ -184,6 +199,24 @@ fn a_body_that_is_not_a_response_cannot_open_the_bootstrap_gate() {
                  number here and nothing keys on it: the rule is about which fields the \
                  response type declares, not about spotting an error",
             ),
+            (
+                HYBRID_ERRCODE,
+                "a real `device_keys` carried alongside an `errcode`. The shape rule passes \
+                 this, because `device_keys` is a field this endpoint declares, so the marker \
+                 rule is the only thing that refuses it. Accepted, it is read as a successful \
+                 key query naming no identity and the account is minted a second one",
+            ),
+            (
+                HYBRID_ERROR,
+                "the same hybrid with the non-conformant `error` key, which is the half of \
+                 the marker rule that can be dropped on its own without any other test in \
+                 this crate noticing",
+            ),
+            (
+                HYBRID_FLOWS,
+                "the same hybrid with a challenge's `flows`. A 401 whose body an intermediary \
+                 merged into a partial answer is still a 401",
+            ),
         ] {
             assert_eq!(
                 mark_request_sent(&query.id, body).await,
@@ -228,14 +261,15 @@ fn a_body_that_is_not_a_response_cannot_open_the_bootstrap_gate() {
             );
         }
 
-        // --- Act 2: the two bodies no check can ever separate ---------------
+        // --- Act 2: the body no check separates, in its three spellings ----
         //
-        // `{}` and a completely empty body are a *real* `/keys/query` answer
-        // meaning "this account has no identity", which is the one fact that
-        // authorises a mint. A 502 whose body was empty produces the same
-        // bytes. There is nothing in them to tell apart, so a product that
-        // branches on the status says so with `mark_request_failed` and the
-        // gate stays shut. That is the whole reason the call exists.
+        // All three are an object with no keys by the time anything looks,
+        // and that object is a *real* `/keys/query` answer meaning "this
+        // account has no identity", which is the one fact that authorises a
+        // mint. A 502 whose body was empty produces the same bytes. There is
+        // nothing in them to tell apart, so a product that branches on the
+        // status says so with `mark_request_failed` and the gate stays shut.
+        // That is the whole reason the call exists.
         for (body, status) in [
             (EMPTY_OBJECT, 502u16),
             (EMPTY_BODY, 503u16),
@@ -275,6 +309,33 @@ fn a_body_that_is_not_a_response_cannot_open_the_bootstrap_gate() {
             mark_request_failed(&query.id, 600).await,
             Err(SessionError::NotAFailureStatus),
             "600 is not an HTTP status"
+        );
+
+        // The three boundaries of the accepted range, driven either side.
+        // A range written as `300..=599` is one keystroke from `200..=599`,
+        // and that keystroke is the difference between catching the swapped
+        // pair and not.
+        assert_eq!(
+            mark_request_failed(&query.id, 299).await,
+            Err(SessionError::NotAFailureStatus),
+            "299 is a success, and the last one: the range must not reach down into 2xx"
+        );
+        mark_request_failed(&query.id, 300)
+            .await
+            .expect("300 is the first status a refused request can carry");
+        mark_request_failed(&query.id, 599)
+            .await
+            .expect("599 is the last status a refused request can carry");
+
+        // The id is checked before the status, which the doc comment states
+        // and nothing pinned. A bogus id with a bogus status must answer for
+        // the id, or a caller holding a superseded id is sent to inspect an
+        // argument that is not their problem.
+        assert_eq!(
+            mark_request_failed("not-a-request-this-machine-issued", 200).await,
+            Err(SessionError::UnknownRequest),
+            "both arguments are wrong here, and the answer must be the id: that ordering is \
+             documented, and it decides which of the two a caller goes and looks at"
         );
 
         // A transport failure carries no status at all. Inventing a plausible
