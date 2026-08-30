@@ -878,11 +878,36 @@ pub async fn confirm_flow(flow: &FlowId) -> Result<(), MachineError> {
         queue(request);
     }
     // Produced only once this device has a cross-signing identity to sign
-    // with, which nothing in this library sets up yet, so this is a branch
-    // that does not run today. Queued rather than dropped anyway: it is the
-    // message that would publish the verification to the rest of the
-    // account, and a silently discarded one would be invisible on every
-    // other device.
+    // with. This said nothing in this library sets one up, and that
+    // stopped being true when `signing::bootstrap_identity` landed, so the
+    // precondition is now satisfiable and the branch is live rather than
+    // dead.
+    //
+    // It is one of two producers of the same request, and which one fires
+    // is decided by the flow's shape, not by anything here. Upstream
+    // finishes a comparison from a confirmation only out of
+    // `InnerSas::MacReceived` with `started_from_request` false, so a flow
+    // that arrived as a bare start is signed *here*, while a flow that came
+    // from a request is signed later, when the peer's own acknowledgement
+    // arrives: `VerificationMachine::mark_sas_as_done` queues the request
+    // for itself and it reaches the pump through
+    // `OlmMachine::outgoing_requests()` like any other reaction. Both
+    // therefore reach the pump, and neither needed a change here.
+    //
+    // **Only the second of the two is driven by a test.**
+    // `tests/verified_sender.rs` verifies through a requested flow, and
+    // that was confirmed rather than assumed: asserting `is_none()` here
+    // leaves that test passing. So this branch's own firing is still
+    // unwitnessed, and a test that drives a bare-start comparison against
+    // a cross-signed counterparty is what would witness it.
+    //
+    // Queued rather than dropped, which is what mattered before either
+    // could run: this is the message that publishes the verification to
+    // the rest of the account, and without it the sender's master key
+    // never carries our signature, so nothing this device verified would
+    // ever read as an authenticated sender. See `SenderVerification`'s own
+    // doc comment for what the signature is worth and what still has to
+    // happen to it.
     if let Some(upload) = signature_upload {
         queue(upload);
     }
