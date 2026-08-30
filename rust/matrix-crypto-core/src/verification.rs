@@ -1004,11 +1004,14 @@ fn queue(request: impl Into<UpstreamOutgoingRequest>) {
 /// Asks a device to verify itself against this one.
 ///
 /// Advertises [`announced_methods`] rather than upstream's default list, for
-/// the reason that function gives: advertising a method this library cannot
-/// carry out is a claim the far side may act on, and taking a default is
-/// letting somebody else decide what this library claims. Whether a
-/// scannable code is among them is [`offer_scanning`]'s answer, and it is
-/// off until a product says otherwise.
+/// the reason that function gives: taking a default is letting somebody
+/// else decide what this library claims. The reason used to be that
+/// advertising a method this library cannot carry out is a claim the far
+/// side may act on, and it has moved rather than gone: this library can
+/// carry out both methods now, and what it may not claim is that a
+/// *product* can point a camera at a screen. Whether a scannable code is
+/// among them is [`offer_scanning`]'s answer, and it is off until a product
+/// says otherwise.
 pub async fn request_flow(user_id: &str, device_id: &str) -> Result<FlowId, MachineError> {
     // Owned before the closure, not borrowed, for the reason
     // `identity.rs` documents: `with_machine` requires a `'static` closure.
@@ -1170,8 +1173,11 @@ pub async fn request_self_flow() -> Result<FlowId, MachineError> {
             };
 
             // [`announced_methods`], not upstream's default list, for
-            // `request_flow`'s reason: advertising a method this library
-            // cannot carry out is a claim the far side may act on.
+            // `request_flow`'s reason: what a flow announces is a claim the
+            // far side may act on, and with codes it is a claim about the
+            // product rather than about this library. This is the third of
+            // the three call sites, and the one `qr_self_new_login_shows`
+            // reads off the wire.
             let (request, outgoing) = identity
                 .request_verification_with_methods(announced_methods().to_vec())
                 .await
