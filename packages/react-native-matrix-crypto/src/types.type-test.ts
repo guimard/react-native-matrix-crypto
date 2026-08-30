@@ -14,6 +14,7 @@ import { asCryptoScopeId } from './types'
 import type {
   confirmScan,
   getVerificationCode,
+  offerScannableCodes,
   ScannableCode as PublishedScannableCode,
   submitScannedCode,
 } from './index'
@@ -159,8 +160,14 @@ void bad; void known; void future; void envelope; void decrypted
 // Referenced so the type-only imports above are not merely present but used;
 // an unused import is the shape a later edit deletes as dead.
 const published: PublishedScannableCode = code
-const surface: [typeof getVerificationCode, typeof submitScannedCode, typeof confirmScan] | undefined =
-  undefined
+const surface:
+  | [
+      typeof offerScannableCodes,
+      typeof getVerificationCode,
+      typeof submitScannedCode,
+      typeof confirmScan,
+    ]
+  | undefined = undefined
 
 void rawBuffer; void nestedGrid; void code; void published; void surface
 void fabricatedTrust; void fabricatedStage; void trust; void stage

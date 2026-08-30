@@ -324,6 +324,28 @@ pub fn offer_scanning(enabled: bool) {
     SCANNING_OFFERED.store(enabled, Ordering::Relaxed);
 }
 
+/// What [`offer_scanning`] was last told.
+///
+/// **Not a question a product has to ask**, and deliberately not crossed to
+/// the published surface: the switch is the caller's own state, which is
+/// exactly what [`offer_scanning`] leans on when it explains how a caller
+/// tells the two causes of [`MachineError::CodeNotOffered`] apart. A getter
+/// on that surface would invite a product to read back a decision it made,
+/// and to treat the answer as though it described the wire, which it does
+/// not: what a *flow* announces is fixed when that flow is created.
+///
+/// It is public for one reason, and it is a testing reason. Setting the
+/// switch has no observable effect anywhere outside this module, so the
+/// bridge that crosses [`offer_scanning`] to another language has nothing to
+/// be checked against: a bridge function whose body dropped its argument
+/// would compile, export, and pass every test in this repository, and the
+/// symptom would be a product that turned codes on and was told
+/// `CodeNotOffered` on the first flow it tried. `matrix-crypto-ffi`'s own
+/// tests read this to close that hole.
+pub fn scanning_offered() -> bool {
+    SCANNING_OFFERED.load(Ordering::Relaxed)
+}
+
 /// The methods this library announces, which is every method it can
 /// actually carry out right now.
 ///

@@ -27,6 +27,7 @@ import {
   identityStatus as nativeIdentityStatus,
   markRequestFailed as nativeMarkRequestFailed,
   markRequestSent as nativeMarkRequestSent,
+  offerScanning as nativeOfferScanning,
   openCryptoStore as nativeOpenCryptoStore,
   receiveSyncChanges as nativeReceiveSyncChanges,
   recoverIdentity as nativeRecoverIdentity,
@@ -1552,6 +1553,71 @@ export async function cancelVerification(verificationId: string): Promise<void> 
 }
 
 /**
+ * Says whether this product can show a scannable code and read one.
+ *
+ * **Off until you call this, and a build that never does says on the wire
+ * exactly what it said before codes existed here.** Nothing about a
+ * consumer's verifications changes because this library grew a feature they
+ * do not use. Turning it on is one line and it is yours to write, because
+ * the two claims a code makes are claims about the *product*: it owns the
+ * camera, the screen and the scanner, and this library cannot know whether
+ * you built any of them.
+ *
+ * # Both settings cost something, so both are written down
+ *
+ * **On when you cannot really scan:** the other side's client is told this
+ * one can, so it shows its user a code and asks them to point a camera at
+ * it. Nothing here can read it. **No error reaches either product**, because
+ * nothing was asked of this library, and the flow simply stalls until the
+ * protocol's own ten-minute timeout. The person who pays is a user who did
+ * nothing wrong, and neither product can see it happen.
+ *
+ * **Off when you meant to be on:** {@link getVerificationCode} refuses with
+ * `'code_not_offered'` on the first flow you try it on. A named error, at
+ * integration time, in front of the person who can fix it in one line.
+ *
+ * That asymmetry is the whole argument for the default. A developer holding
+ * an error message is cheap; a user staring at a code nobody can scan, with
+ * the product blind to it, is not.
+ *
+ * # Off does more than stay quiet
+ *
+ * It makes a code unavailable rather than merely unadvertised, in both
+ * directions, and that is not this library's choice: a code exists only if
+ * *both* sides announced their half. So with this off, the peer's own client
+ * produces no code either and falls through to the short string, exactly as
+ * it did against every earlier release.
+ *
+ * # When to call it
+ *
+ * Before opening or answering any flow a code might be used on. What a flow
+ * announces is fixed when that flow is created or agreed to, so calling this
+ * afterwards changes nothing about a verification already under way. Once at
+ * start-up, next to {@link createCryptoMachine}, is the usual place.
+ *
+ * It applies to the whole process rather than to one flow, because it
+ * describes the product, and a product does not have a camera on some of its
+ * verifications and not others.
+ *
+ * **Not asynchronous, unlike almost everything else here.** It sets one flag
+ * and cannot fail, and the shape is deliberate: an awaitable call that a
+ * caller forgot to await could land after the flow it was meant to affect
+ * had already said what it can do.
+ */
+export function offerScannableCodes(enabled: boolean): void {
+  try {
+    nativeOfferScanning(enabled)
+  } catch (e) {
+    // Cannot fail on the Rust side: it stores a boolean and returns nothing.
+    // Wrapped anyway, because the layer between here and there can fail on
+    // its own -- a native module that never installed throws from every call
+    // that reaches for it -- and a product should catch one kind of thing
+    // from this surface rather than two.
+    throw toCryptoError(e)
+  }
+}
+
+/**
  * The code for this flow, for a person to hold up to another camera.
  *
  * # What your product has to do, and what this library will not
@@ -1596,8 +1662,11 @@ export async function cancelVerification(verificationId: string): Promise<void> 
  * point: the layer underneath answers seven different conditions with an
  * empty code and a warning nobody reads, and this call names them instead.
  *
- * - `'code_not_offered'` -- the other device never offered to scan. Waiting
- *   will never help; offer a short-string comparison instead.
+ * - `'code_not_offered'` -- codes were not negotiated on this flow. Waiting
+ *   will never help. Two causes, and you can always tell which: either this
+ *   build never called {@link offerScannableCodes}, or the other device did
+ *   not offer to scan, in which case offer a short-string comparison
+ *   instead.
  * - `'identity_not_known'` -- this account has no signing identity for the
  *   code to carry. See {@link bootstrapCrossSigning}.
  * - `'peer_identity_not_known'` -- the *other* user has none, and nothing

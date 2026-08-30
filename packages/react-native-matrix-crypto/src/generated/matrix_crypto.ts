@@ -818,6 +818,31 @@ export async function markRequestSent(
 }
 
 /**
+ * Says whether this product can show a code and read one. Mirrors
+ * `offer_scanning`; see its own doc comment in
+ * `matrix-crypto-core::verification` for what each setting costs, who pays
+ * it, and why off does more than stay quiet.
+ *
+ * **Not `async` and not fallible, unlike every other exported call here.**
+ * It sets one process-wide flag, touches no store and cannot fail, and the
+ * synchronous shape is deliberate rather than incidental: a caller must set
+ * this *before* opening or answering a flow, and an asynchronous one that a
+ * caller forgot to await could land after the flow it was meant to affect
+ * had already announced what it can do.
+ */
+export function offerScanning(enabled: boolean): void {
+  uniffiCaller.rustCall(
+    /*caller:*/ (callStatus) => {
+      nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_offer_scanning(
+        FfiConverterBool.lower(enabled, nativeModule().rustbuffer_alloc),
+        callStatus
+      );
+    },
+    /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString)
+  );
+}
+
+/**
  * Reopens a store written by an earlier process. Mirrors `open_store`,
  * which is the same operation as `create_machine` under a name that says
  * what the caller means; see that function's own doc comment in
@@ -5125,6 +5150,14 @@ function uniffiEnsureInitialized() {
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       "uniffi_matrix_crypto_ffi_checksum_func_mark_request_sent"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_offer_scanning() !==
+    21506
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_offer_scanning"
     );
   }
   if (
