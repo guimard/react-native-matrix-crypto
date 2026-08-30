@@ -338,7 +338,16 @@ impl From<MachineError> for SessionError {
             // module for the same reason as the three flow kinds above:
             // unreachable through this conversion, listed by name so a
             // future variant still has to be ruled on here.
-            | MachineError::IdentityNotKnown => SessionError::Failed,
+            | MachineError::IdentityNotKnown
+            // `recovery.rs`'s four, on the same rule again. That module
+            // returns `MachineError` directly and never routes through this
+            // conversion, so all four are unreachable here; they are listed
+            // by name rather than caught by a wildcard so the next variant
+            // added anywhere still has to be ruled on in this match.
+            | MachineError::PrivateKeysNotHeld
+            | MachineError::RecoveryNotSetUp
+            | MachineError::RecoveryKeyIncorrect
+            | MachineError::RecoveryDataMalformed => SessionError::Failed,
         }
     }
 }

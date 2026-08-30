@@ -197,7 +197,7 @@ fn store_failed() -> MachineError {
     }
 }
 
-async fn read_status(machine: &OlmMachine) -> Result<IdentityStatus, MachineError> {
+pub(crate) async fn read_status(machine: &OlmMachine) -> Result<IdentityStatus, MachineError> {
     // `None` as the timeout, not a duration: with `Some`, upstream waits for
     // an in-flight key query for this account to land
     // (`wait_if_user_pending`, `machine/mod.rs:2646`), and a read of what is

@@ -130,6 +130,39 @@ export type CryptoErrorKind =
   // {@link bootstrapCrossSigning}, not a retry. Deliberately absent from
   // RETRIABLE below: calling again changes nothing until an identity exists.
   | 'identity_not_known'
+  // ---- server-side recovery ----------------------------------------------
+  // All four cross the FFI boundary. The pair in the middle is the one this
+  // surface exists to keep apart, and the one a product's error message
+  // turns on.
+  //
+  // `createRecovery` on a device that does not hold all three private
+  // signing keys. There is nothing to write; `getIdentityStatus` says
+  // whether the remedy is to create an identity or to join one.
+  | 'private_keys_not_held'
+  // The account data handed to `recoverIdentity` carries no complete
+  // recovery. Either this account has none, or not all of it was fetched;
+  // that call's own doc comment names the five events a complete one has.
+  // This library sees only what it was given, so it cannot tell the two
+  // apart, and says so rather than guessing.
+  | 'recovery_not_set_up'
+  // The passphrase or recovery key does not open the stored recovery, which
+  // is otherwise intact. **The one refusal on this surface a user fixes by
+  // typing again**, which is why it is not folded into the kind below.
+  // Deliberately absent from RETRIABLE: retrying the same call with the same
+  // secret fails the same way every time, and what resolves it is a
+  // different secret rather than a repeat.
+  | 'recovery_key_incorrect'
+  // The stored recovery cannot be read, so no secret will open it: damaged
+  // or unparseable account data, and also a recovery written for an identity
+  // this account has since replaced. The remedy is to set recovery up again
+  // from a device that still holds the keys.
+  //
+  // Folding this with 'recovery_key_incorrect' is the defect both exist to
+  // prevent, and it goes wrong in both directions: a user with a typo told
+  // their identity is destroyed does the one thing that destroys it, and a
+  // user whose recovery really is unreadable retypes a correct passphrase
+  // forever.
+  | 'recovery_data_malformed'
   | 'not_implemented'
   | 'not_initialised'
   | 'already_initialised'
@@ -278,6 +311,17 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   // none at all. A product told the wrong one either waits for an identity
   // that does not exist or refuses to create the one that is missing.
   ['IdentityNotKnown', 'identity_not_known'],
+  // The four `MachineFfiError` variants server-side recovery added. Without
+  // these entries every one of them arrives as kind 'unknown' with the
+  // message "crypto error: unknown", which is the failure mode this map
+  // exists to prevent and which no test on the Rust side can see. It matters
+  // most for the middle pair: the Rust side proves a wrong passphrase and an
+  // unreadable recovery are told apart, and this map is the only thing that
+  // decides whether a product can act on the difference.
+  ['PrivateKeysNotHeld', 'private_keys_not_held'],
+  ['RecoveryNotSetUp', 'recovery_not_set_up'],
+  ['RecoveryKeyIncorrect', 'recovery_key_incorrect'],
+  ['RecoveryDataMalformed', 'recovery_data_malformed'],
 ])
 
 // 'session_refused' is deliberately not here: see its own doc comment on

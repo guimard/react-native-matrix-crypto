@@ -194,6 +194,81 @@ pub enum MachineError {
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("this account has no signing identity to verify against")]
     IdentityNotKnown,
+    /// This device does not hold the account's complete private signing
+    /// keys, so there is nothing for it to write into server-side storage.
+    ///
+    /// Distinguished from `IdentityNotKnown`, which is about the *account*
+    /// having no identity at all, and from `IdentityAlreadyExists`, which is
+    /// a bootstrap refusing. This one says the account's identity is not the
+    /// question: whatever the account has, this device cannot write a copy
+    /// of what it does not hold. The remedy is whichever of
+    /// `crate::bootstrap_identity` or `crate::request_self_flow` applies,
+    /// and `IdentityStatus` is what says which.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("this device does not hold the account's private signing keys")]
+    PrivateKeysNotHeld,
+    /// The account data handed to `crate::recover_identity` holds no
+    /// complete server-side recovery to restore from.
+    ///
+    /// **Two situations arrive here and this library cannot tell them
+    /// apart, which is stated rather than hidden.** Either the account has
+    /// no recovery -- nobody ever ran `crate::create_recovery`, or the
+    /// writes it produced were never all completed -- or the caller did not
+    /// hand over all of the account data that does exist. This call sees
+    /// only what it was given, so those two are the same observation from
+    /// here. `crate::recover_identity`'s own doc comment names every account
+    /// data event a complete recovery needs, which is what turns the second
+    /// case into something a caller can check.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("no complete server-side recovery was supplied")]
+    RecoveryNotSetUp,
+    /// The passphrase or recovery key does not open this account's
+    /// server-side recovery.
+    ///
+    /// **Kept apart from `RecoveryDataMalformed`, and that separation is the
+    /// point of both.** This one is a typo: the stored recovery is intact,
+    /// the secret was wrong, and asking the user again is the whole remedy.
+    /// The other means no secret will ever open it. A product that folded
+    /// them would either tell a user with a typo that their recovery is
+    /// destroyed, or leave a user whose recovery really is destroyed
+    /// retyping forever.
+    ///
+    /// Upstream draws the same line rather than this crate inventing it:
+    /// `SecretStorageKey::from_account_data` verifies the reconstructed key
+    /// against a MAC stored alongside the key description and reports
+    /// `DecodeError::Mac` when it does not match
+    /// (`matrix-sdk-crypto-0.18.0/src/secret_storage.rs`). Every other
+    /// `DecodeError` variant describes input this library could not parse at
+    /// all, which is the other error.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("the passphrase or recovery key does not open this recovery")]
+    RecoveryKeyIncorrect,
+    /// A server-side recovery was supplied and could not be read.
+    ///
+    /// The mirror image of `RecoveryKeyIncorrect`: no secret opens this, so
+    /// a product must stop asking for one. What lands here is account data
+    /// that is not JSON, a key description this library cannot parse or
+    /// whose algorithm it does not implement, an encrypted secret whose own
+    /// MAC does not verify under a key that did verify, and a stored seed
+    /// that is not a signing key.
+    ///
+    /// **One further case is deliberately folded in here and named rather
+    /// than left to be discovered: a recovery written for an identity the
+    /// account has since replaced.** Upstream reports that distinguishably
+    /// (`SecretImportError::MismatchedPublicKeys`), and it is not damaged
+    /// data. It is folded because a product does the same thing about both,
+    /// which is to stop asking for a passphrase and set recovery up again;
+    /// the distinction that changes what a product *says* is a wrong
+    /// passphrase, and that one is a variant of its own. If a product is
+    /// ever found needing to word those two differently, splitting this is
+    /// the change to make.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("the stored recovery could not be read")]
+    RecoveryDataMalformed,
 }
 
 struct Held {

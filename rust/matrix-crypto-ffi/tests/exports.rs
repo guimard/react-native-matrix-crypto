@@ -74,3 +74,32 @@ async fn the_self_verification_call_reaches_the_core() {
         matrix_crypto_ffi::MachineFfiError::NotInitialised
     ));
 }
+
+/// The two server-side recovery calls reach the core, with the same three
+/// ways of going wrong as the calls above: absent, wired to the wrong core
+/// function, or swallowing the core's error.
+///
+/// The same limit applies as above, and is worth restating because these two
+/// have four refusals between them: a body of
+/// `Err(MachineFfiError::NotInitialised)` would pass this, and no test
+/// reachable from here can tell it apart. What drives the served path and
+/// every refusal against a real store is the core's own
+/// `src/recovery.rs` tests and `tests/recovery_refusals.rs`.
+#[tokio::test]
+async fn the_recovery_calls_reach_the_core() {
+    // `unwrap_err` is unavailable here: `RecoverySetup` has no `Debug`
+    // derive on purpose, because it carries the recovery key. Matched
+    // instead, which asserts the same thing.
+    assert!(matches!(
+        matrix_crypto_ffi::create_recovery("passphrase".to_string()).await,
+        Err(matrix_crypto_ffi::MachineFfiError::NotInitialised)
+    ));
+
+    let err = matrix_crypto_ffi::recover_identity("passphrase".to_string(), Vec::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        matrix_crypto_ffi::MachineFfiError::NotInitialised
+    ));
+}

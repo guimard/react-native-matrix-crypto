@@ -9,6 +9,7 @@ mod identity;
 mod machine;
 mod observer;
 mod probe;
+mod recovery;
 mod runtime;
 mod session;
 mod signing;
@@ -22,6 +23,7 @@ pub use observer::{
     ProbeObserver, ProbeSignal,
 };
 pub use probe::{probe, ProbeReport};
+pub use recovery::{create_recovery, recover_identity, AccountDataEntry, RecoverySetup};
 pub use runtime::in_runtime;
 pub use session::{
     decrypt_event, encrypt_event, mark_request_failed, mark_request_sent, receive_sync_changes,

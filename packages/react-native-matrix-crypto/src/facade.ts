@@ -17,6 +17,7 @@ import {
   cancelVerification as nativeCancelVerification,
   confirmVerification as nativeConfirmVerification,
   createCryptoMachine as nativeCreateCryptoMachine,
+  createRecovery as nativeCreateRecovery,
   decryptEvent as nativeDecryptEvent,
   deviceIdentityKeys as nativeDeviceIdentityKeys,
   deviceStatuses as nativeDeviceStatuses,
@@ -26,6 +27,7 @@ import {
   markRequestSent as nativeMarkRequestSent,
   openCryptoStore as nativeOpenCryptoStore,
   receiveSyncChanges as nativeReceiveSyncChanges,
+  recoverIdentity as nativeRecoverIdentity,
   requestSelfVerification as nativeRequestSelfVerification,
   requestVerification as nativeRequestVerification,
   shareScopeKey as nativeShareScopeKey,
@@ -57,7 +59,20 @@ function notImplemented(name: string): Promise<never> {
  * that stringifies an `unknown` payload.
  */
 function stringifyOrMalformed(value: unknown): string {
-  const json = JSON.stringify(value)
+  let json: string | undefined
+  try {
+    json = JSON.stringify(value)
+  } catch {
+    // `JSON.stringify` has two failure modes and this one was missed until
+    // server-side recovery's own tests hit it: a value it cannot represent
+    // returns `undefined`, and a value that *refers to itself* throws a
+    // `TypeError` instead. Uncaught, that leaves the boundary as a raw
+    // `TypeError` rather than a `CryptoError`, so `isCryptoError` is false
+    // and a product's error handling has nothing to read. A cycle is an
+    // ordinary shape for an object a product assembled itself, which is
+    // what every caller of this helper is handed.
+    throw toCryptoError({ name: 'MalformedPayload' })
+  }
   if (json === undefined) {
     throw toCryptoError({ name: 'MalformedPayload' })
   }
@@ -1698,10 +1713,267 @@ async function unfoldStartRejection(raw: unknown, verificationId: string): Promi
   }
 }
 
+/**
+ * One global account data event, as your homeserver stores it.
+ *
+ * `content` is the event's content object, already parsed: exactly the body
+ * of a `PUT /_matrix/client/v3/user/{userId}/account_data/{eventType}` and
+ * exactly what the matching `GET` answers with. This library adds no
+ * envelope of its own, so these values move to and from your homeserver
+ * unchanged.
+ */
+export interface AccountDataEntry {
+  /** The global account data event type, such as `'m.secret_storage.default_key'`. */
+  eventType: string
+  /** The event's content object. */
+  content: unknown
+}
+
+/**
+ * What {@link createRecovery} produced: the one secret to show your user,
+ * and the account data to write.
+ */
+export interface RecoverySetup {
+  /**
+   * The recovery key, in the base58 form the Matrix specification defines,
+   * grouped in fours.
+   *
+   * **This value is never stored and can never be produced again.** It is
+   * the passphrase's equal rather than a backup of it: either one opens the
+   * recovery, and losing both loses the account's identity for good. See
+   * {@link createRecovery} for what that costs.
+   */
+  recoveryKey: string
+  /**
+   * The account data to write, in the order to write it.
+   *
+   * Five events: the key description, the pointer that makes it this
+   * account's default key, and one per private signing key. The pointer is
+   * second on purpose, so a product interrupted partway through has never
+   * advertised a key description it did not manage to write.
+   */
+  accountData: AccountDataEntry[]
+}
+
+/**
+ * Writes this account's private signing keys into server-side storage,
+ * under a key derived from `passphrase`, so that a device which has lost
+ * its store can get the identity back.
+ *
+ * **This is what makes an identity survive a reinstall.** Delete the
+ * application and install it again and the store goes with it. Without a
+ * recovery, what is lost is not a cache: the private signing keys were only
+ * ever on that device, so the new installation has to be verified against
+ * another device the user still has, and every person who had verified this
+ * account has to verify it again. With one, the new installation asks for
+ * the passphrase and is the same identity it was before, and nobody else
+ * has to do anything.
+ *
+ * # Say what this costs, at the moment you ask for the passphrase
+ *
+ * `recoveryKey` comes back exactly once and is never stored anywhere. If
+ * your user loses it **and** forgets the passphrase, the account's identity
+ * is gone: nothing on the server can open the stored keys without one of
+ * them, and this library keeps no second copy. Showing the key on a screen
+ * the user taps past is how that ends in a support request nobody can
+ * answer. Make them record it.
+ *
+ * # This is Matrix's own format, not one this library invented
+ *
+ * The account data written here is secret storage as the specification
+ * defines it, the `m.secret_storage.v1.aes-hmac-sha2` scheme, produced by
+ * `matrix-sdk-crypto`'s own implementation of it. Another Matrix client
+ * signed into the same account reads these same five events with the same
+ * passphrase or recovery key, and a recovery another client wrote is one
+ * {@link recoverIdentity} restores. That interoperability is the reason
+ * this call exists and {@link exportSecrets} does not.
+ *
+ * # Nothing here reaches the network
+ *
+ * This library performs no request, here or anywhere. On success, `PUT`
+ * each entry of `accountData` to
+ * `/_matrix/client/v3/user/{userId}/account_data/{eventType}` with the
+ * entry's `content` as the body, **in the order they are handed back**.
+ *
+ * Nothing is queued through {@link takeOutgoingRequests} for this, and that
+ * is deliberate: the outbound pump is a body to send and a report that it
+ * was sent, with no value coming back, and account data is a read then a
+ * write. Rather than change what a pump entry means for every other kind of
+ * request, these two calls take and return the JSON and leave the two
+ * endpoints to you. It is the same shape {@link receiveSyncChanges} already
+ * uses for the one other place this library needs something from your
+ * server.
+ *
+ * # Refusals
+ *
+ * `'private_keys_not_held'` means this device does not hold all three
+ * private signing keys, so there is nothing to write. Read
+ * {@link getIdentityStatus}: an account with no identity needs
+ * {@link bootstrapCrossSigning}, and an identity this device has not joined
+ * needs {@link requestSelfVerification}. A partial write is not offered as
+ * an alternative, because account data that opens with the right passphrase
+ * and restores half an identity is worse than none.
+ */
+export async function createRecovery(passphrase: string): Promise<RecoverySetup> {
+  let setup
+  try {
+    setup = await nativeCreateRecovery(passphrase)
+  } catch (e) {
+    throw toCryptoError(e)
+  }
+  // Outside the `catch` above, deliberately: a `CryptoError` thrown inside
+  // it would be run through `toCryptoError` a second time and come back as
+  // kind 'unknown', because its `name` is 'CryptoError' rather than a
+  // variant name. Every other function here that maps after a native call
+  // has the same shape for the same reason.
+  //
+  // Destructured, not returned directly. See encryptEvent above.
+  const { recoveryKey, accountData } = setup
+  return {
+    recoveryKey,
+    accountData: accountData.map((entry) => ({
+      eventType: entry.eventType,
+      // Parsed here rather than handed over as a string, so a product
+      // sends an object to an endpoint that takes an object.
+      content: parseContent(entry.content),
+    })),
+  }
+}
+
+/**
+ * Restores this account's private signing keys from server-side storage.
+ *
+ * `secret` is **either** the passphrase {@link createRecovery} derived the
+ * key from **or** the recovery key it returned. One parameter serves both,
+ * so you do not have to ask your user which one they are holding.
+ *
+ * `accountData` is what you read back from your homeserver. Five events are
+ * needed and a complete recovery has all five:
+ * `'m.secret_storage.default_key'`, the `'m.secret_storage.key.<id>'` it
+ * names, and `'m.cross_signing.master'`, `'m.cross_signing.self_signing'`
+ * and `'m.cross_signing.user_signing'`. Fetch them with
+ * `GET /_matrix/client/v3/user/{userId}/account_data/{eventType}`, or take
+ * them out of a `/sync` response's global account data, which carries all
+ * of them. Entries this call does not need are ignored, so handing over
+ * everything you have is fine and is the simpler thing to do.
+ *
+ * **The key description's event type is not known in advance**, because it
+ * ends in the key's own id. Read `'m.secret_storage.default_key'` first and
+ * its `key` field is that id, so fetching one event at a time takes two
+ * rounds. Taking the account data from a sync you already perform costs
+ * none.
+ *
+ * # What this restores, and what it does not
+ *
+ * It restores the identity and, with it, every verification anyone else had
+ * made of this account. That is the part a second device cannot give back
+ * and the reason this call exists. It does **not** publish anything: the
+ * recovered device still has to publish its own device keys and be signed
+ * into the identity it has just rejoined, which is
+ * {@link bootstrapCrossSigning} republishing on a device that now holds the
+ * private keys.
+ *
+ * After it succeeds, {@link getIdentityStatus} reports `privateKeysHeld`.
+ * That is the durable answer; a `'trust_changed'` signal for your own user
+ * id follows on the next {@link receiveSyncChanges}, exactly as it does
+ * when the keys arrive by gossip instead.
+ *
+ * # Refusals, and the one distinction your error message needs
+ *
+ * `'recovery_key_incorrect'` means the secret is wrong and the stored
+ * recovery is intact. Ask again.
+ *
+ * `'recovery_data_malformed'` means no secret will ever open it. Stop
+ * asking, and set recovery up again from a device that still holds the
+ * keys. What lands here is damaged or unreadable account data, and also a
+ * recovery written for an identity this account has since replaced.
+ *
+ * **These two are never folded together, and your product should not fold
+ * them either.** Telling a user with a typo that their identity is
+ * destroyed sends them to do the one thing that destroys it; telling a user
+ * whose recovery really is unreadable that their passphrase is wrong leaves
+ * them retyping forever. The line is drawn by the MAC stored beside the key
+ * description, which is what a wrong secret fails and damaged data does not
+ * reach.
+ *
+ * `'recovery_not_set_up'` means the account data you handed over carries no
+ * complete recovery. Either this account has none, or you did not fetch all
+ * of it. This library sees only what it was given, so it cannot tell those
+ * apart, and the list above is what to check.
+ *
+ * `'account_keys_not_fetched'` and `'identity_not_known'` are the same pair
+ * {@link bootstrapCrossSigning} and {@link requestSelfVerification} report,
+ * and they are checked before the passphrase is even derived. Importing a
+ * private key checks it against the account's **published** identity, so
+ * this call needs a `'keys_query'` for your own account answered first. The
+ * refusal queues that query itself, so the remedy is the ordinary loop:
+ * drain, send, report sent, call this again.
+ */
+export async function recoverIdentity(secret: string, accountData: AccountDataEntry[]): Promise<void> {
+  const entries = accountData.map((entry) => ({
+    eventType: entry.eventType,
+    content: stringifyOrMalformed(entry.content),
+  }))
+  try {
+    await nativeRecoverIdentity(secret, entries)
+  } catch (e) {
+    throw toCryptoError(e)
+  }
+}
+
+/**
+ * The inverse of {@link stringifyOrMalformed}, for account data content the
+ * native side produced.
+ *
+ * Separate from the `try`/`catch` around the native call in
+ * {@link createRecovery}, so that a parse failure is reported as a
+ * malformed payload rather than as whatever the last native error happened
+ * to be.
+ */
+function parseContent(json: string): unknown {
+  try {
+    return JSON.parse(json)
+  } catch {
+    throw toCryptoError({ name: 'MalformedPayload' })
+  }
+}
+
+/**
+ * **Not implemented, and not waiting on anything.** Rejects with kind
+ * `'not_implemented'`. {@link createRecovery} is the call that does this
+ * job, and it is the one to use.
+ *
+ * The signature has been frozen since the first milestone: a passphrase in,
+ * a `Uint8Array` out. What has become clear since is that no such byte
+ * array exists in Matrix. `matrix-sdk-crypto` provides the **payload** and
+ * not the **container**: `export_secrets_bundle` yields the three signing
+ * seeds as plain JSON, neither encrypted nor derived from a passphrase, and
+ * its two passphrase primitives are the wrong shape for wrapping it. One is
+ * the session-key export format, which is a different payload. The other is
+ * secret storage itself, whose salt and iteration count belong in account
+ * data rather than inside a byte array.
+ *
+ * So the container would be a format **this library invented**, and no
+ * other Matrix client would read it. That is a defensible thing to build
+ * for "move my identity to my other phone over a cable", and the wrong
+ * thing to hand anyone who expects a Matrix recovery key. Since
+ * {@link createRecovery} delivers the interoperable form, shipping a
+ * private one beside it would invite exactly that confusion, so these two
+ * stay unimplemented on purpose rather than pending.
+ *
+ * If you need the identity on a second device you still have, that is
+ * {@link requestSelfVerification}. If you need it after the first one is
+ * gone, that is {@link recoverIdentity}.
+ */
 export function exportSecrets(_passphrase: string): Promise<Uint8Array> {
   return notImplemented('exportSecrets')
 }
 
+/**
+ * **Not implemented, and not waiting on anything.** Rejects with kind
+ * `'not_implemented'`. The other half of {@link exportSecrets}; see that
+ * function for why neither is coming, and for what to use instead.
+ */
 export function importSecrets(_bundle: Uint8Array, _passphrase: string): Promise<void> {
   return notImplemented('importSecrets')
 }

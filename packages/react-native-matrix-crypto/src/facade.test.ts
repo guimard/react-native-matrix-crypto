@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CryptoScopeId, SasMaterial, SyncDelta, VerificationStage } from './types'
 import { asCryptoScopeId } from './types'
+import type { CryptoError } from './errors'
 import { isCryptoError } from './errors'
 import { onCryptoSignal } from './signals'
 import type { CryptoSignal } from './signals'
@@ -10,6 +11,7 @@ import {
   cancelVerification,
   confirmVerification,
   createCryptoMachine,
+  createRecovery,
   decryptEvent,
   encryptEvent,
   encryptionSlice,
@@ -19,10 +21,12 @@ import {
   getIdentityStatus,
   getVerificationMaterial,
   getVerificationStage,
+  importSecrets,
   markRequestFailed,
   markRequestSent,
   openCryptoStore,
   receiveSyncChanges,
+  recoverIdentity,
   requestSelfVerification,
   requestVerification,
   shareScopeKey,
@@ -36,6 +40,7 @@ import {
   CryptoSignal as NativeCryptoSignal,
   confirmVerification as nativeConfirmVerification,
   createCryptoMachine as nativeCreateCryptoMachine,
+  createRecovery as nativeCreateRecovery,
   decryptEvent as nativeDecryptEvent,
   deviceIdentityKeys as nativeDeviceIdentityKeys,
   deviceStatuses as nativeDeviceStatuses,
@@ -46,6 +51,7 @@ import {
   markRequestSent as nativeMarkRequestSent,
   openCryptoStore as nativeOpenCryptoStore,
   receiveSyncChanges as nativeReceiveSyncChanges,
+  recoverIdentity as nativeRecoverIdentity,
   requestSelfVerification as nativeRequestSelfVerification,
   requestVerification as nativeRequestVerification,
   SenderVerification as NativeSenderVerification,
@@ -192,6 +198,15 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
     bootstrapIdentity: vi.fn(async () => {
       throw new actual.MachineFfiError.AccountKeysNotFetched()
     }),
+    // Server-side recovery. Stateless defaults, and deliberately
+    // distinguishable from anything a test supplies, so a test that forgot
+    // to assert on `.mock.calls` would still notice values it never
+    // provided coming back out. Every test that cares overrides them.
+    createRecovery: vi.fn(async () => ({
+      recoveryKey: 'native-recovery-key',
+      accountData: [{ eventType: 'm.native.account.data', content: '{"native":true}' }],
+    })),
+    recoverIdentity: vi.fn(async () => undefined),
   }
 })
 
@@ -624,6 +639,31 @@ describe('decryptEvent wiring to the native layer', () => {
     vi.mocked(nativeDecryptEvent).mockClear()
 
     await expect(decryptEvent(scope, undefined)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
+    )
+
+    expect(nativeDecryptEvent).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The other half of the same rule, and it did not hold until M4's
+   * server-side recovery work tripped over it.
+   *
+   * `JSON.stringify` has two failure modes. The test above covers the one
+   * that returns `undefined`; a value that refers to itself **throws** a
+   * `TypeError` instead, which escaped this boundary uncaught. A product
+   * caught something for which `isCryptoError` is false and `kind` does not
+   * exist, on a call whose documentation says it rejects with
+   * `'malformed_payload'` before touching native. A cycle is an ordinary
+   * shape for an object a product assembled itself, so this is not an exotic
+   * input.
+   */
+  it('rejects with malformed_payload before ever calling native, when rawEvent refers to itself', async () => {
+    vi.mocked(nativeDecryptEvent).mockClear()
+    const cyclic: Record<string, unknown> = { type: 'm.room.encrypted' }
+    cyclic.itself = cyclic
+
+    await expect(decryptEvent(scope, cyclic)).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
     )
 
@@ -2389,6 +2429,155 @@ describe('the mock defaults survive every describe above', () => {
     })
     await expect(bootstrapCrossSigning()).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'account_keys_not_fetched',
+    )
+  })
+})
+
+/**
+ * Server-side recovery, on the TypeScript side of the boundary.
+ *
+ * Three things can go wrong here that no Rust test can see, because the Rust
+ * side never crosses this boundary and these tests mock it away:
+ *
+ * 1. **The JSON conversion.** The native surface speaks strings and this one
+ *    speaks parsed objects, in both directions. A conversion missing on
+ *    either side compiles, because `content` is `unknown` here and `string`
+ *    there is what the generated record declares, and the symptom appears
+ *    only against a real homeserver.
+ * 2. **The two entry fields.** `eventType` and `content` are both strings at
+ *    the boundary, so swapping them compiles and passes every Rust test.
+ * 3. **The two refusals.** A wrong passphrase and an unreadable recovery are
+ *    told apart in Rust and proven there; whether a *product* can act on the
+ *    difference is decided by `errors.ts`'s map, which is TypeScript, and
+ *    the last two milestones both found variants that reached it as kind
+ *    `'unknown'`.
+ */
+describe('server-side recovery', () => {
+  const KEY_DESCRIPTION = 'm.secret_storage.key.ABCD1234'
+  const DEFAULT_KEY = 'm.secret_storage.default_key'
+
+  it('hands back the recovery key and the account data with its content parsed', async () => {
+    vi.mocked(nativeCreateRecovery).mockResolvedValue({
+      recoveryKey: 'EsTx aaaa bbbb cccc',
+      accountData: [
+        { eventType: KEY_DESCRIPTION, content: '{"algorithm":"m.secret_storage.v1.aes-hmac-sha2"}' },
+        { eventType: DEFAULT_KEY, content: '{"key":"ABCD1234"}' },
+      ],
+    })
+
+    const setup = await createRecovery('a passphrase')
+
+    expect(vi.mocked(nativeCreateRecovery).mock.calls.at(-1)?.[0]).toBe('a passphrase')
+    expect(setup.recoveryKey).toBe('EsTx aaaa bbbb cccc')
+    expect(setup.accountData.map((entry) => entry.eventType)).toEqual([
+      KEY_DESCRIPTION,
+      DEFAULT_KEY,
+    ])
+    // Parsed, not the string the native side handed over. A product puts
+    // this in the body of a PUT, where a JSON-encoded string is not the
+    // same thing as an object.
+    expect(setup.accountData[1]?.content).toEqual({ key: 'ABCD1234' })
+    expect(typeof setup.accountData[1]?.content).toBe('object')
+  })
+
+  it('sends the account data back down with its content stringified', async () => {
+    await expect(
+      recoverIdentity('a passphrase', [
+        { eventType: DEFAULT_KEY, content: { key: 'ABCD1234' } },
+        { eventType: 'm.cross_signing.master', content: { encrypted: { ABCD1234: {} } } },
+      ]),
+    ).resolves.toBeUndefined()
+
+    const [secret, entries] = vi.mocked(nativeRecoverIdentity).mock.calls.at(-1) ?? []
+    expect(secret).toBe('a passphrase')
+    expect(entries).toEqual([
+      { eventType: DEFAULT_KEY, content: '{"key":"ABCD1234"}' },
+      { eventType: 'm.cross_signing.master', content: '{"encrypted":{"ABCD1234":{}}}' },
+    ])
+    // Named separately, because the assertion above would still pass if both
+    // fields were strings for the wrong reason: the type must not have been
+    // stringified, and the content must not have been left an object.
+    expect(entries?.[0]?.eventType).toBe(DEFAULT_KEY)
+    expect(typeof entries?.[0]?.content).toBe('string')
+  })
+
+  it('rejects account data whose content cannot be stringified, before any native call', async () => {
+    const before = vi.mocked(nativeRecoverIdentity).mock.calls.length
+    const cyclic: Record<string, unknown> = {}
+    cyclic.self = cyclic
+
+    await expect(
+      recoverIdentity('a passphrase', [{ eventType: DEFAULT_KEY, content: cyclic }]),
+    ).rejects.toSatisfy((e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload')
+    expect(vi.mocked(nativeRecoverIdentity).mock.calls.length).toBe(before)
+  })
+
+  /**
+   * The distinction this whole feature turns on, asserted where a product
+   * actually reads it.
+   *
+   * The Rust side proves the two conditions produce different variants. This
+   * proves the difference survives the crossing, which is a separate claim
+   * with a separate way of being wrong: a missing entry in `KIND_BY_NAME`
+   * turns both into kind `'unknown'` with the message "crypto error:
+   * unknown", and every Rust test stays green.
+   */
+  it('tells a wrong secret apart from a recovery that cannot be read', async () => {
+    vi.mocked(nativeRecoverIdentity).mockRejectedValue(new MachineFfiError.RecoveryKeyIncorrect())
+    await expect(recoverIdentity('the wrong one', [])).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'recovery_key_incorrect',
+    )
+
+    vi.mocked(nativeRecoverIdentity).mockRejectedValue(new MachineFfiError.RecoveryDataMalformed())
+    await expect(recoverIdentity('the right one', [])).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'recovery_data_malformed',
+    )
+
+    // Stated on its own, because the two assertions above could both be
+    // rewritten to one constant by a defect that also rewrote the expected
+    // kinds. This one cannot.
+    vi.mocked(nativeRecoverIdentity).mockRejectedValue(new MachineFfiError.RecoveryKeyIncorrect())
+    const incorrect = await recoverIdentity('a', []).catch((e: unknown) => e)
+    vi.mocked(nativeRecoverIdentity).mockRejectedValue(new MachineFfiError.RecoveryDataMalformed())
+    const malformed = await recoverIdentity('b', []).catch((e: unknown) => e)
+    expect(isCryptoError(incorrect) && isCryptoError(malformed)).toBe(true)
+    expect((incorrect as CryptoError).kind).not.toBe((malformed as CryptoError).kind)
+
+    // Neither is retriable, and that is not an oversight. Retrying the same
+    // call with the same secret fails the same way every time; what resolves
+    // the first is a different secret, and nothing resolves the second.
+    expect((incorrect as CryptoError).retriable).toBe(false)
+    expect((malformed as CryptoError).retriable).toBe(false)
+  })
+
+  it('reports the other two refusals as their own kinds rather than as unknown', async () => {
+    vi.mocked(nativeCreateRecovery).mockRejectedValue(new MachineFfiError.PrivateKeysNotHeld())
+    await expect(createRecovery('a passphrase')).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'private_keys_not_held',
+    )
+
+    vi.mocked(nativeRecoverIdentity).mockRejectedValue(new MachineFfiError.RecoveryNotSetUp())
+    await expect(recoverIdentity('a passphrase', [])).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'recovery_not_set_up',
+    )
+
+    // The pair `recoverIdentity` shares with the two identity calls. Absent
+    // here, a product recovering on a device that has not yet asked the
+    // server anything would be told nothing it could act on.
+    vi.mocked(nativeRecoverIdentity).mockRejectedValue(
+      new MachineFfiError.AccountKeysNotFetched(),
+    )
+    await expect(recoverIdentity('a passphrase', [])).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'account_keys_not_fetched',
+    )
+  })
+
+  it('leaves the two frozen secret calls rejecting rather than half-built', async () => {
+    await expect(exportSecrets('a passphrase')).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'not_implemented',
+    )
+    await expect(importSecrets(new Uint8Array([1, 2, 3]), 'a passphrase')).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'not_implemented',
     )
   })
 })
