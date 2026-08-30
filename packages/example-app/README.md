@@ -73,6 +73,65 @@ particular these remain exercised only by a human holding a phone, or by
   React components and are not covered here.
 * **Signal timing.** `PROBE_SIGNAL_MS` and `PROBE_SIGNAL_NTH` are measurements
   of a real device under a real race. A host machine cannot produce them.
+* **That a camera reads the code this library renders.** See below: it needs a
+  person, a second client and a lens, and no test can stand in for any of the
+  three.
+
+# The camera proof
+
+Verification by scanning a code is proven by tests in three places already:
+the core drives all three modes against a bare upstream machine, and
+`rust/matrix-crypto-core/tests/level_two_scanned.rs` drives them against a
+mautrix-go counterparty over a real homeserver. **Not one of them points a
+camera at a screen.** That claim matters more than any of the others for a
+product whose users will scan with whatever client they already have, and it
+is the one claim a process cannot make about itself.
+
+```sh
+# Build a release APK first; the run needs one and will say so if it has none.
+(cd packages/example-app/android && ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a)
+
+python3 packages/example-app/level-two/run_camera_proof.py
+```
+
+That program starts a throwaway homeserver in a container, creates one
+account, logs the phone in, hands the app a run plan on the host's loopback,
+installs and launches the app, and then **stops and prints what to do**. It
+asserts nothing, on purpose: what it is arranging is a person looking at two
+screens, and a program that claimed to have checked that would be claiming
+something it did not see.
+
+What the person does, in short, with the full version printed by the run
+itself:
+
+1. Sign in to Element Web or Element Desktop on this machine, at the
+   homeserver URL, account and password the program prints. It is one account
+   on a container that is destroyed on exit.
+2. In Element, open Settings, Sessions, find the phone's session and choose to
+   verify it. **On the phone** the headline changes to *Point the other
+   client's camera at this code* and a black-and-white square appears.
+3. In Element, choose *Scan QR code* and fill the viewfinder with the phone's
+   screen. **On the phone** the headline becomes *The other device says it
+   scanned this code* and a green button appears. Nothing is verified yet:
+   this is the one moment the mode asks a person anything.
+4. Press the green button. **On the phone** the headline becomes *Verified*
+   and the square disappears; **in Element** the session is marked verified.
+
+**If it does not scan, that is a finding rather than a nuisance**, and which
+of two it was is what matters. A camera that never locks on is a rendering
+problem: the symbol is too small, the screen too dim or too reflective. A
+camera that locks on and is then rejected is the serious one, because it would
+mean the bytes drawn are not the bytes meant.
+
+The screen itself is `src/ScannedCodeWalkthrough.tsx`, and everything it
+decides is in `src/scannedCodeRunner.ts`, which imports the published
+TypeScript surface and no component. `src/scannedCodeRunner.test.ts` runs that
+module's real functions on this machine against a faked native binding, so
+the arc, the grid's polarity, the confirmation prompt and the refusal path are
+all checked without a device. **What crosses on a device and cannot cross
+here is a real payload byte**: every other TypeScript test of this surface
+talks to a mock, and this walkthrough is the first thing in `packages/` that
+carries the library's own bytes end to end.
 
 This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
 
