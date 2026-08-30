@@ -173,8 +173,7 @@ use std::time::{Duration, Instant};
 
 use matrix_crypto_core::{
     accept_flow, bootstrap_identity, cancel_flow, confirm_scan, create_machine, device_statuses,
-    flow_stage,
-    identity_status, offer_scanning, read_code, receive_sync_changes, request_flow,
+    flow_stage, identity_status, offer_scanning, read_code, receive_sync_changes, request_flow,
     request_self_flow, set_crypto_observer, share_scope_key, submit_scanned_code, CryptoObserver,
     CryptoSignal, FlowId, FlowStage, MachineConfig, MachineError, TrustState,
 };
@@ -472,7 +471,7 @@ fn as_hex(payload: &[u8]) -> String {
 
 fn from_hex(encoded: &str) -> Vec<u8> {
     assert!(
-        encoded.len() % 2 == 0,
+        encoded.len().is_multiple_of(2),
         "a hexadecimal payload has an even number of digits; this one has {}",
         encoded.len()
     );
@@ -728,7 +727,12 @@ fn a_third_party_client_and_this_library_verify_each_other_by_scanning_a_code() 
     // is what makes the refusal above a refusal of the *change* and not of
     // the format. Then the counterparty's early `done` is measured off the
     // wire and the flow is pinned where it stops. See this file's header.
-    let halted = open_and_ready(&mut session, &mut shown_to, &shown_user_id, &shown_device_id);
+    let halted = open_and_ready(
+        &mut session,
+        &mut shown_to,
+        &shown_user_id,
+        &shown_device_id,
+    );
     let shown = run(read_code(&halted)).expect("a ready cross-user flow must offer a code");
     assert_eq!(mode_of(&shown.payload), 0x00);
     assert_eq!(
@@ -766,7 +770,8 @@ fn a_third_party_client_and_this_library_verify_each_other_by_scanning_a_code() 
     });
     let together = session.delivered_types();
     assert!(
-        together.iter().any(|kind| kind == START_EVENT) && together.iter().any(|kind| kind == DONE_EVENT),
+        together.iter().any(|kind| kind == START_EVENT)
+            && together.iter().any(|kind| kind == DONE_EVENT),
         "THE ATTRIBUTION. The counterparty's `done` must have arrived in the same batch \
          as its `start`, before this side could confirm anything, which is what the \
          specification puts last and what upstream therefore drops. That sync carried \
@@ -840,8 +845,12 @@ fn a_third_party_client_and_this_library_verify_each_other_by_scanning_a_code() 
     // =====================================================================
     // PHASE 3: CROSS-USER, MODE 0x00, WITH THIS LIBRARY SCANNING
     // =====================================================================
-    let cross_user =
-        open_and_ready(&mut session, &mut scanner, &scanner_user_id, &scanner_device_id);
+    let cross_user = open_and_ready(
+        &mut session,
+        &mut scanner,
+        &scanner_user_id,
+        &scanner_device_id,
+    );
     let their_payload = code_shown_by(&mut scanner, &cross_user, 0x00);
     run(submit_scanned_code(&cross_user, &their_payload))
         .expect("this library must read a code a third-party client rendered");
@@ -1012,9 +1021,10 @@ fn a_third_party_client_and_this_library_verify_each_other_by_scanning_a_code() 
             .expect("the counterparty reports the flow it opened")
             .to_string(),
     );
-    session.sync_until("the library was told a second verification was asked", |_| {
-        matches!(run(flow_stage(&trusted_shows)), Ok(FlowStage::Requested))
-    });
+    session.sync_until(
+        "the library was told a second verification was asked",
+        |_| matches!(run(flow_stage(&trusted_shows)), Ok(FlowStage::Requested)),
+    );
     run(accept_flow(&trusted_shows)).expect("a flow another device opened may be agreed to");
     pump_and_send(&homeserver, &library.token);
 
