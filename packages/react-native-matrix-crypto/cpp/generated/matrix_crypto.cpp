@@ -238,6 +238,8 @@ extern "C" {
     /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_func_receive_sync_changes(
         RustBuffer raw_json
     );
+    /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_func_request_self_verification(
+    );
     /*handle*/ uint64_t uniffi_matrix_crypto_ffi_fn_func_request_verification(
         RustBuffer user_id, 
         RustBuffer device_id
@@ -491,6 +493,8 @@ extern "C" {
     uint16_t uniffi_matrix_crypto_ffi_checksum_func_probe_with_observer(
     );
     uint16_t uniffi_matrix_crypto_ffi_checksum_func_receive_sync_changes(
+    );
+    uint16_t uniffi_matrix_crypto_ffi_checksum_func_request_self_verification(
     );
     uint16_t uniffi_matrix_crypto_ffi_checksum_func_request_verification(
     );
@@ -3026,6 +3030,14 @@ NativeMatrixCrypto::NativeMatrixCrypto(
             return this->cpp_uniffi_matrix_crypto_ffi_fn_func_receive_sync_changes(rt, thisVal, args, count);
         }
     );
+    props["ubrn_uniffi_matrix_crypto_ffi_fn_func_request_self_verification"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_fn_func_request_self_verification"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_fn_func_request_self_verification(rt, thisVal, args, count);
+        }
+    );
     props["ubrn_uniffi_matrix_crypto_ffi_fn_func_request_verification"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_fn_func_request_verification"),
@@ -3602,6 +3614,14 @@ NativeMatrixCrypto::NativeMatrixCrypto(
             return this->cpp_uniffi_matrix_crypto_ffi_checksum_func_receive_sync_changes(rt, thisVal, args, count);
         }
     );
+    props["ubrn_uniffi_matrix_crypto_ffi_checksum_func_request_self_verification"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_checksum_func_request_self_verification"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_matrix_crypto_ffi_checksum_func_request_self_verification(rt, thisVal, args, count);
+        }
+    );
     props["ubrn_uniffi_matrix_crypto_ffi_checksum_func_request_verification"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_matrix_crypto_ffi_checksum_func_request_verification"),
@@ -4086,6 +4106,13 @@ jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_probe_with_o
 }
 jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_receive_sync_changes(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_matrix_crypto_ffi_fn_func_receive_sync_changes(uniffi::matrix_crypto::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0])
+        );
+
+        
+        return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_fn_func_request_self_verification(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_matrix_crypto_ffi_fn_func_request_self_verification(
         );
 
         
@@ -4629,6 +4656,13 @@ jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_probe_
 }
 jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_receive_sync_changes(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_matrix_crypto_ffi_checksum_func_receive_sync_changes(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeMatrixCrypto::cpp_uniffi_matrix_crypto_ffi_checksum_func_request_self_verification(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_matrix_crypto_ffi_checksum_func_request_self_verification(
         );
 
         

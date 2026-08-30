@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CryptoScopeId, SasMaterial, SyncDelta, VerificationStage } from './types'
 import { asCryptoScopeId } from './types'
 import { isCryptoError } from './errors'
+import { onCryptoSignal } from './signals'
+import type { CryptoSignal } from './signals'
 import {
   acceptVerification,
   bootstrapCrossSigning,
@@ -21,6 +23,7 @@ import {
   markRequestSent,
   openCryptoStore,
   receiveSyncChanges,
+  requestSelfVerification,
   requestVerification,
   shareScopeKey,
   startVerificationComparison,
@@ -30,6 +33,7 @@ import {
   acceptVerification as nativeAcceptVerification,
   bootstrapIdentity as nativeBootstrapIdentity,
   cancelVerification as nativeCancelVerification,
+  CryptoSignal as NativeCryptoSignal,
   confirmVerification as nativeConfirmVerification,
   createCryptoMachine as nativeCreateCryptoMachine,
   decryptEvent as nativeDecryptEvent,
@@ -42,6 +46,7 @@ import {
   markRequestSent as nativeMarkRequestSent,
   openCryptoStore as nativeOpenCryptoStore,
   receiveSyncChanges as nativeReceiveSyncChanges,
+  requestSelfVerification as nativeRequestSelfVerification,
   requestVerification as nativeRequestVerification,
   SenderVerification as NativeSenderVerification,
   SessionFfiError,
@@ -55,6 +60,19 @@ import {
 } from './generated/matrix_crypto'
 
 const scope = asCryptoScopeId('!scope:example.org')
+
+/**
+ * The observer `signals.ts` handed to the native side, if any.
+ *
+ * `vi.hoisted` because `vi.mock`'s factory is hoisted above the imports and
+ * cannot close over an ordinary module-level `const`. Only the chain test at
+ * the end of this file uses it; everything else in this file never
+ * subscribes, so it stays `undefined` and the two registry calls are never
+ * reached.
+ */
+const { observer } = vi.hoisted(() => ({
+  observer: { current: undefined as { onSignal: (signal: unknown) => void } | undefined },
+}))
 
 /**
  * The generated binding speaks `ArrayBuffer` for `Vec<u8>` fields (see
@@ -87,6 +105,20 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
     // this mock throwing or needing per-test setup.
     createCryptoMachine: vi.fn(async () => undefined),
     openCryptoStore: vi.fn(async () => undefined),
+    // The signal channel's two registry calls. Mocked for the same reason as
+    // everything else here -- there is no JSI host object under vitest, so
+    // neither can actually run -- and recorded rather than ignored, because
+    // the chain test at the end of this file is the one place a product's
+    // whole loop is driven, and half that loop is being *told* something
+    // happened. `CryptoSignal`'s own tagged classes come through
+    // `importOriginal` untouched, so a signal this file feeds the observer is
+    // built with the real generated constructor.
+    setCryptoObserver: vi.fn((installed: { onSignal: (signal: unknown) => void }) => {
+      observer.current = installed
+    }),
+    clearCryptoObserver: vi.fn(() => {
+      observer.current = undefined
+    }),
     deviceIdentityKeys: vi.fn(async (userId: string) => {
       if (userId !== 'bad-id') throw new Error('unexpected call in this fixture')
       throw new actual.MachineFfiError.MalformedIdentifier({ detail: 'user id' })
@@ -132,6 +164,11 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
       { deviceId: 'NATIVEDEVICE', trust: actual.TrustState.Unverified },
     ]),
     requestVerification: vi.fn(async () => 'native-flow-id'),
+    // A different string from `requestVerification`'s above, deliberately:
+    // the two calls are one line each and the way to wire one to the other's
+    // native function is to copy the line and forget half the edit, which
+    // would then be invisible to a test that accepted either value.
+    requestSelfVerification: vi.fn(async () => 'native-self-flow-id'),
     acceptVerification: vi.fn(async () => undefined),
     startVerificationComparison: vi.fn(async () => undefined),
     verificationStage: vi.fn(async () => actual.VerificationStage.Requested),
@@ -999,6 +1036,8 @@ beforeEach(() => {
   ])
   vi.mocked(nativeRequestVerification).mockReset()
   vi.mocked(nativeRequestVerification).mockResolvedValue('native-flow-id')
+  vi.mocked(nativeRequestSelfVerification).mockReset()
+  vi.mocked(nativeRequestSelfVerification).mockResolvedValue('native-self-flow-id')
   vi.mocked(nativeAcceptVerification).mockReset()
   vi.mocked(nativeAcceptVerification).mockResolvedValue(undefined)
   vi.mocked(nativeStartVerificationComparison).mockReset()
@@ -1119,6 +1158,45 @@ describe('requestVerification, acceptVerification and cancelVerification', () =>
     vi.mocked(nativeRequestVerification).mockRejectedValue(new MachineFfiError.UnknownDevice())
     await expect(requestVerification('@bob:example.org', 'NOSUCHDEVICE')).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'unknown_device',
+    )
+  })
+
+  /**
+   * The call a second login joins an identity with. It takes no arguments at
+   * all, which is the property under test as much as the return value:
+   * upstream's identity-level request fans out to every device the account's
+   * identity has signed, and a facade that quietly forwarded a user or device
+   * id would be reaching for the wrong native function.
+   */
+  it('asks for no identifiers and returns the flow id native minted', async () => {
+    await expect(requestSelfVerification()).resolves.toBe('native-self-flow-id')
+    expect(vi.mocked(nativeRequestSelfVerification).mock.calls.at(-1)).toEqual([])
+    expect(requestSelfVerification.length).toBe(0)
+  })
+
+  /**
+   * Both of its refusals arrive as their own kinds rather than as `unknown`,
+   * which is what they would be if `errors.ts` had no entry for the variant
+   * -- and `identity_not_known` is a new variant on the Rust side, so nothing
+   * in Rust can see whether this map was updated with it.
+   *
+   * The two are asserted together because they are told apart together: one
+   * means ask the server and call again, the other means there is nothing to
+   * join and the answer is `bootstrapCrossSigning`.
+   */
+  it('tells its two refusals apart rather than reporting either as unknown', async () => {
+    vi.mocked(nativeRequestSelfVerification).mockRejectedValue(
+      new MachineFfiError.AccountKeysNotFetched(),
+    )
+    await expect(requestSelfVerification()).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'account_keys_not_fetched',
+    )
+
+    vi.mocked(nativeRequestSelfVerification).mockRejectedValue(
+      new MachineFfiError.IdentityNotKnown(),
+    )
+    await expect(requestSelfVerification()).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'identity_not_known',
     )
   })
 
@@ -1634,6 +1712,7 @@ describe('a verification driven end to end through the public surface', () => {
  */
 describe('the signing identity chain, driven through the public surface', () => {
   const PEER = '@bob:example.org'
+  const OUR_USER = '@alice:example.org'
 
   interface Chain {
     /** Step 1a: a key query naming our own account was reported sent. */
@@ -1659,6 +1738,10 @@ describe('the signing identity chain, driven through the public surface', () => 
      * keys for, which no call in this file can otherwise produce.
      */
     anotherDeviceOfOursPublishedAnIdentity(): void
+    /** A self-verification closes, and asks for the seeds this device lacks. */
+    finishTheSelfFlow(): void
+    /** Our other device serves that request; the answer lands on the next sync. */
+    theOtherDeviceAnswersTheSecretRequest(): void
   }
 
   function installFake(): Fake {
@@ -1679,9 +1762,26 @@ describe('the signing identity chain, driven through the public surface', () => 
     let privateKeysHeld = false
     let stage = NativeVerificationStage.Requested
     let keyReported = false
+    // Whether the other device's answer to a secret request is on its way in.
+    // Armed by the test, spent by the next sync, because that is where the
+    // core imports it: nothing returns to the caller when it lands.
+    let seedsInFlight = false
 
     const queue = (kind: string, body = '{}'): void => {
       owed.push({ id: `request-${++nextId}`, kind, body })
+    }
+
+    /**
+     * The account key query both refusals queue as they refuse.
+     *
+     * One slot in the core, not one entry per refusal, so a caller that met
+     * both refusals sends one query rather than two. Modelled that way here
+     * because a model that queued twice would let a test assert an ordering
+     * the library does not have.
+     */
+    const queueAccountQuery = (): void => {
+      if (owed.some((request) => request.kind === 'keys_query')) return
+      queue('keys_query')
     }
 
     vi.mocked(nativeIdentityStatus).mockImplementation(async () => ({
@@ -1694,7 +1794,7 @@ describe('the signing identity chain, driven through the public surface', () => 
       if (!chain.accountKeysFetched) {
         // Queued *by* the refusal, exactly as the core does it, so the
         // refusal is recoverable rather than a dead end.
-        queue('keys_query')
+        queueAccountQuery()
         throw new MachineFfiError.AccountKeysNotFetched()
       }
       if (identityKnown && !privateKeysHeld) throw new MachineFfiError.IdentityAlreadyExists()
@@ -1743,6 +1843,19 @@ describe('the signing identity chain, driven through the public surface', () => 
     })
 
     vi.mocked(nativeReceiveSyncChanges).mockImplementation(async () => {
+      if (seedsInFlight) {
+        seedsInFlight = false
+        privateKeysHeld = true
+        // Announced from inside the sync, which is the only place the core
+        // announces anything, and after the state it describes has moved.
+        observer.current?.onSignal(
+          new NativeCryptoSignal.TrustChanged({
+            user: OUR_USER,
+            state: NativeTrustState.Verified,
+          }),
+        )
+        return { toDeviceEventCount: 1, newSessionCount: 0 }
+      }
       queue('keys_query')
       return { toDeviceEventCount: 0, newSessionCount: 0 }
     })
@@ -1794,6 +1907,22 @@ describe('the signing identity chain, driven through the public surface', () => 
       stage = NativeVerificationStage.Requested
       return 'chain-flow-id'
     })
+    vi.mocked(nativeRequestSelfVerification).mockImplementation(async () => {
+      // The same two refusals the core keeps apart, in the same order and
+      // for the same reasons: nobody has asked, versus the answer named no
+      // identity to join.
+      if (!chain.accountKeysFetched) {
+        // The same queue-as-you-refuse the bootstrap does, and the same slot.
+        // Without it this refusal is permanent on any relaunch of an existing
+        // store, because nothing underneath volunteers the query for an
+        // account it already tracks.
+        queueAccountQuery()
+        throw new MachineFfiError.AccountKeysNotFetched()
+      }
+      if (!identityKnown) throw new MachineFfiError.IdentityNotKnown()
+      stage = NativeVerificationStage.Requested
+      return 'self-flow-id'
+    })
     vi.mocked(nativeAcceptVerification).mockImplementation(async () => {
       if (stage !== NativeVerificationStage.Requested) throw new MachineFfiError.WrongStage()
       stage = NativeVerificationStage.Ready
@@ -1830,6 +1959,16 @@ describe('the signing identity chain, driven through the public surface', () => 
       },
       async peerDevicesChanged() {
         await receiveSyncChanges({ changed_devices: { changed: [PEER] } })
+      },
+      finishTheSelfFlow() {
+        stage = NativeVerificationStage.Done
+        // What marking our own identity verified sets off: a request to our
+        // other devices for the seeds this one lacks. An ordinary to-device
+        // request on the ordinary pump, which is the point.
+        queue('to_device')
+      },
+      theOtherDeviceAnswersTheSecretRequest() {
+        seedsInFlight = true
       },
       anotherDeviceOfOursPublishedAnIdentity() {
         // The row a fresh login on an old account lands on, and the only
@@ -2091,6 +2230,118 @@ describe('the signing identity chain, driven through the public surface', () => 
     // And it queued nothing: unlike the first refusal, there is no request
     // a caller could send that would change the answer.
     expect(await takeOutgoingRequests()).toEqual([])
+  })
+
+  /**
+   * What the refusal above points at, driven through the public surface as a
+   * second login would drive it.
+   *
+   * The test above leaves a device that knows the account has an identity and
+   * holds none of it, which is where every fresh login on an old account
+   * stops. This carries on from there: ask this account's other devices to
+   * verify this one, compare a string, pump, and watch the seeds arrive on a
+   * later sync with `privateKeysHeld` turning true and `trust_changed`
+   * announcing it.
+   *
+   * **What a model can and cannot say.** It proves this layer drives the
+   * published calls a product would drive, in an order that works, translates
+   * what it is handed, and delivers the signal to a listener rather than
+   * dropping it -- and it proves the two refusals arrive as their own kinds,
+   * which no Rust test can see because that mapping lives here. It cannot
+   * prove the library behaves this way, because the behaviour it reads is
+   * this file's own model. `rust/matrix-crypto-core/tests/self_verification.rs`
+   * is what proves that, against a second real crypto machine, with the seeds
+   * genuinely gossiped between them.
+   */
+  it('joins the identity it was refused, and is told when it can sign', async () => {
+    const fake = installFake()
+
+    // Subscribed before the first sync, which is what `onCryptoSignal` tells
+    // a product to do: the announcement below is produced inside a sync and
+    // consumed there.
+    const seen: CryptoSignal[] = []
+    const unsubscribe = onCryptoSignal((signal) => seen.push(signal))
+
+    // ---- Where a second login starts ----------------------------------
+    //
+    // Asked before joining, for the same reason as before publishing: a
+    // device that has not asked cannot know there is an identity to join.
+    // **Reached through this call and nothing else**, so the query below is
+    // attributable to it. Calling `bootstrapCrossSigning` first would queue
+    // one too and the assertion would pass without this call contributing
+    // anything, which is the shape the core's own
+    // `self_verification_recovery.rs` exists to avoid.
+    expect(await takeOutgoingRequests()).toEqual([])
+    await expect(requestSelfVerification()).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'account_keys_not_fetched',
+    )
+    expect(await pump()).toEqual(['keys_query'])
+
+    // Answered, and the answer names no identity. There is nothing to join
+    // yet, and that is its own kind rather than the one above.
+    await expect(requestSelfVerification()).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'identity_not_known',
+    )
+
+    // The account has one after all, published by a device that got there
+    // first. Now the bootstrap is the wrong call and this is the right one.
+    fake.anotherDeviceOfOursPublishedAnIdentity()
+    await expect(bootstrapCrossSigning()).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'identity_already_exists',
+    )
+    expect(await getIdentityStatus()).toEqual({
+      accountKeysFetched: true,
+      identityKnown: true,
+      privateKeysHeld: false,
+    })
+
+    // ---- Joining -------------------------------------------------------
+    //
+    // No arguments, and that is the difference from `requestVerification`
+    // rather than a convenience: the invitation goes to every device the
+    // account's identity has signed, and a new login cannot choose between
+    // them.
+    expect(requestSelfVerification.length).toBe(0)
+    expect(declaredParameters(requestSelfVerification)).toBe('')
+    const id = await requestSelfVerification()
+
+    await acceptVerification(id)
+    await startVerificationComparison(id)
+    expect(await pump()).toEqual(['to_device'])
+    expect(await getVerificationStage(id)).toBe('keys-exchanged')
+    const material = await getVerificationMaterial(id)
+    await confirmVerification(id, material)
+    fake.finishTheSelfFlow()
+    expect(await getVerificationStage(id)).toBe('done')
+
+    // ---- The seeds, which no call returns ------------------------------
+    //
+    // A completed comparison is not the seeds. Asserted before the arrival,
+    // so the assertion after it cannot pass on state that predates the
+    // gossip.
+    expect((await getIdentityStatus()).privateKeysHeld).toBe(false)
+    expect(seen).toEqual([])
+
+    // The secret request leaves on the ordinary pump. No new request kind,
+    // and no call of its own.
+    expect(await pump()).toEqual(['to_device'])
+
+    fake.theOtherDeviceAnswersTheSecretRequest()
+    await receiveSyncChanges({ to_device_events: [{ type: 'm.room.encrypted' }] })
+
+    expect(await getIdentityStatus()).toEqual({
+      accountKeysFetched: true,
+      identityKnown: true,
+      // The whole point: this device can now sign with the account's
+      // identity rather than only recognise it.
+      privateKeysHeld: true,
+    })
+
+    // And it was told, rather than having to ask on a timer. Announced for
+    // our own user id, which is what sends a product to `getIdentityStatus`.
+    expect(seen).toEqual([{ kind: 'trust_changed', user: OUR_USER, state: 'verified' }])
+
+    unsubscribe()
   })
 })
 

@@ -96,9 +96,55 @@
 //! without removing it, so the retry is an ordinary second send of the same
 //! pending request.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use matrix_sdk_crypto::OlmMachine;
 
 use crate::machine::{with_machine, MachineError};
+
+/// Whether the account's private signing keys were held the last time
+/// anything looked, so that an arrival can be told from a standing fact.
+///
+/// Process-wide, like the machine and the flow registry, and deliberately
+/// **not** persisted: it is not a record of what this account has, which is
+/// [`IdentityStatus::private_keys_held`]'s job, but of what this process has
+/// already reported. Seeded from the store the moment a machine is created
+/// (`machine::build`), so a relaunch of a device that already holds the keys
+/// starts out having nothing new to say.
+static PRIVATE_KEYS_HELD: AtomicBool = AtomicBool::new(false);
+
+/// Records what a machine holds at the moment it is created or reopened.
+///
+/// Called from `machine::build` and from its test reset, and from nowhere
+/// else: every other update goes through [`note_private_keys_held`], which
+/// is the one that decides whether anything is announced.
+pub(crate) fn seed_private_keys_held(held: bool) {
+    PRIVATE_KEYS_HELD.store(held, Ordering::SeqCst);
+}
+
+/// Records what the machine holds now, and answers whether that is news.
+///
+/// **True exactly once per arrival.** The two ways a device comes to hold
+/// the account's private signing keys are [`bootstrap_identity`], which
+/// mints them, and secret gossip from another of our own devices, which
+/// lands inside `receive_sync_changes` after this device has verified
+/// itself against one of them. Neither is special-cased: the rule is that
+/// the first look which finds the keys present, after a look that found
+/// them absent, is the arrival.
+///
+/// `false` is stored as faithfully as `true`, and that is not symmetry for
+/// its own sake. Upstream drops a private identity that a key query has
+/// contradicted (`identities/manager.rs:418-443`), so the keys really can
+/// go away; recording that is what lets a later arrival be announced rather
+/// than swallowed as "already reported".
+///
+/// The caller decides what to do with a `true`. `verification::announce_state_changes`
+/// is the only one, and it only ever asks while somebody is listening, so
+/// an arrival nobody was subscribed for leaves this latch alone and is
+/// announced on the first sync after somebody subscribes.
+pub(crate) fn note_private_keys_held(held_now: bool) -> bool {
+    held_now && !PRIVATE_KEYS_HELD.swap(held_now, Ordering::SeqCst)
+}
 
 /// What this library will say about the account's signing identity.
 ///

@@ -123,6 +123,13 @@ export type CryptoErrorKind =
   // this device joins that identity, it does not replace it, and replacing
   // it would reset the trust of everyone who had verified the old one.
   | 'identity_already_exists'
+  // The mirror image of the kind above, and the third refusal on this
+  // surface that turns on the same question. `requestSelfVerification` reports
+  // it when the server has been asked and named no identity for this account:
+  // there is nothing to join, so the answer is
+  // {@link bootstrapCrossSigning}, not a retry. Deliberately absent from
+  // RETRIABLE below: calling again changes nothing until an identity exists.
+  | 'identity_not_known'
   | 'not_implemented'
   | 'not_initialised'
   | 'already_initialised'
@@ -265,6 +272,12 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   // opposite things done about them.
   ['AccountKeysNotFetched', 'account_keys_not_fetched'],
   ['IdentityAlreadyExists', 'identity_already_exists'],
+  // The third of that group, added with self-verification. It completes a
+  // triangle rather than a pair: `identity_already_exists` says the account
+  // has an identity this device is not part of, and this says the account has
+  // none at all. A product told the wrong one either waits for an identity
+  // that does not exist or refuses to create the one that is missing.
+  ['IdentityNotKnown', 'identity_not_known'],
 ])
 
 // 'session_refused' is deliberately not here: see its own doc comment on

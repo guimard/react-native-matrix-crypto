@@ -26,6 +26,7 @@ import {
   markRequestSent as nativeMarkRequestSent,
   openCryptoStore as nativeOpenCryptoStore,
   receiveSyncChanges as nativeReceiveSyncChanges,
+  requestSelfVerification as nativeRequestSelfVerification,
   requestVerification as nativeRequestVerification,
   shareScopeKey as nativeShareScopeKey,
   startVerificationComparison as nativeStartVerificationComparison,
@@ -817,9 +818,16 @@ export interface IdentityStatus {
  * What this library will say about this account's signing identity right
  * now. Reads only: it asks the server nothing and creates nothing.
  *
- * See {@link IdentityStatus} for why two of the three fields have to be
- * read together, and {@link bootstrapCrossSigning} for the call that
- * changes them.
+ * See {@link IdentityStatus} for why two of the three fields have to be read
+ * together. Two calls change them: {@link bootstrapCrossSigning} creates the
+ * identity, and {@link requestSelfVerification} joins one the account already
+ * has.
+ *
+ * **This is the durable answer the signal channel sends you to.** Nothing
+ * returns to a caller when a join's seeds arrive; what happens instead is a
+ * `'trust_changed'` for your own user id on `onCryptoSignal`, and reading
+ * `privateKeysHeld` here is what that signal means. It is the same variant a
+ * completed comparison produces, so read this rather than counting signals.
  */
 export async function getIdentityStatus(): Promise<IdentityStatus> {
   try {
@@ -918,7 +926,18 @@ export async function getIdentityStatus(): Promise<IdentityStatus> {
  * `'identity_already_exists'` means the answer named an identity this device
  * does not hold the private keys for. There is no remedy through this call
  * and there should not be: this device joins that identity, it does not
- * replace it. Joining is a later release.
+ * replace it. **{@link requestSelfVerification} is the call that joins it**,
+ * and it is where a second login goes from here.
+ *
+ * # After a join, this call starts being served again
+ *
+ * A device that has joined holds the account's private keys, so this
+ * republishes the identity it now holds rather than being refused, and the
+ * `'signing_keys_upload'` in the batch needs the same user-interactive
+ * authentication as the first time. "Call it on every launch" is still the
+ * right advice, but a joined device following it meets an authentication
+ * challenge, and a product that only expected one during setup should expect
+ * this one too.
  */
 export async function bootstrapCrossSigning(): Promise<void> {
   try {
@@ -1045,6 +1064,92 @@ export async function getDeviceStatuses(userId: string): Promise<DeviceStatus[]>
 export async function requestVerification(userId: string, deviceId: string): Promise<string> {
   try {
     return await nativeRequestVerification(userId, deviceId)
+  } catch (e) {
+    throw toCryptoError(e)
+  }
+}
+
+/**
+ * Asks this account's **other** devices to verify this one, so that this
+ * device can join the cross-signing identity the account already has.
+ *
+ * This is what a second login does. A device that does not hold the account's
+ * private signing keys joins the identity; it does not create one.
+ * {@link bootstrapCrossSigning} refuses such a device with
+ * `'identity_already_exists'`, and that refusal is the one thing standing
+ * between an ordinary second login and an account whose identity has been
+ * silently replaced, resetting the trust of every device and every person who
+ * had verified it. **This call is the remedy that refusal points at, and it
+ * is not a way around it.**
+ *
+ * # Three ways it differs from {@link requestVerification}
+ *
+ * **It names no device**, because a new login is in no position to choose
+ * one. The invitation goes to every other device of yours that the account's
+ * identity has signed, and whichever is in front of a person answers first;
+ * the others are told the flow was taken. A device of yours that the identity
+ * has never signed is not invited, which is deliberate: it is a login this
+ * account's identity has never vouched for.
+ *
+ * **The signature at the end is made with a different key**, and by the other
+ * side. The device that already holds the private keys signs this one with
+ * the account's self-signing key. This device has nothing to sign with yet,
+ * which is the whole reason it is asking.
+ *
+ * **It asks for the account's secrets, which verifying somebody else never
+ * does.** Once the comparison completes, this library asks your other devices
+ * for the cross-signing seeds it lacks. Those go out as ordinary entries in
+ * {@link takeOutgoingRequests}' output, and the encrypted answer arrives in a
+ * later {@link receiveSyncChanges}, which imports it.
+ *
+ * # Nothing returns to you when the seeds land
+ *
+ * The call that started all this resolved long before. Two things tell you it
+ * happened, and you want the first:
+ *
+ * - **`onCryptoSignal`** announces `'trust_changed'` for your own user id on
+ *   the sync that carried the seeds. That is the signal to read
+ *   {@link getIdentityStatus} again. It is the same variant a completed
+ *   comparison produces, so read the status rather than counting signals;
+ *   see `onCryptoSignal`'s own comment.
+ * - **{@link getIdentityStatus}** is the durable answer:
+ *   `privateKeysHeld === true` means this device can now sign with the
+ *   account's identity rather than only recognise it. Read it when you are
+ *   told to, not on a timer.
+ *
+ * # Driving the flow
+ *
+ * Identical to {@link requestVerification} from the moment this resolves:
+ * pump, wait for {@link getVerificationStage} to read `'ready'`,
+ * {@link startVerificationComparison}, pump, read
+ * {@link getVerificationMaterial}, show it, and
+ * {@link confirmVerification} or {@link cancelVerification}. The person is
+ * comparing two of their own screens instead of talking to somebody else,
+ * which changes none of the calls.
+ *
+ * # Refusals
+ *
+ * `'account_keys_not_fetched'` means this process has not yet asked the
+ * server about this account, so it cannot know whether there is an identity
+ * to join. **This call queues that key query before returning the refusal**,
+ * so the remedy is the ordinary loop: drain the pump, send, report sent, and
+ * call this again. You do not have to reach for
+ * {@link bootstrapCrossSigning} to get unstuck, and on a device that is
+ * joining you should not: it is the call that would create a second identity
+ * if the state ever moved under you.
+ *
+ * Expect this refusal on **every** launch, not only the first. Whether the
+ * server has been asked is not persisted, and the layer underneath will not
+ * volunteer the question for an account it already knows about, so a
+ * relaunched store starts out having asked nothing.
+ *
+ * `'identity_not_known'` means the server was asked and said this account has
+ * no identity. There is nothing to join, and the answer is
+ * {@link bootstrapCrossSigning} rather than a retry.
+ */
+export async function requestSelfVerification(): Promise<string> {
+  try {
+    return await nativeRequestSelfVerification()
   } catch (e) {
     throw toCryptoError(e)
   }

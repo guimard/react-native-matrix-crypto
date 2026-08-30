@@ -47,6 +47,7 @@ class NativeMatrixCrypto : public jsi::HostObject {
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_probe(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_probe_with_observer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_receive_sync_changes(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_request_self_verification(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_request_verification(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_set_crypto_observer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_share_scope_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
@@ -119,6 +120,7 @@ class NativeMatrixCrypto : public jsi::HostObject {
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_probe(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_probe_with_observer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_receive_sync_changes(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_request_self_verification(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_request_verification(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_set_crypto_observer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_share_scope_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);

@@ -677,6 +677,138 @@ pub async fn request_flow(user_id: &str, device_id: &str) -> Result<FlowId, Mach
     Ok(FlowId(flow_id))
 }
 
+/// Asks this account's *other* devices to verify this one, so that this
+/// device can join the signing identity the account already has.
+///
+/// # Why this is not [`request_flow`] with our own identifiers
+///
+/// Three differences, all of them upstream's and none of them cosmetic.
+///
+/// **It names no device.** [`request_flow`] asks one device, chosen by the
+/// caller, through `Device::request_verification_with_methods`. This asks
+/// through `OwnUserIdentity::request_verification_with_methods`, which fans
+/// the invitation out to *every* other device of ours at once and lets
+/// whichever is in front of a person answer first. A new login normally has
+/// no idea which of its owner's devices is to hand, so choosing one is a
+/// question it cannot answer; the ones that do not answer see the flow
+/// cancelled when one does.
+///
+/// **The signature it ends in is made with a different key.** Upstream's
+/// `mark_as_done` signs a device with our *self-signing* key when the device
+/// is ours, and another user's master key with our *user-signing* key when
+/// it is not (`verification/mod.rs:513`, `:549`). Both sides of a
+/// self-verification take the first branch, and only the side that already
+/// holds the private keys can act on it: the device with the identity signs
+/// the new one, and the new one finds it has nothing to sign with and
+/// carries on.
+///
+/// **It asks for the account's secrets, which verifying somebody else never
+/// does.** Marking our own identity verified sets upstream's
+/// `should_request_secrets`, which asks our other devices for whatever
+/// cross-signing seeds this device lacks. Those become ordinary to-device
+/// requests that [`crate::take_outgoing_requests`] hands out, and the reply
+/// arrives encrypted inside a later [`crate::receive_sync_changes`], where
+/// upstream imports it if and only if the sending device is one of ours and
+/// is verified. **Nothing returns to the caller when that lands.**
+/// [`crate::identity_status`]' `private_keys_held` is the durable answer,
+/// and the `trust_changed` signal on [`crate::CryptoSignal`] is how a caller
+/// learns of it without asking repeatedly.
+///
+/// # This is not a bootstrap, and must never become one
+///
+/// A device that does not hold the account's private signing keys **joins**
+/// the identity the account already has. [`crate::bootstrap_identity`]
+/// refuses such a device with [`MachineError::IdentityAlreadyExists`], and
+/// that refusal is the one thing standing between an ordinary second login
+/// and an account whose identity has been silently replaced, resetting the
+/// trust of every device and every user who had verified the old one. This
+/// call is the remedy that refusal points at; it is not a way around it.
+///
+/// # After it returns
+///
+/// The flow is driven exactly like [`request_flow`]'s: pump, wait for
+/// [`FlowStage::Ready`], [`begin_comparison`], read the string with
+/// [`read_material`], show it to a person, and [`confirm_flow`] or
+/// [`cancel_flow`]. The person is comparing two of their own screens rather
+/// than talking to somebody else, which changes nothing about the calls.
+///
+/// # Refusals
+///
+/// [`MachineError::AccountKeysNotFetched`] means this process has not asked
+/// the server about this account yet, so it cannot know whether the account
+/// has an identity to join. **This call queues that key query before
+/// returning the refusal**, exactly as [`crate::bootstrap_identity`] does and
+/// for the same reason, so the remedy is the ordinary loop: drain the pump,
+/// send, report sent, call this again.
+///
+/// It has to queue it itself, and this is not defensive. Upstream volunteers
+/// an own-account key query only while the account is not yet tracked
+/// ("We always want to track our own user",
+/// `identities/manager.rs:836-852`), and `update_tracked_users` re-flags only
+/// accounts it did not already know (`store/mod.rs:258-273`). So on any
+/// relaunch of an existing store, and on any process that shared a key before
+/// asking, nothing would ever volunteer the query and this refusal would be
+/// permanent on this call. The one escape would be
+/// [`crate::bootstrap_identity`], which is precisely the call a joining device
+/// must not reach for. `tests/self_verification_recovery.rs` constructs that
+/// state, which a fresh machine cannot.
+///
+/// [`MachineError::IdentityNotKnown`] means the server was asked and named
+/// no identity for this account. There is nothing to join, and the answer is
+/// [`crate::bootstrap_identity`] rather than a retry.
+pub async fn request_self_flow() -> Result<FlowId, MachineError> {
+    let (flow_id, request, outgoing) = with_machine(|machine| {
+        Box::pin(async move {
+            // `None` as the timeout, not a duration, for the reason
+            // `signing::read_status` gives at more length: with `Some`,
+            // upstream waits for an in-flight key query for this account
+            // while this call holds the machine lock, and the caller cannot
+            // drain the pump to satisfy it from another task.
+            let identity = machine
+                .get_identity(machine.user_id(), None)
+                .await
+                .map_err(|_upstream| store_failed())?
+                .and_then(|identity| identity.own());
+
+            let Some(identity) = identity else {
+                // The two refusals are separated by the same question
+                // `signing::may_mint` asks first, read from the same place,
+                // so this call and the bootstrap gate cannot come to
+                // disagree about whether anybody has asked.
+                if crate::session::account_keys_answered() {
+                    return Err(MachineError::IdentityNotKnown);
+                }
+                // Queued *by* the refusal, so the refusal is recoverable
+                // rather than a dead end. The reasoning is
+                // `signing::bootstrap_identity`'s, unchanged and not
+                // repeated here: upstream will not volunteer this query for
+                // an account it is already tracking, which is every relaunch
+                // of an existing store. The same single slot, so a caller
+                // that reached both calls sends one query rather than two.
+                let (id, request) =
+                    machine.query_keys_for_users(std::iter::once(machine.user_id()));
+                crate::session::queue_account_key_query(id, request);
+                return Err(MachineError::AccountKeysNotFetched);
+            };
+
+            // One method advertised, not upstream's default list, for
+            // `request_flow`'s reason: advertising a method this library
+            // cannot carry out is a claim the far side may act on.
+            let (request, outgoing) = identity
+                .request_verification_with_methods(vec![VerificationMethod::SasV1])
+                .await
+                .map_err(|_upstream| store_failed())?;
+            Ok((request.flow_id().as_str().to_string(), request, outgoing))
+        })
+    })
+    .await??;
+
+    register(&flow_id, FlowRecord::from_request(request));
+    queue(outgoing);
+
+    Ok(FlowId(flow_id))
+}
+
 /// Agrees to whatever the other side is currently asking of this device.
 ///
 /// # There are two things a peer can ask, and this call answers both
@@ -1101,15 +1233,24 @@ const START_EVENT_TYPE: &str = "m.key.verification.start";
 /// this library has -- and it is why the TypeScript side uninstalls the
 /// observer on the last unsubscribe rather than leaving it latched.
 ///
-/// **With somebody listening, one `tracked_users()` and one
-/// `get_verification_requests` per tracked user, per sync.** Measured
-/// against an empty sync on an account with one tracked user, the
-/// difference was below the resolution of the measurement -- but
-/// `tracked_users` clones the whole tracked-user set into a fresh
-/// `HashSet<OwnedUserId>` (`machine/mod.rs:482`), so on an account tracking
-/// thousands that is an allocation proportional to the account on this
-/// library's most frequent call. Nothing here has measured that case, and
-/// the small-account figure must not be read as covering it.
+/// **With somebody listening, one `tracked_users()`, one
+/// `get_verification_requests` per tracked user, and one
+/// `cross_signing_status()`, per sync.** Measured against an empty sync on
+/// an account with one tracked user, the difference was below the
+/// resolution of the measurement -- but `tracked_users` clones the whole
+/// tracked-user set into a fresh `HashSet<OwnedUserId>`
+/// (`machine/mod.rs:482`), so on an account tracking thousands that is an
+/// allocation proportional to the account on this library's most frequent
+/// call. Nothing here has measured that case, and the small-account figure
+/// must not be read as covering it.
+///
+/// The third is the one this milestone added, and it is the cheap one: it
+/// takes two in-memory locks and reads three `Option`s
+/// (`machine/mod.rs:2765-2767`), touching neither the store nor the
+/// tracked-user set. It is listed rather than folded into the sentence
+/// above because this block is read as an enumeration, and one that quietly
+/// stopped enumerating would be worse than one that says a cheap thing
+/// costs something.
 ///
 /// # A verification begun without a request
 ///
@@ -1182,6 +1323,40 @@ pub(crate) async fn announce_state_changes(processed: &[ProcessedToDeviceEvent])
             for user in changed {
                 signals.push(CryptoSignal::TrustChanged {
                     user,
+                    state: TrustState::Verified,
+                });
+            }
+
+            // The account's own private signing keys arriving, which is a
+            // trust change no comparison of this device's own reports.
+            //
+            // A device that joins an identity by verifying itself against
+            // another of ours asks that device for the seeds it lacks, and
+            // the answer comes back inside a later `receive_sync_changes` as
+            // an encrypted secret upstream imports on its own. Nothing
+            // returns to the caller when it lands, and nothing else on this
+            // surface changes, so without this a product would have to poll
+            // `identity_status` to find out that its new device can sign.
+            //
+            // The latch is what makes this an arrival rather than a report
+            // repeated on every sync; `signing::note_private_keys_held`
+            // owns it. Announced under our own user id, which is the shape
+            // this variant has carried since M1: which of that user's
+            // devices moved is `device_statuses`' answer, and here the
+            // answer is potentially all of them at once, because a device
+            // that holds the self-signing key can follow the account's own
+            // signature over every device it signed.
+            //
+            // Consumed if it reaches nobody, like the completions above and
+            // unlike an inbound invitation. `identity_status().private_keys_held`
+            // is the durable answer and is correct the instant the import
+            // lands, so a missed announcement costs a caller one call rather
+            // than a state it can never recover.
+            if crate::signing::note_private_keys_held(
+                machine.cross_signing_status().await.is_complete(),
+            ) {
+                signals.push(CryptoSignal::TrustChanged {
+                    user: machine.user_id().to_string(),
                     state: TrustState::Verified,
                 });
             }
