@@ -99,10 +99,16 @@ export interface DeviceStatus {
  * homeserver returned it, and nothing this library adds or removes.
  *
  * **A wrong `responseJson` is not reliably rejected**, so do not treat the
- * column below as validated input. A body is accepted when it is shaped like
- * that endpoint's response: an object with no keys, or an object carrying at
- * least one of the fields in its row below. Anything else is rejected with
- * `malformed_payload`. What that leaves through, and why, is set out once in
+ * column below as validated input. A body that is *not* shaped like that
+ * endpoint's response is always rejected with `malformed_payload`: being an
+ * object with no keys, or carrying at least one of the fields in its row
+ * below, is what that means.
+ *
+ * **Being shaped right is necessary, not sufficient.** A body carrying a real
+ * field alongside a Matrix error's `errcode`, a gateway's `error` or a
+ * challenge's `flows` is still rejected, and `{}` is rejected for
+ * `keys_upload`, `keys_claim` and `room_message`, whose responses each have
+ * one required field. What survives all of that, and why, is set out once in
  * {@link markRequestFailed}.
  *
  * | `kind` | Method & path | `responseJson` must contain |

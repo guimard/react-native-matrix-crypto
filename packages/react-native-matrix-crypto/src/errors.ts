@@ -39,8 +39,11 @@ export type CryptoErrorKind =
   // through 599. The case this exists to catch is a **2xx**: it means
   // `markRequestFailed` and `markRequestSent` have been swapped, and since
   // reporting a refusal changes no state, saying nothing would let that
-  // stand. It is the only confusion of the pair this library can detect,
-  // and it detects it in the status, never in the body.
+  // stand. It is the confusion this call can see in its own arguments, not
+  // the only one the library catches: reporting a refused response through
+  // `markRequestSent` is caught too whenever the body is not shaped like
+  // that endpoint's answer. What neither can see is a refusal whose body is
+  // shaped like one.
   | 'not_a_failure_status'
   | 'failed'
   // Reserved for genuine store corruption, which decryption work does not

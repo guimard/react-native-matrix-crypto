@@ -195,10 +195,14 @@ pub enum SessionError {
     /// `300` through `599`. Everything else is rejected, and the case worth
     /// naming is a **2xx**: a caller passing one has confused this call with
     /// [`mark_request_sent`], and since a refusal changes no state, being
-    /// told nothing would let that confusion stand. This is the one misuse
-    /// of the pair the library can see for itself, and it is the argument,
-    /// never the body. See [`mark_request_failed`] for why the body cannot
-    /// be made to give the same answer.
+    /// told nothing would let that confusion stand.
+    ///
+    /// It is the confusion this call can see **in its own arguments**, which
+    /// is not the same as the only one the library catches: reporting a
+    /// refused response through [`mark_request_sent`] is caught too whenever
+    /// the body is not shaped like that endpoint's answer, by
+    /// [`refuse_a_non_response`]. What neither can see is a refusal whose
+    /// body *is* shaped like an answer. See [`mark_request_failed`].
     ///
     /// Declared next to [`UnknownRequest`](Self::UnknownRequest), which it
     /// reads beside, rather than appended: this enum has no wire
@@ -2436,6 +2440,16 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
 /// object carrying at least one field this endpoint's response really
 /// declares.**
 ///
+/// **Passing this function is necessary, not sufficient.** It is one of two
+/// checks, and the per-kind parse in [`mark_sent`] runs after it and refuses
+/// more: `{}` reaches that parse for every kind and is then rejected for
+/// `keys_upload`, `keys_claim` and `room_message`, whose responses each have
+/// one required field. The rules above also compose rather than partition,
+/// so a body carrying a declared field *and* an error marker is refused by
+/// the marker rule even though the shape rule would pass it. The statement
+/// below is therefore about what this function lets through, not about what
+/// `mark_request_sent` ultimately accepts.
+///
 /// Every genuine success is inside that shape, which is the point of drawing
 /// it there. So is any failure whose body happens to fall inside it, and the
 /// member that matters is the object with no keys. `{}` is what
@@ -2507,12 +2521,22 @@ fn refuse_a_non_response(kind: PendingKind, body: &str) -> Result<(), SessionErr
     // knows nothing about, and it is the entire success response of both
     // fieldless kinds.
     //
-    // This is deliberately not `deny_unknown_fields`. A response carrying a
-    // field a later specification adds, *alongside* one this crate knows,
-    // still passes. Only a body made up exclusively of fields none of
-    // which this crate's ruma declares is refused. That residual
-    // forward-compatibility cost fails closed, with `MalformedPayload` and
-    // a gate that stays shut, rather than open.
+    // For the five kinds with fields this is deliberately not
+    // `deny_unknown_fields`. A response carrying a field a later
+    // specification adds, *alongside* one this crate knows, still passes.
+    // Only a body made up exclusively of fields none of which this crate's
+    // ruma declares is refused.
+    //
+    // For `to_device` and `signing_keys_upload` it *is* `deny_unknown_fields`
+    // in every practical sense, and that is worth saying here rather than
+    // only where the empty list is defined: their declared list is empty, so
+    // no key can ever match and any key at all is refused. A field added to
+    // either endpoint's 200 response by a later specification would break
+    // them. Both are `Response {}` today and have been stable, and this is
+    // the only check either gets, so the trade is taken knowingly.
+    //
+    // Either way the residual forward-compatibility cost fails closed, with
+    // `MalformedPayload` and a gate that stays shut, rather than open.
     if !object.is_empty()
         && !object
             .keys()
