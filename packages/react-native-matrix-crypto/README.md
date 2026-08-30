@@ -386,7 +386,7 @@ yarn --cwd packages/react-native-matrix-crypto test   # TypeScript
 yarn --cwd packages/example-app test                  # the example app
 ```
 
-`packages/example-app` is a neutral React Native application that runs the full chain and explains it, walking seven steps from a trivial call through to real cryptographic keys and showing at each step the exact TypeScript a consumer would write, what crosses the native boundary, and the result.
+`packages/example-app` is a neutral React Native application that runs the full chain and explains it, walking from a trivial call through to real cryptographic keys and showing at each step the exact TypeScript a consumer would write, what crosses the native boundary, and the result. It counts its own steps on screen rather than stating a number here, because the number was wrong in both copies of this file at once and the check that compares them could not see it.
 
 That app had no test runner until 2026-08-30, which is why it carried two defects at once: a step that read a value before the step producing it had settled, and a card asserting that a library function was unimplemented for a milestone after the library implemented it. It runs vitest now, the same runner as the library, in the same CI job. Those tests drive the walkthrough's real step functions, and the file that checks what a card claims about the library mocks nothing at all. What they cannot reach is the JSI turbo module, which no Node process can load, so nothing in them establishes that the bridge works; `packages/example-app/README.md` lists exactly which behaviour is still exercised only on a device.
 
