@@ -863,6 +863,12 @@ fn a_third_party_client_and_this_library_verify_each_other_by_scanning_a_code() 
     session.sync_until("the library finished the cross-user flow", |session| {
         stage(&cross_user) == FlowStage::Done && session.completed(&cross_user)
     });
+    // Both sides, not just this one. The counterparty's own callback is what
+    // says its client considers the verification complete, and a phase that
+    // asserted only this side's stage would pass against a peer that had
+    // given up. After this side, never before it: the counterparty is
+    // waiting for the `done` this side sends on reaching `Done`.
+    scanner.sync_until_seen("done");
     let their_view = scanner.call(json!({
         "op": "device_trust",
         "user": library.user_id,
@@ -974,10 +980,10 @@ fn a_third_party_client_and_this_library_verify_each_other_by_scanning_a_code() 
         json!(true),
         "the side that showed the code answers for it: {confirmed}"
     );
-
     session.sync_until("the library finished the untrusted self flow", |session| {
         stage(&untrusted_shows) == FlowStage::Done && session.completed(&untrusted_shows)
     });
+    new_login.sync_until_seen("done");
     assert_eq!(
         library_trust(&library.user_id, &new_login_id),
         TrustState::Verified,
@@ -1024,10 +1030,10 @@ fn a_third_party_client_and_this_library_verify_each_other_by_scanning_a_code() 
         json!(true),
         "the side that showed the code answers for it: {confirmed}"
     );
-
     session.sync_until("the library finished the trusted self flow", |session| {
         stage(&trusted_shows) == FlowStage::Done && session.completed(&trusted_shows)
     });
+    new_login.sync_until_seen("done");
 
     // The library's own self request is driven too, so that the third of the
     // three call sites the switch has to reach is exercised against a real

@@ -540,8 +540,12 @@ else
   # Everything Go writes goes inside this run's own working directory, so a
   # run leaves nothing in the caller's module or build cache.
   (
+    # `-mod=readonly`, which is the default and is stated anyway: a build
+    # that needed to change `go.mod` or `go.sum` must fail here rather than
+    # rewrite a committed file, which is the same rule `yarn install
+    # --frozen-lockfile` follows elsewhere in this repository.
     cd "$REPO_ROOT/rust/matrix-crypto-core/tests/interop/mautrix_party" \
-      && GOFLAGS=-mod=mod \
+      && GOFLAGS=-mod=readonly \
          GOMODCACHE="$WORKDIR/go/mod" \
          GOCACHE="$WORKDIR/go/build" \
          go build -tags goolm -o "$WORKDIR/mautrix-party" .
