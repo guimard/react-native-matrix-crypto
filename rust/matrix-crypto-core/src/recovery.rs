@@ -342,6 +342,87 @@ pub async fn recover_identity(
     .await?
 }
 
+/// Which upstream decode failure is a wrong secret and which is a stored
+/// recovery that cannot be read.
+///
+/// **The whole point of keeping [`MachineError::RecoveryKeyIncorrect`] and
+/// [`MachineError::RecoveryDataMalformed`] apart lives in this function**,
+/// so the question it answers is asked once, of every variant, by name.
+///
+/// # The rule
+///
+/// Upstream's `DecodeError` mixes two subjects that its own name does not
+/// separate: some variants describe the string the user just typed, and
+/// some describe the key description this library read back from the
+/// server. The first set is a wrong secret and the user retypes it; the
+/// second is a recovery no secret will ever open.
+///
+/// # Why this was wrong once, and what it cost
+///
+/// This was a single `Mac` arm and a wildcard, on the reasoning that
+/// "every other variant describes input that could not be parsed at all".
+/// That premise is false, and the case it is false in is the one a product
+/// most needs right. `SecretStorageKey::from_account_data`
+/// (`matrix-sdk-crypto-0.18.0/src/secret_storage.rs`) branches on whether
+/// the key description carries a `passphrase` block. **With** one it tries
+/// the passphrase, falls back to base58, and on double failure returns the
+/// passphrase error, which is `Mac`. **Without** one, which the
+/// specification permits, which upstream handles explicitly and which
+/// another client's recovery can perfectly well be, it goes straight to the
+/// base58 path, whose failures are `Base58`, `Prefix`, `Parity` and
+/// `KeyLength`. Every one of those describes the typed secret, and every
+/// one of them landed in the wildcard.
+///
+/// So a user with a one-character typo in their recovery key was told their
+/// stored data was unreadable, whose documented remedy is to set recovery
+/// up again, which is the single action that destroys the recovery they
+/// were trying to open. That is precisely the harm this pair of variants
+/// exists to prevent, arrived at through the one path no fixture reached,
+/// because `create_recovery` always writes a passphrase block.
+///
+/// # Exhaustive, and no wildcard
+///
+/// `DecodeError` is not `#[non_exhaustive]`, so every variant is named. A
+/// variant upstream adds later must fail this build rather than fall
+/// through to whichever answer the wildcard happened to give, which is
+/// exactly how the defect above survived.
+fn classify_decode_error(upstream: DecodeError) -> MachineError {
+    // Matched by variant, not by text, like every other upstream error this
+    // crate classifies.
+    match upstream {
+        // The typed secret. `Mac` is the reconstructed key failing its own
+        // check, which a wrong passphrase and a wrong recovery key both
+        // produce. The other four come out of `parse_base58_key` and
+        // describe the characters the user entered: not base58 at all, the
+        // wrong length once decoded, the wrong two-byte prefix, or a parity
+        // byte that does not match the key it is meant to check.
+        DecodeError::Mac(_)
+        | DecodeError::Base58(_)
+        | DecodeError::KeyLength(_, _)
+        | DecodeError::Prefix(_, _)
+        | DecodeError::Parity(_, _) => MachineError::RecoveryKeyIncorrect,
+        // The stored key description. The iteration count is the one that
+        // looks like it could be about the secret and is not: it is the
+        // count the *description* asks for, refused because it does not fit
+        // in this platform's `usize`, and no secret changes it. `IvLength`
+        // and `MacLength` are the description's own check fields being the
+        // wrong size, and `UnsupportedAlgorithm` is a scheme this build
+        // does not implement.
+        //
+        // `Base64` is unreachable from this call in
+        // `matrix-sdk-crypto` 0.18.0: it exists as a `#[from]` conversion
+        // and nothing on the path from `from_account_data` constructs one.
+        // Named rather than left to a wildcard anyway, and put here because
+        // if it ever becomes reachable it will be a field of the stored
+        // description that failed to decode.
+        DecodeError::Base64(_)
+        | DecodeError::IvLength(_, _)
+        | DecodeError::MacLength(_, _)
+        | DecodeError::UnsupportedAlgorithm(_)
+        | DecodeError::KdfIterationCount(_) => MachineError::RecoveryDataMalformed,
+    }
+}
+
 /// The whole of [`recover_identity`] once a machine is in hand.
 ///
 /// Separate so that the `with_machine` closure stays a single expression
@@ -392,17 +473,8 @@ async fn restore(
     let description = SecretStorageKeyEventContent::from_parts(&description_type, &description)
         .map_err(|_| MachineError::RecoveryDataMalformed)?;
 
-    let key = SecretStorageKey::from_account_data(secret, description).map_err(|upstream| {
-        // Matched by variant, not by text, like every other upstream error
-        // this crate classifies. `Mac` is the MAC check on the
-        // reconstructed key failing, which is what a wrong passphrase or a
-        // wrong recovery key produces; every other variant describes input
-        // that could not be parsed at all, which no secret will fix.
-        match upstream {
-            DecodeError::Mac(_) => MachineError::RecoveryKeyIncorrect,
-            _other => MachineError::RecoveryDataMalformed,
-        }
-    })?;
+    let key =
+        SecretStorageKey::from_account_data(secret, description).map_err(classify_decode_error)?;
 
     let mut seeds = Vec::with_capacity(SECRETS.len());
     for name in &SECRETS {
@@ -1410,7 +1482,69 @@ mod tests {
                  wrong passphrase nor damaged data"
             );
 
-            // (5) The control. The same fixture, the same machine, the
+            // (5) A mistyped recovery key, against a recovery whose key
+            //     description carries no passphrase block.
+            //
+            //     That shape is legal, upstream branches on it explicitly,
+            //     and this library promises to restore a recovery another
+            //     client wrote, so it is a shape that arrives here. With no
+            //     passphrase block upstream goes straight to the base58
+            //     path, whose failures describe the string the user just
+            //     typed. **This is the case the whole pair of variants
+            //     exists for**, and it is the one no fixture on this branch
+            //     could reach until now, because `create_recovery` always
+            //     writes a passphrase block.
+            let key_only = without_the_passphrase_block(&recovery.account_data);
+            assert_eq!(
+                recover_identity(&mistyped(&recovery.recovery_key), &key_only).await,
+                Err(MachineError::RecoveryKeyIncorrect),
+                "a recovery key with one character wrong is a wrong secret, \
+                 whatever the key description does or does not carry. Reporting \
+                 it as unreadable data sends a user whose only mistake was a \
+                 typo to set recovery up again, which is the one action that \
+                 destroys what they were trying to recover"
+            );
+            assert_eq!(
+                recover_identity(PASSPHRASE, &key_only).await,
+                Err(MachineError::RecoveryKeyIncorrect),
+                "a passphrase typed at a recovery that has no passphrase block \
+                 is a wrong secret too, for the same reason: nothing about the \
+                 stored data is wrong"
+            );
+
+            //     The control for that pair, and what makes the two above
+            //     statements about the secret rather than about the
+            //     fixture: the same key-only description opens with the
+            //     right recovery key.
+            recover_identity(&recovery.recovery_key, &key_only)
+                .await
+                .expect(
+                    "a recovery with no passphrase block must still open with \
+                     the recovery key it was created with",
+                );
+
+            // (6) The other control, and it is what stops the fix for (5)
+            //     from being `report every secret as wrong`. The
+            //     **passphrase is right** and the key description names an
+            //     encryption scheme this build does not implement, so the
+            //     answer must still be that the stored data cannot be read.
+            //
+            //     The passphrase block is deliberately left in place. With
+            //     it removed, upstream never reaches the algorithm at all:
+            //     it takes the base58 path, fails to parse a passphrase as
+            //     a key, and answers about the secret. Which is correct,
+            //     and is why this fixture changes one field rather than
+            //     replacing the description.
+            let unsupported = with_an_unsupported_algorithm(&recovery.account_data);
+            assert_eq!(
+                recover_identity(PASSPHRASE, &unsupported).await,
+                Err(MachineError::RecoveryDataMalformed),
+                "a key description naming an encryption algorithm this build \
+                 does not implement describes the stored data, not the secret, \
+                 and no secret will open it"
+            );
+
+            // (7) The control. The same fixture, the same machine, the
             //     right passphrase: it opens. Without this, every refusal
             //     above would be equally consistent with a fixture that was
             //     never openable at all.
@@ -1425,6 +1559,18 @@ mod tests {
                 "the control must actually restore the identity, or it is not \
                  a control"
             );
+
+            // (8) And the other secret opens it too. `secret` is documented
+            //     as either the passphrase or the recovery key, and the
+            //     recovery key is the half a product shows a human once and
+            //     the only thing that survives a forgotten passphrase, so
+            //     the claim is pinned rather than left to the doc comment.
+            recover_identity(&recovery.recovery_key, &recovery.account_data)
+                .await
+                .expect(
+                    "the recovery key this call returned must open the recovery \
+                     it returned it for",
+                );
         }));
     }
 
@@ -1472,6 +1618,99 @@ mod tests {
         *ciphertext = serde_json::Value::String(altered);
         entry.content = content.to_string();
         damaged
+    }
+
+    /// A copy of `account_data` whose key description carries no
+    /// `passphrase` block.
+    ///
+    /// Legal, and not a corruption: the Matrix specification defines the
+    /// block as optional, upstream's `from_account_data` branches on its
+    /// absence, and a client that offered its user only a recovery key
+    /// writes exactly this. `create_recovery` always writes one, so this is
+    /// the only way to build the shape from inside this file.
+    ///
+    /// Nothing else is touched, which is what makes the assertions using it
+    /// about the branch rather than about the fixture.
+    fn without_the_passphrase_block(account_data: &[AccountDataEntry]) -> Vec<AccountDataEntry> {
+        let mut stripped = account_data.to_vec();
+        let entry = stripped
+            .iter_mut()
+            .find(|entry| entry.event_type.starts_with("m.secret_storage.key."))
+            .expect("a recovery always carries a key description");
+        let mut content: serde_json::Value =
+            serde_json::from_str(&entry.content).expect("this module wrote well-formed JSON");
+        let removed = content
+            .as_object_mut()
+            .expect("a key description is an object")
+            .remove("passphrase");
+        assert!(
+            removed.is_some(),
+            "the fixture must have carried a passphrase block for removing it \
+             to mean anything"
+        );
+        entry.content = content.to_string();
+        stripped
+    }
+
+    /// The same recovery key with one character replaced by another from
+    /// the same alphabet.
+    ///
+    /// A typo, not a truncation: the result is still a base58 string of the
+    /// right length, so what rejects it is the key's own parity or MAC
+    /// check rather than a length test, which is the shape a real mistyping
+    /// takes.
+    fn mistyped(recovery_key: &str) -> String {
+        let mut wrong = String::with_capacity(recovery_key.len());
+        let mut swapped = false;
+        for character in recovery_key.chars() {
+            if !swapped && character.is_ascii_alphanumeric() {
+                wrong.push(if character == 'a' { 'b' } else { 'a' });
+                swapped = true;
+            } else {
+                wrong.push(character);
+            }
+        }
+        assert!(swapped, "a recovery key always carries a base58 character");
+        assert_ne!(wrong, recovery_key, "the typo must change the key");
+        wrong
+    }
+
+    /// A copy of `account_data` whose key description names an encryption
+    /// scheme this build does not implement.
+    ///
+    /// One field changed and nothing else, in particular **not** the
+    /// passphrase block: that is what makes the failure reachable. Upstream
+    /// only looks at the algorithm once it has a candidate key, so a
+    /// description with no passphrase block is rejected on the base58 path
+    /// before the algorithm is consulted, and the answer is then correctly
+    /// about the secret rather than about the stored data.
+    fn with_an_unsupported_algorithm(account_data: &[AccountDataEntry]) -> Vec<AccountDataEntry> {
+        let mut altered = account_data.to_vec();
+        let entry = altered
+            .iter_mut()
+            .find(|entry| entry.event_type.starts_with("m.secret_storage.key."))
+            .expect("a recovery always carries a key description");
+        let mut content: serde_json::Value =
+            serde_json::from_str(&entry.content).expect("this module wrote well-formed JSON");
+        let object = content
+            .as_object_mut()
+            .expect("a key description is an object");
+        assert!(
+            object.contains_key("passphrase"),
+            "this fixture depends on the passphrase block being present, or \
+             the algorithm is never reached"
+        );
+        let replaced = object.insert(
+            "algorithm".to_string(),
+            serde_json::Value::String("m.secret_storage.v1.something-else".to_string()),
+        );
+        assert!(
+            replaced.is_some(),
+            "a key description always names an algorithm, so replacing it \
+             must have replaced something"
+        );
+        entry.content = content.to_string();
+        altered
     }
 
     /// A copy of `account_data` with the content of the first entry whose
