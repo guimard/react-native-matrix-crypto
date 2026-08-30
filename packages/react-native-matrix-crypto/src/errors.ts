@@ -163,6 +163,32 @@ export type CryptoErrorKind =
   // user whose recovery really is unreadable retypes a correct passphrase
   // forever.
   | 'recovery_data_malformed'
+  // `createRecovery` was handed account data that already names a recovery.
+  // It will not write over one, because it cannot tell a user replacing
+  // their own passphrase from a product about to invalidate the recovery key
+  // another Matrix client gave this user and told them to keep. See that
+  // call for the remedy, which is a deliberate clear-then-write rather than
+  // a retry.
+  | 'recovery_already_exists'
+  // ---- verification by a scannable code ----------------------------------
+  // The *other* user has no signing identity, so no code can name them.
+  // Deliberately not folded with 'identity_not_known', which says the same
+  // about this account: the remedies point at different people. A product
+  // that showed one sentence for both would send half its users to set up
+  // something that is not broken.
+  | 'peer_identity_not_known'
+  // The other device did not offer to scan, so there is nothing to show it.
+  // Not a stage: no amount of waiting changes it, and the answer is to
+  // compare a short string instead. Every client that speaks only the short
+  // string produces this, including this library's own earlier releases.
+  | 'code_not_offered'
+  // A scanned payload was refused. This kind currently folds three things a
+  // product must eventually tell apart -- not one of these codes at all, a
+  // code for a different flow, and keys that are not the ones expected --
+  // and the task that crosses the payload to this side is where they
+  // separate. Named here rather than left to arrive as 'unknown', because
+  // 'unknown' is the failure this map exists to prevent.
+  | 'scanned_code_refused'
   | 'not_implemented'
   | 'not_initialised'
   | 'already_initialised'
@@ -322,6 +348,21 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   ['RecoveryNotSetUp', 'recovery_not_set_up'],
   ['RecoveryKeyIncorrect', 'recovery_key_incorrect'],
   ['RecoveryDataMalformed', 'recovery_data_malformed'],
+  // The fifth, added when `createRecovery` stopped writing over a recovery
+  // the account already had. Without this entry a product would be told
+  // 'unknown' on the one refusal whose whole purpose is to make it stop and
+  // look.
+  ['RecoveryAlreadyExists', 'recovery_already_exists'],
+  // The three `MachineFfiError` variants verification by a scannable code
+  // added. The core produces all three today and nothing on this side calls
+  // the functions that return them yet; they are mapped anyway, for the
+  // reason the recovery block above gives. An entry missing here is not a
+  // compile error and no test on the Rust side can see it -- the type test
+  // in `errors.test.ts` that walks every generated variant is the only thing
+  // that can, and it is what caught these.
+  ['PeerIdentityNotKnown', 'peer_identity_not_known'],
+  ['CodeNotOffered', 'code_not_offered'],
+  ['ScannedCodeRefused', 'scanned_code_refused'],
 ])
 
 // 'session_refused' is deliberately not here: see its own doc comment on

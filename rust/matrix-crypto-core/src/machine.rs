@@ -269,6 +269,29 @@ pub enum MachineError {
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("the stored recovery could not be read")]
     RecoveryDataMalformed,
+    /// The account data handed to `crate::create_recovery` already names a
+    /// server-side recovery, and writing a second one would take the first
+    /// one away.
+    ///
+    /// The same shape as `IdentityAlreadyExists`, one layer over, and for
+    /// the same reason: two situations reach this call looking identical
+    /// and need opposite things done. One is a user replacing their own
+    /// passphrase, where the old recovery key is *meant* to stop working.
+    /// The other is a product writing a recovery for a user who already set
+    /// one up in another Matrix client, where the recovery key that stops
+    /// working is one somebody wrote down and was told to keep forever.
+    /// Nothing inside this library can tell those apart, so it refuses and
+    /// makes the destructive one something a product has to perform
+    /// deliberately.
+    ///
+    /// The remedy is at `crate::create_recovery`, and it is not "call it
+    /// again": the product clears the existing pointer and key description
+    /// from account data first, which is the act that takes the old
+    /// recovery away, and then calls this.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("this account already has a server-side recovery")]
+    RecoveryAlreadyExists,
     /// The other user has no signing identity, so there is nothing for a
     /// scannable code to name them by.
     ///

@@ -69,6 +69,12 @@ jobs:
       # have already drifted once, in the direction a consumer arriving from
       # npm would not see.
       - run: yarn gate:readme
+      # The README's worked example for the signing-keys authentication loop
+      # must run the same steps as the test that proves it. That loop is the
+      # one path this library hands to a product whole, so its example is
+      # most of what a product has to go on, and an example that drifts from
+      # the proof is worse than none.
+      - run: yarn gate:uia-example
       - run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
       - run: cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
       # gate:boundary already runs matrix-crypto-core's own tests as part of

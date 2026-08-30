@@ -348,6 +348,10 @@ impl From<MachineError> for SessionError {
             | MachineError::RecoveryNotSetUp
             | MachineError::RecoveryKeyIncorrect
             | MachineError::RecoveryDataMalformed
+            // `recovery.rs`'s fifth, added when `create_recovery` stopped
+            // writing over a recovery the account already had. Same rule,
+            // same unreachability, listed by name for the same reason.
+            | MachineError::RecoveryAlreadyExists
             // `verification.rs`'s three refusals for a flow driven by
             // scanning a code, on the same rule again: that module returns
             // `MachineError` directly and never routes through this

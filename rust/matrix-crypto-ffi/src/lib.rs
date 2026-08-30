@@ -196,21 +196,32 @@ pub enum MachineFfiError {
     #[error("the stored recovery could not be read")]
     RecoveryDataMalformed,
     // Appended last, like every variant above and for the same wire-ordinal
-    // reason. These three mirror the ones the core's `MachineError` grew for
-    // verification by scannable code, in the core's own order.
+    // reason. It mirrors the one the core's `MachineError` grew when
+    // `create_recovery` stopped writing over a recovery the account already
+    // had; `IdentityAlreadyExists`, eight variants up, is the same refusal
+    // about the identity rather than about the recovery that protects it.
+    #[error("this account already has a server-side recovery")]
+    RecoveryAlreadyExists,
+    // Appended last, like every variant above and for the same
+    // wire-ordinal reason. These three mirror the ones the core's
+    // `MachineError` grew for verification by scannable code, in the
+    // core's own order.
     //
-    // `RecoveryDataMalformed` held the highest ordinal, 16, before these;
-    // these take 17, 18 and 19 and move nothing. Confirmed against the
-    // generated TypeScript rather than reasoned about, because the
-    // renumbering these comments exist to prevent is invisible in Rust.
+    // `RecoveryAlreadyExists` above held the highest ordinal, 17, before
+    // these; these take 18, 19 and 20 and move nothing. Confirmed against
+    // the generated TypeScript rather than reasoned about, because the
+    // renumbering these comments exist to prevent is invisible in Rust --
+    // and because this branch was written against 16 as the highest and
+    // would have collided at 17 had it not been re-read after the merge.
     //
-    // Nothing in this file returns them yet: the core produces them and the
-    // task that crosses the scannable code to TypeScript is what will call
-    // the functions that do. They are declared here now for the reason the
-    // pair above them was, which that comment states in full -- the `From`
-    // impl below is exhaustive by rule, and folding a refusal that means
-    // something else onto an existing variant to avoid declaring it puts a
-    // wrong error on the wire the moment the bridge lands, silently.
+    // Nothing in this file returns them yet: the core produces them and
+    // the task that crosses the scannable code to TypeScript is what will
+    // call the functions that do. They are declared here now for the
+    // reason the pair above them was, which that comment states in full --
+    // the `From` impl below is exhaustive by rule, and folding a refusal
+    // that means something else onto an existing variant to avoid
+    // declaring it puts a wrong error on the wire the moment the bridge
+    // lands, silently.
     #[error("the other user has no signing identity")]
     PeerIdentityNotKnown,
     #[error("the other device did not offer to scan a code")]
@@ -241,6 +252,7 @@ impl From<matrix_crypto_core::MachineError> for MachineFfiError {
             matrix_crypto_core::MachineError::RecoveryNotSetUp => Self::RecoveryNotSetUp,
             matrix_crypto_core::MachineError::RecoveryKeyIncorrect => Self::RecoveryKeyIncorrect,
             matrix_crypto_core::MachineError::RecoveryDataMalformed => Self::RecoveryDataMalformed,
+            matrix_crypto_core::MachineError::RecoveryAlreadyExists => Self::RecoveryAlreadyExists,
             matrix_crypto_core::MachineError::PeerIdentityNotKnown => Self::PeerIdentityNotKnown,
             matrix_crypto_core::MachineError::CodeNotOffered => Self::CodeNotOffered,
             matrix_crypto_core::MachineError::ScannedCodeRefused => Self::ScannedCodeRefused,
@@ -1220,14 +1232,25 @@ impl From<matrix_crypto_core::RecoverySetup> for RecoverySetup {
 /// Mirrors `create_recovery`; see its own doc comment in
 /// `matrix-crypto-core::recovery` for what a product owes its user about
 /// the recovery key, for why the account data is handed back rather than
-/// sent, and for the one refusal.
+/// sent, for why nothing is said about passphrase strength, and for the
+/// refusals.
+///
+/// `account_data` is the account's **existing** global account data. It is
+/// required rather than optional because this call will not write over a
+/// recovery the account already has, and an empty list is a caller saying
+/// there is none.
 ///
 /// **Nothing here reaches the network.** The returned account data is
 /// written by the product, one `PUT` per entry, in the order it is handed
-/// back.
+/// back, with the default-key pointer last.
 #[uniffi::export]
-pub async fn create_recovery(passphrase: String) -> Result<RecoverySetup, MachineFfiError> {
-    matrix_crypto_core::create_recovery(&passphrase)
+pub async fn create_recovery(
+    passphrase: String,
+    account_data: Vec<AccountDataEntry>,
+) -> Result<RecoverySetup, MachineFfiError> {
+    let account_data: Vec<matrix_crypto_core::AccountDataEntry> =
+        account_data.into_iter().map(Into::into).collect();
+    matrix_crypto_core::create_recovery(&passphrase, &account_data)
         .await
         .map(Into::into)
         .map_err(Into::into)

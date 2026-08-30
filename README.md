@@ -140,7 +140,72 @@ for (const request of await takeOutgoingRequests()) {
 }
 ```
 
-**The `signing_keys_upload` request needs user-interactive authentication, and this library will not do it for you.** Expect its first send to come back `401` with a challenge. Read the challenge, ask your user, merge an `auth` object into `request.body`, which is opaque JSON this library never interprets, and send the same body again. The id survives any number of refused attempts, because only a success consumes it.
+**The `signing_keys_upload` request needs user-interactive authentication, and this library will not do it for you.** Send it. If it comes back `401`, that body is a challenge: read the session out of it, ask your user, merge an `auth` object into `request.body`, which is opaque JSON this library never interprets, and send the same body again. The id survives any number of refused attempts, because only a success consumes it.
+
+**A first publication is normally not challenged, and that is not a bug in your code.** Both mainstream homeservers decide it the same way: the upload is accepted outright when the account holds no cross-signing key yet, and challenged only when it would replace one. Measured on continuwuity v26.7.2, and read off Synapse 1.159.0's own handler, which allows first-time setup without authentication per MSC3967. So a fresh account's first publication normally answers `200` with no challenge at all, and the challenge is what you meet when an identity is already there. Write both branches: a loop that only handles `401` never finishes on a fresh account, and one that only handles `200` fails the first time it matters.
+
+Here is the whole loop, both branches. It is the code `rust/matrix-crypto-core/tests/level_two_identity_challenge.rs` runs against a real homeserver's real refusal, step for step; `gate:uia-example` holds this block and that test to the same ordered steps, so it cannot drift from what is actually proven.
+
+<!-- uia-example:begin -->
+```ts
+for (const request of await takeOutgoingRequests()) {
+  if (request.kind !== 'signing_keys_upload') {
+    const res = await send(request)
+    if (res.ok) await markRequestSent(request.id, await res.text())
+    else await markRequestFailed(request.id, res.status)
+    continue
+  }
+
+  // uia-step: send
+  let res = await post('/_matrix/client/v3/keys/device_signing/upload', request.body)
+
+  // uia-step: accepted
+  // The ordinary answer on an account that has no identity yet. Nothing to
+  // ask your user, nothing to retry.
+  if (res.ok) {
+    await markRequestSent(request.id, await res.text())
+    continue
+  }
+
+  // uia-step: refusal
+  if (res.status !== 401) throw new Error(`signing keys refused with ${res.status}`)
+  await markRequestFailed(request.id, res.status)
+
+  // uia-step: challenge
+  // The session is the homeserver's, and knowable only from here. That is
+  // why bootstrapCrossSigning has no auth parameter to pass one in through.
+  const challenge = await res.json()
+  const flows = challenge.flows ?? []
+  if (!flows.some((flow) => flow.stages?.includes('m.login.password'))) {
+    throw new Error('this homeserver asked for a flow this code cannot answer')
+  }
+  const password = await askYourUserForTheirPassword()
+
+  // uia-step: merge
+  // request.body is opaque. Parse it, add one member, serialise it back. Do
+  // not rebuild it: the keys in it are the ones already minted, and a body
+  // you construct yourself is a different identity.
+  const body = JSON.parse(request.body)
+  body.auth = {
+    type: 'm.login.password',
+    identifier: { type: 'm.id.user', user: myUserId },
+    password,
+    session: challenge.session,
+  }
+
+  // uia-step: resend
+  // The same id and the same keys. markRequestFailed left the request
+  // pending, so this is a second send of it rather than a new request.
+  res = await post('/_matrix/client/v3/keys/device_signing/upload', JSON.stringify(body))
+  if (!res.ok) throw new Error(`challenge answered and still refused: ${res.status}`)
+
+  // uia-step: sent
+  await markRequestSent(request.id, await res.text())
+}
+```
+<!-- uia-example:end -->
+
+**A `200` from the second send is the only evidence you get.** `getIdentityStatus` reads the same before and after: holding the account's private signing keys is a local fact, and publishing nothing does not change it. A run of the test above with the retry deleted still reports `identityKnown` and `privateKeysHeld`, and the homeserver still serves somebody else's identity. If you need to know the identity is really on the server, ask the server.
 
 **There is no `auth` parameter, and there will not be one.** The challenge is only known after the first request has been refused, so an argument on `bootstrapCrossSigning` would have to be guessed before the server had said what it wants. The cost is stated rather than hidden: you cannot complete this step without implementing an authentication flow this library gives you no help with. What you get for it is that this library has never touched an account credential.
 
@@ -170,7 +235,7 @@ const id = await requestSelfVerification()
 
 **The seeds arrive after the comparison, on a later sync, and nothing returns to you when they do.** Once both sides have confirmed, this library asks your other devices for the cross-signing seeds this one lacks. They go out as ordinary entries in `takeOutgoingRequests`, and the encrypted answer comes back in a `receiveSyncChanges` you feed it. `getIdentityStatus().privateKeysHeld` then reads `true`, which is the moment this device can sign with the account's identity rather than only recognise it. `trust_changed` for your own user id is what tells you to look; do not poll for it. It is the same signal a completed comparison produces, which is why the handler above reads the status rather than counting signals.
 
-**After the join, `bootstrapCrossSigning` stops being refused and starts being served.** This device now holds the account's private keys, so it republishes the identity it holds rather than creating a second one, which is correct and is what "call it on every launch" is for. What it also means is that the batch carries a `signing_keys_upload` again, and that request needs the same user-interactive authentication as the first time. A joined device that calls it on the next launch meets an authentication challenge, so ask your user for it rather than treating it as a failure.
+**After the join, `bootstrapCrossSigning` stops being refused and starts being served.** This device now holds the account's private keys, so it republishes the identity it holds rather than creating a second one, which is correct and is what "call it on every launch" is for. What it also means is that the batch carries a `signing_keys_upload` again, and you still send it through the loop above. It will normally be accepted without a challenge, because the keys in it are the ones the account already has and neither continuwuity nor Synapse challenges an upload that changes nothing: Synapse short-circuits an identical re-upload to `200` before it considers authentication at all. Do not treat that as the request having been skipped, and do not assume the challenge either. Send it and handle both answers.
 
 Two refusals, and they want opposite things done about them. `account_keys_not_fetched` means nobody has asked the server about this account yet, and this call queues that key query as it refuses: drain the pump, send, report sent, and call again. `identity_not_known` means the server answered and this account has no identity at all, so there is nothing to join and `bootstrapCrossSigning` is the call you want.
 
@@ -229,7 +294,7 @@ await receiveSyncChanges(encryptionSlice(sync))
 | Joining that identity from a second login | working, through `requestSelfVerification`: the new device verifies itself against one that already holds the identity, the private keys arrive by encrypted gossip on a later sync, and `getIdentityStatus` then reports `privateKeysHeld`. Proven between two crypto machines with everything travelling through the queue. When no second device is to hand, `recoverIdentity` is the other way in |
 | `EventEnvelope.senderVerification` on a decrypted event | working, and it reads `verified` once the whole chain has been driven, which it can be from TypeScript since this release |
 | Sender authenticity, per event | **provided at the end of a chain, not by a call.** Seven steps: hold a signing identity, publish it, have the sender publish and sign theirs, fetch their keys, complete a comparison, upload the signature it produces, and fetch their keys again. Omitting the last step is silent and leaves every event reading `unverified_identity` |
-| Surviving a reinstall | working, through `createRecovery` and `recoverIdentity`: the account's private signing keys are stored encrypted in its own account data under a passphrase, and a device that has lost its store restores them and is the same identity it was. Proven end to end against a real store: the recovery is written, the store is deleted from disk, a new device restores from the passphrase, and an event from a peer verified before the reinstall reads `verified` again. The two account data requests are your product's, because this library performs none |
+| Surviving a reinstall | working, through `createRecovery` and `recoverIdentity`: the account's private signing keys are stored encrypted in its own account data under a passphrase, and a device that has lost its store restores them and is the same identity it was. Proven end to end against a real store: the recovery is written, the store is deleted from disk, a new device restores from the passphrase, and an event from a peer verified before the reinstall reads `verified` again. `createRecovery` refuses to write over a recovery the account already has, including one another Matrix client wrote. The two account data requests are your product's, because this library performs none |
 | Device verification by QR code | **deferred**, see the roadmap |
 | Secret export and import | **not implemented, and not coming.** `exportSecrets` and `importSecrets` would need a `Uint8Array` container that Matrix does not define, so it would be a format this library invented and no other client could read. `createRecovery` delivers the interoperable form instead; the roadmap says more |
 
@@ -253,7 +318,13 @@ What `senderVerification` can also do is tell an ordinary unsigned device apart 
 
 **The recovery key is shown once and cannot be produced again.** `createRecovery` returns it, nothing stores it, and no call brings it back. If your user loses it and forgets the passphrase, the account's identity is gone: nothing on the server can open the stored keys without one of the two, this library keeps no second copy, and the consequence is not only theirs. Every device they own has to be verified again, and so does every person who had verified them. That is the whole security value of the mechanism and the whole support burden of it, and a screen the user taps past is where the burden starts.
 
-**A wrong passphrase and an unreadable recovery are different answers, and your product has to word them differently.** `recoverIdentity` reports `recovery_key_incorrect` when the stored recovery is intact and the secret was wrong, which is the one refusal here a user fixes by typing again, and `recovery_data_malformed` when no secret will ever open it. Telling a user with a typo that their recovery is destroyed sends them to set it up again, which is the one action that actually destroys the old one; telling a user whose recovery really is unreadable that their passphrase is wrong leaves them retyping something that was already right. The library never folds the two, and the third, `recovery_not_set_up`, means the account data you handed over carries no complete recovery: either this account has none, or you did not fetch all five events.
+**A wrong passphrase and an unreadable recovery are different answers, and your product has to word them differently.** `recoverIdentity` reports `recovery_key_incorrect` when the stored recovery is intact and the secret was wrong, which is the one refusal here a user fixes by typing again, and `recovery_data_malformed` when no secret will ever open it. Telling a user with a typo that their recovery is destroyed sends them to set it up again, which is the one action that actually destroys the old one; telling a user whose recovery really is unreadable that their passphrase is wrong leaves them retyping something that was already right. The library never folds the two, and that holds for a mistyped **recovery key** as much as a mistyped passphrase, including against a recovery another client wrote that describes no passphrase at all. The third refusal, `recovery_not_set_up`, means the account data you handed over carries no complete recovery: either this account has none, or you did not fetch all five events.
+
+**`createRecovery` will not write over a recovery this account already has, and it needs the account data to know.** It takes the account's existing global account data alongside the passphrase, and refuses with `recovery_already_exists` when that names a recovery. It cannot tell your two callers apart: a user replacing their own passphrase, where the old recovery key is meant to stop working, and a product writing what it believes is a first recovery for a user who already set one up in Element, where the key that stops working is one somebody wrote down and was told to keep forever. To replace one deliberately, clear the existing `m.secret_storage.default_key` and its `m.secret_storage.key.<id>` (`PUT {}` to each, which is how the client-server API clears account data), read the account data again, and call again. Passing `[]` asserts the account has no recovery and the refusal believes you, the same way the cross-signing gate believes a key query you reported as answered. What the refusal buys is that you have to have looked.
+
+**The passphrase is the weak half, and this library imposes no rule on it.** The encrypted keys sit on your homeserver, so the passphrase is what stands between anyone who can read that account data and the account's private signing keys. `createRecovery('')` is accepted, and so is anything else: no minimum length, no strength estimate, no refusal. That is a decision, not an omission, and the reason is that any threshold picked here would be arbitrary, wrong for somebody, and unadjustable from your side. Choose a policy and apply it before you call. The recovery key is unaffected either way: it is thirty-two random bytes whatever the passphrase is, which is the other reason to make your user record it.
+
+**Write the account data in the order you were given it, with the default-key pointer last.** Everything before it adds to the account without changing what any client resolves, so an interrupted write leaves whatever recovery the account had still working. Writing the pointer earlier repoints the account at a key whose secrets do not exist yet, and in that window neither the old recovery nor the new one opens anything.
 
 **Server-side recovery is Matrix's format, not this library's.** What `createRecovery` writes is secret storage as the specification defines it, produced by `matrix-sdk-crypto`'s own implementation, so another Matrix client signed into the same account reads it with the same passphrase and a recovery another client wrote is one `recoverIdentity` restores. The two requests are yours: this library performs none, so you `PUT` the five events it hands back and `GET` them again when you need them. The key description's event type ends in the key's own id, so read `m.secret_storage.default_key` first, or take the whole of your global account data out of a sync you already perform.
 
@@ -316,7 +387,7 @@ The layers, top to bottom: the TypeScript facade in `src/*.ts` holds the branded
 python3 packages/example-app/level-two/run_level_two.py  # the published TypeScript API
 ```
 
-The first starts a throwaway [Continuwuity](https://continuwuity.org) homeserver in a container, creates the one account the test needs with a password generated for that run, installs a pinned `matrix-nio[e2e]` into a temporary virtualenv, runs the level 2 test, and destroys all of it. It needs Docker, a Rust toolchain and a Python 3, and nothing else. No credential is read from anywhere and none is left behind. CI runs the same script, so what you run and what stands behind the claim are the same code path. A run that never reaches the assertions fails: the script requires cargo's own output to name the test as passed, because `cargo test` exits successfully when it matches no test at all. The same script runs the third-party verification proof. To point it at a homeserver you already have an account on, set `MATRIX_INTEROP_HOMESERVER`, `MATRIX_INTEROP_USER` and `MATRIX_INTEROP_PASSWORD` and it starts no container.
+The first starts a throwaway [Continuwuity](https://continuwuity.org) homeserver in a container, creates the two accounts the tests need with a password generated for that run, installs a pinned `matrix-nio[e2e]` into a temporary virtualenv, runs the four level 2 proofs, and destroys all of it. It needs Docker, a Rust toolchain and a Python 3, and nothing else. No credential is read from anywhere and none is left behind. CI runs the same script, so what you run and what stands behind the claim are the same code path. A run that never reaches the assertions fails: the script requires cargo's own output to name each test as passed, because `cargo test` exits successfully when it matches no test at all. The four are encryption against a third-party client, device verification against one, a signing identity published to a real homeserver, and the authentication loop that publishing one needs, driven against a refusal the homeserver wrote. To point it at a homeserver you already have accounts on, set `MATRIX_INTEROP_HOMESERVER`, `MATRIX_INTEROP_USER`, `MATRIX_INTEROP_PASSWORD` and `MATRIX_INTEROP_CHALLENGE_USER` and it starts no container. The fourth variable names a second account, sharing the password, that has never published a cross-signing identity; the authentication proof needs one, because it begins by asserting the account has none.
 
 The second drives the same exchange through the UniFFI scaffolding, the JSI binding, the generated TypeScript and the facade, on an Android emulator. It needs Docker, an emulator `adb` can see, a release APK already built, and a Python with `matrix-nio[e2e]`, and no Rust toolchain. It stands up its own homeserver, creates two accounts and an encrypted room, drives `matrix-nio` as the counterparty, installs and launches the example app, and reads the app's own `LEVEL2_SUMMARY 13/13` back out of the system log. Every call the app makes is the published API and nothing else. Everything it creates lives inside the container, which is destroyed from a `finally`, an `atexit` hook and a signal handler. `--mutation <name>` sabotages exactly one assertion to check that assertion can fail, and a mutated run prints a different summary line, so it can never be read as a clean one.
 
@@ -333,6 +404,7 @@ Every one of these runs in CI. Each has been observed rejecting a real violation
 | `gate:agility` | no Megolm, Olm, room or Matrix specific identifier reaches the public API |
 | `gate:stubs` | the committed turbo module is really wired up, not an empty shell |
 | `gate:readme` | the README npm shows is the README GitHub shows, and every gate here runs in CI |
+| `gate:uia-example` | the worked example for the signing-keys authentication loop runs the same steps as the test that proves it |
 | `gate:measure-guards` | the B2 measurement harness still refuses the runs it documents refusing |
 | `gate:measure-guards-ios` | the same, for the iOS harness, including its refusal to launch into a log stream it cannot show was already attached |
 | `gate:artifact-provenance` | an artifact size is only ever recorded from a binary this tree built |
