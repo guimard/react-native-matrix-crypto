@@ -198,16 +198,18 @@ export interface SasMaterial {
  * shared secret, and there is no string it can honestly be turned into. A
  * product handed only bytes reaches for a JavaScript component that draws a
  * code from a string, and draws a square that decodes to something else.
- * `modules` is the symbol this library's own encoder built, at the version
- * and error-correction level it fixes because mobile clients have trouble
- * decoding otherwise, so a product that draws the grid draws what the
- * protocol meant rather than a re-encoding of it.
+ * `modules` is the symbol these bytes were encoded into on the way out, at
+ * the version and error-correction level the protocol's own encoder fixes
+ * because mobile clients have trouble decoding otherwise, so a product that
+ * draws the grid draws what the protocol meant rather than a re-encoding of
+ * it.
  *
  * **Drawing it.** `modules` is row-major and has exactly `width * width`
  * entries; `true` is a dark square. A product draws `width` rows of `width`
  * squares, leaves the usual quiet margin around them, and shows it. There is
- * no image here and there never will be: this library has no encoder to draw
- * one with and no business choosing a size.
+ * no image here and there never will be: this library draws nothing, and has
+ * no business choosing a size, a colour or a margin for somebody else's
+ * screen.
  *
  * **Treat this value as secret while the flow is open**, exactly as
  * {@link SasMaterial} is treated. The payload carries the shared secret the
