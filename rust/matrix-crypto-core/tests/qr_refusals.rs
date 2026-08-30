@@ -37,7 +37,7 @@
 use matrix_crypto_core::{
     accept_flow, bootstrap_identity, cancel_flow, create_machine, flow_stage, identity_status,
     in_runtime, mark_request_sent, offer_scanning, read_code, share_scope_key, submit_scanned_code,
-    take_outgoing_requests, FlowId, FlowStage, MachineConfig, MachineError,
+    take_outgoing_requests, CryptoSignal, FlowId, FlowStage, MachineConfig, MachineError,
 };
 use matrix_sdk_common::ruma::events::key::verification::VerificationMethod;
 use matrix_sdk_common::ruma::OwnedUserId;
@@ -46,8 +46,8 @@ use matrix_sdk_crypto::OlmMachine;
 #[path = "scanned/harness.rs"]
 mod harness;
 use harness::{
-    cross_signed_machine, deliver_verification_request, every_method, one_of, pump_to_bare,
-    queried_users, settle_key_upload,
+    cross_signed_machine, deliver_verification_request, drain_signals, drain_to_quiet,
+    every_method, no_signal, one_of, pump_to_bare, queried_users, settle_key_upload, subscribe,
 };
 
 /// The library.
@@ -715,6 +715,67 @@ fn every_refusal_a_scannable_code_can_give_is_named() {
             "a code for this flow whose keys are not this flow's must not arrive as \
              any of the three refusals above: those say a person aimed a camera \
              badly, and this one is what an interposed party would look like"
+        );
+
+        // ---- And what a refusal announces, which is nothing ----------------
+        //
+        // **A flow that was refused or that timed out tells a subscriber
+        // nothing at all**, for a comparison as much as for a code. That is
+        // older than codes and is deliberate rather than overlooked, but
+        // until this phase existed it was a sentence in three doc comments
+        // and a property no test observed. A sentence cannot notice when it
+        // stops being true: a later change that started announcing on
+        // cancel, or that stopped announcing at all, would have left every
+        // test in this repository green.
+        //
+        // Subscribed here rather than at the top of this file on purpose.
+        // Everything above runs with no observer installed, which is the
+        // shape those refusals were written against and the shape in which
+        // `announce_state_changes` returns before it touches anything.
+        subscribe();
+        // One pass with nothing in it first, and it is not decoration. This
+        // account minted a signing identity above, and M4's arrival latch
+        // fires on the first announcement pass that has somebody to announce
+        // to -- so without this the very next assertion reads a
+        // `TrustChanged` for this account ahead of what it is about. Watched:
+        // removing these two lines fails with exactly that pair.
+        harness::deliver_to_library(Vec::new()).await;
+        drain_to_quiet();
+
+        // The positive half, first, and it is what stops the negative half
+        // being vacuous. A `no_signal` alone passes just as well against a
+        // channel that was never installed as against one that correctly had
+        // nothing to say, and this file had never installed one.
+        let inbound = FlowId("refusal-silence-transaction-id".to_string());
+        harness::deliver_to_library(vec![an_invitation_naming(&inbound.0, ALICE_OTHER_DEVICE)])
+            .await;
+        assert_eq!(
+            drain_signals("an invitation from another device of this account"),
+            vec![CryptoSignal::VerificationRequested {
+                user: ALICE.to_string(),
+                device_id: ALICE_OTHER_DEVICE.to_string(),
+                flow_id: inbound.0.clone(),
+            }],
+            "the channel has to be able to deliver here, or the silence asserted \
+             below would be the silence of a channel nobody installed"
+        );
+
+        // And now the refusals. One flow this side never answered and one it
+        // had agreed to, so the assertion covers a flow refused before it
+        // began as well as one refused after.
+        cancel_flow(&inbound)
+            .await
+            .expect("an invitation can be refused");
+        cancel_flow(&with_bob)
+            .await
+            .expect("a live flow can be refused");
+        take_outgoing_requests()
+            .await
+            .expect("the pump must be drainable");
+        harness::deliver_to_library(Vec::new()).await;
+        no_signal(
+            "a refused flow is not a state change this channel reports, so a product \
+             that waits on it waits for ever and has to read the stage instead",
         );
     }));
 }
