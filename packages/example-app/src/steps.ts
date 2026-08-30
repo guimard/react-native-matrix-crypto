@@ -9,7 +9,16 @@
  * which a purely static list cannot express on its own.
  */
 export interface FlowStep {
-  id: 'subscribe' | 'call' | 'signal' | 'typedError' | 'identity' | 'notYet' | 'layers'
+  id:
+    | 'subscribe'
+    | 'call'
+    | 'signal'
+    | 'typedError'
+    | 'identity'
+    | 'signingIdentity'
+    | 'senderCheck'
+    | 'notYet'
+    | 'layers'
   title: string
   /** The exact TypeScript a consumer would write. */
   call: string
@@ -61,8 +70,24 @@ export const FLOW_STEPS: FlowStep[] = [
     why: "Everything before this line was plumbing. This is the first genuine cryptographic value in the flow. The store path comes from this app's own native code, not from the library: a crypto library that picks its own on-disk location writes somewhere the product did not agree to.",
   },
   {
+    id: 'signingIdentity',
+    title: "6. Publish this account's signing identity",
+    call: "import { bootstrapCrossSigning, getIdentityStatus, isCryptoError } from 'react-native-matrix-crypto';\n\nconst status = await getIdentityStatus();\n\ntry {\n  await bootstrapCrossSigning();\n} catch (e) {\n  if (isCryptoError(e) && e.kind === 'account_keys_not_fetched') {\n    // Ask the homeserver first: drain takeOutgoingRequests, send the\n    // key query this refusal already queued, report it with\n    // markRequestSent, then call bootstrapCrossSigning again.\n  }\n}",
+    crosses:
+      "Rust reads three separate facts about the account out of the live machine: whether a key query naming it has been answered in this process, whether this machine holds a public signing identity for it, and whether it holds the private half. Then it is asked to mint one, and refuses. The refusal crosses back as a typed error whose kind names the remedy. Nothing is minted and nothing is published.",
+    why: "A signing identity is what lets one device vouch for another without a person comparing anything. Minting a second one over an account's existing identity resets the trust of every device and every person who ever verified that account, and there is no warning and nothing this process can afterwards detect. So the call refuses until the server has actually been asked. This walkthrough stops at the refusal on purpose: finishing the bootstrap means answering that key query, and answering it with a body this app invented is precisely the mistake the gate exists to prevent.",
+  },
+  {
+    id: 'senderCheck',
+    title: '7. What a decrypted event says about its sender',
+    call: "import { asCryptoScopeId, decryptEvent, encryptEvent, shareScopeKey } from 'react-native-matrix-crypto';\n// utf8Decode is this app's own helper: React Native ships no TextDecoder.\n\nconst scope = asCryptoScopeId('!sender-demo:example.org');\nawait shareScopeKey(scope, ['@alice:example.org']);\n\nconst sealed = await encryptEvent(scope, 'm.room.message', {\n  msgtype: 'm.text',\n  body: 'who sent this?',\n});\nconst opened = await decryptEvent(scope, {\n  sender: sealed.sender,\n  event_id: '$sender-demo:example.org',\n  origin_server_ts: 1700000000000,\n  content: JSON.parse(utf8Decode(sealed.ciphertext)),\n});\n\nconsole.log(opened.senderVerification);\n// { state: 'unverified', reason: 'unsigned_device' }",
+    crosses:
+      'A group session is created, one payload is encrypted with it, and the resulting event is handed straight back to be decrypted. What comes back alongside the plaintext is this library reporting what it knew about the sending device at the moment it decrypted: a value with a stable state and, when the state is unverified, a reason.',
+    why: "The reason is 'unsigned_device' here, and it is the honest answer rather than a placeholder. The device that sent this event carries no signature from an identity its owner published, because step 6 refused to publish one. This value never asks whether you trust the sender; it says what evidence exists. A product decides what to show from that, and the branch above is the one every product meets first.",
+  },
+  {
     id: 'notYet',
-    title: '6. Not implemented yet -- on purpose',
+    title: '8. Not implemented yet -- on purpose',
     call: "import { exportSecrets } from 'react-native-matrix-crypto';\n\nawait exportSecrets(passphrase);",
     crosses:
       'Nothing crosses to native code at all. The facade rejects before making a call, with a typed not_implemented error.',
@@ -70,7 +95,7 @@ export const FLOW_STEPS: FlowStep[] = [
   },
   {
     id: 'layers',
-    title: '7. Where the layers are',
+    title: '9. Where the layers are',
     call: '// No call -- everything above already crossed all five.',
     crosses: 'Nothing new here. A summary of what every step above actually passed through.',
     why: 'Five layers, each doing one job: the TypeScript facade (types the public surface), generated bindings (translate types), the JSI Turbo Module (crosses the JS/native boundary), UniFFI scaffolding (matches Rust to JavaScript), and the Rust core (the cryptography itself).',
