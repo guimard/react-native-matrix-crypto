@@ -1797,6 +1797,25 @@ describe('the signing identity chain, driven through the public surface', () => 
     }
   }
 
+  /**
+   * The declared parameter list of a function, read out of its own source.
+   *
+   * Exists because `Function.length` is not the guard it looks like: it
+   * stops counting at the first parameter with a default, so a
+   * `bootstrapCrossSigning(auth = {})` reads as length zero and slips
+   * through. This returns the raw text between the first parentheses, which
+   * is empty only when there is genuinely nothing declared. It is used to
+   * assert emptiness and nothing else, so a default containing a bracket of
+   * its own would still produce a non-empty string and still fail, which is
+   * the direction that matters.
+   */
+  function declaredParameters(fn: (...args: never[]) => unknown): string {
+    const source = fn.toString()
+    const open = source.indexOf('(')
+    const close = source.indexOf(')', open)
+    return source.slice(open + 1, close).trim()
+  }
+
   /** Sends and reports everything the pump is currently holding. */
   async function pump(): Promise<string[]> {
     const batch = await takeOutgoingRequests()
@@ -1848,11 +1867,23 @@ describe('the signing identity chain, driven through the public surface', () => 
     const signingKeys = batch.find((request) => request.kind === 'signing_keys_upload')
     if (signingKeys === undefined) throw new Error('the bootstrap queued no signing keys upload')
 
-    // `bootstrapCrossSigning` takes no argument, and this is the assertion
-    // that fails the day someone adds one: the challenge is only known
-    // after this very request has been refused, so a credential parameter
-    // would have to be guessed before the server had spoken.
+    // `bootstrapCrossSigning` takes no argument, and these are the two
+    // assertions that fail the day someone adds one: the challenge is only
+    // known after this very request has been refused, so a credential
+    // parameter would have to be guessed before the server had spoken.
+    //
+    // Both, because neither is sufficient. `Function.length` stops counting
+    // at the first parameter carrying a default, so `auth: T = {}` reads as
+    // zero -- and that is the *more* likely accident of the two, since a
+    // default is what someone reaches for to keep a call backwards
+    // compatible. `declaredParameters` reads the text instead and catches
+    // it. Kept alongside rather than instead: `length` is the cheaper
+    // check and does not depend on a bundler leaving the parameter list in
+    // the emitted source.
     expect(bootstrapCrossSigning.length).toBe(0)
+    expect(declaredParameters(bootstrapCrossSigning)).toBe('')
+    // The read side takes nothing either, and never should.
+    expect(declaredParameters(getIdentityStatus)).toBe('')
 
     // The server refuses the first attempt with a challenge. Reported as a
     // failure, which teaches the library nothing and consumes nothing.
