@@ -376,9 +376,13 @@ export async function encryptEvent(
  * **This library decrypts events. It does not authenticate their
  * senders** -- spec section 7.1. The returned envelope's `sender` and
  * `algorithm` are read from the fields the homeserver delivered, not
- * independently verified, and are **unauthenticated transport metadata**
- * until cross-signing lands, which is M4. Verifying the sending device does
- * not change it: see {@link EventEnvelope.sender} and
+ * independently verified, and are **unauthenticated transport metadata**.
+ * That was scoped to "until cross-signing lands, which is M4" twice, and
+ * cross-signing has now landed without changing it: these two fields are
+ * never re-derived, whatever this library knows about the sender. What
+ * cross-signing adds is the separate value below, not a promotion of these
+ * two. Verifying the sending device does not change it either: see
+ * {@link EventEnvelope.sender} and
  * {@link EventEnvelope.algorithm} for what that means and why. A product
  * that reads the sender of a successfully decrypted event as the
  * cryptographic sender has assumed something this milestone does not
@@ -387,8 +391,15 @@ export async function encryptEvent(
  * **What the returned envelope now adds is the size of that assumption.**
  * `senderVerification` carries what this library knew about the sender at
  * the moment it decrypted -- see {@link SenderVerification}. It does not
- * turn `sender` into an authenticated value, and in this release it can
- * never read `'verified'`. What it can do is tell three different things
+ * turn `sender` into an authenticated value. It cannot yet read
+ * `'verified'` through this surface, and the reason is no longer that the
+ * library has no cross-signing identity: the core has one since M4 and
+ * reaches `'verified'` through the whole chain in its own
+ * `tests/verified_sender.rs`. What is missing here is the bridged call
+ * that would let a product create that identity, which is the remaining
+ * step of the same milestone. Treat this as a gap that is closing, not as
+ * a property of the design. What the value can already do is tell three
+ * different things
  * apart: an ordinary unsigned device, a device its owner cross-signed whose
  * owner you have not verified (`'unverified_identity'`, which this release
  * does produce, from any peer whose client has cross-signing set up), and
@@ -1176,15 +1187,21 @@ function verificationStageOf(stage: NativeVerificationStage): VerificationStage 
  * `TS2366: Function lacks ending return statement and return type does not
  * include 'undefined'`.
  *
- * That mattered more than a tidier signature because of what this arm is.
- * **No test in this repository feeds this function `Verified`**: the M3
- * design ruling requires the suite to hold no case that appears to produce
- * it, since a fixture faking it teaches exactly the belief the ruling exists
- * to prevent, and this release cannot produce it anyway. The compiler is
- * therefore the *only* thing standing behind that arm, which is precisely
- * why it had to actually be standing there. The other direction -- something
- * else arriving *as* `'verified'`, which is the one that hurts -- is covered
- * by a test: see `facade.test.ts`.
+ * That mattered more than a tidier signature because of what this arm was
+ * for a whole milestone. **No test in this repository fed this function
+ * `Verified`**, because the M3 design ruling required the suite to hold no
+ * case that appeared to produce it, and the library could not produce it
+ * anyway. The compiler was the only thing standing behind that arm, which
+ * is precisely why it had to actually be standing there.
+ *
+ * That is history now. M4 gives the core a cross-signing identity, and the
+ * ruling was replaced rather than dropped by the stricter form written at
+ * `matrix_crypto_core::SenderVerification`: nothing except the real chain
+ * produces `Verified`. `facade.test.ts` feeds this function every native
+ * value including `Verified`, and asserts that `'verified'` comes out for
+ * that one and for no other. Both directions matter now. Something else
+ * arriving *as* `'verified'` is still the failure that hurts most, and a
+ * `Verified` the chain earned being dropped here is the one M4 added.
  */
 function senderVerificationOf(verification: NativeSenderVerification): SenderVerification {
   switch (verification) {

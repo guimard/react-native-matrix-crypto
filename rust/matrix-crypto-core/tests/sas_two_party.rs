@@ -307,11 +307,17 @@ fn verification_body(request: &OutgoingVerificationRequest) -> String {
     }
 }
 
-/// M3 verifies devices but publishes no cross-signing identity, so both
-/// machines decrypt with upstream's most permissive trust requirement --
-/// the same deliberate placeholder `session.rs`'s own
-/// `decryption_settings()` documents, mirrored here so the counterparty is
-/// held to the same standard the library holds itself to.
+/// Neither machine in this file publishes a cross-signing identity, so
+/// both decrypt with upstream's most permissive trust requirement: the same
+/// deliberate placeholder `session.rs`'s own `decryption_settings()`
+/// documents, mirrored here so the counterparty is held to the standard the
+/// library holds itself to.
+///
+/// This said "M3 verifies devices but publishes no cross-signing identity",
+/// which stopped being true of the library when M4 landed
+/// `bootstrap_identity`. It is still true of these fixtures, and the
+/// setting is unchanged for the reason `session.rs` now gives: the
+/// requirement became movable in M4 and was deliberately not moved.
 fn decryption_settings() -> DecryptionSettings {
     DecryptionSettings {
         sender_device_trust_requirement: TrustRequirement::Untrusted,

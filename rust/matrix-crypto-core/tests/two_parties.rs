@@ -667,10 +667,17 @@ fn two_parties_exchange_a_group_key_and_each_decrypts_what_the_other_encrypted()
         // read as evidence that it did not, which is how the type
         // documentation came to say so.
         //
-        // What stays true here is the part about `Verified`: it cannot be
-        // reached, so this file proves instead that the values it *can*
-        // reach are told apart, and proves nothing with a fixture faking
-        // the one it cannot.
+        // This used to add that `Verified` "cannot be reached", full stop.
+        // It can, since M4: `tests/verified_sender.rs` reaches it by
+        // driving the whole chain, bootstrap through decryption. What is
+        // true here is narrower and is the reason this file still matters.
+        // Nothing in *these* fixtures bootstraps an identity, so `Verified`
+        // is out of reach in this file, and this file's job is to prove
+        // that the values it can reach are told apart from each other and
+        // from that one. It fakes nothing to do it, which is the rule that
+        // replaced the old one: nothing except the real chain produces
+        // `Verified`, and holding the rungs below it is how the rest of the
+        // suite says so. See `SenderVerification`'s own doc comment.
 
         // (2) The same ciphertext, re-addressed.
         //
@@ -791,11 +798,15 @@ fn two_parties_exchange_a_group_key_and_each_decrypts_what_the_other_encrypted()
             Some(SenderVerification::UnsignedDevice),
             "a device that now reports verified still sends events reading \
              `UnsignedDevice`: the event path consults cross-signing, and a \
-             short-string comparison sets local trust. This is why \
-             `SenderVerification::Verified` is documented as unreachable in \
-             this build, and why no test here fabricates it. It says nothing \
-             about `UnverifiedIdentity`, which this build does produce and \
-             `tests/cross_signed_peer.rs` proves"
+             short-string comparison sets local trust. This message used to \
+             end \"which is why `Verified` is documented as unreachable in \
+             this build\", and M4 made that false while leaving this \
+             assertion green, which is the failure it was warning about \
+             happening to itself. `Verified` is reachable now, through the \
+             whole chain in `tests/verified_sender.rs`, and a comparison \
+             alone is still one step of seven, which is what this line \
+             holds. It says nothing about `UnverifiedIdentity`, which this \
+             build does produce and `tests/cross_signed_peer.rs` proves"
         );
     }));
 }
