@@ -8,19 +8,24 @@ import {
 import type { CryptoScopeId, TrustState } from './types'
 // Imported for the documentation below and used by nothing here.
 // `{@link}` resolves against what is in scope in the file it is written in,
-// so without this the four names the comments below send a reader to are
-// plain text in an editor's hover: a link that promises navigation and does
-// not deliver it. Type-only, so it is erased and adds no runtime edge, and
+// so without this the names the comments below send a reader to are plain
+// text in an editor's hover: a link that promises navigation and does not
+// deliver it. This said "the four names" over a block of six and a set of
+// docs linking eight, and then gained two more links without gaining the
+// imports; no count here now, and `scripts/assert-doc-links.sh` is what
+// keeps the block and the links in step. Type-only, so it is erased and adds no runtime edge, and
 // `facade.ts` imports nothing from this module, so it adds no cycle either.
 // `tsconfig.json` sets `noUnusedLocals: false`, which is what lets an import
 // exist for a reader rather than for the compiler.
 import type {
   acceptVerification,
+  confirmScan,
   decryptEvent,
   getDeviceStatuses,
   getIdentityStatus,
   receiveSyncChanges,
   requestSelfVerification,
+  submitScannedCode,
 } from './facade'
 
 /**

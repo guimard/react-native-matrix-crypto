@@ -48,9 +48,11 @@ export function toArrayBuffer(view: Uint8Array): ArrayBuffer {
  * `onProbeSignal`, if given, receives that one call's own diagnostic and
  * nothing else. It is deliberately NOT routed through
  * `emitCryptoSignal`/`onCryptoSignal`: that channel is spec section 7.3's
- * broadcast for genuine crypto state changes (`trust_changed`,
- * `unexpected_device`, `key_missing`), which every subscriber should learn
- * about. A probe's signal is a per-call diagnostic of this function, not a
+ * broadcast for genuine crypto state changes (`verification_requested`,
+ * `trust_changed`, `unexpected_device`, `key_missing`), which every
+ * subscriber should learn about. This list named three of the four and left
+ * out the only one of them that hands a caller something no other call
+ * will. A probe's signal is a per-call diagnostic of this function, not a
  * crypto state change, so it must reach only the caller that asked for it --
  * broadcasting it made two independent callers of `runProbe` (e.g. the
  * example app's guided walkthrough and its diagnostics panel, mounted as

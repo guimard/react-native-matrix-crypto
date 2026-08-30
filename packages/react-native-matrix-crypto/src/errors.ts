@@ -1,4 +1,9 @@
 import type { CryptoScopeId } from './types'
+// Imported for the documentation below and used by nothing here, on the
+// same terms `types.ts` and `signals.ts` state at length: `{@link}` resolves
+// against what the file has in scope, so a name the comments send a reader
+// to has to be one of them. Type-only, so it is erased.
+import type { bootstrapCrossSigning } from './facade'
 
 /**
  * Deliberately open, per spec section 4bis.4: a new variant is a minor bump,
@@ -153,9 +158,12 @@ export type CryptoErrorKind =
   // RETRIABLE below: calling again changes nothing until an identity exists.
   | 'identity_not_known'
   // ---- server-side recovery ----------------------------------------------
-  // All four cross the FFI boundary. The pair in the middle is the one this
-  // surface exists to keep apart, and the one a product's error message
-  // turns on.
+  // All five cross the FFI boundary. `recovery_key_incorrect` and
+  // `recovery_data_malformed` are the pair this surface exists to keep
+  // apart, and the pair a product's error message turns on. This said "all
+  // four" while five stood under it, and `KIND_BY_NAME` below already knew
+  // there were five: `recovery_already_exists` was appended to the block
+  // and not to the sentence over it.
   //
   // `createRecovery` on a device that does not hold all three private
   // signing keys. There is nothing to write; `getIdentityStatus` says

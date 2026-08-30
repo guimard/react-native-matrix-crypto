@@ -55,6 +55,11 @@ import type { SasMaterial as NativeSasMaterial } from './generated/matrix_crypto
 // `submitScannedCode` below is this file's only caller, and a scanner's
 // output is exactly the kind of value that arrives as a view.
 import { toArrayBuffer } from './probe'
+// Imported for the documentation in this file and used by nothing in it, on
+// the terms `types.ts` states in full: `{@link}` resolves against what the
+// file has in scope. Type-only, so it is erased and adds no runtime edge,
+// and `signals.ts` imports nothing from here, so it adds no cycle.
+import type { onCryptoSignal } from './signals'
 
 function notImplemented(name: string): Promise<never> {
   return Promise.reject(toCryptoError({ name: 'NotImplemented', reason: `${name} is not implemented yet` }))
@@ -756,9 +761,11 @@ export async function markRequestSent(id: string, responseJson: string): Promise
  * pending exactly as if you had reported it refused. Reporting a refusal and
  * reporting nothing are the same to this library, and both are the safe
  * direction: what advances its state is {@link markRequestSent}, and only
- * that. The cross-signing bootstrap this protects arrives in a later
- * release; when it does, it will refuse to run rather than mint an identity
- * on a question it was never told the answer to. The failure mode of silence
+ * that. The cross-signing bootstrap this protects has since shipped as
+ * {@link bootstrapCrossSigning}, and does exactly what this said it would:
+ * it refuses with `'account_keys_not_fetched'` rather than mint an identity
+ * on a question it was never told the answer to. This sentence said the
+ * bootstrap was still to come for the whole of the release that shipped it. The failure mode of silence
  * is work that will not proceed, which you will notice, and never an
  * identity destroyed.
  *
@@ -988,14 +995,25 @@ export async function bootstrapCrossSigning(): Promise<void> {
  * Every device this library has been told about for `userId`, and the trust
  * it currently reports for each, sorted by device id.
  *
- * **This is the only place a completed verification becomes visible.** A
- * device that has been through {@link requestVerification} to
- * {@link confirmVerification}, with both sides agreeing, reads `'verified'`
- * here where it read `'unverified'` before. Nothing else in this library
- * changes as a result of a verification -- in particular a decrypted
- * event's sender does not become authenticated, because that path consults
- * cross-signing and a short-string comparison sets local trust. See
- * {@link TrustState}.
+ * **This is the only place a completed verification becomes visible**, by
+ * either method. A device that has been through
+ * {@link requestVerification} to {@link confirmVerification}, with both
+ * sides agreeing, reads `'verified'` here where it read `'unverified'`
+ * before; so does one that went through {@link getVerificationCode} and
+ * {@link confirmScan}, or {@link submitScannedCode}, with nobody comparing
+ * a string at all. This paragraph named only the first pair, which is the
+ * "verification is a short string" claim on the call the README itself
+ * calls the only place a verification is visible.
+ *
+ * **It is also the only place a scanned verification becomes visible**,
+ * more literally than the string's is: a flow finished by a scan emits no
+ * `trust_changed` down {@link onCryptoSignal}, so this call is the whole of
+ * what a product has to read. See that function's own doc.
+ *
+ * Nothing else in this library changes as a result of a verification -- in
+ * particular a decrypted event's sender does not become authenticated,
+ * because that path consults cross-signing and a verification of either
+ * kind sets local trust. See {@link TrustState}.
  *
  * # `'verified'` no longer means a person compared a string with this device
  *

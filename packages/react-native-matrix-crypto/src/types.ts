@@ -2,18 +2,26 @@
 // `{@link}` resolves against what is in scope in the file it is written in,
 // so without this every name below that sends a reader to a facade call is
 // plain text in an editor's hover -- a link promising navigation it does not
-// deliver. Type-only, so it is erased: no runtime import, and the cycle it
+// deliver. **This list has to grow when the docs below do**, and it did not:
+// four links to the scannable-code calls were written into the comments here
+// without being added, which is the defect this paragraph exists to prevent,
+// committed under the paragraph itself. `scripts/assert-doc-links.sh` checks
+// it now, in both languages. Type-only, so it is erased: no runtime import, and the cycle it
 // makes with `facade.ts`, which imports the types below, exists only for the
 // typechecker, which resolves it. `tsconfig.json` sets
 // `noUnusedLocals: false`, which is what lets an import exist for a reader
 // rather than for the compiler.
 import type {
   acceptVerification,
+  confirmScan,
   getDeviceStatuses,
+  getVerificationCode,
   getVerificationMaterial,
+  getVerificationStage,
   markRequestSent,
   receiveSyncChanges,
   startVerificationComparison,
+  submitScannedCode,
 } from './facade'
 
 /**
@@ -116,11 +124,15 @@ export type TrustState = 'unverified' | 'recognized' | 'verified'
  * branches on this to decide what to show, and a stage it has never seen
  * must be a compile error rather than a silent default.
  *
- * Deliberately coarser than the nineteen states the underlying protocol
- * distinguishes. What a caller has to decide is which of a small set of
- * things to do next, and every distinction that does not change that answer
- * is one this surface would be inviting a product to branch on for no
- * reason.
+ * Deliberately coarser than the nineteen states the layer underneath
+ * distinguishes, across three enums of its own: six for the request, seven
+ * for a short-string comparison and six for a scanned code. What a caller
+ * has to decide is which of a small set of things to do next, and every
+ * distinction that does not change that answer is one this surface would be
+ * inviting a product to branch on for no reason.
+ *
+ * The six that belong to a scanned code are the ones this is not coarser
+ * than but blind to, which is the limit stated next.
  *
  * **These seven are the short string's vocabulary, and a flow that went to
  * a scannable code is described in it for want of one of its own.** Such a
@@ -469,7 +481,10 @@ export interface EventEnvelope {
    * homeserver delivered on the outer, not-yet-decrypted event, not a
    * value this library independently confirmed, and it is
    * **unauthenticated transport metadata**. Verifying the sending device
-   * does not change that; cross-signing is what would, and it is M4. A
+   * does not change that, by string or by scanned code; cross-signing is
+   * what would, and it has landed without moving this field, which is the
+   * point `senderVerification` forty lines below makes at length. This said
+   * "and it is M4", naming a milestone as a thing still to come. A
    * product that reads it as the cryptographic sender of a successfully
    * decrypted event has assumed something this library does not provide,
    * and that
