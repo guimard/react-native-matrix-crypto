@@ -19,13 +19,19 @@
 //!    rather than minting a second one. Asserted on the **master key on the
 //!    wire**, not on a status flag: a status flag would read the same either
 //!    way, and the master key is the thing whose change is the damage.
+//! 4. Repeating that does not leak pending ids. Each bootstrap mints a fresh
+//!    transaction id for a publication of the *same* identity, so without an
+//!    eviction rule the pump's `pending` map grows by one entry per
+//!    bootstrap-and-drain cycle for the life of the process. M2 and M3 both
+//!    had to prove this bound for their own request kinds; this is the same
+//!    obligation for the kind M4 adds.
 //!
 //! Its own process, for the reason `tests/pump_eviction.rs` gives: the
 //! machine registry and the pump's bookkeeping are process-wide.
 
 use matrix_crypto_core::{
     bootstrap_identity, create_machine, identity_status, mark_request_sent, take_outgoing_requests,
-    MachineConfig, OutgoingRequest,
+    MachineConfig, OutgoingRequest, SessionError,
 };
 
 const ACCOUNT: &str = "@alice:example.org";
@@ -137,9 +143,17 @@ fn a_bootstrap_publishes_one_identity_and_republishes_the_same_one() {
 
         // Order matters and upstream states it: the device keys first if
         // present, then the signing keys, then the signatures, because a
-        // signature may reference a key that is not published yet.
+        // signature may reference a key that is not published yet. Both
+        // halves are asserted; only the second used to be, and a device-key
+        // upload sorting after the signing keys would have gone unnoticed.
+        let device_keys_at = position(&published, "keys_upload");
         let signing_at = position(&published, "signing_keys_upload");
         let signatures_at = position(&published, "signature_upload");
+        assert!(
+            device_keys_at < signing_at,
+            "the device-key upload must be handed out before the signing-keys upload: {:?}",
+            kinds(&published)
+        );
         assert!(
             signing_at < signatures_at,
             "the signing-keys upload must be handed out before the signature upload: {:?}",
@@ -180,6 +194,38 @@ fn a_bootstrap_publishes_one_identity_and_republishes_the_same_one() {
              is the milestone's whole failure mode: every device and every user who \
              verified the first identity is silently invalidated"
         );
+
+        // Claim 4. That last publication was drained and deliberately left
+        // unresolved. One more cycle must supersede it rather than leave
+        // both outstanding.
+        let stale_id = republished.id.clone();
+        bootstrap_identity()
+            .await
+            .expect("a third bootstrap must be served");
+        let third = take_outgoing_requests()
+            .await
+            .expect("draining the pump must not fail");
+        let fresh = third
+            .iter()
+            .find(|request| request.kind == "signing_keys_upload")
+            .unwrap_or_else(|| panic!("a third bootstrap must publish; got {:?}", kinds(&third)));
+        assert_ne!(
+            fresh.id, stale_id,
+            "each publication carries its own transaction id, which is what makes the \
+             eviction below necessary rather than automatic"
+        );
+
+        assert_eq!(
+            mark_request_sent(&stale_id, "{}").await,
+            Err(SessionError::UnknownRequest),
+            "a fresh publication must supersede the stale one. Both kept, `pending` grows by \
+             one entry per bootstrap-and-drain cycle for the life of the process, and a caller \
+             is handed two ids for one identity and two rounds of user-interactive \
+             authentication to publish it"
+        );
+        mark_request_sent(&fresh.id, "{}")
+            .await
+            .expect("the surviving publication must still be resolvable");
     });
 }
 

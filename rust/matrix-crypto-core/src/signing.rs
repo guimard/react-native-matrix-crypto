@@ -13,8 +13,11 @@
 //! depending entirely on when it is called:
 //!
 //! * Called on a device that already holds the complete private identity, it
-//!   is idempotent -- it re-derives the publication of what is already there
-//!   and yields the same master key. Safe to call on every launch.
+//!   is idempotent *locally* -- it re-derives the publication of what is
+//!   already there and yields the same master key. What it publishes may
+//!   still be wrong: a store restored from a backup holds a complete
+//!   identity the server has already replaced, and republishing it puts the
+//!   old one back over the new. Local idempotence is not safety.
 //! * Called on a device whose private identity is incomplete, it **mints a
 //!   new one** (`matrix-sdk-crypto-0.18.0/src/machine/mod.rs:676` branches on
 //!   `identity.is_empty()`, and a partial identity counts as empty). If the
@@ -43,10 +46,26 @@
 //!    identity for the account. Read from the store, where the answer to (1)
 //!    put it.
 //!
-//! Minting is served only on "asked, and the answer named none". "Not asked"
-//! and "asked, and there is one" are different refusals with different
+//! Nothing is served before (1), **including a republication by a device
+//! that holds the private keys**, because that is exactly the restored-backup
+//! case above and only a key query can tell it apart from an ordinary
+//! relaunch. Given (1), the call is served when the account has no identity
+//! or this device holds the one it has. "Not asked" and "asked, and there is
+//! one this device does not hold" are different refusals with different
 //! remedies, and [`MachineError::AccountKeysNotFetched`] /
 //! [`MachineError::IdentityAlreadyExists`] keep them apart.
+//!
+//! # What the gate cannot check
+//!
+//! Fact (1) is "a key query was reported to us as having succeeded". No HTTP
+//! status crosses this library's boundary, so a caller that reports a
+//! failed query's body as a success supplies that fact falsely and the gate
+//! believes it. `session::mark_request_sent` refuses the two failure shapes
+//! a body can carry -- a standard Matrix error and an authentication
+//! challenge -- and its own doc comment states what no body-based check can
+//! catch. It is also "asked at some point in this process", not "asked
+//! recently": a bootstrap long after the answer decides on stale
+//! information.
 //!
 //! # This library never sees a credential
 //!
@@ -98,6 +117,13 @@ pub struct IdentityStatus {
     /// A device that has joined the identity by self-verifying, or restored
     /// it from server-side storage, holds them too. Incomplete counts as
     /// false: upstream regenerates a partial private identity wholesale.
+    ///
+    /// **True does not mean the server agrees.** Until `account_keys_fetched`
+    /// is also true, these keys may belong to an identity the account has
+    /// since replaced -- a restored backup holds a complete one that is
+    /// simply out of date. Upstream drops such keys when a key query
+    /// contradicts them (`identities/manager.rs:418-443`), so this field is
+    /// only trustworthy alongside that one.
     pub private_keys_held: bool,
 }
 
@@ -134,24 +160,46 @@ async fn read_status(machine: &OlmMachine) -> Result<IdentityStatus, MachineErro
 /// The single place the rule lives, so [`identity_status`] and
 /// [`bootstrap_identity`] cannot come to disagree about it.
 ///
-/// `private_keys_held` short-circuits everything, and that is not a
-/// shortcut: it is the exact condition under which upstream cannot mint.
-/// `cross_signing_status().is_complete()` is `has_master && has_user_signing
-/// && has_self_signing`, and `PrivateCrossSigningIdentity::is_empty` -- the
-/// flag upstream branches on -- is its negation, over the same object
-/// (`olm/signing/mod.rs:99-138`, `machine/mod.rs:676`). So when this is
-/// true, the call ahead is a republication of an identity this device
-/// already holds and there is nothing to gate. Requiring a key query for it
-/// would cost a round trip on every launch to answer a question whose answer
-/// cannot change what happens.
+/// # Nothing is served before the server has been asked
+///
+/// The check on `account_keys_fetched` comes first and has no exception,
+/// **including for a device that already holds the private keys.** An
+/// earlier version short-circuited on `private_keys_held`, reasoning that
+/// upstream cannot mint when the private identity is complete
+/// (`cross_signing_status().is_complete()` is exactly the negation of the
+/// `PrivateCrossSigningIdentity::is_empty` upstream branches on --
+/// `olm/signing/mod.rs:99-138`, `machine/mod.rs:676`) and that a key query
+/// therefore could not change the outcome.
+///
+/// **It can change the outcome, and the case where it does is the case that
+/// matters.** A store restored from a backup, or one whose account had its
+/// identity reset from another device, holds a *complete* private identity
+/// the server has already replaced. Republishing it puts the stale identity
+/// back over the newer one, which resets the trust of every device and every
+/// user who had verified the newer one -- the same destruction this gate
+/// exists to prevent, arrived at from the other direction. Upstream itself
+/// only notices on a key query: `IdentityManager::check_private_identity`
+/// calls `clear_if_differs` and drops the stale private keys
+/// (`identities/manager.rs:418-443`), after which `private_keys_held` is
+/// false, `identity_known` is true, and the rule below refuses correctly.
+///
+/// The cost is one key query per process before its first bootstrap, not one
+/// per bootstrap: `account_keys_fetched` stays true for the process
+/// lifetime once an answer has been accepted. A caller pays the same
+/// drain-send-report round it already pays on a fresh login, and pays it
+/// uniformly rather than only in the cases that looked dangerous.
+///
+/// # The rule
+///
+/// Served when this process has asked *and* either the account has no
+/// identity or this device holds the one it has. Refused otherwise, with
+/// the two refusals kept apart because their remedies are different: ask
+/// again, versus join the identity that already exists.
 fn may_mint(status: &IdentityStatus) -> Result<(), MachineError> {
-    if status.private_keys_held {
-        return Ok(());
-    }
     if !status.account_keys_fetched {
         return Err(MachineError::AccountKeysNotFetched);
     }
-    if status.identity_known {
+    if status.identity_known && !status.private_keys_held {
         return Err(MachineError::IdentityAlreadyExists);
     }
     Ok(())
@@ -166,32 +214,65 @@ pub async fn identity_status() -> Result<IdentityStatus, MachineError> {
 /// Publishes this account's signing identity, minting one first if the
 /// account provably has none.
 ///
-/// Idempotent once this device holds the private keys: call it on every
-/// launch. What it will not do is mint a second identity for an account that
-/// already has one -- see this module's own documentation for why that is
-/// the point rather than a precaution.
+/// Safe to call on every launch. The first call in a process is normally
+/// refused once, with the key query that lifts the refusal already queued;
+/// the call after that answer is served, and further calls in the same
+/// process republish the identity this device holds rather than minting a
+/// second one. What it will not do is mint over an identity the account
+/// already has -- see this module's own documentation for why that is the
+/// point rather than a precaution.
 ///
 /// # What a caller must do next
 ///
 /// Nothing here reaches the network; this library performs no request. On
 /// success, drain [`crate::take_outgoing_requests`] and send what it hands
-/// back **in the order it hands it back**: the device keys first if present,
+/// back **in the order it hands it back**, reporting each with
+/// [`crate::mark_request_sent`]. The order that matters is device keys,
 /// then `signing_keys_upload`, then `signature_upload`, because a signature
-/// may reference a key that is not published yet. Report each sent with
-/// [`crate::mark_request_sent`].
+/// may reference a key that is not published yet.
+///
+/// Expect **four** entries, not three, and the batch is ordered as above:
+/// a `keys_upload` this call queued, the `signing_keys_upload`, the
+/// `signature_upload`, and then a *second* `keys_upload` under a different
+/// id carrying the same device keys. The duplicate is upstream's own
+/// standing "these device keys are not published yet" request, which
+/// `outgoing_requests()` offers independently of the copy
+/// `bootstrap_cross_signing` hands back. Sending both is harmless -- the
+/// endpoint is idempotent and the second is a no-op at the server -- and
+/// the copy this call queues is the one that has to exist, because only a
+/// queued request carries a sequence stamp early enough to sort ahead of
+/// the signing keys. A caller that would rather not send the same twelve
+/// kilobytes twice may send the first `keys_upload`, report it, and find
+/// the duplicate absent from the next batch.
 ///
 /// The `signing_keys_upload` request is the one that needs user-interactive
 /// authentication. Expect the first attempt to be refused with a challenge,
 /// merge an `auth` object into the body, and send it again; the request id
 /// stays valid across any number of refused attempts.
 ///
+/// # Report only what a success returned
+///
+/// **Never report a non-2xx body through [`crate::mark_request_sent`]**,
+/// and that includes the 401 challenge above. Report nothing for the
+/// challenge and report the eventual success. This matters more here than
+/// anywhere else on the surface: a failed key query reported as a success
+/// is read by the gate below as "the server answered and this account has
+/// no identity", which is the one fact that authorises a mint; and the
+/// signing-keys upload's success response is an empty object, so a reported
+/// challenge would mark an identity published that never was. That call
+/// refuses a standard error body and a challenge on sight, but no HTTP
+/// status crosses this library's boundary, so a failure that never reaches
+/// Matrix's error format -- a proxy's HTML error page, a truncated body --
+/// cannot be caught for you.
+///
 /// # Refusals
 ///
 /// [`MachineError::AccountKeysNotFetched`] means this process has not yet
 /// asked the server about this account, so it cannot know whether minting
-/// would destroy an existing identity. **This call queues that key query
-/// before returning it**, so the remedy is the ordinary loop: drain the
-/// pump, send, report sent, call this again.
+/// or republishing would destroy an existing identity. **This call queues
+/// that key query before returning it**, so the remedy is the ordinary
+/// loop: drain the pump, send, report sent, call this again. Holding the
+/// private keys is not an exemption; `may_mint` says why.
 ///
 /// [`MachineError::IdentityAlreadyExists`] means the answer named an
 /// identity this device does not hold the private keys for. There is no
@@ -208,11 +289,17 @@ pub async fn bootstrap_identity() -> Result<(), MachineError> {
                     // rather than a dead end. Upstream volunteers an
                     // own-account key query only while the account is not
                     // yet tracked ("We always want to track our own user",
-                    // `identities/manager.rs:836-852`), which after the
-                    // first sync it always is -- so on a second process for
-                    // the same store, nothing would ever ask again and this
-                    // refusal would be permanent. Asking out-of-band costs
-                    // one request and removes that trap entirely.
+                    // `identities/manager.rs:836-852`), and it will not
+                    // re-dirty an account it is already tracking:
+                    // `update_tracked_users` inserts into a set and only
+                    // flags what was newly inserted (`store/mod.rs:258-273`).
+                    // So on a second process for the same store, or on any
+                    // process that shared a key before bootstrapping,
+                    // nothing would ever ask again and this refusal would be
+                    // permanent. Asking out-of-band costs one request and
+                    // removes that trap entirely. It is covered by
+                    // `tests/identity_bootstrap_recovery.rs`, which
+                    // constructs the case upstream volunteers nothing in.
                     let (id, request) =
                         machine.query_keys_for_users(std::iter::once(machine.user_id()));
                     crate::session::queue_account_key_query(id, request);
@@ -253,11 +340,10 @@ mod tests {
     ///
     /// The integration tests under `tests/` drive the two refusals through
     /// the real surface, which is what proves they are reachable. This
-    /// covers the two cases those cannot reach cheaply: that holding the
-    /// private keys overrides both refusals (a launch-time republication
-    /// must not be blocked by a key query nobody has answered in this
-    /// process), and that no combination of the three flags produces a
-    /// fourth outcome.
+    /// covers what those cannot reach cheaply: that **holding the private
+    /// keys overrides neither refusal**, so a device whose store predates an
+    /// identity reset elsewhere is still made to ask before it republishes;
+    /// and that no combination of the three flags produces a fourth outcome.
     #[test]
     fn minting_is_served_only_when_the_account_provably_has_no_identity() {
         for account_keys_fetched in [false, true] {
@@ -268,11 +354,9 @@ mod tests {
                         identity_known,
                         private_keys_held,
                     };
-                    let expected = if private_keys_held {
-                        Ok(())
-                    } else if !account_keys_fetched {
+                    let expected = if !account_keys_fetched {
                         Err(MachineError::AccountKeysNotFetched)
-                    } else if identity_known {
+                    } else if identity_known && !private_keys_held {
                         Err(MachineError::IdentityAlreadyExists)
                     } else {
                         Ok(())
@@ -283,14 +367,28 @@ mod tests {
         }
 
         // Named separately rather than left to be read out of the loop
-        // above, because it is the one row the milestone exists for: asked
-        // nothing, hold nothing, know nothing. A gate written as "is the
-        // local identity empty" serves this row.
+        // above, because they are the two rows the milestone exists for.
+        //
+        // Asked nothing, hold nothing, know nothing: a gate written as "is
+        // the local identity empty" serves this row.
         assert_eq!(
             may_mint(&IdentityStatus {
                 account_keys_fetched: false,
                 identity_known: false,
                 private_keys_held: false,
+            }),
+            Err(MachineError::AccountKeysNotFetched)
+        );
+
+        // Asked nothing, but holding a complete private identity: the row a
+        // restored backup lands on. Serving it republishes keys the server
+        // may already have replaced. This is the row the short-circuit this
+        // gate used to have served without asking anything.
+        assert_eq!(
+            may_mint(&IdentityStatus {
+                account_keys_fetched: false,
+                identity_known: false,
+                private_keys_held: true,
             }),
             Err(MachineError::AccountKeysNotFetched)
         );

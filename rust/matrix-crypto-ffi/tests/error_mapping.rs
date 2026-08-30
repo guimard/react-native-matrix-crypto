@@ -127,7 +127,7 @@ fn every_session_error_maps_to_the_matching_ffi_variant() {
     );
 }
 
-/// All nine `MachineError` variants, each to its own kind, and both
+/// All eleven `MachineError` variants, each to its own kind, and both
 /// `detail`-carrying variants checked for the payload as well as the kind.
 ///
 /// The two field-carrying variants are the ones a swap could hide behind a
@@ -230,6 +230,35 @@ fn every_machine_error_maps_to_the_matching_ffi_variant() {
         ),
         "MachineError::UnknownDevice must not arrive as another kind -- it is \
          fixed by querying that user's devices and trying again, which is not \
-         what any of the other eight asks for"
+         what any of the other ten asks for"
+    );
+
+    // The two identity-bootstrap kinds. Same shape, adjacent in both enums,
+    // and **opposite in what they ask of a product**: one says ask the
+    // server and call again, the other says never call again for this
+    // account because doing so would destroy an identity somebody else's
+    // devices already trust. Swapping the two arms compiles, and before this
+    // pair of assertions existed it passed the entire suite -- which is
+    // precisely the hazard this file was written for.
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::AccountKeysNotFetched),
+            MachineFfiError::AccountKeysNotFetched
+        ),
+        "MachineError::AccountKeysNotFetched must not arrive as another kind -- \
+         it is the recoverable one, lifted by draining the pump and reporting \
+         the key query it queued, and a product told IdentityAlreadyExists \
+         instead would give up on an account that has no identity at all"
+    );
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::IdentityAlreadyExists),
+            MachineFfiError::IdentityAlreadyExists
+        ),
+        "MachineError::IdentityAlreadyExists must not arrive as another kind -- \
+         a product told AccountKeysNotFetched instead would fetch the keys and \
+         call again, and calling again is the one thing that must never work \
+         here: this device joins the identity the account already has, it does \
+         not replace it"
     );
 }

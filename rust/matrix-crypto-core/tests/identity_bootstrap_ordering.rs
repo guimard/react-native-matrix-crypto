@@ -94,27 +94,34 @@ fn bootstrapping_before_the_account_keys_have_been_fetched_is_refused() {
             "a refused bootstrap must leave the account exactly as it found it"
         );
 
-        // The refusal is actionable rather than a dead end. A caller told
-        // "the account's keys have not been fetched" has no other way to
-        // fetch them: upstream only volunteers an own-account key query
-        // while this account is not yet tracked
-        // (`identities/manager.rs:836-852`), so after a process restart on a
-        // machine that has already tracked itself, nothing would ever ask
-        // again and the gate could never be satisfied. So the refusal queues
-        // the question it is refusing for.
+        // The refusal is actionable rather than a dead end: it queues the
+        // question it is refusing for.
+        //
+        // **Counted, not merely found.** This machine is fresh, so upstream
+        // volunteers an own-account key query of its own here ("We always
+        // want to track our own user", `identities/manager.rs:836-852`) and
+        // an assertion that simply finds one passes with the refusal's own
+        // queueing deleted -- it did, for a whole round of review. Two is
+        // the discriminating number: upstream's, and the refusal's.
+        //
+        // `tests/identity_bootstrap_recovery.rs` covers the case this one
+        // structurally cannot, where upstream volunteers nothing at all and
+        // the refusal's query is the only one there is.
         let batch = take_outgoing_requests()
             .await
             .expect("draining the pump must not fail");
-        let account_queries: Vec<_> = batch
+        let account_queries = batch
             .iter()
             .filter(|request| request.kind == "keys_query")
             .filter(|request| names_the_account(&request.body))
-            .collect();
-        assert!(
-            !account_queries.is_empty(),
-            "the refusal must queue the key query that lifts it, or a caller has no way \
-             to satisfy the gate; got {:?}",
-            batch.iter().map(|r| &r.kind).collect::<Vec<_>>()
+            .count();
+        assert_eq!(
+            account_queries,
+            2,
+            "the refusal must queue the key query that lifts it, alongside the one upstream \
+             volunteers on a fresh machine. One means the refusal queued nothing and a caller \
+             has no way to satisfy the gate on a machine that already tracks itself; got {:?}",
+            batch.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>()
         );
     });
 }

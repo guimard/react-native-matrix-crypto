@@ -612,6 +612,25 @@ export async function takeOutgoingRequests(): Promise<OutgoingRequest[]> {
  * request named by `id` stays outstanding when that happens, so the same
  * `id` can be retried with corrected input.
  *
+ * **Call this only for a 2xx, and never for an error or a challenge.**
+ * `markRequestSent(id, await res.text())` without branching on the status
+ * is the obvious wrapper and it is wrong. No HTTP status crosses this
+ * boundary, and every field of every response shape here is optional, so a
+ * homeserver error body parses as a flawless *empty success* -- an errored
+ * `keys_query` reported this way tells the machine the server answered and
+ * this account has no signing identity, which is exactly the fact that
+ * authorises minting a new one over whatever the account already had.
+ *
+ * A standard Matrix error body (top-level `errcode`) and a user-interactive
+ * authentication challenge (top-level `flows`) are both rejected with
+ * `malformed_payload`, and the id stays outstanding, so the ordinary
+ * "retry with `auth` merged in" flow needs nothing special: report nothing
+ * for the challenge, and report the eventual success. What cannot be
+ * rejected for you is a failure that never reaches Matrix's error format at
+ * all -- a proxy's HTML error page, a `{}` body carrying a 503 -- because
+ * only the status distinguishes those, and the status is not on this
+ * signature. Branch on `res.ok` before calling.
+ *
  * **This call is what stops `id` being handed out again**, not a courtesy
  * notification after the fact -- see {@link takeOutgoingRequests}'s own doc
  * comment for what a product observes if it is skipped.
