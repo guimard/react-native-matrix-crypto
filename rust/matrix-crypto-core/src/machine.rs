@@ -495,9 +495,10 @@ pub(crate) fn reset_for_test() {
     // `the_registry_is_emptied_before_the_store_it_holds_alive_is_dropped`
     // is what now keeps these two statements in this order.
     //
-    // `session`'s request registry needs no such treatment: it holds
-    // request bodies, not store handles, which is why only this one is
-    // reset from here.
+    // `session`'s request registry needs no such treatment *for this
+    // reason*: it holds request bodies and ids, not store handles, which is
+    // why only this one is reset from here for the ordering above. One field
+    // of it is not a request body, and it is cleared further down.
     crate::verification::reset_flows_for_test();
 
     // Same reason, one layer up: a recorder installed by one test would
@@ -513,6 +514,17 @@ pub(crate) fn reset_for_test() {
     // `build` seeds it for every machine created after this point; this
     // covers the window in between.
     crate::signing::seed_private_keys_held(false);
+
+    // The one field of `session`'s registry that is not a request body:
+    // whether this process has been answered a key query about its own
+    // account. That is a fact about *which account* is held, and this
+    // function is the only place in the codebase where the held account
+    // changes, so leaving it set would hand the next machine a gate standing
+    // open on the previous machine's answer. Harmless while every proof of
+    // that gate lives in its own file under `tests/`; the point of clearing
+    // it is that a proof written inside `src/` is then possible, instead of
+    // passing or failing for a reason belonging to its neighbour.
+    crate::session::forget_account_keys_answered_for_test();
 
     // `RwLock`, not `OnceLock`: the registry must be clearable between tests
     // that each need their own fresh machine, all run in one process rather

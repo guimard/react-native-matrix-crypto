@@ -42,6 +42,19 @@ use matrix_crypto_core::{
 const ACCOUNT: &str = "@alice:example.org";
 const SOMEBODY_ELSE: &str = "@bob:example.org";
 
+/// A `/keys/query` answer naming no identity for this account: the server
+/// has been asked, it has answered **about this account**, and what it holds
+/// for it is nothing.
+///
+/// Continuwuity v26.7.2's real answer for such an account, measured directly
+/// over HTTP; Synapse 1.159.0 and Dendrite 0.15.2 answer the same thing with
+/// `"failures":{}` and the three empty cross-signing maps beside it. The
+/// account is **named**, which the `{"device_keys":{}}` written here before
+/// was not, and which no measured homeserver omits. A body that names nobody
+/// is silent about this account, and `session::answer_speaks_about` has why
+/// silence does not lift the gate.
+const NO_IDENTITY: &str = r#"{"device_keys":{"@alice:example.org":{}}}"#;
+
 #[test]
 fn the_refusal_queues_the_query_that_lifts_it_when_upstream_never_would() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -135,7 +148,7 @@ fn the_refusal_queues_the_query_that_lifts_it_when_upstream_never_would() {
         );
 
         assert_ne!(
-            mark_request_sent(&recovery_id, r#"{"device_keys":{}}"#).await,
+            mark_request_sent(&recovery_id, NO_IDENTITY).await,
             Err(SessionError::UnknownRequest),
             "a later ordinary key query must not evict the recovery query. Upstream does not \
              forget an out-of-band query the way it forgets the ones it volunteers, so \
