@@ -457,50 +457,86 @@ fn parse_user(user_id: &str) -> Result<OwnedUserId, SessionError> {
 /// and a sender mismatch, which are three different things for a product to
 /// do about one event.
 ///
-/// # Two of these cannot happen in this build, and the line falls in a
-/// surprising place
+/// # What each of these costs to reach, and whose identity pays
 ///
 /// The distinction is **whose** cross-signing identity a value depends on.
 /// Upstream's decision function is `SenderData::from_device`, and it has
 /// two gates. The first, `Device::is_cross_signed_by_owner`, asks only
 /// whether the sending device carries a signature from a self-signing key
 /// its own owner published. This machine is not consulted. The second,
-/// `Device::is_cross_signing_trusted`, is where our own identity is read,
-/// and with none it is `false` for every device.
+/// `Device::is_cross_signing_trusted`, is where our own identity is read:
+/// for another user's device it is
+/// `own_identity.is_identity_verified(theirs) && theirs.is_device_signed(device)`,
+/// so it needs our user-signing key over their master key, **present in our
+/// own store**.
 ///
-/// So [`SenderVerification::UnverifiedIdentity`] **is produced by this
-/// build**, on the ordinary path, with no work on our side at all. It is
-/// what the first gate passing and the second failing means. Any peer who
-/// has set cross-signing up already produces it here, which is every
-/// Element user, and `tests/cross_signed_peer.rs` decrypts an event from
-/// one and asserts it. Nothing about that value is a claim of
-/// authenticity: it says the sending device is one its owner vouches for,
-/// and that we have no opinion about the owner.
+/// So [`SenderVerification::UnverifiedIdentity`] arrives on the ordinary
+/// path, with no work on our side at all. It is what the first gate
+/// passing and the second failing means. Any peer who has set cross-signing
+/// up already produces it here, which is every Element user, and
+/// `tests/cross_signed_peer.rs` decrypts an event from one and asserts it.
+/// Nothing about that value is a claim of authenticity: it says the sending
+/// device is one its owner vouches for, and that we have no opinion about
+/// the owner.
 ///
-/// The two that cannot happen are [`SenderVerification::Verified`] and
-/// [`SenderVerification::VerificationViolation`], and both are blocked on
-/// our side rather than the sender's. `Verified` needs the second gate,
-/// which reads our user-signing key over the sender's master key.
-/// `VerificationViolation` needs the sender's identity to have been marked
-/// previously verified, and the only thing upstream marks it with is our
-/// own verified identity signing theirs. Nothing in this crate calls
-/// `bootstrap_cross_signing`, so this build holds no such key and neither
-/// value can occur until cross-signing lands.
+/// [`SenderVerification::Verified`] is what the second gate passing means,
+/// and reaching it is a chain of seven steps rather than a call. We hold a
+/// private signing identity ([`crate::bootstrap_identity`]); our own public
+/// identity is marked verified, which the bootstrap does by itself; the
+/// sender published their identity and signed their own device; we fetched
+/// their keys; a completed comparison signed their master key with our
+/// user-signing key; we uploaded that signature; and **we fetched their
+/// keys again**. `tests/verified_sender.rs` performs all seven against a
+/// counterparty this process does not control.
 ///
-/// Both are declared anyway, and named as unreachable at each variant,
-/// because the set is closed on both sides of the boundary: widening it
-/// later is a breaking change for every consumer that matched on it
-/// exhaustively, and the alternative to a full type is not a smaller true
-/// type but a different false one. A four-value type would say that four
-/// values is all this vocabulary has, which is not true of what it models.
+/// The last step is the one to know about, because omitting it is silent.
+/// Nothing caches the outgoing signature -- upstream carries a
+/// `// TODO: store the signature upload request as well.` at exactly that
+/// point -- so a signature we made and uploaded but never fetched back is
+/// one our own store has never seen, and the second gate reads the store.
+/// A chain stopped at step six leaves every event from that sender reading
+/// `UnverifiedIdentity` while the comparison, the device trust and every
+/// return value say success. `tests/verified_sender.rs`'s second test
+/// drives exactly that and asserts where the value lands.
 ///
-/// **Nothing in this repository's tests produces `Verified`, deliberately.**
-/// A fixture faking it would teach exactly the belief this doc comment
-/// exists to prevent. What the tests do instead is prove the negative:
-/// `tests/two_parties.rs` marks a device locally trusted, which is the one
-/// state a completed comparison sets, confirms `device_statuses` now calls
-/// it verified, and asserts that events from it still read
-/// [`SenderVerification::UnsignedDevice`].
+/// [`SenderVerification::VerificationViolation`] sits one step past
+/// `Verified` rather than beside it: upstream reaches it only when the
+/// sender's identity was previously marked verified, and the only thing
+/// that marks it is our own user-signing key verifying their master key,
+/// which is step seven above. So it becomes reachable once, and only once,
+/// the chain has completed for that sender and their identity has since
+/// changed. No test in this repository constructs one.
+///
+/// # The rule that governs `Verified` in this repository's tests
+///
+/// It used to be that **nothing** in this repository's tests produced
+/// `Verified`. That rule was written against a real failure: a fixture
+/// faking the value would teach exactly the belief this doc comment exists
+/// to prevent, and a mapping test with `Verified` as a literal says the
+/// library produces a value when the wiring might not.
+///
+/// The rule is now the narrower one it always meant, and it is stricter,
+/// not looser: **nothing except the real chain produces `Verified`.**
+/// Reaching it through bootstrap, publish, sign, upload and re-query is
+/// what discharges the old rule rather than breaking it. Reaching it any
+/// other way is still forbidden, and the complement is what the other
+/// tests hold: `tests/two_parties.rs` marks a device locally trusted,
+/// confirms `device_statuses` now calls it verified, and asserts that
+/// events from it still read [`SenderVerification::UnsignedDevice`];
+/// `tests/cross_signed_peer.rs` holds the rung above it; and
+/// `tests/verified_sender.rs`'s second test holds the rung immediately
+/// below `Verified`, which is the one a defect would cross.
+///
+/// Every one of those four is a test rather than a comment, and each was
+/// watched failing against a mapping that answered `Verified` regardless
+/// of what upstream said.
+///
+/// Every variant is declared whatever its cost, because the set is closed
+/// on both sides of the boundary: widening it later is a breaking change
+/// for every consumer that matched on it exhaustively, and the alternative
+/// to a full type is not a smaller true type but a different false one. A
+/// four-value type would say that four values is all this vocabulary has,
+/// which is not true of what it models.
 ///
 /// # How this went wrong once, which is why the paragraphs above are long
 ///
@@ -509,9 +545,12 @@ fn parse_user(user_id: &str) -> Result<OwnedUserId, SessionError> {
 /// `UnverifiedIdentity` was reachable from the first release; what was
 /// missing was a test with a cross-signed counterparty, because every
 /// fixture in this repository was a bare machine that never bootstrapped.
-/// The sentence sounded like the neighbouring true ones about `Verified`
-/// and stood in for them for a whole milestone. `tests/cross_signed_peer.rs`
-/// exists so that it cannot again.
+/// The sentence sounded like the neighbouring ones about `Verified`, which
+/// were true when they were written and are not any more, and stood in for
+/// them for a whole milestone. `tests/cross_signed_peer.rs` exists so that
+/// it cannot again, and the lesson generalises: a claim about what a build
+/// cannot produce is a claim about every peer it might meet, not only about
+/// the peers its own tests construct.
 ///
 /// # Order
 ///
@@ -525,17 +564,26 @@ fn parse_user(user_id: &str) -> Result<OwnedUserId, SessionError> {
 /// wire ordinals by declaration position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SenderVerification {
-    /// **Not produced by this build.** The event came from a device
-    /// belonging to a user this machine has verified. Upstream's own words
-    /// for it: the only state in which authenticity is guaranteed.
+    /// **Produced by this build, and only at the end of the whole chain.**
+    /// The event came from a device belonging to a user this machine has
+    /// verified. Upstream's own words for it: the only state in which
+    /// authenticity is guaranteed.
     ///
-    /// Unreachable until cross-signing lands, and "a comparison will make
-    /// it reachable" is the wrong summary of why. The path that produces
-    /// this reads `SenderData::SenderVerified`, which needs **our own**
-    /// user-signing key over the sender's master key; local trust, which is
-    /// all a comparison sets, is never consulted there. This build has no
-    /// such key, so this value cannot arrive however cross-signed the
-    /// sender is. See this type's own doc comment.
+    /// "A comparison makes it reachable" is the wrong summary of what it
+    /// takes. The path that produces this reads
+    /// `SenderData::SenderVerified`, which needs **our own** user-signing
+    /// key over the sender's master key, **read back out of our own
+    /// store**; local trust, which is all a comparison sets by itself, is
+    /// never consulted there. So a completed comparison is one step of
+    /// seven, and the signature it produces has to be uploaded and then
+    /// fetched back before this value can arrive. See this type's own doc
+    /// comment for the full chain and for the step that is silent when it
+    /// is skipped.
+    ///
+    /// A device can therefore read [`crate::TrustState::Verified`] while
+    /// every event from it reads [`SenderVerification::UnverifiedIdentity`],
+    /// and that combination is not a defect: it is a comparison whose
+    /// signature has not come back yet.
     Verified,
     /// **Produced by this build.** The device is signed by its owner's
     /// cross-signing identity, and that identity is one this machine has
@@ -544,25 +592,31 @@ pub enum SenderVerification {
     /// It needs a published master key from **the sender**, and nothing
     /// from us: upstream's gate for it reads only whether the sender signed
     /// their own device. So it arrives from any peer whose client has set
-    /// cross-signing up, against a build that has none, and it is the
+    /// cross-signing up, whatever this machine holds, and it is the
     /// ordinary case for a peer running a mainstream Matrix client rather
     /// than a state a product can defer handling.
     ///
     /// It is not a weaker `Verified` and not a stronger `UnsignedDevice`.
     /// It says the owner of the sending device vouches for that device, and
-    /// that we have no opinion about the owner. Cross-signing landing is
-    /// what would let this become [`SenderVerification::Verified`] for a
-    /// user we have verified; it is not what makes this value occur.
+    /// that we have no opinion about the owner. **It is also where an
+    /// incomplete chain lands**: verifying this sender and then not
+    /// fetching their keys back leaves events reading exactly this, which
+    /// is indistinguishable from never having verified them at all. See
+    /// [`SenderVerification::Verified`] for the chain and its last step.
     UnverifiedIdentity,
-    /// **Not produced by this build.** The device is signed by its owner's
-    /// cross-signing identity, that identity was verified once, and it is
-    /// not the same identity any more.
+    /// The device is signed by its owner's cross-signing identity, that
+    /// identity was verified once, and it is not the same identity any
+    /// more.
     ///
-    /// Unreachable for the same reason as [`SenderVerification::Verified`]
-    /// rather than for the sender's: upstream reaches it only when the
-    /// sender's identity was previously marked verified, and the only thing
-    /// that marks it is our own verified identity signing theirs. With no
-    /// identity of our own, no peer is ever in that state.
+    /// **Reachable only past `Verified`, never instead of it.** Upstream
+    /// reaches this only when the sender's identity was previously marked
+    /// verified, and the only thing that marks it is our own user-signing
+    /// key verifying their master key, which is the last step of the chain
+    /// [`SenderVerification::Verified`] describes. So a sender has to have
+    /// been fully verified once, and then have changed identity, before any
+    /// event of theirs can read this. No test in this repository constructs
+    /// one, and a product that has never completed a chain will never see
+    /// it.
     VerificationViolation,
     /// The sending device is known to this machine and carries no signature
     /// from its owner's cross-signing identity.
@@ -706,12 +760,14 @@ pub struct Envelope {
     ///
     /// Dropping it is the point. It is upstream reporting `Verified` about
     /// *this device's own keys*, which is a statement about a device and is
-    /// true of a machine that has never verified anything. Forwarding it
-    /// would put the one word this build cannot honestly attach to a
-    /// decrypted event onto the same field a decrypted event reads, where a
-    /// product switching on `sender_verification` would meet it. `None`
-    /// says "this question was not asked of this event", which is the
-    /// honest answer for something this device just encrypted for itself.
+    /// true of a machine that has never verified anything and never
+    /// published an identity. On the decrypt path the same word is the end
+    /// of a seven-step chain against another user
+    /// (see [`SenderVerification::Verified`]), so forwarding this one would
+    /// put a value that cost nothing onto the field where a product reads a
+    /// value that cost all seven. `None` says "this question was not asked
+    /// of this event", which is the honest answer for something this device
+    /// just encrypted for itself.
     ///
     /// # It is a snapshot, and upstream says so
     ///
