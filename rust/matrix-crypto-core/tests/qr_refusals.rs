@@ -35,9 +35,9 @@
 //! what it is for.
 
 use matrix_crypto_core::{
-    bootstrap_identity, cancel_flow, create_machine, flow_stage, identity_status, in_runtime,
-    mark_request_sent, read_code, share_scope_key, submit_scanned_code, take_outgoing_requests,
-    FlowId, FlowStage, MachineConfig, MachineError,
+    accept_flow, bootstrap_identity, cancel_flow, create_machine, flow_stage, identity_status,
+    in_runtime, mark_request_sent, offer_scanning, read_code, share_scope_key, submit_scanned_code,
+    take_outgoing_requests, FlowId, FlowStage, MachineConfig, MachineError,
 };
 use matrix_sdk_common::ruma::events::key::verification::VerificationMethod;
 use matrix_sdk_common::ruma::OwnedUserId;
@@ -61,6 +61,14 @@ const BOB_DEVICE: &str = "BOBDEVICE";
 /// the same assertion.
 const CAROL: &str = "@carol:example.org";
 const CAROL_DEVICE: &str = "CAROLDEVICE";
+/// Another device of the library's own account.
+///
+/// The control for the *other* half of that pair. `IdentityNotKnown` and
+/// `PeerIdentityNotKnown` are decided by one branch on whether the flow's
+/// other end is us, and against a peer alone that branch can be deleted
+/// outright with nothing noticing. A flow with this device is the only way
+/// to reach its first arm.
+const ALICE_OTHER_DEVICE: &str = "ALICESECOND";
 /// Somewhere for the one call on the shipped surface that tracks a user to
 /// point at. Nothing is ever encrypted to it.
 const SCOPE: &str = "!refusals:example.org";
@@ -103,6 +111,51 @@ fn payload_naming(flow_id: &str) -> Vec<u8> {
     payload.extend_from_slice(ANOTHER_KEY);
     payload.extend_from_slice(A_SECRET);
     payload
+}
+
+/// A flow identifier too long to fit in the symbol upstream builds.
+///
+/// Not an arbitrary large number. `matrix-sdk-qrcode` fixes every symbol at
+/// version 7 with error correction `L`
+/// (`matrix-sdk-qrcode-0.18.0/src/utils.rs:69-72`), which holds 154 bytes,
+/// and the payload around the identifier is about ninety of them. Anything
+/// past roughly sixty therefore cannot be drawn. Two hundred is comfortably
+/// over without being absurd -- a transaction identifier is a free-form
+/// string and the other side chooses it.
+fn an_unencodable_flow_id() -> String {
+    "z".repeat(200)
+}
+
+/// The to-device event a device of this account sends to open a flow.
+///
+/// Hand-built, which is the point: every identifier in a flow this library
+/// did not start comes from the other side, and upstream mints its own when
+/// asked, so a transaction id this long cannot be produced by asking. A
+/// homeserver relays whatever a client sent.
+fn an_invitation_naming(flow_id: &str, from_device: &str) -> serde_json::Value {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("this machine's clock is after 1970")
+        .as_millis();
+    serde_json::json!({
+        "sender": ALICE,
+        "type": "m.key.verification.request",
+        "content": {
+            "from_device": from_device,
+            "transaction_id": flow_id,
+            // Every method, so nothing below is refused for the negotiation
+            // rather than for the reason it is about.
+            "methods": [
+                "m.sas.v1",
+                "m.qr_code.show.v1",
+                "m.qr_code.scan.v1",
+                "m.reciprocate.v1",
+            ],
+            // Upstream drops an invitation older than ten minutes, so this
+            // has to be now rather than a fixed literal.
+            "timestamp": now,
+        },
+    })
 }
 
 fn config(store_path: String) -> MachineConfig {
@@ -197,8 +250,28 @@ fn every_refusal_a_scannable_code_can_give_is_named() {
     let store_path = dir.path().join("store").to_string_lossy().into_owned();
 
     futures::executor::block_on(in_runtime(async move {
+        // The product asks to take part in verification by a scannable code.
+        // Off until it does, and off is byte for byte the wire this library
+        // put out before codes existed, so without this line every flow
+        // below negotiates the short string alone and nothing here can
+        // happen. `tests/qr_announcement.rs` is where that default is the
+        // subject rather than the setting.
+        offer_scanning(true);
+
         // ---- The counterparties ----------------------------------------
         let bob = cross_signed_machine(BOB, BOB_DEVICE).await;
+        // Another device of the library's own account. A bare machine, so
+        // its keys are real and upstream will store them; a hand-written
+        // device would be dropped for a bad self-signature and the self flow
+        // below would fail to start for a reason that is not its subject.
+        let account: OwnedUserId = ALICE.parse().expect("a literal user id parses");
+        let alice_other: matrix_sdk_common::ruma::OwnedDeviceId = ALICE_OTHER_DEVICE.into();
+        let sibling = OlmMachine::new(&account, &alice_other).await;
+        settle_key_upload(&sibling).await;
+        let sibling_keys =
+            serde_json::to_value(harness::device_keys_of(&sibling, &account, &alice_other).await)
+                .expect("upstream device keys serialise");
+
         let carol_user: OwnedUserId = CAROL.parse().expect("a literal user id parses");
         let carol_device: matrix_sdk_common::ruma::OwnedDeviceId = CAROL_DEVICE.into();
         let carol = OlmMachine::new(&carol_user, &carol_device).await;
@@ -240,9 +313,16 @@ fn every_refusal_a_scannable_code_can_give_is_named() {
                     && queried_users(&request.body).iter().any(|u| u == ALICE)
             })
             .expect("a fresh machine must owe a key query for its own account");
+        // Naming the account's other device and no signing identity: the
+        // second half is what lifts `bootstrap_identity`'s ordering gate in
+        // phase two, and the first is what makes a flow with our own other
+        // device possible at all.
         mark_request_sent(
             &own_query.id,
-            &serde_json::json!({ "device_keys": { ALICE: {} } }).to_string(),
+            &serde_json::json!({
+                "device_keys": { ALICE: { ALICE_OTHER_DEVICE: sibling_keys } },
+            })
+            .to_string(),
         )
         .await
         .expect("answering the account key query must not fail");
@@ -263,6 +343,21 @@ fn every_refusal_a_scannable_code_can_give_is_named() {
             }),
         )
         .await;
+
+        // And the account's other device has to know this one before it can
+        // answer.
+        sibling
+            .mark_request_as_sent(
+                &matrix_sdk_common::ruma::TransactionId::new(),
+                &harness::keys_query_response(
+                    &serde_json::json!({
+                        "device_keys": { ALICE: { ALICE_DEVICE: alice_device_keys.clone() } },
+                    })
+                    .to_string(),
+                ),
+            )
+            .await
+            .expect("the bare machine must accept a keys-query response");
 
         // Bob has to know Alice's device before he can answer her.
         bob.peer
@@ -405,6 +500,35 @@ fn every_refusal_a_scannable_code_can_give_is_named() {
             .expect("a live flow can be refused");
         pump_to_bare(&bob.peer, ALICE, BOB, BOB_DEVICE).await;
 
+        // ---- The same refusal about our own account ---------------------
+        //
+        // `read_code` decides between two named refusals on one branch:
+        // whether the identity the code would carry is this account's or the
+        // other end's. Every assertion so far has been about somebody else,
+        // and against those alone the branch can be deleted outright -- both
+        // arms would answer `PeerIdentityNotKnown` and nothing would notice.
+        // A flow with a device of our own account is the only way to reach
+        // the first arm.
+        //
+        // The counterparty here is a second device of this same account, so
+        // the identity upstream looks for is ours, and this account has
+        // none.
+        let with_our_own = ready_flow(&sibling, ALICE, ALICE_OTHER_DEVICE, every_method()).await;
+        assert_eq!(
+            read_code(&with_our_own)
+                .await
+                .expect_err("a code for our own account needs our own identity"),
+            MachineError::IdentityNotKnown,
+            "our account having no identity is not the other user having none: the \
+             first is fixed here by `bootstrap_identity` and the second cannot be \
+             fixed here at all, and a product told the wrong one either sets up an \
+             identity it already has or waits for one that will never arrive"
+        );
+        cancel_flow(&with_our_own)
+            .await
+            .expect("a live flow can be refused");
+        pump_to_bare(&sibling, ALICE, ALICE, ALICE_OTHER_DEVICE).await;
+
         // ---- A flow nobody has agreed to yet ----------------------------
         let unanswered = matrix_crypto_core::request_flow(BOB, BOB_DEVICE)
             .await
@@ -466,6 +590,55 @@ fn every_refusal_a_scannable_code_can_give_is_named() {
             )
             .await
             .expect("the bare machine must accept a keys-query response");
+
+        // ---- An identifier that cannot be drawn -------------------------
+        //
+        // The last refusal `read_code` can give, and the only one this side
+        // never chooses: upstream fixes the symbol at a version that holds
+        // 154 bytes, and about ninety of those are spent before the flow
+        // identifier. Ours are ordinary transaction ids and always fit. The
+        // other side's are whatever the other side sent, which is why this
+        // is reachable at all and why it is reported as a malformed
+        // identifier rather than as a stage or a store failure.
+        //
+        // Driven through `accept_flow`, because a flow this library started
+        // cannot have an identifier this library did not mint.
+        let unencodable = an_unencodable_flow_id();
+        harness::deliver_to_library(vec![an_invitation_naming(&unencodable, ALICE_OTHER_DEVICE)])
+            .await;
+        let oversized = FlowId(unencodable);
+        assert_eq!(
+            flow_stage(&oversized)
+                .await
+                .expect("an invitation from a device of this account builds a flow"),
+            FlowStage::Requested,
+            "the hand-built invitation must have been accepted by upstream, or the \
+             refusal below would be about a flow that never existed"
+        );
+        accept_flow(&oversized)
+            .await
+            .expect("an invitation from a known device can be agreed to");
+        take_outgoing_requests()
+            .await
+            .expect("the pump must be drainable");
+        assert_eq!(
+            read_code(&oversized)
+                .await
+                .expect_err("a flow identifier this long cannot be drawn"),
+            MachineError::MalformedIdentifier {
+                detail: "flow id".to_string()
+            },
+            "a code that cannot be encoded must name what could not be encoded. \
+             Everything else about this flow is in order -- both identities are \
+             present, both sides offered to scan -- so any other refusal would \
+             send a product looking at the wrong thing"
+        );
+        cancel_flow(&oversized)
+            .await
+            .expect("a live flow can be refused");
+        take_outgoing_requests()
+            .await
+            .expect("the pump must be drainable");
 
         let with_carol = ready_flow(&carol, CAROL, CAROL_DEVICE, every_method()).await;
         assert_eq!(

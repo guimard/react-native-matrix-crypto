@@ -314,23 +314,32 @@ pub enum MachineError {
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("the other user has no signing identity")]
     PeerIdentityNotKnown,
-    /// The other device did not offer to scan a code, so showing one would
-    /// put a square on a screen that nothing on the other end can read.
+    /// Codes were not negotiated on this flow, so showing one would put a
+    /// square on a screen that nothing on the other end can read.
     ///
-    /// Not a stage and not a refusal by anybody: the two sides negotiated
-    /// which methods they can both carry out when the flow became ready, and
+    /// Not a stage and not a refusal by anybody: the two sides settled which
+    /// methods they can both carry out when the flow became ready, and
     /// scanning was not among them. Kept apart from `WrongStage`, which it
     /// was folded into first, because the two call for opposite things. A
-    /// flow at the wrong stage is one to wait on or to restart; a flow whose
-    /// peer cannot scan will never be able to, however long a product waits,
-    /// and the answer is to compare a short string instead.
+    /// flow at the wrong stage is one to wait on or to restart; a flow that
+    /// did not negotiate codes never will, however long a product waits.
     ///
-    /// Reachable against any client that does not implement scanning, which
-    /// includes this library's own releases before this one and every client
-    /// that speaks only the short-string method.
+    /// **Two causes, and a caller can always tell which.** Either this
+    /// process never called `crate::offer_scanning`, in which case this
+    /// library announced no scanning half and the remedy is that one call
+    /// before the next flow; or the other device did not offer to scan,
+    /// which nothing here can change and whose answer is to compare a short
+    /// string instead. The switch is the caller's own state, so the
+    /// distinction needs no second variant to carry it: a product that never
+    /// turned scanning on knows this is the first, and one that did knows it
+    /// is the second.
+    ///
+    /// The second cause is reachable against any client that does not
+    /// implement scanning, which includes this library's own releases before
+    /// this one and every client that speaks only the short-string method.
     ///
     /// Appended, not inserted -- see `UnknownFlow` above.
-    #[error("the other device did not offer to scan a code")]
+    #[error("codes were not negotiated on this flow")]
     CodeNotOffered,
     /// A scanned payload was refused.
     ///
@@ -580,6 +589,11 @@ pub(crate) fn reset_for_test() {
     // request bodies, not store handles, which is why only this one is
     // reset from here.
     crate::verification::reset_flows_for_test();
+    // The product-level choice about announcing scannable codes goes back
+    // to what a fresh process has, so one test's choice is not another's
+    // starting state. Unlike the registry above this has nothing to do
+    // with the store's lifetime and no ordering constraint of its own.
+    crate::verification::reset_scanning_for_test();
 
     // Same reason, one layer up: a recorder installed by one test would
     // otherwise keep receiving another test's signals, and a test that

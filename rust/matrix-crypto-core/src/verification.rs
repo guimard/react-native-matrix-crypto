@@ -99,6 +99,12 @@
 //! line M1 drew for the homeserver, and it is the line the design's section
 //! 1.1 settles.
 //!
+//! It is also why none of this happens until a product asks for it.
+//! [`offer_scanning`] is off until called, and with it off this library
+//! announces on the wire exactly what every release before it announced, so
+//! a consumer who never scans is not quietly made to take part. See that
+//! function for what each setting costs and who pays it.
+//!
 //! The three modes the protocol defines are all reachable here, and which
 //! one a flow uses is decided by *which device is holding up its screen*
 //! rather than by anything a caller passes:
@@ -143,6 +149,7 @@
 //! named rather than silent -- see [`MachineError::MaterialNotReady`].
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
 
 use matrix_sdk_common::deserialized_responses::ProcessedToDeviceEvent;
@@ -229,17 +236,19 @@ impl std::fmt::Debug for SasEmoji {
     }
 }
 
-/// Every verification method this library can actually carry out, which is
-/// what it announces and all it announces.
+/// What this library announces when a product has not asked for verification
+/// by a scannable code.
 ///
-/// Passed explicitly at every call site that names methods, rather than
-/// letting upstream apply its own default. That has always been the rule
-/// here -- announcing a method this library cannot carry out is a claim the
-/// far side may act on -- and enabling the code-scanning feature is what
-/// made it load-bearing rather than tidy: upstream's default list widens
-/// when that feature is on (`verification/requests.rs:60-65`), so a
-/// repository that used the default would have changed what it says on the
-/// wire by turning a Cargo feature on. Nothing here uses it, so nothing did.
+/// **Byte for byte what every release before this one announced**, and that
+/// is the whole point of it: a build that never asks for codes says on the
+/// wire exactly what it said before they existed, so nothing about a
+/// consumer's flows changes because this library grew a feature they do not
+/// use. `the_default_announcement_is_the_one_that_shipped_before_codes`
+/// pins it, and `tests/qr_announcement.rs` pins it on the wire rather than
+/// on this constant.
+const WITHOUT_SCANNING: &[VerificationMethod] = &[VerificationMethod::SasV1];
+
+/// What this library announces once a product has asked for codes.
 ///
 /// **`QrCodeScanV1` is in this list and is never in upstream's default.** A
 /// client that wants to be *offered* a code to scan has to say so itself, in
@@ -250,12 +259,96 @@ impl std::fmt::Debug for SasEmoji {
 /// `ReciprocateV1` is the method name for the message the scanning side
 /// sends once it has read a code, so a flow that announced the other two
 /// without it could produce a code that nothing may answer.
-const ANNOUNCED_METHODS: &[VerificationMethod] = &[
+const WITH_SCANNING: &[VerificationMethod] = &[
     VerificationMethod::SasV1,
     VerificationMethod::QrCodeShowV1,
     VerificationMethod::QrCodeScanV1,
     VerificationMethod::ReciprocateV1,
 ];
+
+/// Whether this process has asked to take part in verification by a
+/// scannable code. Off until [`offer_scanning`] is called.
+static SCANNING_OFFERED: AtomicBool = AtomicBool::new(false);
+
+/// Says whether this product can show a code and read one.
+///
+/// **Off by default, and the default is not caution for its own sake.**
+/// Announcing a method is a claim the far side acts on, and the two claims
+/// codes require are claims about the *product*, not about this library: it
+/// owns the camera, the screen and the scanner, and this library cannot know
+/// whether it built any of them. A library that announced them on every
+/// product's behalf would be answering a question only the product can.
+///
+/// # What each setting costs, and who pays it
+///
+/// **On, wrongly:** a peer's client is told this side can scan, so it shows
+/// its user a code and asks them to point a camera at it. Nothing here can
+/// read it. No error is returned to anybody, because nothing was asked of
+/// this library -- the failure is invisible to the product and lands on a
+/// person who did nothing wrong. If a reciprocation ever did arrive for a
+/// flow with no code, upstream drops it with a warning and sends no
+/// cancellation (`verification/requests.rs:1448-1467`), so the flow stalls
+/// to the protocol's ten-minute timeout rather than failing.
+///
+/// **Off, wrongly:** [`read_code`] refuses with
+/// [`MachineError::CodeNotOffered`] on the first flow a developer tries it
+/// on. That is a named error, at integration time, in front of the person
+/// who can fix it in one line.
+///
+/// The owner settled it in that direction on 2026-08-30: a developer with an
+/// error message is cheap, and a user staring at a code nobody can scan,
+/// with the product unable to detect it, is not.
+///
+/// # When to call it
+///
+/// Before opening or answering any flow a code might be used on. The
+/// announcement is made once, when a flow is created or agreed to, and it
+/// fixes what that flow can do for its whole life: calling this afterwards
+/// changes nothing about a flow already under way, and there is no message
+/// in the protocol that would.
+///
+/// Process-wide, like the observer registry and for the same reason: it
+/// describes the product, and a product does not have a camera on some of
+/// its verifications and not others.
+///
+/// # Off does more than stay quiet
+///
+/// It makes a code genuinely unavailable rather than merely unadvertised,
+/// in both directions, and neither direction is this library's own choice:
+/// upstream refuses to build one unless *both* sides announced their half
+/// (`verification/requests.rs:1222-1228`). So with this off, a peer's own
+/// `generate_qr_code` returns nothing and its client falls through to the
+/// short string, exactly as it did against every release before this one.
+/// `tests/qr_announcement.rs` observes both halves.
+pub fn offer_scanning(enabled: bool) {
+    SCANNING_OFFERED.store(enabled, Ordering::Relaxed);
+}
+
+/// The methods this library announces, which is every method it can
+/// actually carry out right now.
+///
+/// Read at each of the three call sites that name methods rather than being
+/// captured once, so the answer describes the process at the moment a flow
+/// is opened or agreed to. Passed explicitly rather than letting upstream
+/// apply its own default: that has always been the rule here, and enabling
+/// the code-scanning feature is what made it load-bearing rather than tidy,
+/// because upstream's default list widens when that feature is on
+/// (`verification/requests.rs:60-65`). Nothing here uses it, so nothing did.
+fn announced_methods() -> &'static [VerificationMethod] {
+    if SCANNING_OFFERED.load(Ordering::Relaxed) {
+        WITH_SCANNING
+    } else {
+        WITHOUT_SCANNING
+    }
+}
+
+/// Puts the switch back where a fresh process finds it, so one test's
+/// product-level choice is not another's starting state. Called from
+/// `machine::reset_for_test` beside the flow registry.
+#[cfg(test)]
+pub(crate) fn reset_scanning_for_test() {
+    SCANNING_OFFERED.store(false, Ordering::Relaxed);
+}
 
 /// A code to show a person's other camera, in both of the forms a product
 /// needs to draw one.
@@ -830,10 +923,12 @@ fn queue(request: impl Into<UpstreamOutgoingRequest>) {
 
 /// Asks a device to verify itself against this one.
 ///
-/// Advertises [`ANNOUNCED_METHODS`] rather than upstream's default list, for
-/// the reason that constant gives: advertising a method this library cannot
+/// Advertises [`announced_methods`] rather than upstream's default list, for
+/// the reason that function gives: advertising a method this library cannot
 /// carry out is a claim the far side may act on, and taking a default is
-/// letting somebody else decide what this library claims.
+/// letting somebody else decide what this library claims. Whether a
+/// scannable code is among them is [`offer_scanning`]'s answer, and it is
+/// off until a product says otherwise.
 pub async fn request_flow(user_id: &str, device_id: &str) -> Result<FlowId, MachineError> {
     // Owned before the closure, not borrowed, for the reason
     // `identity.rs` documents: `with_machine` requires a `'static` closure.
@@ -868,7 +963,7 @@ pub async fn request_flow(user_id: &str, device_id: &str) -> Result<FlowId, Mach
                 .ok_or(MachineError::UnknownDevice)?;
 
             let (request, outgoing) =
-                device.request_verification_with_methods(ANNOUNCED_METHODS.to_vec());
+                device.request_verification_with_methods(announced_methods().to_vec());
             Ok((request.flow_id().as_str().to_string(), request, outgoing))
         })
     })
@@ -994,11 +1089,11 @@ pub async fn request_self_flow() -> Result<FlowId, MachineError> {
                 return Err(MachineError::AccountKeysNotFetched);
             };
 
-            // [`ANNOUNCED_METHODS`], not upstream's default list, for
+            // [`announced_methods`], not upstream's default list, for
             // `request_flow`'s reason: advertising a method this library
             // cannot carry out is a claim the far side may act on.
             let (request, outgoing) = identity
-                .request_verification_with_methods(ANNOUNCED_METHODS.to_vec())
+                .request_verification_with_methods(announced_methods().to_vec())
                 .await
                 .map_err(|_upstream| store_failed())?;
             Ok((request.flow_id().as_str().to_string(), request, outgoing))
@@ -1065,7 +1160,7 @@ pub async fn accept_flow(flow: &FlowId) -> Result<(), MachineError> {
         // of doing the same thing: at most one of the two is ever waiting
         // on an answer, so this is a search for whichever it is.
         (Some(request), comparison) => request
-            .accept_with_methods(ANNOUNCED_METHODS.to_vec())
+            .accept_with_methods(announced_methods().to_vec())
             .or_else(|| comparison.as_ref().and_then(Sas::accept)),
         (None, Some(comparison)) => comparison.accept(),
         // Unreachable: `handles` returns a record built by one of
@@ -1303,9 +1398,12 @@ pub async fn confirm_flow(flow: &FlowId) -> Result<(), MachineError> {
 ///   is over, or it never had a request behind it. A flow that arrived as a
 ///   bare `m.key.verification.start` has no request and never will, and a
 ///   code is only ever built from one.
-/// * [`MachineError::CodeNotOffered`] -- the other device did not offer to
-///   scan. No amount of waiting changes that; the answer is to compare a
-///   short string instead.
+/// * [`MachineError::CodeNotOffered`] -- codes were not negotiated on this
+///   flow. Either this build never called [`offer_scanning`], which is the
+///   half a developer fixes in one line before the next flow, or the other
+///   device did not offer to scan, which nobody here can fix and whose
+///   answer is to compare a short string instead. No amount of waiting
+///   changes either.
 /// * [`MachineError::IdentityNotKnown`] -- this account has no signing
 ///   identity for the code to carry. [`crate::bootstrap_identity`].
 /// * [`MachineError::PeerIdentityNotKnown`] -- the other user has none, and
@@ -1412,7 +1510,7 @@ async fn why_no_code(
 ) -> MachineError {
     // Exhaustive, no wildcard, like every other upstream match in this
     // crate.
-    let their_methods = match request.state() {
+    let negotiated = match request.state() {
         // Not agreed yet by one side or the other, or finished. Upstream
         // refuses all four of these before it looks at anything else
         // (`verification/requests.rs:988-996`).
@@ -1420,15 +1518,31 @@ async fn why_no_code(
         | VerificationRequestState::Requested { .. }
         | VerificationRequestState::Done
         | VerificationRequestState::Cancelled(_) => return MachineError::WrongStage,
-        VerificationRequestState::Ready { their_methods, .. } => Some(their_methods),
+        VerificationRequestState::Ready {
+            our_methods,
+            their_methods,
+            ..
+        } => Some((our_methods, their_methods)),
         // The methods are not carried on this state. A flow that has already
         // become a code or a comparison answered the negotiation question
         // once, when it became ready, so skipping it here loses nothing --
         // and guessing at it would be worse than not asking.
         VerificationRequestState::Transitioned { .. } => None,
     };
-    if their_methods.is_some_and(|methods| !methods.contains(&VerificationMethod::QrCodeScanV1)) {
-        return MachineError::CodeNotOffered;
+    // **Both halves, ours first, which is upstream's own order and its own
+    // single condition** (`verification/requests.rs:1222-1228`). Ours is the
+    // half a developer can fix: it is false exactly when this flow was
+    // opened or agreed to while [`offer_scanning`] was off, and the remedy
+    // is one call before the next flow rather than anything about this one.
+    // Theirs is the half nobody here can fix. `CodeNotOffered` covers both
+    // and its own documentation says how to tell them apart, which a caller
+    // always can: it set the switch.
+    if let Some((our_methods, their_methods)) = negotiated {
+        if !our_methods.contains(&VerificationMethod::QrCodeShowV1)
+            || !their_methods.contains(&VerificationMethod::QrCodeScanV1)
+        {
+            return MachineError::CodeNotOffered;
+        }
     }
 
     // Whose identity the code would have to carry is decided by who is on
@@ -2162,34 +2276,60 @@ mod tests {
         );
     }
 
-    /// Every method this library announces is one it can carry out, and the
-    /// list is passed explicitly rather than taken from upstream.
+    /// **The wire a build that never asks for codes puts out is the wire it
+    /// put out before codes existed.**
     ///
-    /// The claim "a consumer that never scans a code pays nothing for this
-    /// feature" rests on this list being ours: upstream's own default widens
-    /// when the feature is enabled, so a repository that took the default
-    /// would change what it says on the wire by flipping a Cargo switch.
-    /// What this pins is the other half -- that the list is the one this
-    /// file declares, which is the half a reader can check.
+    /// This is the criterion the design struck as unachievable and the owner
+    /// then restored, so it gets the test the spec asked for and never got.
+    /// Asserted as the whole list, not as "contains the short string": a list
+    /// that had grown one entry would still contain it, and growing by one
+    /// entry is exactly the change this exists to catch.
+    ///
+    /// The literal on the right is what every release before this one
+    /// announced, written out here rather than referred to, because a
+    /// constant compared against itself asserts nothing.
     #[test]
-    fn the_announced_methods_are_this_library_own_list() {
+    fn the_default_announcement_is_the_one_that_shipped_before_codes() {
+        reset_scanning_for_test();
         assert_eq!(
-            ANNOUNCED_METHODS,
+            announced_methods(),
+            &[VerificationMethod::SasV1],
+            "a product that never asked for scannable codes must say on the wire \
+             exactly what every release before this one said. One method becoming \
+             four is a claim a peer acts on: it makes that peer's client show its \
+             user a code and ask for it to be scanned, which nothing on this side \
+             can do, and no error reaches anybody because nothing was asked of this \
+             library"
+        );
+    }
+
+    /// And what it announces once a product has asked.
+    ///
+    /// The pair is the point. Either assertion alone would pass against a
+    /// switch that ignored its argument.
+    #[test]
+    fn asking_for_codes_announces_both_halves_of_one() {
+        reset_scanning_for_test();
+        offer_scanning(true);
+        assert_eq!(
+            announced_methods(),
             &[
                 VerificationMethod::SasV1,
                 VerificationMethod::QrCodeShowV1,
                 VerificationMethod::QrCodeScanV1,
                 VerificationMethod::ReciprocateV1,
             ],
-            "changing what this library announces changes what every flow it opens \
-             or answers claims it can do, on the wire, for every consumer. It is not \
-             a detail of the code-scanning feature"
+            "showing and scanning are separate methods and a product that asked for \
+             codes needs both: a flow that announced only showing could produce a \
+             code no peer may answer, and one that announced only scanning would \
+             never be shown one"
         );
-        assert!(
-            ANNOUNCED_METHODS.contains(&VerificationMethod::QrCodeScanV1),
-            "upstream's default announced list never carries the scanning method, in \
-             any version, so a peer will not build a code for a client that does not \
-             ask for one explicitly"
+        reset_scanning_for_test();
+        assert_eq!(
+            announced_methods(),
+            &[VerificationMethod::SasV1],
+            "and turning it back off must put the old wire back, or the switch is a \
+             latch and a product could not undo it"
         );
     }
 

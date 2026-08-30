@@ -32,7 +32,7 @@ pub use session::{
 };
 pub use signing::{bootstrap_identity, identity_status, IdentityStatus};
 pub use verification::{
-    accept_flow, begin_comparison, cancel_flow, confirm_flow, confirm_scan, flow_stage, read_code,
-    read_material, request_flow, request_self_flow, submit_scanned_code, FlowId, FlowStage,
-    SasEmoji, SasMaterial, ScannableCode,
+    accept_flow, begin_comparison, cancel_flow, confirm_flow, confirm_scan, flow_stage,
+    offer_scanning, read_code, read_material, request_flow, request_self_flow, submit_scanned_code,
+    FlowId, FlowStage, SasEmoji, SasMaterial, ScannableCode,
 };

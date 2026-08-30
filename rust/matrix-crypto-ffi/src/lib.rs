@@ -224,7 +224,7 @@ pub enum MachineFfiError {
     // lands, silently.
     #[error("the other user has no signing identity")]
     PeerIdentityNotKnown,
-    #[error("the other device did not offer to scan a code")]
+    #[error("codes were not negotiated on this flow")]
     CodeNotOffered,
     #[error("the scanned code was refused")]
     ScannedCodeRefused,

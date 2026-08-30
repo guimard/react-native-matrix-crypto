@@ -111,6 +111,28 @@ pub fn addressed_devices(body: &str, user_id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The verification methods one to-device request body announces to
+/// `device_id`.
+///
+/// A decoder, like [`mode_of`], and the claims made with it are in the test
+/// files. Read off the request the pump actually handed out rather than off
+/// the constant the code passes, because what a peer acts on is the wire.
+pub fn methods_announced(body: &str, user_id: &str, device_id: &str) -> Vec<String> {
+    let event = relay_to(body, user_id, user_id, device_id)
+        .expect("the request must address the device it is being read for");
+    event
+        .get("content")
+        .and_then(|content| content.get("methods"))
+        .and_then(serde_json::Value::as_array)
+        .map(|methods| {
+            methods
+                .iter()
+                .filter_map(|method| method.as_str().map(str::to_owned))
+                .collect()
+        })
+        .expect("a verification request or ready event always carries its methods")
+}
+
 /// The users a `/keys/query` body asks about.
 pub fn queried_users(body: &str) -> Vec<String> {
     serde_json::from_str::<serde_json::Value>(body)
@@ -557,6 +579,36 @@ pub fn mode_of(payload: &[u8]) -> u8 {
     );
     payload[7]
 }
+
+/// One row of a drawn symbol, left to right.
+///
+/// A decoder, like [`mode_of`], and it is here for the same reason: it says
+/// only where a row is, and every claim made about what is *in* one is
+/// asserted in a test file. `modules` is row-major and `width` squares wide,
+/// which is the contract a product draws by, so this is also the one place
+/// that reads the two fields against each other.
+pub fn row_of(code: &matrix_crypto_core::ScannableCode, index: u32) -> &[bool] {
+    let width = code.width as usize;
+    assert_eq!(
+        code.modules.len(),
+        width * width,
+        "a symbol must be a square of its own declared side, or no product can \
+         draw it row by row"
+    );
+    let start = index as usize * width;
+    &code.modules[start..start + width]
+}
+
+/// The side, in squares, of the symbol upstream fixes for every one of
+/// these payloads.
+///
+/// Not a guess and not a range: `matrix-sdk-qrcode` builds every code at
+/// `Version::Normal(7)` with error correction `L`
+/// (`matrix-sdk-qrcode-0.18.0/src/utils.rs:69-72`), deliberately, because
+/// mobile clients have trouble decoding what the general-purpose encoder
+/// emits. Version 7 is 45 squares across, which is the 2025 booleans the
+/// design names.
+pub const SYMBOL_WIDTH: u32 = 45;
 
 /// Verifying another user. Both master signing keys travel in the payload.
 pub const MODE_CROSS_USER: u8 = 0x00;
