@@ -400,15 +400,15 @@ export async function encryptEvent(
  * **What the returned envelope now adds is the size of that assumption.**
  * `senderVerification` carries what this library knew about the sender at
  * the moment it decrypted -- see {@link SenderVerification}. It does not
- * turn `sender` into an authenticated value. It cannot yet read
- * `'verified'` through this surface, and the reason is no longer that the
- * library has no cross-signing identity: the core has one since M4 and
- * reaches `'verified'` through the whole chain in its own
- * `tests/verified_sender.rs`. What is missing here is the bridged call
- * that would let a product create that identity, which is the remaining
- * step of the same milestone. Treat this as a gap that is closing, not as
- * a property of the design. What the value can already do is tell three
- * different things
+ * turn `sender` into an authenticated value. **It can read `'verified'`
+ * through this surface from this release**, which it could not before: the
+ * last missing step was the bridged call that lets a product create this
+ * account's own cross-signing identity, and that call is
+ * {@link bootstrapCrossSigning}. Reaching the value is still a chain rather
+ * than a setting, and the chain is the seven steps
+ * {@link SenderVerification} sets out; what changed is that every one of
+ * them can now be driven from TypeScript. What the value can already do
+ * without any of that is tell three different things
  * apart: an ordinary unsigned device, a device its owner cross-signed whose
  * owner you have not verified (`'unverified_identity'`, which this release
  * does produce, from any peer whose client has cross-signing set up), and
