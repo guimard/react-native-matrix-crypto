@@ -296,11 +296,13 @@ describe('toCryptoError against the real UniFFI error shape', () => {
  * same gap the `StoreCorrupt` entry above sat in for four tasks.
  *
  * **This heading said "(Task 3)" and named three variants, and the block
- * under it covered four of the ten that exist now.** The six a scannable
- * code brought are covered by the distinctness test at the end of the
- * block, which is where their kinds would collapse together invisibly, and
- * by the walk over every generated variant further down. A milestone number
- * in a heading is what let the count go stale, so there is not one any more.
+ * under it covered four of the fourteen the core's verification module can
+ * produce.** The distinctness test at the end of the block now walks all
+ * fourteen, counted against `verification.rs`'s own sibling list rather
+ * than against a number carried forward; the walk over every generated
+ * variant further down covers them a second time. A milestone number in a
+ * heading is what let this go stale, so there is not one any more, and the
+ * count that replaced it was itself wrong for a commit.
  *
  * Fieldless variants, so `.message` is exactly "<Type>.<Variant>" with no
  * suffix -- the shape `NotInitialised` above documents in full.
@@ -344,13 +346,23 @@ describe('toCryptoError for the verification kinds', () => {
    * else, or refuse and start over -- and any two of them collapsing onto
    * one kind is invisible to a test that only checks each in isolation.
    *
-   * **This said "the four" and listed four while ten existed.** Six
-   * arrived with verification by a scannable code, and the name went on
-   * asserting exhaustiveness that the body had stopped having. The four
-   * code-refusal kinds are the ones this most needed to cover: they are
-   * four sentences a product shows a person about the same failed scan,
+   * **This said "the four" and listed four.** The core's verification
+   * module produces fourteen, and the first correction of this comment
+   * listed eleven while claiming "every", which is the same defect one
+   * size smaller. The list below is now the same fourteen
+   * `every_refusal_this_module_produces_is_its_own_error` enumerates in
+   * `rust/matrix-crypto-core/src/verification.rs`, and the two are meant to
+   * be read together: that one proves the core keeps them apart, this one
+   * proves the crossing does.
+   *
+   * The four code-refusal kinds are what this most needed to cover: they
+   * are four sentences a product shows a person about the same failed scan,
    * and a fold between any two of them is exactly what the design's
    * section 4 forbids and what nothing else on this side would catch.
+   *
+   * `MalformedIdentifier` carries a `detail`, so its message has a suffix.
+   * It is included with one, because a product meets it that way and
+   * because `toCryptoError` reads the name off the front.
    */
   it('keeps every verification-related machine variant on a kind of its own', () => {
     const variants = [
@@ -358,7 +370,10 @@ describe('toCryptoError for the verification kinds', () => {
       'MachineFfiError.WrongStage',
       'MachineFfiError.MaterialNotReady',
       'MachineFfiError.UnknownDevice',
+      'MachineFfiError.AccountKeysNotFetched',
       'MachineFfiError.IdentityNotKnown',
+      'MachineFfiError.PrivateKeysNotHeld',
+      'MachineFfiError.MalformedIdentifier: flow id',
       'MachineFfiError.PeerIdentityNotKnown',
       'MachineFfiError.CodeNotOffered',
       'MachineFfiError.ScannedCodeRefused',

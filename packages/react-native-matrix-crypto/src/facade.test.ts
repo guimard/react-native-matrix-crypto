@@ -30,6 +30,7 @@ import {
   openCryptoStore,
   receiveSyncChanges,
   recoverIdentity,
+  restoreCryptoMachine,
   requestSelfVerification,
   requestVerification,
   shareScopeKey,
@@ -245,12 +246,48 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
  * are refused on purpose, because the byte array they would return has no
  * interoperable form, and their own doc comments say so. `restoreCryptoMachine`
  * is the only one of the three still waiting on anything.
+ *
+ * **All three are driven here, and that is the point of the plural.** The
+ * rename that gave this describe its name left one `it` under it, driving
+ * `exportSecrets` alone, while the paragraph above named three; and
+ * `restoreCryptoMachine` was named in this file and driven nowhere in it.
+ * A name that quantifies over a list the body does not walk is the defect
+ * this whole sweep was about, and it was reintroduced by the sweep.
+ *
+ * `not_implemented` is synthesised in TypeScript by `notImplemented`, so
+ * none of these three touches the mocked bindings at all. Asserted rather
+ * than assumed, because a call that reached native code and happened to
+ * reject would satisfy the kind check while proving something else.
  */
 describe('the calls that reject in JavaScript rather than reaching native code', () => {
   it('rejects exportSecrets with a typed not_implemented error rather than undefined', async () => {
     await expect(exportSecrets('passphrase')).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'not_implemented',
     )
+  })
+
+  it('rejects importSecrets with the same kind, on purpose rather than pending', async () => {
+    await expect(importSecrets(new Uint8Array([1, 2, 3]), 'passphrase')).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'not_implemented',
+    )
+  })
+
+  it('rejects restoreCryptoMachine, the one of the three still waiting on something', async () => {
+    await expect(restoreCryptoMachine(new Uint8Array([1, 2, 3]))).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'not_implemented',
+    )
+  })
+
+  it('rejects all three without reaching a native call', async () => {
+    vi.clearAllMocks()
+    await Promise.allSettled([
+      exportSecrets('passphrase'),
+      importSecrets(new Uint8Array([1]), 'passphrase'),
+      restoreCryptoMachine(new Uint8Array([1])),
+    ])
+
+    expect(nativeCreateCryptoMachine).not.toHaveBeenCalled()
+    expect(nativeOpenCryptoStore).not.toHaveBeenCalled()
   })
 })
 

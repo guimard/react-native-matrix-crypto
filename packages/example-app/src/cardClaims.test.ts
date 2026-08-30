@@ -41,7 +41,7 @@ import { runNotYet, type Outcome } from './flowRunners'
  * call, with a typed `not_implemented`.
  *
  * Pinned deliberately. When the library implements one of these, this list
- * goes red, and whoever is holding it has to look at step 6's card and
+ * goes red, and whoever is holding it has to look at the `notYet` card and
  * decide where it should point now. That is the whole mechanism: the list
  * is a tripwire on the library's progress, not a description anyone has to
  * remember to update.

@@ -30,8 +30,11 @@
  * the same seam `src/facade.test.ts` uses inside the library.
  *
  * WHAT THIS FILE CANNOT ESTABLISH. There is no JSI host object in Node, so
- * nothing here proves the bridge works. Steps 1 and 5 are not stubbed and
- * are asserted to fail here for that reason; see `UNREACHABLE_IN_NODE`.
+ * nothing here proves the bridge works. Three steps are not stubbed and are
+ * asserted to fail here for that reason, and the list is
+ * `UNREACHABLE_IN_NODE` rather than this sentence: it held two ids when
+ * this was written and holds three now, and the package README already said
+ * three.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { FLOW_STEPS, type FlowStep } from './steps'
