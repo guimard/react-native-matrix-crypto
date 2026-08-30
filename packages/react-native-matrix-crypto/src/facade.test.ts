@@ -21,6 +21,7 @@ import {
   markRequestSent,
   openCryptoStore,
   receiveSyncChanges,
+  requestSelfVerification,
   requestVerification,
   shareScopeKey,
   startVerificationComparison,
@@ -42,6 +43,7 @@ import {
   markRequestSent as nativeMarkRequestSent,
   openCryptoStore as nativeOpenCryptoStore,
   receiveSyncChanges as nativeReceiveSyncChanges,
+  requestSelfVerification as nativeRequestSelfVerification,
   requestVerification as nativeRequestVerification,
   SenderVerification as NativeSenderVerification,
   SessionFfiError,
@@ -132,6 +134,11 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
       { deviceId: 'NATIVEDEVICE', trust: actual.TrustState.Unverified },
     ]),
     requestVerification: vi.fn(async () => 'native-flow-id'),
+    // A different string from `requestVerification`'s above, deliberately:
+    // the two calls are one line each and the way to wire one to the other's
+    // native function is to copy the line and forget half the edit, which
+    // would then be invisible to a test that accepted either value.
+    requestSelfVerification: vi.fn(async () => 'native-self-flow-id'),
     acceptVerification: vi.fn(async () => undefined),
     startVerificationComparison: vi.fn(async () => undefined),
     verificationStage: vi.fn(async () => actual.VerificationStage.Requested),
@@ -1119,6 +1126,45 @@ describe('requestVerification, acceptVerification and cancelVerification', () =>
     vi.mocked(nativeRequestVerification).mockRejectedValue(new MachineFfiError.UnknownDevice())
     await expect(requestVerification('@bob:example.org', 'NOSUCHDEVICE')).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'unknown_device',
+    )
+  })
+
+  /**
+   * The call a second login joins an identity with. It takes no arguments at
+   * all, which is the property under test as much as the return value:
+   * upstream's identity-level request fans out to every device the account's
+   * identity has signed, and a facade that quietly forwarded a user or device
+   * id would be reaching for the wrong native function.
+   */
+  it('asks for no identifiers and returns the flow id native minted', async () => {
+    await expect(requestSelfVerification()).resolves.toBe('native-self-flow-id')
+    expect(vi.mocked(nativeRequestSelfVerification).mock.calls.at(-1)).toEqual([])
+    expect(requestSelfVerification.length).toBe(0)
+  })
+
+  /**
+   * Both of its refusals arrive as their own kinds rather than as `unknown`,
+   * which is what they would be if `errors.ts` had no entry for the variant
+   * -- and `identity_not_known` is a new variant on the Rust side, so nothing
+   * in Rust can see whether this map was updated with it.
+   *
+   * The two are asserted together because they are told apart together: one
+   * means ask the server and call again, the other means there is nothing to
+   * join and the answer is `bootstrapCrossSigning`.
+   */
+  it('tells its two refusals apart rather than reporting either as unknown', async () => {
+    vi.mocked(nativeRequestSelfVerification).mockRejectedValue(
+      new MachineFfiError.AccountKeysNotFetched(),
+    )
+    await expect(requestSelfVerification()).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'account_keys_not_fetched',
+    )
+
+    vi.mocked(nativeRequestSelfVerification).mockRejectedValue(
+      new MachineFfiError.IdentityNotKnown(),
+    )
+    await expect(requestSelfVerification()).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'identity_not_known',
     )
   })
 

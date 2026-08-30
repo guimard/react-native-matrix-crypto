@@ -18,7 +18,9 @@ import type {
   acceptVerification,
   decryptEvent,
   getDeviceStatuses,
+  getIdentityStatus,
   receiveSyncChanges,
+  requestSelfVerification,
 } from './facade'
 
 /**
@@ -223,9 +225,17 @@ function trustStateOf(trust: NativeTrustState): TrustState {
  *   `to_device_events` for `m.key.verification.request` and read the field
  *   out of one, which is a protocol detail this library keeps to itself
  *   everywhere else.
- * - `trust_changed` -- a comparison finished and a device belonging to
- *   `user` moved. Read {@link getDeviceStatuses} for that user to see
- *   which; the signal deliberately does not duplicate that answer.
+ * - `trust_changed` -- something this library will now say differently about
+ *   `user` changed. **Two things produce it and they are indistinguishable
+ *   from the value alone**, which is why the rule for this variant is to
+ *   read rather than to count. A comparison finished and a device belonging
+ *   to `user` moved: {@link getDeviceStatuses} for that user says which. Or,
+ *   when `user` is **your own** user id, the account's private signing keys
+ *   arrived on this device by gossip from another of your devices, after
+ *   {@link requestSelfVerification}: {@link getIdentityStatus} says so, with
+ *   `privateKeysHeld === true`, and that is the moment a new login becomes
+ *   able to sign. A self-verification produces both, on consecutive syncs,
+ *   so a product that reads both answers when told is correct under either.
  * - `unexpected_device` and `key_missing` still have no producer. The
  *   conditions they name do occur, and reach you elsewhere: a missing key
  *   arrives as a rejected {@link decryptEvent} with kind `missing_key`, not
@@ -233,7 +243,7 @@ function trustStateOf(trust: NativeTrustState): TrustState {
  *
  * # When they arrive, and what has to have happened first
  *
- * **Both producers run inside {@link receiveSyncChanges}.** Nothing is
+ * **Every producer runs inside {@link receiveSyncChanges}.** Nothing is
  * announced on a timer, and nothing is announced for an event you have not
  * fed in. A product that stops syncing stops being told.
  *
@@ -257,9 +267,10 @@ function trustStateOf(trust: NativeTrustState): TrustState {
  * not lose **those** -- with the one exception named below, which is a real
  * exception and not a hedge.
  *
- * Four things it genuinely does not do. A `trust_changed` for a comparison
- * that finished while you were away is not re-offered -- ask
- * {@link getDeviceStatuses}, which is the durable answer and always was.
+ * Four things it genuinely does not do. A `trust_changed` that fired while
+ * you were away is not re-offered -- ask {@link getDeviceStatuses}, or
+ * {@link getIdentityStatus} for the private-keys one, which are the durable
+ * answers and always were.
  * A hot reload leaves the previous module copy's observer installed
  * until something subscribes again; an invitation arriving in that window
  * is consumed by a listener set nothing can reach. An unsubscribe can land

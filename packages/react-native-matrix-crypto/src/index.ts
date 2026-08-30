@@ -69,6 +69,7 @@ export {
   markRequestSent,
   openCryptoStore,
   receiveSyncChanges,
+  requestSelfVerification,
   requestVerification,
   restoreCryptoMachine,
   shareScopeKey,
