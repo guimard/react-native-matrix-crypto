@@ -269,6 +269,64 @@ pub enum MachineError {
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("the stored recovery could not be read")]
     RecoveryDataMalformed,
+    /// The other user has no signing identity, so there is nothing for a
+    /// scannable code to name them by.
+    ///
+    /// **The mirror image of `IdentityNotKnown`, across the other side of
+    /// the flow, and the pair is why this is a variant rather than a reuse.**
+    /// `IdentityNotKnown` says *this account* has no identity, and its
+    /// remedy is `crate::bootstrap_identity` on this device. This one says
+    /// the account on the other end of the flow has none, and there is
+    /// nothing this device can do about it: the remedy belongs to the other
+    /// person, and a product that told its user to set their own identity up
+    /// would be sending them to fix something that is not broken.
+    ///
+    /// Upstream distinguishes the two on the scanning side and not on the
+    /// showing side. `QrVerification::from_scan` names the user it could not
+    /// find an identity for (`ScanError::MissingCrossSigningIdentity`), so
+    /// `crate::submit_scanned_code` reads which side it is from that;
+    /// `VerificationRequest::generate_qr_code` says nothing at all, and
+    /// `crate::read_code` asks the same question again to answer it.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("the other user has no signing identity")]
+    PeerIdentityNotKnown,
+    /// The other device did not offer to scan a code, so showing one would
+    /// put a square on a screen that nothing on the other end can read.
+    ///
+    /// Not a stage and not a refusal by anybody: the two sides negotiated
+    /// which methods they can both carry out when the flow became ready, and
+    /// scanning was not among them. Kept apart from `WrongStage`, which it
+    /// was folded into first, because the two call for opposite things. A
+    /// flow at the wrong stage is one to wait on or to restart; a flow whose
+    /// peer cannot scan will never be able to, however long a product waits,
+    /// and the answer is to compare a short string instead.
+    ///
+    /// Reachable against any client that does not implement scanning, which
+    /// includes this library's own releases before this one and every client
+    /// that speaks only the short-string method.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("the other device did not offer to scan a code")]
+    CodeNotOffered,
+    /// A scanned payload was refused.
+    ///
+    /// **This variant deliberately folds what a later task splits.** Three
+    /// things a product must eventually be able to tell apart arrive here
+    /// today: a payload that is not one of these codes at all, a payload for
+    /// a different flow, and a payload whose keys are not the ones this flow
+    /// expects. The design (section 4) requires all three to reach a product
+    /// separately, and the task that crosses the payload to TypeScript is
+    /// where that split lands, because the split is only worth anything once
+    /// there is a surface for it to be visible on.
+    ///
+    /// What is *not* folded in here is the one condition that already has a
+    /// name: a payload refused because a cross-signing identity is missing
+    /// reports `IdentityNotKnown` or `PeerIdentityNotKnown` by whose it is.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("the scanned code was refused")]
+    ScannedCodeRefused,
 }
 
 struct Held {

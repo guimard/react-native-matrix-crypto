@@ -347,7 +347,18 @@ impl From<MachineError> for SessionError {
             | MachineError::PrivateKeysNotHeld
             | MachineError::RecoveryNotSetUp
             | MachineError::RecoveryKeyIncorrect
-            | MachineError::RecoveryDataMalformed => SessionError::Failed,
+            | MachineError::RecoveryDataMalformed
+            // `verification.rs`'s three refusals for a flow driven by
+            // scanning a code, on the same rule again: that module returns
+            // `MachineError` directly and never routes through this
+            // conversion, so all three are unreachable here and are listed
+            // by name so the next variant added anywhere still has to be
+            // ruled on in this match. This match is what caught all three
+            // of them the moment they were declared, which is what a
+            // wildcard here would have cost.
+            | MachineError::PeerIdentityNotKnown
+            | MachineError::CodeNotOffered
+            | MachineError::ScannedCodeRefused => SessionError::Failed,
         }
     }
 }

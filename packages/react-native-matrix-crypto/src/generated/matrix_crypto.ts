@@ -2608,6 +2608,9 @@ export enum MachineFfiError_Tags {
   RecoveryNotSetUp = "RecoveryNotSetUp",
   RecoveryKeyIncorrect = "RecoveryKeyIncorrect",
   RecoveryDataMalformed = "RecoveryDataMalformed",
+  PeerIdentityNotKnown = "PeerIdentityNotKnown",
+  CodeNotOffered = "CodeNotOffered",
+  ScannedCodeRefused = "ScannedCodeRefused",
 }
 /**
  * Mirror of the core's machine error, carrying the UniFFI error derive.
@@ -3083,6 +3086,93 @@ export const MachineFfiError = (() => {
     }
   }
 
+  type PeerIdentityNotKnown__interface = {
+    tag: MachineFfiError_Tags.PeerIdentityNotKnown;
+  };
+  class PeerIdentityNotKnown_
+    extends UniffiError
+    implements PeerIdentityNotKnown__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.PeerIdentityNotKnown;
+    constructor() {
+      super("MachineFfiError", "PeerIdentityNotKnown");
+    }
+
+    static new(): PeerIdentityNotKnown_ {
+      return new PeerIdentityNotKnown_();
+    }
+
+    static instanceOf(obj: any): obj is PeerIdentityNotKnown_ {
+      return obj.tag === MachineFfiError_Tags.PeerIdentityNotKnown;
+    }
+    static hasInner(obj: any): obj is PeerIdentityNotKnown_ {
+      return false;
+    }
+  }
+
+  type CodeNotOffered__interface = {
+    tag: MachineFfiError_Tags.CodeNotOffered;
+  };
+  class CodeNotOffered_
+    extends UniffiError
+    implements CodeNotOffered__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.CodeNotOffered;
+    constructor() {
+      super("MachineFfiError", "CodeNotOffered");
+    }
+
+    static new(): CodeNotOffered_ {
+      return new CodeNotOffered_();
+    }
+
+    static instanceOf(obj: any): obj is CodeNotOffered_ {
+      return obj.tag === MachineFfiError_Tags.CodeNotOffered;
+    }
+    static hasInner(obj: any): obj is CodeNotOffered_ {
+      return false;
+    }
+  }
+
+  type ScannedCodeRefused__interface = {
+    tag: MachineFfiError_Tags.ScannedCodeRefused;
+  };
+  class ScannedCodeRefused_
+    extends UniffiError
+    implements ScannedCodeRefused__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.ScannedCodeRefused;
+    constructor() {
+      super("MachineFfiError", "ScannedCodeRefused");
+    }
+
+    static new(): ScannedCodeRefused_ {
+      return new ScannedCodeRefused_();
+    }
+
+    static instanceOf(obj: any): obj is ScannedCodeRefused_ {
+      return obj.tag === MachineFfiError_Tags.ScannedCodeRefused;
+    }
+    static hasInner(obj: any): obj is ScannedCodeRefused_ {
+      return false;
+    }
+  }
+
   function instanceOf(obj: any): obj is MachineFfiError {
     return obj[uniffiTypeNameSymbol] === "MachineFfiError";
   }
@@ -3105,6 +3195,9 @@ export const MachineFfiError = (() => {
     RecoveryNotSetUp: RecoveryNotSetUp_,
     RecoveryKeyIncorrect: RecoveryKeyIncorrect_,
     RecoveryDataMalformed: RecoveryDataMalformed_,
+    PeerIdentityNotKnown: PeerIdentityNotKnown_,
+    CodeNotOffered: CodeNotOffered_,
+    ScannedCodeRefused: ScannedCodeRefused_,
   });
 })();
 /**
@@ -3131,7 +3224,10 @@ export type MachineFfiError = InstanceType<
     | "PrivateKeysNotHeld"
     | "RecoveryNotSetUp"
     | "RecoveryKeyIncorrect"
-    | "RecoveryDataMalformed"]
+    | "RecoveryDataMalformed"
+    | "PeerIdentityNotKnown"
+    | "CodeNotOffered"
+    | "ScannedCodeRefused"]
 >;
 
 // FfiConverter for enum MachineFfiError
@@ -3176,6 +3272,12 @@ const FfiConverterTypeMachineFfiError = (() => {
           return new MachineFfiError.RecoveryKeyIncorrect();
         case 16:
           return new MachineFfiError.RecoveryDataMalformed();
+        case 17:
+          return new MachineFfiError.PeerIdentityNotKnown();
+        case 18:
+          return new MachineFfiError.CodeNotOffered();
+        case 19:
+          return new MachineFfiError.ScannedCodeRefused();
         default:
           throw new UniffiInternalError.UnexpectedEnumCase();
       }
@@ -3250,6 +3352,18 @@ const FfiConverterTypeMachineFfiError = (() => {
           c.writeI32(16);
           return;
         }
+        case MachineFfiError_Tags.PeerIdentityNotKnown: {
+          c.writeI32(17);
+          return;
+        }
+        case MachineFfiError_Tags.CodeNotOffered: {
+          c.writeI32(18);
+          return;
+        }
+        case MachineFfiError_Tags.ScannedCodeRefused: {
+          c.writeI32(19);
+          return;
+        }
         default:
           // Throwing from here means that MachineFfiError_Tags hasn't matched an ordinal.
           throw new UniffiInternalError.UnexpectedEnumCase();
@@ -3309,6 +3423,15 @@ const FfiConverterTypeMachineFfiError = (() => {
           return 4;
         }
         case MachineFfiError_Tags.RecoveryDataMalformed: {
+          return 4;
+        }
+        case MachineFfiError_Tags.PeerIdentityNotKnown: {
+          return 4;
+        }
+        case MachineFfiError_Tags.CodeNotOffered: {
+          return 4;
+        }
+        case MachineFfiError_Tags.ScannedCodeRefused: {
           return 4;
         }
         default:

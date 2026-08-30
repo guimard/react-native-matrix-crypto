@@ -195,6 +195,28 @@ pub enum MachineFfiError {
     RecoveryKeyIncorrect,
     #[error("the stored recovery could not be read")]
     RecoveryDataMalformed,
+    // Appended last, like every variant above and for the same wire-ordinal
+    // reason. These three mirror the ones the core's `MachineError` grew for
+    // verification by scannable code, in the core's own order.
+    //
+    // `RecoveryDataMalformed` held the highest ordinal, 16, before these;
+    // these take 17, 18 and 19 and move nothing. Confirmed against the
+    // generated TypeScript rather than reasoned about, because the
+    // renumbering these comments exist to prevent is invisible in Rust.
+    //
+    // Nothing in this file returns them yet: the core produces them and the
+    // task that crosses the scannable code to TypeScript is what will call
+    // the functions that do. They are declared here now for the reason the
+    // pair above them was, which that comment states in full -- the `From`
+    // impl below is exhaustive by rule, and folding a refusal that means
+    // something else onto an existing variant to avoid declaring it puts a
+    // wrong error on the wire the moment the bridge lands, silently.
+    #[error("the other user has no signing identity")]
+    PeerIdentityNotKnown,
+    #[error("the other device did not offer to scan a code")]
+    CodeNotOffered,
+    #[error("the scanned code was refused")]
+    ScannedCodeRefused,
 }
 
 impl From<matrix_crypto_core::MachineError> for MachineFfiError {
@@ -219,6 +241,9 @@ impl From<matrix_crypto_core::MachineError> for MachineFfiError {
             matrix_crypto_core::MachineError::RecoveryNotSetUp => Self::RecoveryNotSetUp,
             matrix_crypto_core::MachineError::RecoveryKeyIncorrect => Self::RecoveryKeyIncorrect,
             matrix_crypto_core::MachineError::RecoveryDataMalformed => Self::RecoveryDataMalformed,
+            matrix_crypto_core::MachineError::PeerIdentityNotKnown => Self::PeerIdentityNotKnown,
+            matrix_crypto_core::MachineError::CodeNotOffered => Self::CodeNotOffered,
+            matrix_crypto_core::MachineError::ScannedCodeRefused => Self::ScannedCodeRefused,
         }
     }
 }
