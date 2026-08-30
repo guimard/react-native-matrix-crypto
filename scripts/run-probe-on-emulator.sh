@@ -39,6 +39,48 @@ ACTIVITY=".MainActivity"
 # report 11. Deriving the number from the sources would make both invisible.
 # If you add or remove a probe check, update this line in the same commit --
 # CI failing until you do is the point.
+#
+# WHAT THESE TWELVE DO NOT COVER: CROSS-SIGNING, AND WHAT IT WOULD TAKE
+#
+# None of the twelve looks at a signing identity or at what a decrypted event
+# says about its sender. That is a real hole on hardware and it is named here
+# rather than left for someone to discover, because the number above is the
+# only place on the device path where coverage is stated at all.
+#
+# The two halves are not equally out of reach, so they are separated:
+#
+#   * THE GATE IS REACHABLE HERE and is not counted. `bootstrapCrossSigning`
+#     refuses with `account_keys_not_fetched` on a device with no homeserver,
+#     which is exactly what the guided walkthrough's step 6 drives on every
+#     launch of this same app. But the walkthrough prints nothing this script
+#     scrapes -- only ProbeHarness emits PROBE_CHECK / PROBE_SUMMARY -- so a
+#     device run exercises it and reports nothing about it. A thirteenth check
+#     could close that, at the cost of moving this number and the copies of it
+#     in scripts/assert-measure-guards.sh, scripts/assert-measure-guards-ios.sh,
+#     scripts/assert-no-logger.sh and scripts/assert-generated-not-stubbed.sh.
+#     It has not been done, and this paragraph is the alternative to doing it
+#     silently.
+#
+#   * A SERVED BOOTSTRAP IS NOT REACHABLE HERE, and could not be made so
+#     honestly. Publishing an identity needs a `/keys/query` naming the account
+#     to have been sent AND answered, and this app has no homeserver. The only
+#     way to get past the gate on a device with no network is to hand
+#     `markRequestSent` a body the app invented, which is the precise mistake
+#     that call's own documentation exists to prevent and which would make the
+#     check a demonstration of the wrong thing.
+#
+#   * NOR IS ANY SENDER VALUE ABOVE `unsigned_device`. The `round_trip` check
+#     already decrypts a real event on the device; it simply does not read
+#     `senderVerification`. If it did, the only value reachable with no
+#     homeserver and no counterparty is `unsigned_device`, because every value
+#     above it needs a peer whose client published a cross-signing identity.
+#
+# Where each is covered instead: the gate and both refusals in
+# rust/matrix-crypto-core/tests/identity_bootstrap*.rs; `unverified_identity`
+# from a cross-signed peer in tests/cross_signed_peer.rs; `verified` through
+# the whole chain in tests/verified_sender.rs; and all of it against a real
+# homeserver and a third-party client in tests/level_two_identity.rs, run by
+# scripts/run-level-two-interop.sh.
 EXPECTED_SUMMARY="PROBE_SUMMARY 12/12"
 
 APK=${1:-packages/example-app/android/app/build/outputs/apk/release/app-release.apk}
