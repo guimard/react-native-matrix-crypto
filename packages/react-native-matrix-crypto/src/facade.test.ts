@@ -2465,7 +2465,7 @@ describe('server-side recovery', () => {
       ],
     })
 
-    const setup = await createRecovery('a passphrase')
+    const setup = await createRecovery('a passphrase', [])
 
     expect(vi.mocked(nativeCreateRecovery).mock.calls.at(-1)?.[0]).toBe('a passphrase')
     expect(setup.recoveryKey).toBe('EsTx aaaa bbbb cccc')
@@ -2478,6 +2478,41 @@ describe('server-side recovery', () => {
     // same thing as an object.
     expect(setup.accountData[1]?.content).toEqual({ key: 'ABCD1234' })
     expect(typeof setup.accountData[1]?.content).toBe('object')
+  })
+
+  it('sends the existing account data down with createRecovery, stringified', async () => {
+    vi.mocked(nativeCreateRecovery).mockResolvedValue({
+      recoveryKey: 'EsTx aaaa bbbb cccc',
+      accountData: [{ eventType: DEFAULT_KEY, content: '{"key":"ABCD1234"}' }],
+    })
+
+    await createRecovery('a passphrase', [
+      { eventType: DEFAULT_KEY, content: { key: 'OLDKEY' } },
+      { eventType: 'm.cross_signing.master', content: { encrypted: { OLDKEY: {} } } },
+    ])
+
+    // The whole point of the argument is that the refusal underneath can
+    // see what the account already has, so a call that dropped it, or sent
+    // it in the wrong shape, would silently restore the behaviour where a
+    // second write invalidates the first recovery key.
+    const [, existing] = vi.mocked(nativeCreateRecovery).mock.calls.at(-1) ?? []
+    expect(existing).toEqual([
+      { eventType: DEFAULT_KEY, content: '{"key":"OLDKEY"}' },
+      { eventType: 'm.cross_signing.master', content: '{"encrypted":{"OLDKEY":{}}}' },
+    ])
+    expect(typeof existing?.[0]?.content).toBe('string')
+    expect(existing?.[0]?.eventType).toBe(DEFAULT_KEY)
+  })
+
+  it('rejects existing account data that cannot be stringified, before any native call', async () => {
+    const before = vi.mocked(nativeCreateRecovery).mock.calls.length
+    const cyclic: Record<string, unknown> = {}
+    cyclic.self = cyclic
+
+    await expect(
+      createRecovery('a passphrase', [{ eventType: DEFAULT_KEY, content: cyclic }]),
+    ).rejects.toSatisfy((e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload')
+    expect(vi.mocked(nativeCreateRecovery).mock.calls.length).toBe(before)
   })
 
   it('sends the account data back down with its content stringified', async () => {
@@ -2552,8 +2587,20 @@ describe('server-side recovery', () => {
 
   it('reports the other two refusals as their own kinds rather than as unknown', async () => {
     vi.mocked(nativeCreateRecovery).mockRejectedValue(new MachineFfiError.PrivateKeysNotHeld())
-    await expect(createRecovery('a passphrase')).rejects.toSatisfy(
+    await expect(createRecovery('a passphrase', [])).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'private_keys_not_held',
+    )
+
+    vi.mocked(nativeCreateRecovery).mockRejectedValue(new MachineFfiError.RecoveryAlreadyExists())
+    await expect(createRecovery('a passphrase', [])).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'recovery_already_exists',
+    )
+
+    vi.mocked(nativeCreateRecovery).mockRejectedValue(
+      new MachineFfiError.AccountKeysNotFetched(),
+    )
+    await expect(createRecovery('a passphrase', [])).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'account_keys_not_fetched',
     )
 
     vi.mocked(nativeRecoverIdentity).mockRejectedValue(new MachineFfiError.RecoveryNotSetUp())

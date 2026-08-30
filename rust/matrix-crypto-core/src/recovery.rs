@@ -96,10 +96,17 @@ pub struct RecoverySetup {
     pub recovery_key: String,
     /// The account data to write, in the order it should be written.
     ///
-    /// Five events: the key description, the pointer that makes it the
-    /// account's default key, and one per private signing key. The pointer
-    /// is second on purpose, so a product that stops partway through has
-    /// never named a key description it did not manage to write.
+    /// Five events: the key description, one per private signing key, and
+    /// the pointer that makes the new key this account's default.
+    ///
+    /// **The pointer is last and the order matters.** Everything before it
+    /// adds to the account without changing what any client currently
+    /// resolves, so a product interrupted partway through has written a key
+    /// description and some ciphertexts that nothing points at, and whatever
+    /// recovery the account had before still works. Writing the pointer
+    /// earlier would repoint the account at a key whose secrets do not exist
+    /// yet, which is a window in which neither the old recovery nor the new
+    /// one opens the account.
     pub account_data: Vec<AccountDataEntry>,
 }
 
@@ -149,15 +156,82 @@ fn entry<'a>(account_data: &'a [AccountDataEntry], event_type: &str) -> Option<&
         .map(|entry| entry.content.as_str())
 }
 
+/// Whether this account data already names a server-side recovery.
+///
+/// **The pointer decides it, and nothing else does.**
+/// `m.secret_storage.default_key` is what every Matrix client follows to
+/// find the key it should ask for, so an account whose pointer names a key
+/// has a recovery somebody can open, and writing over that pointer is the
+/// act that takes it away.
+///
+/// Four inputs and one rule. A pointer naming a key id is a recovery.
+/// Absent is not. An empty object is not, and that is the case that has to
+/// work: the client-server API has no way to delete account data, so
+/// `PUT {}` is how a product clears an event, and a rule that treated the
+/// cleared pointer as a recovery would make the documented remedy at
+/// [`create_recovery`] impossible to carry out. Content that is not JSON,
+/// or that names no key, is not a recovery either: nothing can follow it.
+fn names_a_recovery(account_data: &[AccountDataEntry]) -> bool {
+    entry(account_data, &default_key_event_type())
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(content).ok())
+        .and_then(|content| {
+            content
+                .get("key")?
+                .as_str()
+                .map(|key_id| !key_id.is_empty())
+        })
+        .unwrap_or(false)
+}
+
+/// The `encrypted` map already stored for one secret, if the account data
+/// carries a readable one.
+///
+/// Merging into it rather than replacing it is the difference between
+/// adding a key to this account's secret storage and quietly evicting every
+/// other key from it. The specification's shape is a map from key id to
+/// ciphertext precisely so that several keys can open the same secret, and
+/// another client's entry under its own key id is none of this library's
+/// business to remove.
+///
+/// An unreadable existing value is replaced rather than merged into, and
+/// nothing is lost by that: a secret whose `encrypted` map cannot be parsed
+/// carries nothing any client could have used.
+fn existing_ciphertexts(
+    account_data: &[AccountDataEntry],
+    name: &SecretName,
+) -> serde_json::Map<String, serde_json::Value> {
+    entry(account_data, name.as_str())
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(content).ok())
+        .and_then(|content| content.get("encrypted").cloned())
+        .and_then(|encrypted| match encrypted {
+            serde_json::Value::Object(map) => Some(map),
+            _other => None,
+        })
+        .unwrap_or_default()
+}
+
 /// Writes this account's private signing keys into server-side storage,
 /// under a key derived from `passphrase`.
+///
+/// `account_data` is the account's existing global account data, read back
+/// from the homeserver the same way [`recover_identity`] takes it. It is
+/// required rather than optional because this call refuses to write over a
+/// recovery the account already has, and an empty list is a caller saying
+/// there is none.
 ///
 /// Returns the recovery key to show the user and the account data to write.
 /// **Nothing here reaches the network**, and nothing is written until the
 /// product writes it: on success, `PUT` each entry of
 /// [`RecoverySetup::account_data`] to
 /// `/_matrix/client/v3/user/{userId}/account_data/{eventType}` with the
-/// entry's content as the body, in the order they are handed back.
+/// entry's content as the body, **in the order they are handed back**.
+///
+/// The order is load-bearing and the pointer is last. Everything before it
+/// adds to the account without changing what any client currently resolves;
+/// the pointer is the single step that switches the account over. A product
+/// interrupted anywhere before it has written a key description and some
+/// ciphertexts nothing points at, and the recovery that was already there,
+/// if any, still works.
 ///
 /// # What this costs the user, said once
 ///
@@ -168,6 +242,23 @@ fn entry<'a>(account_data: &'a [AccountDataEntry], event_type: &str) -> Option<&
 /// without making the user record it has built the support burden into its
 /// first screen.
 ///
+/// # The passphrase is the weak half, and this library imposes no rule on it
+///
+/// The encrypted keys live on the homeserver, so the passphrase is what
+/// stands between anyone who can read this account's account data and the
+/// account's private signing keys. `create_recovery("")` is accepted, and so
+/// is any other passphrase: **no minimum length, no strength estimate and no
+/// refusal**. That is a decision rather than an omission. Any threshold this
+/// library picked would be arbitrary, would be wrong for somebody, and would
+/// be enforced in the one place a product cannot adjust it; a product knows
+/// its users and its threat model and this call does not. Choose a policy
+/// and apply it before calling.
+///
+/// The recovery key is not affected by any of that. It is thirty-two random
+/// bytes whatever the passphrase is, so a user who keeps it is protected
+/// even if the passphrase is guessable, which is the other reason to make
+/// them record it.
+///
 /// # This is the interoperable format
 ///
 /// The account data written here is Matrix's own secret storage, the
@@ -177,7 +268,45 @@ fn entry<'a>(account_data: &'a [AccountDataEntry], event_type: &str) -> Option<&
 /// a recovery another client wrote is one [`recover_identity`] restores.
 /// Nothing about the container is this library's invention.
 ///
+/// Interoperability is also why the ciphertexts are **merged** rather than
+/// replaced. Each `m.cross_signing.*` event holds a map from key id to
+/// ciphertext so that more than one key can open the same secret, and this
+/// call adds its own entry to whatever it was handed instead of writing a
+/// map of one. Another client's entry under its own key id is not this
+/// library's to remove.
+///
 /// # Refusals
+///
+/// [`MachineError::RecoveryAlreadyExists`] if `account_data` names a
+/// recovery already. **This call will not write over one**, and the reason
+/// is that it cannot tell the two callers apart: a user replacing their own
+/// passphrase, where the old recovery key is meant to stop working, and a
+/// product writing a first recovery for a user who already set one up in
+/// another client, where the key that stops working is one somebody wrote
+/// down and was told to keep forever. Both arrive here as the same call.
+///
+/// To replace a recovery deliberately, clear the account's existing
+/// `m.secret_storage.default_key` and its `m.secret_storage.key.<id>` first
+/// (`PUT {}` to each, which is how the client-server API clears account
+/// data), then read the account data again and call this. That is the same
+/// two requests a product already makes, and it puts the destructive step in
+/// the product's own code where a review can see it.
+///
+/// **This call believes the account data it is handed.** A caller that
+/// passes an empty list asserts the account has no recovery, and the refusal
+/// above believes it, exactly as `crate::bootstrap_identity`'s gate believes
+/// a key query reported as answered. That is unavoidable in a library that
+/// performs no request of its own, and it is said rather than left to be
+/// discovered: what this refusal buys is that a product has to have *looked*
+/// before it destroys anything.
+///
+/// [`MachineError::AccountKeysNotFetched`] if this process has not yet asked
+/// the server about this account. The keys this device holds may belong to
+/// an identity the account has already replaced, which is exactly the case
+/// `crate::bootstrap_identity`'s gate exists for, and a recovery written for
+/// them opens correctly and restores an identity the account no longer has.
+/// This call queues that key query as it refuses, so the remedy is the
+/// ordinary loop: drain the pump, send, report sent, call this again.
 ///
 /// [`MachineError::PrivateKeysNotHeld`] if this device does not hold all
 /// three private signing keys. There is nothing to write, and a partial
@@ -186,76 +315,126 @@ fn entry<'a>(account_data: &'a [AccountDataEntry], event_type: &str) -> Option<&
 /// [`crate::identity_status`] says which of the two remedies applies, which
 /// are [`crate::bootstrap_identity`] for an account with no identity and
 /// [`crate::request_self_flow`] for one this device has not joined yet.
-pub async fn create_recovery(passphrase: &str) -> Result<RecoverySetup, MachineError> {
+pub async fn create_recovery(
+    passphrase: &str,
+    account_data: &[AccountDataEntry],
+) -> Result<RecoverySetup, MachineError> {
     let passphrase = passphrase.to_string();
+    let account_data = account_data.to_vec();
     with_machine(move |machine| {
-        Box::pin(async move {
-            let export = machine
-                .export_cross_signing_keys()
-                .await
-                .map_err(|_upstream| store_failed())?
-                .ok_or(MachineError::PrivateKeysNotHeld)?;
-
-            // Cloned field by field, which is the one place in this crate
-            // that does not destructure an upstream struct. It cannot:
-            // `CrossSigningKeyExport` is `ZeroizeOnDrop`, so it implements
-            // `Drop` and Rust forbids moving its fields out. The rule
-            // Global Constraints states, that a field added upstream must
-            // fail this build rather than be silently dropped, is kept by
-            // the exhaustive `let ... else` immediately below instead: it
-            // names all three fields, and a fourth private key upstream
-            // added would be visible as an export whose contents this
-            // module knowingly ignores rather than as a compile error.
-            let master_key = export.master_key.clone();
-            let self_signing_key = export.self_signing_key.clone();
-            let user_signing_key = export.user_signing_key.clone();
-
-            // `Some` for all three, not merely a non-`None` export.
-            // Upstream returns `Some` as soon as any one of them is
-            // present, and a store holding one seed of three is exactly the
-            // half-recovered state this refusal exists to keep out of
-            // account data.
-            let (Some(master), Some(self_signing), Some(user_signing)) =
-                (master_key, self_signing_key, user_signing_key)
-            else {
-                return Err(MachineError::PrivateKeysNotHeld);
-            };
-
-            let key = SecretStorageKey::new_from_passphrase(&passphrase);
-            let key_id = key.key_id().to_string();
-
-            let mut account_data = Vec::with_capacity(2 + SECRETS.len());
-            account_data.push(AccountDataEntry {
-                event_type: key.event_type().to_string(),
-                content: to_json(key.event_content())?,
-            });
-            account_data.push(AccountDataEntry {
-                event_type: default_key_event_type(),
-                content: to_json(&SecretStorageDefaultKeyEventContent::new(key_id.clone()))?,
-            });
-
-            for (name, seed) in SECRETS.iter().zip([master, self_signing, user_signing]) {
-                // The plaintext is the seed exactly as upstream exports it,
-                // an unpadded base64 string, which is what the
-                // specification puts in these events and what every other
-                // client expects to find there. Encoding it any other way
-                // would produce account data only this library could read.
-                let encrypted = key.encrypt(seed.into_bytes(), name);
-                account_data.push(AccountDataEntry {
-                    event_type: name.as_str().to_string(),
-                    content: to_json(&serde_json::json!({
-                        "encrypted": { &key_id: encrypted },
-                    }))?,
-                });
-            }
-
-            Ok(RecoverySetup {
-                recovery_key: key.to_base58(),
-                account_data,
-            })
-        })
+        Box::pin(async move { write(machine, &passphrase, &account_data).await })
     })
     .await?
+}
+
+/// The whole of [`create_recovery`] once a machine is in hand.
+///
+/// Separate so that the `with_machine` closure stays a single expression,
+/// matching [`restore`] below.
+async fn write(
+    machine: &OlmMachine,
+    passphrase: &str,
+    account_data: &[AccountDataEntry],
+) -> Result<RecoverySetup, MachineError> {
+    // The argument is checked before the machine, unlike `restore` below,
+    // and the order is deliberate in both. There, the machine check is a
+    // precondition that saves half a million PBKDF2 iterations. Here, the
+    // refusal that protects something a user already has comes first: a
+    // caller whose account already has a recovery should be told that
+    // whatever else is true of its process.
+    if names_a_recovery(account_data) {
+        return Err(MachineError::RecoveryAlreadyExists);
+    }
+
+    // The same gate `bootstrap_identity` and `recover_identity` carry, and
+    // for the reason `signing.rs` states at length: a store restored from a
+    // backup, or one whose account had its identity reset from another
+    // device, holds a *complete* private identity the server has already
+    // replaced, and only a key query dislodges it. Writing a recovery for
+    // those keys produces account data that opens perfectly and restores an
+    // identity the account no longer has, and the failure surfaces much
+    // later, at `recover_identity`, as unreadable data.
+    if !crate::signing::read_status(machine)
+        .await?
+        .account_keys_fetched
+    {
+        // Queued by the refusal, exactly as `bootstrap_identity` and
+        // `recover_identity` do, so the refusal is recoverable rather than
+        // a dead end on any process that shared a key before writing.
+        let (id, request) = machine.query_keys_for_users(std::iter::once(machine.user_id()));
+        crate::session::queue_account_key_query(id, request);
+        return Err(MachineError::AccountKeysNotFetched);
+    }
+
+    let export = machine
+        .export_cross_signing_keys()
+        .await
+        .map_err(|_upstream| store_failed())?
+        .ok_or(MachineError::PrivateKeysNotHeld)?;
+
+    // Cloned field by field, which is the one place in this crate that does
+    // not destructure an upstream struct. It cannot: `CrossSigningKeyExport`
+    // is `ZeroizeOnDrop`, so it implements `Drop` and Rust forbids moving
+    // its fields out. The rule Global Constraints states, that a field added
+    // upstream must fail this build rather than be silently dropped, is kept
+    // by the exhaustive `let ... else` immediately below instead: it names
+    // all three fields, and a fourth private key upstream added would be
+    // visible as an export whose contents this module knowingly ignores
+    // rather than as a compile error.
+    let master_key = export.master_key.clone();
+    let self_signing_key = export.self_signing_key.clone();
+    let user_signing_key = export.user_signing_key.clone();
+
+    // `Some` for all three, not merely a non-`None` export. Upstream returns
+    // `Some` as soon as any one of them is present, and a store holding one
+    // seed of three is exactly the half-recovered state this refusal exists
+    // to keep out of account data.
+    let (Some(master), Some(self_signing), Some(user_signing)) =
+        (master_key, self_signing_key, user_signing_key)
+    else {
+        return Err(MachineError::PrivateKeysNotHeld);
+    };
+
+    let key = SecretStorageKey::new_from_passphrase(passphrase);
+    let key_id = key.key_id().to_string();
+
+    let mut entries = Vec::with_capacity(2 + SECRETS.len());
+    entries.push(AccountDataEntry {
+        event_type: key.event_type().to_string(),
+        content: to_json(key.event_content())?,
+    });
+
+    for (name, seed) in SECRETS.iter().zip([master, self_signing, user_signing]) {
+        // The plaintext is the seed exactly as upstream exports it, an
+        // unpadded base64 string, which is what the specification puts in
+        // these events and what every other client expects to find there.
+        // Encoding it any other way would produce account data only this
+        // library could read.
+        let encrypted = key.encrypt(seed.into_bytes(), name);
+        let mut ciphertexts = existing_ciphertexts(account_data, name);
+        ciphertexts.insert(
+            key_id.clone(),
+            serde_json::to_value(encrypted).map_err(|_| store_failed())?,
+        );
+        entries.push(AccountDataEntry {
+            event_type: name.as_str().to_string(),
+            content: to_json(&serde_json::json!({ "encrypted": ciphertexts }))?,
+        });
+    }
+
+    // Last, and this is the order a product must preserve. Everything above
+    // adds to the account without changing what any client resolves today;
+    // this is the single step that switches the account over to the key just
+    // written, so an interrupted write leaves whatever was there working.
+    entries.push(AccountDataEntry {
+        event_type: default_key_event_type(),
+        content: to_json(&SecretStorageDefaultKeyEventContent::new(key_id.clone()))?,
+    });
+
+    Ok(RecoverySetup {
+        recovery_key: key.to_base58(),
+        account_data: entries,
+    })
 }
 
 /// Serialises a value that cannot reasonably fail to serialise.
@@ -342,6 +521,87 @@ pub async fn recover_identity(
     .await?
 }
 
+/// Which upstream decode failure is a wrong secret and which is a stored
+/// recovery that cannot be read.
+///
+/// **The whole point of keeping [`MachineError::RecoveryKeyIncorrect`] and
+/// [`MachineError::RecoveryDataMalformed`] apart lives in this function**,
+/// so the question it answers is asked once, of every variant, by name.
+///
+/// # The rule
+///
+/// Upstream's `DecodeError` mixes two subjects that its own name does not
+/// separate: some variants describe the string the user just typed, and
+/// some describe the key description this library read back from the
+/// server. The first set is a wrong secret and the user retypes it; the
+/// second is a recovery no secret will ever open.
+///
+/// # Why this was wrong once, and what it cost
+///
+/// This was a single `Mac` arm and a wildcard, on the reasoning that
+/// "every other variant describes input that could not be parsed at all".
+/// That premise is false, and the case it is false in is the one a product
+/// most needs right. `SecretStorageKey::from_account_data`
+/// (`matrix-sdk-crypto-0.18.0/src/secret_storage.rs`) branches on whether
+/// the key description carries a `passphrase` block. **With** one it tries
+/// the passphrase, falls back to base58, and on double failure returns the
+/// passphrase error, which is `Mac`. **Without** one, which the
+/// specification permits, which upstream handles explicitly and which
+/// another client's recovery can perfectly well be, it goes straight to the
+/// base58 path, whose failures are `Base58`, `Prefix`, `Parity` and
+/// `KeyLength`. Every one of those describes the typed secret, and every
+/// one of them landed in the wildcard.
+///
+/// So a user with a one-character typo in their recovery key was told their
+/// stored data was unreadable, whose documented remedy is to set recovery
+/// up again, which is the single action that destroys the recovery they
+/// were trying to open. That is precisely the harm this pair of variants
+/// exists to prevent, arrived at through the one path no fixture reached,
+/// because `create_recovery` always writes a passphrase block.
+///
+/// # Exhaustive, and no wildcard
+///
+/// `DecodeError` is not `#[non_exhaustive]`, so every variant is named. A
+/// variant upstream adds later must fail this build rather than fall
+/// through to whichever answer the wildcard happened to give, which is
+/// exactly how the defect above survived.
+fn classify_decode_error(upstream: DecodeError) -> MachineError {
+    // Matched by variant, not by text, like every other upstream error this
+    // crate classifies.
+    match upstream {
+        // The typed secret. `Mac` is the reconstructed key failing its own
+        // check, which a wrong passphrase and a wrong recovery key both
+        // produce. The other four come out of `parse_base58_key` and
+        // describe the characters the user entered: not base58 at all, the
+        // wrong length once decoded, the wrong two-byte prefix, or a parity
+        // byte that does not match the key it is meant to check.
+        DecodeError::Mac(_)
+        | DecodeError::Base58(_)
+        | DecodeError::KeyLength(_, _)
+        | DecodeError::Prefix(_, _)
+        | DecodeError::Parity(_, _) => MachineError::RecoveryKeyIncorrect,
+        // The stored key description. The iteration count is the one that
+        // looks like it could be about the secret and is not: it is the
+        // count the *description* asks for, refused because it does not fit
+        // in this platform's `usize`, and no secret changes it. `IvLength`
+        // and `MacLength` are the description's own check fields being the
+        // wrong size, and `UnsupportedAlgorithm` is a scheme this build
+        // does not implement.
+        //
+        // `Base64` is unreachable from this call in
+        // `matrix-sdk-crypto` 0.18.0: it exists as a `#[from]` conversion
+        // and nothing on the path from `from_account_data` constructs one.
+        // Named rather than left to a wildcard anyway, and put here because
+        // if it ever becomes reachable it will be a field of the stored
+        // description that failed to decode.
+        DecodeError::Base64(_)
+        | DecodeError::IvLength(_, _)
+        | DecodeError::MacLength(_, _)
+        | DecodeError::UnsupportedAlgorithm(_)
+        | DecodeError::KdfIterationCount(_) => MachineError::RecoveryDataMalformed,
+    }
+}
+
 /// The whole of [`recover_identity`] once a machine is in hand.
 ///
 /// Separate so that the `with_machine` closure stays a single expression
@@ -392,17 +652,8 @@ async fn restore(
     let description = SecretStorageKeyEventContent::from_parts(&description_type, &description)
         .map_err(|_| MachineError::RecoveryDataMalformed)?;
 
-    let key = SecretStorageKey::from_account_data(secret, description).map_err(|upstream| {
-        // Matched by variant, not by text, like every other upstream error
-        // this crate classifies. `Mac` is the MAC check on the
-        // reconstructed key failing, which is what a wrong passphrase or a
-        // wrong recovery key produces; every other variant describes input
-        // that could not be parsed at all, which no secret will fix.
-        match upstream {
-            DecodeError::Mac(_) => MachineError::RecoveryKeyIncorrect,
-            _other => MachineError::RecoveryDataMalformed,
-        }
-    })?;
+    let key =
+        SecretStorageKey::from_account_data(secret, description).map_err(classify_decode_error)?;
 
     let mut seeds = Vec::with_capacity(SECRETS.len());
     for name in &SECRETS {
@@ -971,7 +1222,10 @@ mod tests {
         let peer_master_key = with_our_signature(peer_master_key, &signatures);
 
         // ---- The recovery -----------------------------------------------
-        let recovery = create_recovery(PASSPHRASE)
+        // `&[]`: this account has no recovery yet, and saying so is what
+        // this argument is for. `a_second_recovery_refuses_rather_than_
+        // taking_the_first_one_away` is where the other answer is driven.
+        let recovery = create_recovery(PASSPHRASE, &[])
             .await
             .expect("a device holding the private signing keys can write a recovery");
 
@@ -1027,6 +1281,12 @@ mod tests {
             recovery,
         } = before;
 
+        // `keep()`, and it leaves a directory behind on purpose: the
+        // machine created from it lives in the process-wide registry past
+        // the end of this function, so a `TempDir` guard dropped here would
+        // delete a store that is still open. The same trade `session.rs`'s
+        // own `test_config` documents, and the same one every other store
+        // in this file's tests takes.
         let dir = tempfile::tempdir().expect("temp dir").keep();
         create_machine(config(
             dir.join("store").to_string_lossy().into_owned(),
@@ -1205,6 +1465,20 @@ mod tests {
     /// The uninstall, made literal. `reset_for_test` above releases the
     /// machine that held it open; this is what makes the bytes stop
     /// existing, so nothing below can be resting on a file that survived.
+    ///
+    /// # The reinstall must return on a different path, and this is why
+    ///
+    /// [`after_the_reinstall`] builds its machine at a **new** store path
+    /// with a **new** device id, which is what a fresh login is. Do not
+    /// simplify it to reuse the path this deletes. `create_machine` and
+    /// `open_store` on a path whose directory has been removed return
+    /// `Ok(())` without recreating anything, and a machine already built
+    /// over the deleted file goes on serving from it, so a version of this
+    /// scenario that reopened the same path would look exactly like a
+    /// reinstall and be a relaunch. It would stay green while proving
+    /// nothing, which is the shape of defect this repository keeps finding,
+    /// and the assertion below would still pass because the directory
+    /// really was deleted.
     fn destroy(store_dir: &std::path::Path) {
         std::fs::remove_dir_all(store_dir).expect("the first device's store must be deletable");
         assert!(
@@ -1334,6 +1608,8 @@ mod tests {
                 ..
             } = before;
 
+            // `keep()`, for the reason `after_the_reinstall` above gives:
+            // the machine outlives this block in the process-wide registry.
             let dir = tempfile::tempdir().expect("temp dir").keep();
             create_machine(config(
                 dir.join("store").to_string_lossy().into_owned(),
@@ -1410,7 +1686,69 @@ mod tests {
                  wrong passphrase nor damaged data"
             );
 
-            // (5) The control. The same fixture, the same machine, the
+            // (5) A mistyped recovery key, against a recovery whose key
+            //     description carries no passphrase block.
+            //
+            //     That shape is legal, upstream branches on it explicitly,
+            //     and this library promises to restore a recovery another
+            //     client wrote, so it is a shape that arrives here. With no
+            //     passphrase block upstream goes straight to the base58
+            //     path, whose failures describe the string the user just
+            //     typed. **This is the case the whole pair of variants
+            //     exists for**, and it is the one no fixture on this branch
+            //     could reach until now, because `create_recovery` always
+            //     writes a passphrase block.
+            let key_only = without_the_passphrase_block(&recovery.account_data);
+            assert_eq!(
+                recover_identity(&mistyped(&recovery.recovery_key), &key_only).await,
+                Err(MachineError::RecoveryKeyIncorrect),
+                "a recovery key with one character wrong is a wrong secret, \
+                 whatever the key description does or does not carry. Reporting \
+                 it as unreadable data sends a user whose only mistake was a \
+                 typo to set recovery up again, which is the one action that \
+                 destroys what they were trying to recover"
+            );
+            assert_eq!(
+                recover_identity(PASSPHRASE, &key_only).await,
+                Err(MachineError::RecoveryKeyIncorrect),
+                "a passphrase typed at a recovery that has no passphrase block \
+                 is a wrong secret too, for the same reason: nothing about the \
+                 stored data is wrong"
+            );
+
+            //     The control for that pair, and what makes the two above
+            //     statements about the secret rather than about the
+            //     fixture: the same key-only description opens with the
+            //     right recovery key.
+            recover_identity(&recovery.recovery_key, &key_only)
+                .await
+                .expect(
+                    "a recovery with no passphrase block must still open with \
+                     the recovery key it was created with",
+                );
+
+            // (6) The other control, and it is what stops the fix for (5)
+            //     from being `report every secret as wrong`. The
+            //     **passphrase is right** and the key description names an
+            //     encryption scheme this build does not implement, so the
+            //     answer must still be that the stored data cannot be read.
+            //
+            //     The passphrase block is deliberately left in place. With
+            //     it removed, upstream never reaches the algorithm at all:
+            //     it takes the base58 path, fails to parse a passphrase as
+            //     a key, and answers about the secret. Which is correct,
+            //     and is why this fixture changes one field rather than
+            //     replacing the description.
+            let unsupported = with_an_unsupported_algorithm(&recovery.account_data);
+            assert_eq!(
+                recover_identity(PASSPHRASE, &unsupported).await,
+                Err(MachineError::RecoveryDataMalformed),
+                "a key description naming an encryption algorithm this build \
+                 does not implement describes the stored data, not the secret, \
+                 and no secret will open it"
+            );
+
+            // (7) The control. The same fixture, the same machine, the
             //     right passphrase: it opens. Without this, every refusal
             //     above would be equally consistent with a fixture that was
             //     never openable at all.
@@ -1425,6 +1763,18 @@ mod tests {
                 "the control must actually restore the identity, or it is not \
                  a control"
             );
+
+            // (8) And the other secret opens it too. `secret` is documented
+            //     as either the passphrase or the recovery key, and the
+            //     recovery key is the half a product shows a human once and
+            //     the only thing that survives a forgotten passphrase, so
+            //     the claim is pinned rather than left to the doc comment.
+            recover_identity(&recovery.recovery_key, &recovery.account_data)
+                .await
+                .expect(
+                    "the recovery key this call returned must open the recovery \
+                     it returned it for",
+                );
         }));
     }
 
@@ -1474,6 +1824,99 @@ mod tests {
         damaged
     }
 
+    /// A copy of `account_data` whose key description carries no
+    /// `passphrase` block.
+    ///
+    /// Legal, and not a corruption: the Matrix specification defines the
+    /// block as optional, upstream's `from_account_data` branches on its
+    /// absence, and a client that offered its user only a recovery key
+    /// writes exactly this. `create_recovery` always writes one, so this is
+    /// the only way to build the shape from inside this file.
+    ///
+    /// Nothing else is touched, which is what makes the assertions using it
+    /// about the branch rather than about the fixture.
+    fn without_the_passphrase_block(account_data: &[AccountDataEntry]) -> Vec<AccountDataEntry> {
+        let mut stripped = account_data.to_vec();
+        let entry = stripped
+            .iter_mut()
+            .find(|entry| entry.event_type.starts_with("m.secret_storage.key."))
+            .expect("a recovery always carries a key description");
+        let mut content: serde_json::Value =
+            serde_json::from_str(&entry.content).expect("this module wrote well-formed JSON");
+        let removed = content
+            .as_object_mut()
+            .expect("a key description is an object")
+            .remove("passphrase");
+        assert!(
+            removed.is_some(),
+            "the fixture must have carried a passphrase block for removing it \
+             to mean anything"
+        );
+        entry.content = content.to_string();
+        stripped
+    }
+
+    /// The same recovery key with one character replaced by another from
+    /// the same alphabet.
+    ///
+    /// A typo, not a truncation: the result is still a base58 string of the
+    /// right length, so what rejects it is the key's own parity or MAC
+    /// check rather than a length test, which is the shape a real mistyping
+    /// takes.
+    fn mistyped(recovery_key: &str) -> String {
+        let mut wrong = String::with_capacity(recovery_key.len());
+        let mut swapped = false;
+        for character in recovery_key.chars() {
+            if !swapped && character.is_ascii_alphanumeric() {
+                wrong.push(if character == 'a' { 'b' } else { 'a' });
+                swapped = true;
+            } else {
+                wrong.push(character);
+            }
+        }
+        assert!(swapped, "a recovery key always carries a base58 character");
+        assert_ne!(wrong, recovery_key, "the typo must change the key");
+        wrong
+    }
+
+    /// A copy of `account_data` whose key description names an encryption
+    /// scheme this build does not implement.
+    ///
+    /// One field changed and nothing else, in particular **not** the
+    /// passphrase block: that is what makes the failure reachable. Upstream
+    /// only looks at the algorithm once it has a candidate key, so a
+    /// description with no passphrase block is rejected on the base58 path
+    /// before the algorithm is consulted, and the answer is then correctly
+    /// about the secret rather than about the stored data.
+    fn with_an_unsupported_algorithm(account_data: &[AccountDataEntry]) -> Vec<AccountDataEntry> {
+        let mut altered = account_data.to_vec();
+        let entry = altered
+            .iter_mut()
+            .find(|entry| entry.event_type.starts_with("m.secret_storage.key."))
+            .expect("a recovery always carries a key description");
+        let mut content: serde_json::Value =
+            serde_json::from_str(&entry.content).expect("this module wrote well-formed JSON");
+        let object = content
+            .as_object_mut()
+            .expect("a key description is an object");
+        assert!(
+            object.contains_key("passphrase"),
+            "this fixture depends on the passphrase block being present, or \
+             the algorithm is never reached"
+        );
+        let replaced = object.insert(
+            "algorithm".to_string(),
+            serde_json::Value::String("m.secret_storage.v1.something-else".to_string()),
+        );
+        assert!(
+            replaced.is_some(),
+            "a key description always names an algorithm, so replacing it \
+             must have replaced something"
+        );
+        entry.content = content.to_string();
+        altered
+    }
+
     /// A copy of `account_data` with the content of the first entry whose
     /// type satisfies `matches` replaced.
     fn with_replaced_content(
@@ -1488,6 +1931,218 @@ mod tests {
             .expect("this fixture carries the entry being replaced");
         entry.content = content.to_string();
         replaced
+    }
+
+    /// A copy of `account_data` whose default-key pointer has been cleared,
+    /// which is the one thing a product can do to an account data event it
+    /// wants gone.
+    ///
+    /// `PUT {}`, not a delete: the client-server API has no way to remove a
+    /// global account data event, so an empty content object is what
+    /// "cleared" looks like on a real homeserver, and it is what
+    /// [`create_recovery`]'s documented remedy tells a product to write.
+    fn with_the_pointer_cleared(account_data: &[AccountDataEntry]) -> Vec<AccountDataEntry> {
+        with_replaced_content(
+            account_data,
+            |event_type| event_type == "m.secret_storage.default_key",
+            "{}",
+        )
+    }
+
+    /// The `encrypted` map of one stored secret, as key id to ciphertext.
+    fn ciphertexts_of(
+        account_data: &[AccountDataEntry],
+        name: &SecretName,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let content = account_data
+            .iter()
+            .find(|entry| entry.event_type == name.as_str())
+            .map(|entry| entry.content.as_str())
+            .expect("this fixture carries the secret being read");
+        let content: serde_json::Value =
+            serde_json::from_str(content).expect("this module wrote well-formed JSON");
+        content
+            .get("encrypted")
+            .and_then(serde_json::Value::as_object)
+            .cloned()
+            .expect("a stored secret always carries an encrypted map")
+    }
+
+    /// **Writing a recovery must not take away the recovery that is already
+    /// there**, and this is the test that says what it does instead.
+    ///
+    /// # The situation, and why a doc comment could not be the fix
+    ///
+    /// Two callers reach `create_recovery` looking identical and needing
+    /// opposite things. One is a user replacing their own passphrase, where
+    /// the old recovery key is *meant* to stop working. The other is a
+    /// product writing what it believes is a first recovery for a user who
+    /// already set one up in Element, where the key that stops working is
+    /// one somebody wrote down and was told to keep forever. Before this
+    /// change the call could not see the difference, because it was never
+    /// handed the account's existing account data, and it silently did the
+    /// destructive thing in both cases.
+    ///
+    /// # What is asserted, in order
+    ///
+    /// 1. Handed a recovery, it refuses, and the refusal is its own variant
+    ///    rather than one of the four that already existed.
+    /// 2. Handed the same account data with the pointer cleared, which is
+    ///    the documented remedy and the only way a product can clear an
+    ///    account data event, it is served.
+    /// 3. What it then produces **merges** rather than replaces: the master
+    ///    key's `encrypted` map carries the old key id with its original
+    ///    ciphertext, byte for byte, alongside the new one. That is the
+    ///    difference between adding a key to this account's secret storage
+    ///    and evicting every other client's key from it.
+    /// 4. The new secret opens the merged result.
+    #[test]
+    fn a_second_recovery_refuses_rather_than_taking_the_first_one_away() {
+        let _guard = futures::executor::block_on(lock_for_test());
+        reset_for_test();
+        let before = futures::executor::block_on(in_runtime(before_the_reinstall()));
+        let store_dir = before.store_dir.clone();
+
+        futures::executor::block_on(in_runtime(async move {
+            let first = before.recovery;
+
+            // (1) The refusal, and it is not one of the four that existed
+            //     before. `RecoveryNotSetUp` here would be the worst of the
+            //     wrong answers: it says "this account has no recovery", to
+            //     a caller that just handed one over.
+            //
+            //     `.err()` rather than `expect_err`: `RecoverySetup`
+            //     carries the recovery key and so has no `Debug` derive,
+            //     which is what `expect_err` would need in order to print
+            //     the success case.
+            assert_eq!(
+                create_recovery(PASSPHRASE, &first.account_data).await.err(),
+                Some(MachineError::RecoveryAlreadyExists),
+                "a recovery this account already has must be protected by a \\
+                 refusal of its own, because the alternative is a call that \\
+                 silently invalidates a recovery key a user was told to keep \\
+                 forever, including one another Matrix client wrote"
+            );
+
+            // (2) The documented remedy, performed as a product would.
+            let cleared = with_the_pointer_cleared(&first.account_data);
+            let second = create_recovery(PASSPHRASE, &cleared).await.expect(
+                "clearing the pointer is what the refusal tells a product \\
+                     to do, so it must be what lets the write through",
+            );
+
+            // (3) The merge. Nothing the account already held is dropped.
+            let before_write =
+                ciphertexts_of(&first.account_data, &SecretName::CrossSigningMasterKey);
+            let after_write =
+                ciphertexts_of(&second.account_data, &SecretName::CrossSigningMasterKey);
+            assert_eq!(
+                before_write.len(),
+                1,
+                "the first recovery stored one ciphertext for the master key"
+            );
+            assert_eq!(
+                after_write.len(),
+                2,
+                "the second write must add its ciphertext to the map rather \\
+                 than replace it: the specification's shape is a map from key \\
+                 id to ciphertext so that more than one key can open one \\
+                 secret, and another client's entry is not this library's to \\
+                 remove. Got {after_write:?}"
+            );
+            let (old_key_id, old_ciphertext) = before_write
+                .iter()
+                .next()
+                .expect("just asserted there is exactly one");
+            assert_eq!(
+                after_write.get(old_key_id),
+                Some(old_ciphertext),
+                "the entry that was already there must survive byte for byte"
+            );
+
+            // (4) And the result is a working recovery for the new key.
+            //     Written out as a homeserver would store it: the merged
+            //     entries replace their predecessors, one event per type.
+            let mut stored = cleared.clone();
+            for entry in &second.account_data {
+                match stored
+                    .iter_mut()
+                    .find(|existing| existing.event_type == entry.event_type)
+                {
+                    Some(existing) => existing.content = entry.content.clone(),
+                    None => stored.push(entry.clone()),
+                }
+            }
+            recover_identity(&second.recovery_key, &stored)
+                .await
+                .expect("the second recovery must open with its own recovery key");
+        }));
+
+        reset_for_test();
+        destroy(&store_dir);
+    }
+
+    /// An empty passphrase is accepted, and this test is where that stops
+    /// being an accident.
+    ///
+    /// The encrypted keys live on the homeserver, so the passphrase is what
+    /// stands between anyone who can read this account's account data and
+    /// the account's private signing keys. This library still imposes no
+    /// minimum, and `create_recovery`'s own documentation says why: any
+    /// threshold picked here would be arbitrary, wrong for somebody, and
+    /// enforced in the one place a product cannot adjust it.
+    ///
+    /// The second half is the reason that trade is acceptable rather than
+    /// merely convenient. The recovery key is thirty-two random bytes
+    /// whatever the passphrase is, so a user who keeps it is protected even
+    /// if the passphrase is guessable, and it opens the recovery here.
+    #[test]
+    fn an_empty_passphrase_is_accepted_and_the_recovery_key_is_still_strong() {
+        let _guard = futures::executor::block_on(lock_for_test());
+        reset_for_test();
+        let before = futures::executor::block_on(in_runtime(before_the_reinstall()));
+        let store_dir = before.store_dir.clone();
+
+        futures::executor::block_on(in_runtime(async move {
+            let cleared = with_the_pointer_cleared(&before.recovery.account_data);
+            let weak = create_recovery("", &cleared)
+                .await
+                .expect("this library imposes no passphrase policy, deliberately");
+
+            let mut stored = cleared.clone();
+            for entry in &weak.account_data {
+                match stored
+                    .iter_mut()
+                    .find(|existing| existing.event_type == entry.event_type)
+                {
+                    Some(existing) => existing.content = entry.content.clone(),
+                    None => stored.push(entry.clone()),
+                }
+            }
+
+            // The empty passphrase really does open it, which is the half
+            // that makes this a documented decision rather than an
+            // oversight nobody measured.
+            recover_identity("", &stored)
+                .await
+                .expect("an empty passphrase opens what an empty passphrase wrote");
+
+            // And the recovery key opens it too, and is not derived from the
+            // passphrase: a recovery written with no passphrase at all is
+            // still protected for a user who keeps the key.
+            recover_identity(&weak.recovery_key, &stored)
+                .await
+                .expect("the recovery key is random whatever the passphrase is");
+            assert!(
+                weak.recovery_key.len() > 40,
+                "the recovery key is thirty-two bytes of base58 however weak \\
+                 the passphrase was: {}",
+                weak.recovery_key.len()
+            );
+        }));
+
+        reset_for_test();
+        destroy(&store_dir);
     }
 
     /// What a recovery is made of, asserted against the specification's own
@@ -1512,13 +2167,15 @@ mod tests {
             .map(|entry| entry.event_type.as_str())
             .collect();
         assert_eq!(types.len(), 5, "a recovery is five events: {types:?}");
-        assert_eq!(
-            types[1], "m.secret_storage.default_key",
-            "the pointer is written second, after the key description it names"
-        );
         assert!(
             types[0].starts_with("m.secret_storage.key."),
             "the key description's type ends in the key's own id: {types:?}"
+        );
+        assert_eq!(
+            types[4], "m.secret_storage.default_key",
+            "the pointer is written last, so an interrupted write never leaves \
+             the account resolving a key whose secrets are not there yet: \
+             {types:?}"
         );
         for name in SECRETS {
             assert!(
@@ -1531,7 +2188,7 @@ mod tests {
         // The key description names the same key the pointer points at. A
         // mismatch here would produce account data no client, this one
         // included, could ever open.
-        let pointer: serde_json::Value = serde_json::from_str(&setup.account_data[1].content)
+        let pointer: serde_json::Value = serde_json::from_str(&setup.account_data[4].content)
             .expect("this module wrote well-formed JSON");
         let key_id = pointer
             .get("key")

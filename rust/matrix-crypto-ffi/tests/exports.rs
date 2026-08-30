@@ -91,7 +91,7 @@ async fn the_recovery_calls_reach_the_core() {
     // derive on purpose, because it carries the recovery key. Matched
     // instead, which asserts the same thing.
     assert!(matches!(
-        matrix_crypto_ffi::create_recovery("passphrase".to_string()).await,
+        matrix_crypto_ffi::create_recovery("passphrase".to_string(), Vec::new()).await,
         Err(matrix_crypto_ffi::MachineFfiError::NotInitialised)
     ));
 

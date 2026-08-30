@@ -195,6 +195,13 @@ pub enum MachineFfiError {
     RecoveryKeyIncorrect,
     #[error("the stored recovery could not be read")]
     RecoveryDataMalformed,
+    // Appended last, like every variant above and for the same wire-ordinal
+    // reason. It mirrors the one the core's `MachineError` grew when
+    // `create_recovery` stopped writing over a recovery the account already
+    // had; `IdentityAlreadyExists`, eight variants up, is the same refusal
+    // about the identity rather than about the recovery that protects it.
+    #[error("this account already has a server-side recovery")]
+    RecoveryAlreadyExists,
 }
 
 impl From<matrix_crypto_core::MachineError> for MachineFfiError {
@@ -219,6 +226,7 @@ impl From<matrix_crypto_core::MachineError> for MachineFfiError {
             matrix_crypto_core::MachineError::RecoveryNotSetUp => Self::RecoveryNotSetUp,
             matrix_crypto_core::MachineError::RecoveryKeyIncorrect => Self::RecoveryKeyIncorrect,
             matrix_crypto_core::MachineError::RecoveryDataMalformed => Self::RecoveryDataMalformed,
+            matrix_crypto_core::MachineError::RecoveryAlreadyExists => Self::RecoveryAlreadyExists,
         }
     }
 }
@@ -1195,14 +1203,25 @@ impl From<matrix_crypto_core::RecoverySetup> for RecoverySetup {
 /// Mirrors `create_recovery`; see its own doc comment in
 /// `matrix-crypto-core::recovery` for what a product owes its user about
 /// the recovery key, for why the account data is handed back rather than
-/// sent, and for the one refusal.
+/// sent, for why nothing is said about passphrase strength, and for the
+/// refusals.
+///
+/// `account_data` is the account's **existing** global account data. It is
+/// required rather than optional because this call will not write over a
+/// recovery the account already has, and an empty list is a caller saying
+/// there is none.
 ///
 /// **Nothing here reaches the network.** The returned account data is
 /// written by the product, one `PUT` per entry, in the order it is handed
-/// back.
+/// back, with the default-key pointer last.
 #[uniffi::export]
-pub async fn create_recovery(passphrase: String) -> Result<RecoverySetup, MachineFfiError> {
-    matrix_crypto_core::create_recovery(&passphrase)
+pub async fn create_recovery(
+    passphrase: String,
+    account_data: Vec<AccountDataEntry>,
+) -> Result<RecoverySetup, MachineFfiError> {
+    let account_data: Vec<matrix_crypto_core::AccountDataEntry> =
+        account_data.into_iter().map(Into::into).collect();
+    matrix_crypto_core::create_recovery(&passphrase, &account_data)
         .await
         .map(Into::into)
         .map_err(Into::into)
