@@ -60,21 +60,22 @@
 //! Fact (1) is "a key query was reported to us as having succeeded". No HTTP
 //! status crosses this library's boundary on that call, so a caller that
 //! reports a failed query's body as a success supplies that fact falsely and
-//! the gate believes it. `session::mark_request_sent` refuses every body it
-//! can prove is not an answer: a standard Matrix error, an authentication
-//! challenge, a gateway's `{"error":"Bad Gateway"}` carrying no `errcode`,
-//! and anything that is not a JSON object at all, which covers a proxy's
-//! HTML page and the JSON array that serde would otherwise read as an
-//! all-defaulted success.
+//! the gate believes it.
 //!
-//! **What still lifts the gate is `{}` and an empty body** (ruma substitutes
-//! `{}` for it before parsing), and no body-based check will ever refuse
-//! them, because they are the genuine answer for an account the server knows
-//! no identity for. Only the HTTP status separates that answer from a 502
-//! that carried nothing, which is why a caller that got a non-2xx must say
-//! so through `session::mark_request_failed` instead. Reporting nothing at
-//! all is equally safe here: the gate needs a positive mark to open, so
-//! silence leaves it shut.
+//! `session::mark_request_sent` refuses every body it can show is not an
+//! answer, and accepts every body shaped like one. **The exact division, and
+//! why the remainder cannot be closed from a body, is stated once at
+//! `session::refuse_a_non_response` and deliberately not repeated here.**
+//! What a maintainer of this file needs from it is the consequence: a body
+//! shaped like a key query answer lifts this gate, whatever status it
+//! actually arrived with, and the empty object is inside that shape because
+//! it is the real answer for an account the server knows no identity for.
+//!
+//! Only the HTTP status separates that answer from a 502 that carried
+//! nothing, which is why a caller that got a non-2xx must say so through
+//! `session::mark_request_failed` instead. Reporting nothing at all is
+//! equally safe here: the gate needs a positive mark to open, so silence
+//! leaves it shut.
 //!
 //! Fact (1) is also "asked at some point in this process", not "asked
 //! recently": a bootstrap long after the answer decides on stale
@@ -294,20 +295,16 @@ pub async fn identity_status() -> Result<IdentityStatus, MachineError> {
 /// and the signing-keys upload's success response is an empty object, so a
 /// reported challenge would mark an identity published that never was.
 ///
-/// `mark_request_sent` refuses on sight every body it can prove is not an
-/// answer: a standard Matrix error, a challenge, a gateway error carrying
-/// `error` without `errcode`, and anything that is not a JSON object, which
-/// is what now protects the signing-keys upload. That endpoint's success
-/// response is `Response {}` and ruma emits no body parse for it, so this
-/// check is the only one it gets, and it used to accept bytes that were not
-/// JSON at all.
+/// `mark_request_sent` refuses on sight every body it can show is not an
+/// answer, and accepts every body shaped like one. **What that shape is, and
+/// why the remainder cannot be closed from a body, is stated once at
+/// `session::refuse_a_non_response`**; it is not restated here.
 ///
-/// **What no check can refuse is `{}` and a completely empty body**, since
-/// those are the real answers here: `{}` is what the key query returns for
-/// an account with no identity, and it is the signing-keys upload's entire
-/// success response. Only the status tells those from a refusal, and the
-/// status is yours. See `session::refuse_a_non_response` for the mechanism
-/// and [`crate::mark_request_failed`] for the division in full.
+/// The part that bites at this call is that the empty object is inside the
+/// shape for both requests above, and is the whole success response of the
+/// signing-keys upload. Only the status tells that answer from a refusal,
+/// and the status is yours. See [`crate::mark_request_failed`] for where a
+/// non-2xx goes.
 ///
 /// # Refusals
 ///

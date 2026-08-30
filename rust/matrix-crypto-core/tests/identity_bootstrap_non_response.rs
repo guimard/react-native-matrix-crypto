@@ -22,22 +22,29 @@
 //! `not json at all !!!` included. Accepting one marks the account's identity
 //! *published* when the server holds nothing.
 //!
-//! # The two groups, and why they are handled differently
+//! A later review then defeated the gate a third way, and that case is act 1
+//! below: `{"message":"Internal server error"}`, which is AWS API Gateway's
+//! default error body, carries no marker of any kind, so every negative rule
+//! above passes it through and serde reads it as a fully defaulted success.
+//! Measured: it set the gate and `bootstrap_identity` minted. So did
+//! `{"detail":...}`, `{"status":"error","code":502}` and Cloudflare's
+//! `{"success":false,...}`.
 //!
-//! Most of that list is refusable from the body alone at no cost, because no
-//! success body of any endpoint this crate handles is anything other than a
-//! JSON **object**, and none of them declares `errcode`, `error` or `flows`
-//! at the top level. Verified against the vendored response types rather than
-//! assumed. Those cases are act 1 and act 3 below.
+//! # What the rule is now, and what it necessarily leaves
 //!
-//! Two are not refusable and never will be: `{}` and a completely empty body,
-//! which ruma substitutes `{}` for before parsing. Those bytes are a genuine
-//! `/keys/query` success meaning "the server answered and knows no identity
-//! for this account", which is the exact fact that authorises minting one.
-//! The library cannot tell that success from a 502 whose body happened to be
-//! empty, because the only thing that separates them is the HTTP status and
-//! no status crosses this boundary. That is what `mark_request_failed` is
-//! for, and act 2 is its test.
+//! A body is accepted when it is shaped like that endpoint's response: an
+//! object with no keys, or an object carrying at least one field the response
+//! type really declares. `session::refuse_a_non_response` states that rule
+//! and its consequences once; this file drives it rather than restating it.
+//!
+//! What that leaves through is not a list of literals, and the acts below are
+//! written to show both halves rather than to enumerate a residue. The member
+//! that matters is the object with no keys, since `{}` is the genuine
+//! `/keys/query` answer for an account the server knows no identity for,
+//! which is the exact fact that authorises minting one, and the whole success
+//! response of the signing-keys upload. Nothing in those bytes separates that
+//! answer from a 502 that carried none. That is what `mark_request_failed` is
+//! for, and act 3 is its test.
 //!
 //! Its own process, for the reason `tests/pump_eviction.rs` gives: the
 //! machine registry and the pump's bookkeeping are process-wide. The acts run
@@ -72,15 +79,39 @@ const BARE_STRING: &str = r#""nope""#;
 const JSON_NULL: &str = "null";
 const JSON_NUMBER: &str = "42";
 
-/// The two bodies that cannot be refused and never will be. Both are a real
-/// `/keys/query` success meaning "the server answered and knows no identity
-/// for this account", and `{}` is the entire success response of the
-/// signing-keys upload. ruma substitutes `{}` for a completely empty body
-/// before parsing, so the two are the same bytes by the time anything looks.
-/// They are here to be reported through `mark_request_failed`, which is the
-/// only thing that can tell them from the answer they are identical to.
+/// Error bodies real infrastructure emits that carry **no marker at all**:
+/// no `errcode`, no `error`, no `flows`, and nothing else a negative rule
+/// could key on. Each was measured opening the gate before the positive rule
+/// existed. `AWS_GATEWAY` is AWS API Gateway's default and several service
+/// meshes'; `CLOUDFLARE` is Cloudflare's; `ENVOY` and `STATUS_CODE` are
+/// shapes an ingress or a service mesh produces.
+const AWS_GATEWAY: &str = r#"{"message":"Internal server error"}"#;
+const CLOUDFLARE: &str = r#"{"success":false,"errors":[{"code":1000}]}"#;
+const ENVOY: &str = r#"{"detail":"upstream connect error"}"#;
+const STATUS_CODE: &str = r#"{"status":"error","code":502}"#;
+
+/// The body that cannot be refused, in its three spellings. All three are an
+/// object with no keys by the time anything looks: ruma substitutes `{}` for
+/// a completely empty body before parsing, and JSON allows the surrounding
+/// whitespace. It is a real `/keys/query` success meaning "the server
+/// answered and knows no identity for this account", and it is the entire
+/// success response of the signing-keys upload. It is here to be reported
+/// through `mark_request_failed`, which is the only thing that can tell it
+/// from the answer it is identical to.
 const EMPTY_OBJECT: &str = "{}";
 const EMPTY_BODY: &str = "";
+const PADDED_EMPTY_OBJECT: &str = "  {}  ";
+
+/// A real `/keys/query` answer. Correct for that endpoint, and wrong for
+/// every other: it is driven against the signing-keys upload to show the
+/// declared field list is consulted per kind rather than pooled.
+const NO_IDENTITY_ANSWER: &str = r#"{"device_keys":{}}"#;
+
+/// A real answer carrying a field a later specification might add. The rule
+/// is not `deny_unknown_fields`: an unrecognised key **alongside** a declared
+/// one must still be accepted, or every future spec revision breaks this
+/// library. This is the half of the positive rule that has to be right.
+const REAL_ANSWER_WITH_UNKNOWN_FIELD: &str = r#"{"one_time_key_counts":{},"next_spec_field":1}"#;
 
 /// A real `/keys/query` success whose per-server `failures` map carries both
 /// an `errcode` and an `error` **nested** inside it, once per unreachable
@@ -129,6 +160,29 @@ fn a_body_that_is_not_a_response_cannot_open_the_bootstrap_gate() {
                 JSON_ARRAY_NONEMPTY,
                 "same, with a non-empty sequence, which takes a different path through that \
                  deserialiser",
+            ),
+            (
+                AWS_GATEWAY,
+                "AWS API Gateway's default error body carries no `errcode`, no `error` and no \
+                 `flows`. Every rule that asks \"does this look like an error\" passes it, and \
+                 serde reads it as a fully defaulted success. This is the case a review found \
+                 opening the gate after the first fix round, and it is why the last rule asks \
+                 \"does this look like this endpoint's response\" instead",
+            ),
+            (
+                CLOUDFLARE,
+                "Cloudflare's error body, same reason: `success` and `errors` are not fields \
+                 this endpoint declares, and neither is a marker any negative rule can key on",
+            ),
+            (
+                ENVOY,
+                "an ingress or service mesh's `detail` body, same reason",
+            ),
+            (
+                STATUS_CODE,
+                "a hand-rolled `{\"status\":\"error\"}` body, same reason. Note `code` is a \
+                 number here and nothing keys on it: the rule is about which fields the \
+                 response type declares, not about spotting an error",
             ),
         ] {
             assert_eq!(
@@ -182,7 +236,11 @@ fn a_body_that_is_not_a_response_cannot_open_the_bootstrap_gate() {
         // bytes. There is nothing in them to tell apart, so a product that
         // branches on the status says so with `mark_request_failed` and the
         // gate stays shut. That is the whole reason the call exists.
-        for (body, status) in [(EMPTY_OBJECT, 502u16), (EMPTY_BODY, 503u16)] {
+        for (body, status) in [
+            (EMPTY_OBJECT, 502u16),
+            (EMPTY_BODY, 503u16),
+            (PADDED_EMPTY_OBJECT, 504u16),
+        ] {
             mark_request_failed(&query.id, status).await.expect(
                 "a product that received this body with a non-2xx status must be able to say \
                  so; before this call existed its only option was to report it as a success",
@@ -226,12 +284,59 @@ fn a_body_that_is_not_a_response_cannot_open_the_bootstrap_gate() {
             .await
             .expect("a dropped connection has no status and must still be reportable");
 
-        // Same id rule as `mark_request_sent`, and for the same reason.
+        // Same id rule as `mark_request_sent`, and for the same reason. Three
+        // ways an id can fail to name something outstanding, not one: a
+        // review found only the first pinned, and the other two are the ones
+        // a real product actually meets.
         assert_eq!(
             mark_request_failed("not-a-request-this-machine-issued", 502).await,
             Err(SessionError::UnknownRequest),
             "an id this machine never handed out is unknown here too"
         );
+
+        // Superseded: a fresh drain mints a new key query and retires the id
+        // the previous one handed out. A product holding the older id must be
+        // told, not silently absorbed, or it would believe it had reported a
+        // failure it had not.
+        let superseded = query.id.clone();
+        let batch = take_outgoing_requests()
+            .await
+            .expect("draining the pump must not fail");
+        let query = find(&batch, "keys_query", names_the_account);
+        assert_ne!(
+            query.id, superseded,
+            "a second drain must mint a fresh key query id, or this assertion proves nothing"
+        );
+        assert_eq!(
+            mark_request_failed(&superseded, 502).await,
+            Err(SessionError::UnknownRequest),
+            "an id superseded by a later drain is no longer outstanding, and reporting a \
+             failure against it must say so"
+        );
+
+        // --- The other half of the positive rule, on a second kind ---------
+        //
+        // Driven on the key upload from the same batch rather than on the key
+        // query: accepting a real answer consumes the entry and lifts the
+        // gate, and this control has to run while both are still untouched.
+        // It also puts the marker-free error body against a second endpoint,
+        // whose declared field list is a different one.
+        let upload = find(&batch, "keys_upload", |_| true);
+        assert_eq!(
+            mark_request_sent(&upload.id, AWS_GATEWAY).await,
+            Err(SessionError::MalformedPayload),
+            "the rule is per endpoint, and `message` is not a field the key upload declares \
+             either"
+        );
+        mark_request_sent(&upload.id, REAL_ANSWER_WITH_UNKNOWN_FIELD)
+            .await
+            .expect(
+                "an unrecognised field alongside a declared one must be accepted. The rule is \
+                 \"carries at least one field this endpoint declares\", not \"carries only \
+                 fields this endpoint declares\": refusing this would break the library on \
+                 every future specification revision, which is a worse bug than the one the \
+                 rule exists for",
+            );
 
         // --- The half that has to be right: no false refusal ---------------
 
@@ -256,12 +361,19 @@ fn a_body_that_is_not_a_response_cannot_open_the_bootstrap_gate() {
             .await
             .expect("bootstrapping after a real answer must be served");
 
-        // --- Act 3: the fieldless kind, where this check is the only one ---
+        // --- Act 4: the fieldless kind, where this check is the only one ---
         //
         // `signing_keys_upload`'s success response is `Response {}`, so ruma
         // emits no body parse and nothing downstream of this check exists.
         // Every one of these was measured as accepted, and accepting one marks
         // the identity published while the server holds nothing.
+        //
+        // Its declared field list is empty, which is what makes the positive
+        // rule bite hardest here: no key can match, so the only object it
+        // accepts is one with no keys. That is the correct rule and not an
+        // accident of an empty list, so the marker-free error bodies and a
+        // body shaped like a *different* endpoint's answer are both driven
+        // against it below.
 
         let published = take_outgoing_requests()
             .await
@@ -278,6 +390,15 @@ fn a_body_that_is_not_a_response_cannot_open_the_bootstrap_gate() {
             JSON_ARRAY_EMPTY,
             JSON_ARRAY_NONEMPTY,
             GATEWAY_JSON,
+            AWS_GATEWAY,
+            CLOUDFLARE,
+            ENVOY,
+            STATUS_CODE,
+            // A perfectly good `/keys/query` answer, reported for this
+            // request. It carries a declared field, but not one *this*
+            // endpoint declares, which is the whole point of the list being
+            // per kind rather than shared.
+            NO_IDENTITY_ANSWER,
         ] {
             assert_eq!(
                 mark_request_sent(&upload.id, body).await,
