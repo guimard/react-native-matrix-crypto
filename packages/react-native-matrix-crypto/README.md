@@ -144,9 +144,33 @@ for (const request of await takeOutgoingRequests()) {
 
 **There is no `auth` parameter, and there will not be one.** The challenge is only known after the first request has been refused, so an argument on `bootstrapCrossSigning` would have to be guessed before the server had said what it wants. The cost is stated rather than hidden: you cannot complete this step without implementing an authentication flow this library gives you no help with. What you get for it is that this library has never touched an account credential.
 
-**Call it on every launch.** It republishes the identity this device already holds rather than creating a second one. What it will not do is create one over an identity the account already has: that would reset the trust of everyone who had verified the old one, and it is refused with `identity_already_exists` instead. If your device does not hold the private keys for an identity the account already has, this release has no way to join it; that is the next step of the same milestone.
+**Call it on every launch.** It republishes the identity this device already holds rather than creating a second one. What it will not do is create one over an identity the account already has: that would reset the trust of everyone who had verified the old one, and it is refused with `identity_already_exists` instead. That refusal is where a second login belongs, and the next section is what it does instead.
 
 `getIdentityStatus` reports three separate facts, and two of them have to be read together: `identityKnown === false` means "nobody has asked" while `accountKeysFetched` is false, and "the server says there is none" once it is true. Only the second is a basis for creating one.
+
+## Joining an identity from a second device
+
+A second login holds none of the account's private signing keys, so `bootstrapCrossSigning` refuses it with `identity_already_exists`. That refusal is the point rather than a gap: creating a second identity over the first would reset the trust of every device and every person who had verified the one the account already has. The new device **joins** that identity, by verifying itself against a device that already holds it.
+
+```ts
+import { getIdentityStatus, onCryptoSignal, requestSelfVerification } from 'react-native-matrix-crypto'
+
+onCryptoSignal(async (signal) => {
+  if (signal.kind !== 'trust_changed' || signal.user !== myUserId) return
+  const { privateKeysHeld } = await getIdentityStatus()
+  if (privateKeysHeld) thisDeviceCanNowSign()
+})
+
+const id = await requestSelfVerification()
+// From here it is the flow in the next section, unchanged: pump, wait for
+// 'ready', startVerificationComparison, read the string, show it, confirm.
+```
+
+**`requestSelfVerification` takes no arguments, and that is the difference that matters.** The invitation goes to every other device of yours that the account's identity has signed, and whichever one is in front of a person answers first; the rest are told the flow was taken. A device of yours the identity has never signed is not invited, deliberately: it is a login this account has never vouched for. The person compares two of their own screens instead of talking to somebody else, and nothing else about the flow changes.
+
+**The seeds arrive after the comparison, on a later sync, and nothing returns to you when they do.** Once both sides have confirmed, this library asks your other devices for the cross-signing seeds this one lacks. They go out as ordinary entries in `takeOutgoingRequests`, and the encrypted answer comes back in a `receiveSyncChanges` you feed it. `getIdentityStatus().privateKeysHeld` then reads `true`, which is the moment this device can sign with the account's identity rather than only recognise it. `trust_changed` for your own user id is what tells you to look; do not poll for it. It is the same signal a completed comparison produces, which is why the handler above reads the status rather than counting signals.
+
+Two refusals, and they want opposite things done about them. `account_keys_not_fetched` means nobody has asked the server about this account yet: drain the pump, send, report sent, and call again. `identity_not_known` means the server answered and this account has no identity at all, so there is nothing to join and `bootstrapCrossSigning` is the call you want.
 
 ## Verifying a device
 
@@ -176,7 +200,7 @@ onCryptoSignal((signal) => {
 await receiveSyncChanges(encryptionSlice(sync))
 ```
 
-* **Subscribe before your first sync, and keep the subscription.** Both producers run inside `receiveSyncChanges`, and nothing is consumed while nobody is subscribed, so an invitation that arrives while you are away is announced on the first sync after you come back and the ordinary `useEffect(() => onCryptoSignal(h), [])` does not lose invitations. A completed comparison's `trust_changed` is not re-offered that way; `getDeviceStatuses` is the durable answer to that question.
+* **Subscribe before your first sync, and keep the subscription.** Every producer runs inside `receiveSyncChanges`, and nothing is consumed while nobody is subscribed, so an invitation that arrives while you are away is announced on the first sync after you come back and the ordinary `useEffect(() => onCryptoSignal(h), [])` does not lose invitations. A `trust_changed` is not re-offered that way; `getDeviceStatuses`, and `getIdentityStatus` for the private-keys one, are the durable answers to those questions.
 * **A subscribe that cannot reach the native module throws, and every subscribe does.** `onCryptoSignal` installs the observer on the first subscription, and returning normally means that worked. If it does not, the exception comes out of `onCryptoSignal` itself rather than being reported as an unsubscribe function for a channel that will never deliver, no listener is registered, and the next subscribe tries again. Subscribing inside an effect sends that throw to your nearest error boundary, which is the intent: the alternative is a screen waiting for an invitation that expires in ten minutes. `0.1.1` shipped the opposite: only the first subscriber ever saw it, and every later one got an unsubscribe function and silence.
 * **Some clients do not ask first, and it makes no difference to your code.** The protocol still carries an older shape in which a peer opens the comparison directly, with no invitation before it. It is what `matrix-nio` implements, and all it implements. It arrives as the same `verification_requested` signal and `acceptVerification` still agrees to it. Two things differ, neither needing a branch: the stage never reads `ready`, so `startVerificationComparison` answers `comparison_already_started`, which means carry on and wait for the string; and `confirmVerification` can finish the flow outright, so the device is verified when that call resolves, though its `trust_changed` still waits for your next `receiveSyncChanges`. This is the one shape that cannot be re-offered after an unsubscribe, because it leaves nothing behind that a later sync can enumerate.
 * **An invitation from a device you have never been told about is discarded on arrival, and is not announced.** The layer underneath needs the sender's device keys to build the flow. `receiveSyncChanges` still resolves successfully, no flow exists, and `acceptVerification` would reject that transaction id with `unknown_flow`. The silence is the channel refusing to hand you an identifier no call here answers to.
@@ -198,8 +222,9 @@ await receiveSyncChanges(encryptionSlice(sync))
 | Interoperability with a third-party Matrix client | proven both directions against `matrix-nio` over a real homeserver, through the Rust core and through the published TypeScript surface on an emulator |
 | Device verification by short string comparison (SAS) | working, in both flow shapes and whichever side opens the comparison, proven against a bare `matrix-sdk-crypto` machine driven directly: an agreement completing, and a genuine disagreement refusing |
 | A third-party client taking part in a verification | proven over a real homeserver, and it stops short of *completing* one for a reason in the counterparty, described in the roadmap |
-| Crypto signal channel (`onCryptoSignal`) | working for verification. `verification_requested` carries the `verificationId` that `acceptVerification` takes, and is the only way this library hands a receiving side that identifier; `trust_changed` says a comparison finished and a device belonging to that user moved, and `getDeviceStatuses` says which. `unexpected_device` and `key_missing` still have no producer: a missing key arrives as a rejected `decryptEvent` with kind `missing_key` |
-| Creating and publishing this account's cross-signing identity | working, through `bootstrapCrossSigning` and `getIdentityStatus`, with the user-interactive authentication loop left to your product because this library never sees a credential. Joining an identity the account already has, from a device that does not hold its private keys, is not in this release |
+| Crypto signal channel (`onCryptoSignal`) | working for verification and for the signing identity. `verification_requested` carries the `verificationId` that `acceptVerification` takes, and is the only way this library hands a receiving side that identifier; `trust_changed` has two producers and one rule, which is to read rather than to count. A comparison finished and a device belonging to that user moved, and `getDeviceStatuses` says which; or, for your own user id, the account's private signing keys arrived on this device and `getIdentityStatus` says so. `unexpected_device` and `key_missing` still have no producer: a missing key arrives as a rejected `decryptEvent` with kind `missing_key` |
+| Creating and publishing this account's cross-signing identity | working, through `bootstrapCrossSigning` and `getIdentityStatus`, with the user-interactive authentication loop left to your product because this library never sees a credential |
+| Joining that identity from a second login | working, through `requestSelfVerification`: the new device verifies itself against one that already holds the identity, the private keys arrive by encrypted gossip on a later sync, and `getIdentityStatus` then reports `privateKeysHeld`. Proven between two crypto machines with everything travelling through the queue. Recovering them from server-side storage, which is what a device does when no second device is to hand, is not in this release |
 | `EventEnvelope.senderVerification` on a decrypted event | working, and it reads `verified` once the whole chain has been driven, which it can be from TypeScript since this release |
 | Sender authenticity, per event | **provided at the end of a chain, not by a call.** Seven steps: hold a signing identity, publish it, have the sender publish and sign theirs, fetch their keys, complete a comparison, upload the signature it produces, and fetch their keys again. Omitting the last step is silent and leaves every event reading `unverified_identity` |
 | Device verification by QR code | **deferred**, see the roadmap |
@@ -253,7 +278,7 @@ QR verification is **deferred, not rejected**. It would add a dependency absent 
 
 Next, in order:
 
-* the rest of **cross-signing**. Creating and publishing this account's identity has landed, which is what makes a verified *sender* reachable at all; what is still missing is joining an identity the account already has from a new login, and server-side storage of the private keys that would make that possible without a second device
+* the rest of **cross-signing**. Creating and publishing this account's identity has landed, which is what makes a verified *sender* reachable at all, and so has joining that identity from a new login; what is still missing is server-side storage of the private keys, which is what a device recovers from when no second device is to hand
 * device verification by QR code, alongside the string comparison that has landed
 * secret export and import, for recovery
 * multi participant scenarios and federation neutral test coverage
