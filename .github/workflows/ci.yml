@@ -30,6 +30,13 @@ jobs:
       - run: yarn gate:stubs
       - run: yarn gate:logger
       - run: yarn gate:agility
+      # Wired in the same change that added it, because this repository has
+      # already shipped a gate that existed and ran nowhere (see gate:readme
+      # below, added on 2026-08-28 and invoked by no workflow at all). It
+      # asserts that every name a public module exports reaches src/index.ts,
+      # which nothing checked: the entire M3 verification surface could be
+      # deleted from the entry point with every other check here green.
+      - run: yarn gate:surface
       # scripts/measure-signal-latency.sh decides whether a B2 A/B measurement
       # is an A/B at all, and two of its guards shipped unable to fire -- one
       # of them through two review cycles. Both were found by running the case,

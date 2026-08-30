@@ -415,6 +415,7 @@ Every one of these runs in CI. Each has been observed rejecting a real violation
 | `gate:logger` | the bridge contains no logger, in every language it ships: Rust, TypeScript, C/C++/Objective-C, Kotlin, Swift and the podspec |
 | `gate:agility` | no Megolm, Olm, room or Matrix specific identifier reaches the public API |
 | `gate:stubs` | the committed turbo module is really wired up, not an empty shell |
+| `gate:surface` | every name a public module exports reaches `src/index.ts`, so nothing ships unreachable |
 | `gate:readme` | the README npm shows is the README GitHub shows, and every gate here runs in CI |
 | `gate:uia-example` | the worked example for the signing-keys authentication loop runs the same steps as the test that proves it |
 | `gate:measure-guards` | the B2 measurement harness still refuses the runs it documents refusing |
