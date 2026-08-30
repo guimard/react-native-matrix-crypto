@@ -25,19 +25,26 @@
 //!
 //! # Why presence, and not "reports nothing about anybody"
 //!
-//! The rule `session::answer_speaks_about` now applies is that the answer
-//! must **name this account** in one of the four maps a key query answer
-//! keys by user id. The weaker rule -- also accept a body that reports
-//! nothing about anybody, on the grounds that a server with nothing to say
-//! answers `{}` -- was rejected on measurement rather than on taste. Probed
-//! directly over HTTP against three homeservers, on accounts holding no
-//! cross-signing identity and no uploaded device keys at all, Synapse 1.159.0
-//! and Dendrite 0.15.2 both answer
+//! Every body below asserts no cross-signing key for this account, so the
+//! half of `session::answer_about_this_account` they all meet is the one
+//! about a *negative* answer: the account has no identity, and that settles
+//! the question only if the answer covered the account at all, which is
+//! `device_keys` naming it. The weaker rule -- also accept a body that
+//! reports nothing about anybody, on the grounds that a server with nothing
+//! to say answers `{}` -- was rejected on measurement rather than on taste.
+//! Probed directly over HTTP against three homeservers, on accounts holding
+//! no cross-signing identity and no uploaded device keys at all, Synapse
+//! 1.159.0 and Dendrite 0.15.2 both answer
 //! `{"device_keys":{"@user:…":{}},"failures":{},"master_keys":{},`
 //! `"self_signing_keys":{},"user_signing_keys":{}}`, and continuwuity
 //! v26.7.2 answers `{"device_keys":{"@user:…":{}}}`. Every one of them names
 //! the account. None of them answers `{}`. That measurement is what makes
-//! the strong rule affordable, and `session::answer_speaks_about` carries it.
+//! the strong rule affordable.
+//!
+//! The other half -- an answer that *does* assert a cross-signing key for
+//! this account, and that upstream could not read -- is
+//! `tests/identity_bootstrap_unreadable_identity.rs`, and it is the one that
+//! defeated the rule this file was written for.
 //!
 //! The last body below is Synapse's and Dendrite's real answer, byte for
 //! byte with the account substituted, and it is the control: it must lift
@@ -82,11 +89,35 @@ const STRANGER_DEVICES_AND_NO_FAILURES: &str =
 /// declared field of this response, and its nested `errcode` is deliberately
 /// untouched by `session::refuse_a_non_response` because real `failures`
 /// maps carry real errors -- so this passes every check that looks at the
-/// body's shape, and it reports that a server did not answer. It is keyed by
-/// server name, not by user id, which is why `answer_speaks_about` does not
-/// read it.
+/// body's shape, and it reports that a server did not answer, which is the
+/// opposite of an answer about anyone that server hosts.
 const FAILURES_ONLY: &str =
     r#"{"failures":{"example.org":{"errcode":"M_UNKNOWN","error":"boom"}}}"#;
+
+/// The same, keyed by this **account's user id** rather than by a server
+/// name -- and the reason it is here rather than in a comment saying no such
+/// body exists.
+///
+/// The round that introduced the previous rule excluded `failures` from it
+/// on the stated grounds that it is keyed by server name, and recorded that
+/// no body could distinguish the exclusion, so it was "sound by construction
+/// rather than pinned by a run". **That was a reading standing in for a
+/// measurement, and it is false.** Upstream types the map
+/// `BTreeMap<String, JsonValue>` (`ruma-client-api`'s `get_keys`), not
+/// `OwnedServerName`, and nothing validates the key, so a user id sits in it
+/// happily. The other four maps are keyed by `OwnedUserId` and would reject
+/// this at parse time; this one does not. Adding `"failures"` to that rule's
+/// field list turned both of these bodies into mints, which is what makes
+/// them a witness.
+///
+/// The rule they now meet cannot consult `failures` at all -- it reads
+/// `device_keys` and the three cross-signing maps off ruma's parse of the
+/// response, and there is no list to add a fifth name to. These two stay
+/// anyway: what is pinned is the outcome, not the shape of the code that
+/// produces it.
+const FAILURES_NAMES_THE_ACCOUNT: &str =
+    r#"{"failures":{"@alice:example.org":{"errcode":"M_UNKNOWN","error":"boom"}}}"#;
+const FAILURES_NAMES_THE_ACCOUNT_EMPTY: &str = r#"{"failures":{"@alice:example.org":{}}}"#;
 
 #[test]
 fn a_body_that_says_nothing_about_this_account_cannot_open_the_bootstrap_gate() {
@@ -139,8 +170,20 @@ fn a_body_that_says_nothing_about_this_account_cannot_open_the_bootstrap_gate() 
             ),
             (
                 FAILURES_ONLY,
-                "a 200 whose whole content is a federation failure. `failures` is keyed by \
-                 server name, so no entry in it can ever be an answer about this account",
+                "a 200 whose whole content is a federation failure, keyed by a server name. \
+                 An entry in `failures` says a server did not answer, which is the opposite \
+                 of an answer about anyone it hosts",
+            ),
+            (
+                FAILURES_NAMES_THE_ACCOUNT,
+                "the same, keyed by this account's own user id. Upstream types `failures` as \
+                 a plain string map, so this parses, and the previous round's claim that no \
+                 body could distinguish the `failures` exclusion was wrong",
+            ),
+            (
+                FAILURES_NAMES_THE_ACCOUNT_EMPTY,
+                "and with an empty value, so the refusal cannot be coming from the nested \
+                 error rather than from where the account was named",
             ),
             (
                 strangers_identity.as_str(),
@@ -198,7 +241,7 @@ fn a_body_that_says_nothing_about_this_account_cannot_open_the_bootstrap_gate() 
                 .await
                 .expect("reading the identity status must not fail")
                 .account_keys_fetched,
-            "an answer that names this account must lift the gate. If this fails the cure is \
+            "an answer that covers this account must lift the gate. If this fails the cure is \
              worse than the disease: no product on any measured homeserver could ever bootstrap"
         );
         bootstrap_identity()

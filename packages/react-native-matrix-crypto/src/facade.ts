@@ -800,12 +800,15 @@ export async function markRequestFailed(id: string, status: number): Promise<voi
  * What this library will say about this account's signing identity, as
  * returned by {@link getIdentityStatus}.
  *
- * Three independent facts, none of which implies another. **The pair that
+ * Four independent facts, none of which implies another. **The pair that
  * looks redundant is the pair that matters:** `identityKnown === false`
  * means something completely different depending on `accountKeysFetched`.
  * With that false it means "nobody has asked". With it true it means "the
  * server says there is none", and only the second is a basis for creating
  * one. That is why both are reported instead of one collapsed answer.
+ *
+ * `accountKeysAnswerUnsettled` splits the first of those in two, and is the
+ * field to read when a refusal will not go away.
  */
 export interface IdentityStatus {
   /**
@@ -837,16 +840,46 @@ export interface IdentityStatus {
    * date. So this field is only trustworthy alongside that one.
    */
   privateKeysHeld: boolean
+  /**
+   * Whether a key query about this account was answered, and the answer left
+   * this library still unable to say whether the account has an identity.
+   *
+   * **Read it when `accountKeysFetched` is false, and only then.** Those two
+   * together say which of two situations a refusal is in, and the remedies
+   * are different:
+   *
+   * - Both false: nobody has asked yet. The remedy is the documented one.
+   *   Drain {@link takeOutgoingRequests}, send what it hands back, report
+   *   each with {@link markRequestSent}, call again.
+   * - This true: the query was sent, the server answered, the answer was
+   *   accepted, and the library still does not know. **Calling again will do
+   *   exactly the same thing.** Either the answer did not cover this
+   *   account, which the Matrix specification prescribes for a user a
+   *   reachable server does not know, or it carried cross-signing keys for
+   *   the account that could not be assembled into an identity.
+   *
+   * The reachable cause is the account id. A homeserver compares the server
+   * name half of a user id against its own case-sensitively, so an address
+   * a user typed by hand, with `@you:Example.org` where the server calls
+   * itself `example.org`, is treated as a remote account and federates to
+   * itself. Compare the `userId` passed to {@link initCrypto} against the
+   * canonical `user_id` your `/login` returned, and stop looping.
+   *
+   * Nothing is destroyed while this is true and nothing will be: refusing to
+   * create a second identity is the safe direction, and this field exists so
+   * that the refusal is not also silent.
+   */
+  accountKeysAnswerUnsettled: boolean
 }
 
 /**
  * What this library will say about this account's signing identity right
  * now. Reads only: it asks the server nothing and creates nothing.
  *
- * See {@link IdentityStatus} for why two of the three fields have to be read
- * together. Two calls change them: {@link bootstrapCrossSigning} creates the
- * identity, and {@link requestSelfVerification} joins one the account already
- * has.
+ * See {@link IdentityStatus} for why two of the four fields have to be read
+ * together, and why a third exists. Two calls change them:
+ * {@link bootstrapCrossSigning} creates the identity, and
+ * {@link requestSelfVerification} joins one the account already has.
  *
  * **This is the durable answer the signal channel sends you to.** Nothing
  * returns to a caller when a join's seeds arrive; what happens instead is a
@@ -858,8 +891,9 @@ export async function getIdentityStatus(): Promise<IdentityStatus> {
   try {
     const status = await nativeIdentityStatus()
     // Destructured, not returned directly. See encryptEvent above.
-    const { accountKeysFetched, identityKnown, privateKeysHeld } = status
-    return { accountKeysFetched, identityKnown, privateKeysHeld }
+    const { accountKeysFetched, identityKnown, privateKeysHeld, accountKeysAnswerUnsettled } =
+      status
+    return { accountKeysFetched, identityKnown, privateKeysHeld, accountKeysAnswerUnsettled }
   } catch (e) {
     throw toCryptoError(e)
   }

@@ -80,7 +80,7 @@ const FLOWS_NOT_AN_ARRAY: &str = r#"{"flows":{"0":{"stages":["m.login.password"]
 /// identity, and Synapse 1.159.0 and Dendrite 0.15.2 add the empty
 /// `failures` and cross-signing maps beside it. It held `{"device_keys":{}}`
 /// before, which names nobody; that is still accepted, but it no longer
-/// lifts the gate, and `session::answer_speaks_about` has why.
+/// lifts the gate, and `session::answer_about_this_account` has why.
 const FAILURE_WITH_NESTED_ERRCODE: &str = r#"{"device_keys":{"@alice:example.org":{}},"failures":{"example.org":{"errcode":"M_UNKNOWN","error":"boom"}}}"#;
 
 #[test]

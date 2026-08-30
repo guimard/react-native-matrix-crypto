@@ -1973,7 +1973,7 @@ const FfiConverterTypeIdentityKeys = (() => {
  * was.
  *
  * `Debug` is derived, unlike `Envelope` and `CryptoMachineConfig` above:
- * three booleans about this account's own publication state carry no
+ * four booleans about this account's own publication state carry no
  * identifier and no key material, so there is nothing here the global
  * no-secret rule forbids from a `{:?}`.
  *
@@ -1981,11 +1981,20 @@ const FfiConverterTypeIdentityKeys = (() => {
  * particular why the pair that looks redundant is the pair that matters;
  * this mirror deliberately repeats none of it, so the two cannot drift
  * into saying different things.
+ *
+ * `account_keys_answer_unsettled` is **appended**, after the three this
+ * record shipped with, and the reason is the same wire-ordinal reason the
+ * error enums above state at length: UniFFI lays a record's fields out in
+ * declaration order, so inserting one shifts every field after it and a
+ * binding generated before the insert reads the wrong value out of each.
+ * Appending costs a stale binding one field it does not know about, which
+ * is the failure mode that fails cleanly.
  */
 export type IdentityStatus = {
   accountKeysFetched: boolean;
   identityKnown: boolean;
   privateKeysHeld: boolean;
+  accountKeysAnswerUnsettled: boolean;
 };
 
 /**
@@ -2013,18 +2022,21 @@ const FfiConverterTypeIdentityStatus = (() => {
         accountKeysFetched: FfiConverterBool.readFromCursor(c),
         identityKnown: FfiConverterBool.readFromCursor(c),
         privateKeysHeld: FfiConverterBool.readFromCursor(c),
+        accountKeysAnswerUnsettled: FfiConverterBool.readFromCursor(c),
       };
     }
     writeIntoCursor(value: TypeName, c: Cursor): void {
       FfiConverterBool.writeIntoCursor(value.accountKeysFetched, c);
       FfiConverterBool.writeIntoCursor(value.identityKnown, c);
       FfiConverterBool.writeIntoCursor(value.privateKeysHeld, c);
+      FfiConverterBool.writeIntoCursor(value.accountKeysAnswerUnsettled, c);
     }
     allocationSize(value: TypeName): number {
       return (
         FfiConverterBool.allocationSize(value.accountKeysFetched) +
         FfiConverterBool.allocationSize(value.identityKnown) +
-        FfiConverterBool.allocationSize(value.privateKeysHeld)
+        FfiConverterBool.allocationSize(value.privateKeysHeld) +
+        FfiConverterBool.allocationSize(value.accountKeysAnswerUnsettled)
       );
     }
   }

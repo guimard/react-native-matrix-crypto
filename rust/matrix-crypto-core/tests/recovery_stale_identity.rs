@@ -52,6 +52,41 @@
 //!    `create_recovery` then says this device holds none, which is true.
 //!    Without the gate the same run would have written a recovery for the
 //!    keys of an identity that no longer exists, and said nothing.
+//!
+//! # Act three lifts the gate through a different door than it used to
+//!
+//! Stated here rather than left to be discovered, because this file still
+//! passes and the reason changed underneath it.
+//!
+//! `published_identity` below builds a body with `master_keys`,
+//! `self_signing_keys` and `user_signing_keys` and **no `device_keys` at
+//! all**. Under the rule this file was written against -- "the answer names
+//! this account in one of the four maps a key query answer keys by user id"
+//! -- that lifted the gate because the three cross-signing maps name the
+//! account. Under `session::answer_about_this_account` it lifts the gate
+//! because upstream, having consumed the answer, now holds the identity that
+//! answer asserted. Same outcome, different door.
+//!
+//! Measured, not reasoned: adding
+//! `&& response.device_keys.contains_key(account)` to that rule's
+//! identity-asserting branch turns this file red at act three's
+//! `"the answer must have landed"` with
+//! `IdentityStatus { account_keys_fetched: false, identity_known: true,
+//! private_keys_held: false, account_keys_answer_unsettled: true }`. Note
+//! what that says: upstream still dropped the stale private keys, so the
+//! substance this file is about still happened; only the gate flag was
+//! withheld. `tests/identity_bootstrap_existing.rs` goes red under the same
+//! sabotage, for the same reason and with the same kind of body, so the two
+//! of them are the witnesses for that branch.
+//!
+//! The body is left as it is deliberately, and it is worth knowing that **no
+//! measured homeserver sends it** -- Synapse, Dendrite and continuwuity all
+//! name the queried local account under `device_keys` whatever else they
+//! hold for it. It stays because a branch with no witness is the thing this
+//! project's rules forbid, and because the branch is the safe half of the
+//! rule anyway: an answer that reaches it leaves `identity_known` true, and
+//! `signing::may_mint` refuses on that. A maintainer who makes this body
+//! more realistic must check what is left watching the branch first.
 
 use matrix_crypto_core::{
     create_machine, create_recovery, identity_status, in_runtime, mark_request_sent,

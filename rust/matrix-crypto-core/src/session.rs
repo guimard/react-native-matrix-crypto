@@ -59,6 +59,14 @@ use matrix_sdk_crypto::types::requests::{
     AnyIncomingResponse, AnyOutgoingRequest, KeysQueryRequest,
     OutgoingRequest as UpstreamOutgoingRequest, ToDeviceRequest, UploadSigningKeysRequest,
 };
+// Upstream's own wrapper for a cross-signing key marked as a master key.
+// Imported rather than re-derived so that `answer_about_this_account` reads
+// the answer's master key with the exact call upstream reads it with --
+// `deserialize_as_unchecked::<MasterPubkey>`, whose `try_from` validates the
+// `usage` and the inner `user_id` -- and compares it with upstream's own
+// `PartialEq`.
+use matrix_sdk_crypto::types::MasterPubkey;
+use matrix_sdk_crypto::UserIdentity;
 // Reached through `matrix_sdk_crypto`'s own `pub use vodozemac;` re-export
 // rather than a direct `vodozemac` dependency this crate would then have to
 // keep version-matched by hand -- the same reasoning `machine.rs` documents
@@ -1407,7 +1415,7 @@ enum PendingKind {
     /// identity happens to be empty.
     ///
     /// **This variant is half of that fact and not the whole of it.** It
-    /// records which question was asked; [`answer_speaks_about`] records
+    /// records which question was asked; [`answer_about_this_account`] records
     /// whether the body that came back said anything about the account the
     /// question was about. An earlier version stopped here, on the reading
     /// that "a response naming no identity for this account and a response
@@ -1728,11 +1736,11 @@ struct RequestState {
     ///
     /// Set only by [`mark_request_sent`], and only when three things hold at
     /// once: the request was one of the two account-scoped key query kinds,
-    /// upstream accepted the response, and the response names the account in
-    /// one of the maps a key query answer keys by user id
-    /// ([`answer_speaks_about`]). "We asked" is not the fact the gate needs;
-    /// neither is "we asked and something came back". "We asked, and what
-    /// came back spoke about us" is.
+    /// upstream accepted the response, and upstream's own store then said
+    /// whether this account has a signing identity
+    /// ([`answer_about_this_account`]). "We asked" is not the fact the gate
+    /// needs; neither is "we asked and something came back", nor "we asked
+    /// and the answer named us". "We asked, and upstream now knows" is.
     ///
     /// Never unset in production, and deliberately not persisted -- a process
     /// that reopens a store has not asked anything *yet*, and refusing until
@@ -1747,6 +1755,21 @@ struct RequestState {
     /// account, and it clears this through
     /// [`forget_account_keys_answered_for_test`] for exactly that reason.
     account_keys_answered: bool,
+    /// Whether the last accepted answer to a key query about this account
+    /// left upstream **still** not knowing whether the account has a signing
+    /// identity.
+    ///
+    /// The companion to `account_keys_answered` and never true alongside it:
+    /// together they say which of the two situations a shut gate is in.
+    /// Both false is "nobody has asked", whose remedy is the ordinary drain,
+    /// send, report. This one true is "we asked, we were answered, and the
+    /// answer settled nothing", whose remedy is not to ask again -- see
+    /// [`answer_about_this_account`]'s last section for what a product does
+    /// instead, and why leaving this unrecorded made the first remedy a loop
+    /// that could not terminate.
+    ///
+    /// Cleared by the same reset as the flag above, for the same reason.
+    account_keys_answer_unsettled: bool,
     next_sequence: u64,
 }
 
@@ -1773,6 +1796,7 @@ static STATE: StdMutex<RequestState> = StdMutex::new(RequestState {
     queued_account_query: None,
     pending: BTreeMap::new(),
     account_keys_answered: false,
+    account_keys_answer_unsettled: false,
     next_sequence: 0,
 });
 
@@ -1883,6 +1907,20 @@ pub(crate) fn account_keys_answered() -> bool {
         .account_keys_answered
 }
 
+/// Whether the last accepted answer to a key query about this account left
+/// upstream still not knowing whether the account has a signing identity.
+///
+/// Reported by `signing::read_status` and by nothing else. It gates nothing:
+/// the gate is [`account_keys_answered`] alone, and this exists so that a
+/// caller facing a refusal can tell which of the two shut-gate situations it
+/// is in. See [`RequestState::account_keys_answer_unsettled`].
+pub(crate) fn account_keys_answer_unsettled() -> bool {
+    STATE
+        .lock()
+        .expect("request registry poisoned")
+        .account_keys_answer_unsettled
+}
+
 /// Forgets that this process was ever answered about its own account, and
 /// forgets nothing else.
 ///
@@ -1899,10 +1937,9 @@ pub(crate) fn account_keys_answered() -> bool {
 /// today, and clearing it here is what makes a `src/` one possible.
 #[cfg(test)]
 pub(crate) fn forget_account_keys_answered_for_test() {
-    STATE
-        .lock()
-        .expect("request registry poisoned")
-        .account_keys_answered = false;
+    let mut state = STATE.lock().expect("request registry poisoned");
+    state.account_keys_answered = false;
+    state.account_keys_answer_unsettled = false;
 }
 
 #[cfg(test)]
@@ -1915,6 +1952,7 @@ fn reset_request_state_for_test() {
     state.queued_account_query = None;
     state.pending.clear();
     state.account_keys_answered = false;
+    state.account_keys_answer_unsettled = false;
     state.next_sequence = 0;
 }
 
@@ -2130,96 +2168,220 @@ fn account_scoped(
     }
 }
 
-/// The four `/keys/query` response fields that are maps **keyed by user id**,
-/// and so are the only places an answer can name an account.
+/// What upstream's own store says about this account's signing identity,
+/// read the instant after upstream has consumed an answer to a `/keys/query`
+/// this process asked about the account.
 ///
-/// Not `failures`, which is the fifth declared field and is keyed by *server
-/// name*. That difference is the whole of [`answer_speaks_about`]'s second
-/// paragraph and it is stated here, at the list, so the two cannot drift:
-/// a `failures` entry says a server did not answer, which is the opposite of
-/// an answer about anyone it hosts.
-const USER_KEYED_ANSWER_FIELDS: [&str; 4] = [
-    "device_keys",
-    "master_keys",
-    "self_signing_keys",
-    "user_signing_keys",
-];
+/// Three outcomes rather than a `bool`, because "the gate did not lift"
+/// covers two situations whose remedies are opposite and one of which used
+/// to be invisible. See each variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AnswerAboutAccount {
+    /// The response was not an answer to a key query about this account, so
+    /// there was no question here for it to settle. Every other request kind
+    /// lands here, and so does an ordinary key query about other users.
+    NotAsked,
+    /// Upstream consumed the answer and **now knows** whether this account
+    /// has a signing identity. This is the fact `signing.rs`'s gate needs,
+    /// and the only outcome that lifts it.
+    Settled,
+    /// Upstream consumed the answer and **still does not know**. The answer
+    /// asserted a cross-signing key for this account that upstream could not
+    /// read, or it did not cover this account at all.
+    ///
+    /// Recorded rather than merely not-recorded, because it is the one thing
+    /// a product cannot otherwise find out: the request was sent, the
+    /// homeserver answered, `mark_request_sent` returned `Ok`, and the gate
+    /// is still shut. Reported as
+    /// [`crate::IdentityStatus::account_keys_answer_unsettled`], which is
+    /// what turns the documented drain-send-report-again remedy from a loop
+    /// that cannot terminate into a fact the caller can act on.
+    Unsettled,
+}
 
-/// Whether a `/keys/query` response body says anything at all about
-/// `account`: does it name that user in any of the four maps a key query
-/// answer keys by user id.
+/// Whether `response` asserts any cross-signing key at all for `account`,
+/// in any of the three maps a key query answer carries them in.
 ///
-/// # Why the gate needs this and the request classification is not enough
+/// This is the question that decides *which* half of
+/// [`answer_about_this_account`]'s rule applies, and it is deliberately
+/// asked of ruma's parse of the response rather than of the raw bytes: it
+/// is the same value, produced by the same parser, that upstream itself
+/// consumed a moment earlier. There is no second reading of the body for a
+/// first reading to disagree with.
+fn claims_an_identity(response: &KeysQueryResponse, account: &UserId) -> bool {
+    response.master_keys.contains_key(account)
+        || response.self_signing_keys.contains_key(account)
+        || response.user_signing_keys.contains_key(account)
+}
+
+/// Whether an accepted `/keys/query` answer left upstream knowing whether
+/// this account has a signing identity, read from **upstream's store** after
+/// upstream has consumed the answer.
 ///
-/// [`PendingKind::AccountKeysQuery`] records that the *question* named this
-/// account. It records nothing about the answer, and until this function
-/// existed the gate lifted on the question alone. Measured, five bodies in
-/// five fresh processes against a request that did name the account: another
-/// account's real published identity lifted the gate and the next
-/// `bootstrap_identity` minted over this one; so did `device_keys` carrying
-/// only another user; so did a body whose entire content was a `failures`
-/// map. Each of those is a body that answered somebody else's question, or
-/// nobody's, and each was read as "the server says this account has no
-/// identity" -- the one fact that authorises minting a new one over the
-/// account's existing one.
+/// # The question this asks, and the four it stopped asking
 ///
-/// So the rule is that the answer must speak to the account the question was
-/// about. Silence is not an answer, and an answer about a stranger is
-/// silence about us.
+/// The gate `signing.rs` reads exists to answer one thing: *does this
+/// process know whether the account already has a signing identity*, because
+/// minting a second one over an existing one resets the trust of every
+/// device and every person who ever verified the account, silently, and
+/// nothing afterwards can detect it.
 ///
-/// # Presence, not absence, and that is measured rather than assumed
+/// Four earlier rules answered a proxy for that question instead, each a
+/// reading of the response body, and each was defeated by a body the reading
+/// judged differently from upstream:
 ///
-/// The account is named in the affirmative here. The alternative rule --
-/// accept a body that reports nothing about anybody, on the grounds that a
-/// server with nothing to say answers `{}` -- was the reading this library
-/// shipped with, and it is wrong about real homeservers. Probed directly
-/// over HTTP, on throwaway accounts holding no cross-signing identity and
-/// no uploaded device keys at all:
+/// 1. *Any accepted body* lifted the gate. Then the empty object did.
+/// 2. *Which request was answered* lifted it, so another user's keys did.
+/// 3. *The answer names this account* lifted it -- and it tested the map
+///    **key** and never the value. Measured against a live Synapse 1.159.0:
+///    an account that had uploaded a master key and a self-signing key but
+///    no user-signing key answered its own key query with a body carrying
+///    its published master key, and `bootstrap_identity` minted a second
+///    identity over it. So did an account that had uploaded a master key
+///    alone. Sharpest form, from a *correct* answer that refused correctly:
+///    flipping one character of one base64 signature turned
+///    `IdentityAlreadyExists` into a mint.
 ///
-/// * **Synapse 1.159.0** answers
-///   `{"device_keys":{"@user:…":{}},"failures":{},"master_keys":{},`
-///   `"self_signing_keys":{},"user_signing_keys":{}}` -- the account named,
-///   with an empty device map, and every other field present and empty.
-/// * **Dendrite 0.15.2** answers byte-identically to Synapse.
-/// * **Continuwuity v26.7.2**, the image this repository's level 2 harness
-///   pins, answers `{"device_keys":{"@user:…":{}}}` -- the account named,
-///   and nothing else at all.
+/// The mechanism behind all of (3) is upstream's, and it is silent.
+/// `IdentityManager::handle_cross_signing_keys` iterates `master_keys`
+/// alone; `get_minimal_set_of_keys` needs a master key *and* a
+/// `self_signing_keys` entry for the same user; `handle_new_identity` needs
+/// a `user_signing_keys` entry too when the user is our own. Anything
+/// missing or unreadable is dropped with a `warn!` and no identity is
+/// stored (`matrix-sdk-crypto-0.18.0/src/identities/manager.rs`). Every
+/// value in all four maps is a `Raw<CrossSigningKey>`, so ruma accepts any
+/// JSON at all under a valid user id and defers the judgement to upstream.
+/// A rule that reads the body cannot see that judgement; it can only guess
+/// at it, and every guess so far has been wrong in the direction that mints.
 ///
-/// All three name the account for a *local* user that has never uploaded a
-/// key, and all three name one that does not exist on the server at all.
-/// None answers `{}`. An account's own key query always goes to its own
-/// homeserver, which is authoritative for it, so the local case is the only
-/// one this gate ever meets; the one shape that does *not* name a user is
-/// the remote-server failure, which all three report under `failures` and
-/// which cannot be about this account.
+/// So this asks upstream instead. **Upstream either parsed an identity into
+/// the store or did not**, and that is a fact about the answer no reading of
+/// the body can contradict.
 ///
-/// **This is why `{}` no longer lifts the gate, and that is the point of the
-/// change rather than a side effect of it.** `{}` is what a completely empty
-/// body becomes before parsing, so it is also what a 503 that carried
-/// nothing arrives as. That collision was documented as the residue only an
-/// HTTP status could close, and closing it here costs no answer any measured
-/// homeserver actually gives.
+/// # The rule
 ///
-/// **What it would cost, if a homeserver did omit a user it has nothing to
-/// say about:** that product's `bootstrap_identity` would refuse with
-/// `AccountKeysNotFetched` and go on refusing. That is a loud, inspectable
-/// stop -- `identity_status` reports `account_keys_fetched: false` -- against
-/// a silent reset of every verification anyone ever made of the account. The
-/// trade is taken in that direction knowingly, and it is the same direction
-/// `signing.rs`'s gate is argued in throughout.
-fn answer_speaks_about(body: &str, account: &UserId) -> bool {
-    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) else {
-        return false;
+/// Read `machine.get_identity(account)` after the mark, and split on what
+/// the answer asserted -- from ruma's parse of the response, which is the
+/// same value upstream itself consumed:
+///
+/// * **The answer asserts a cross-signing key for this account.** Then the
+///   only thing that settles anything is upstream now holding *the identity
+///   the answer asserted*: a stored identity whose master key is the master
+///   key this answer carries, deserialised with
+///   `deserialize_as_unchecked::<MasterPubkey>` -- upstream's own call, so
+///   upstream's own validation of `usage` and of the inner `user_id`. A
+///   partial identity, an unreadable one, or one whose signatures do not
+///   verify leaves upstream with nothing stored, and this returns
+///   [`AnswerAboutAccount::Unsettled`]. That is the whole of defeat (3),
+///   closed at the place upstream made the decision rather than at a second
+///   reading of the same bytes.
+/// * **The answer asserts no cross-signing key for this account at all.**
+///   Then it is a homeserver saying the account has none, and it settles the
+///   question if it covered the account at all -- which is
+///   `device_keys.contains_key(account)`. That is not this crate's
+///   invention: it is upstream's own criterion for "this response covered
+///   this user", used for `mark_tracked_users_as_up_to_date` and for
+///   removing a server from the failures cache (`manager.rs:152,205-211`).
+///
+/// The consequence worth stating in one line, because it is the safety
+/// property: **the gate can only be lifted with no identity known when the
+/// answer named the account under `device_keys` and asserted no
+/// cross-signing key for it.** Anything else either leaves the gate shut or
+/// leaves `identity_known` true, and `signing::may_mint` refuses on that.
+///
+/// # What this no longer needs to be careful about
+///
+/// `failures` is not consulted, and now cannot be: it is not one of the
+/// three maps [`claims_an_identity`] reads, nor is it `device_keys`. The
+/// previous rule excluded it by hand, on the stated grounds that it is keyed
+/// by server name -- which is false. Upstream types it
+/// `BTreeMap<String, JsonValue>` (`ruma-client-api`'s `get_keys`), so a user
+/// id sits in it happily, and a body whose whole content is
+/// `{"failures":{"@account:…":{}}}` distinguishes the exclusion. It is
+/// pinned by `tests/identity_bootstrap_silent_body.rs` rather than argued.
+///
+/// Neither is there a second JSON parser to disagree with ruma about what a
+/// user id is. The old rule compared a raw `serde_json` map key against
+/// `account.as_str()` while ruma parsed the same key into an
+/// `OwnedUserId`; every reading here goes through ruma's parse.
+///
+/// # What it costs, and where the product finds out
+///
+/// The Matrix specification's `/keys/query` `failures` description says, of
+/// a server that could be reached: *"If the homeserver could be reached, but
+/// the user or device was unknown, no failure is recorded. Instead, the
+/// corresponding user or device is missing from the `device_keys` result."*
+/// So omission is not merely permitted, it is **prescribed**, and against a
+/// server that follows it this returns `Unsettled` and the gate stays shut.
+/// Measured, and reachable without a non-conformant server: Synapse compares
+/// the server-name half of a user id against its own `server_name`
+/// case-sensitively, so a machine created with a mixed-case server name in
+/// its own account id federates, fails, and answers with an empty
+/// `device_keys` and an entry under `failures`.
+///
+/// The direction of that trade is right -- refusing beats resetting every
+/// verification anyone made -- but "loud" is what the previous round claimed
+/// for it and it was not true: `mark_request_sent` returned `Ok(())` at the
+/// one moment the library held both the question and the answer, and
+/// `bootstrap_identity` then reported `AccountKeysNotFetched`, whose
+/// documented remedy is drain, send, report, call again. Against an omitting
+/// server that loop does not terminate, and nothing told the caller so.
+///
+/// [`AnswerAboutAccount::Unsettled`] is now recorded, and surfaced as
+/// [`crate::IdentityStatus::account_keys_answer_unsettled`]. The refusal is
+/// the same; what changed is that the caller can tell "nobody has asked"
+/// from "we asked, we were answered, and the answer settled nothing", and
+/// those have different remedies -- the second one's is to check the account
+/// id this machine was created with against the one `/login` returned, and
+/// to stop looping.
+async fn answer_about_this_account(
+    machine: &OlmMachine,
+    response: &KeysQueryResponse,
+) -> AnswerAboutAccount {
+    let account = machine.user_id();
+
+    // `None` as the timeout, not a duration, for `signing::read_status`'s
+    // reason: with `Some`, upstream waits for an in-flight key query for
+    // this account to land, and this read happens inside the call that is
+    // resolving one.
+    let Ok(stored) = machine.get_identity(account, None).await else {
+        // The store could not be read, so upstream's answer to "is there an
+        // identity" is unavailable rather than negative. Not a fudge: this
+        // variant means exactly "upstream does not now know", and here it
+        // does not. The mark itself still succeeds -- the answer reached
+        // upstream, and the request is resolved.
+        return AnswerAboutAccount::Unsettled;
     };
-    let Some(object) = parsed.as_object() else {
-        return false;
+
+    if !claims_an_identity(response, account) {
+        return if response.device_keys.contains_key(account) {
+            AnswerAboutAccount::Settled
+        } else {
+            AnswerAboutAccount::Unsettled
+        };
+    }
+
+    let Some(identity) = stored.and_then(UserIdentity::own) else {
+        return AnswerAboutAccount::Unsettled;
     };
-    USER_KEYED_ANSWER_FIELDS.iter().any(|field| {
-        object
-            .get(*field)
-            .and_then(serde_json::Value::as_object)
-            .is_some_and(|users| users.contains_key(account.as_str()))
-    })
+    let Some(asserted) = response
+        .master_keys
+        .get(account)
+        .and_then(|key| key.deserialize_as_unchecked::<MasterPubkey>().ok())
+    else {
+        return AnswerAboutAccount::Unsettled;
+    };
+    // `MasterPubkey`'s `PartialEq` compares the user id, the key material
+    // and the usage, and deliberately ignores signatures -- upstream's own
+    // words, "the signatures are provided by other devices and don't alter
+    // the identity of the key itself". That is the right comparison here:
+    // the question is whether upstream now holds *this* identity, not
+    // whether every device that ever signed it is still in the answer.
+    if identity.master_key() == &asserted {
+        AnswerAboutAccount::Settled
+    } else {
+        AnswerAboutAccount::Unsettled
+    }
 }
 
 /// What the product must send to its homeserver, or feed to another
@@ -2617,7 +2779,7 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
 /// object. That collision is now closed one level down rather than here:
 /// this function still accepts `{}` for a key query, because it is a
 /// well-formed response and upstream has to see it, and
-/// [`answer_speaks_about`] is what keeps it from lifting `signing.rs`'s
+/// [`answer_about_this_account`] is what keeps it from lifting `signing.rs`'s
 /// gate. For the two fieldless kinds the collision remains exactly as
 /// described, and [`mark_request_failed`] is still what closes it there.
 ///
@@ -2750,7 +2912,13 @@ async fn mark_sent(
     kind: PendingKind,
     transaction_id: OwnedTransactionId,
     body: Vec<u8>,
-) -> Result<(), SessionError> {
+) -> Result<AnswerAboutAccount, SessionError> {
+    // Held past the match so that the account-scoped kinds can ask
+    // `answer_about_this_account` what upstream made of it, once upstream
+    // has been given it. Kept as ruma's parse rather than as bytes on
+    // purpose: it is the value upstream consumed, so there is no second
+    // reading of the body for the first to disagree with.
+    let mut answer: Option<KeysQueryResponse> = None;
     let outcome = match kind {
         PendingKind::KeysUpload => {
             let response = KeysUploadResponse::try_from_http_response(http_response(body))
@@ -2764,9 +2932,11 @@ async fn mark_sent(
         | PendingKind::AccountKeysQueryOutOfBand => {
             let response = KeysQueryResponse::try_from_http_response(http_response(body))
                 .map_err(|_| SessionError::MalformedPayload)?;
-            machine
+            let outcome = machine
                 .mark_request_as_sent(&transaction_id, &response)
-                .await
+                .await;
+            answer = Some(response);
+            outcome
         }
         PendingKind::KeysClaim => {
             let response = KeysClaimResponse::try_from_http_response(http_response(body))
@@ -2825,7 +2995,23 @@ async fn mark_sent(
     // Upstream `Display` output here can embed device/session/user
     // identifiers pulled straight from the response body -- never
     // forwarded, per spec section 7.
-    outcome.map_err(|_upstream| SessionError::Failed)
+    outcome.map_err(|_upstream| SessionError::Failed)?;
+
+    // Read only after upstream has accepted the answer, and only for the two
+    // kinds whose question was about this account. Everything else has no
+    // question here to settle. See `answer_about_this_account` for the rule
+    // and for the four it replaces.
+    Ok(match answer {
+        Some(response)
+            if matches!(
+                kind,
+                PendingKind::AccountKeysQuery | PendingKind::AccountKeysQueryOutOfBand
+            ) =>
+        {
+            answer_about_this_account(machine, &response).await
+        }
+        _ => AnswerAboutAccount::NotAsked,
+    })
 }
 
 /// Reports that the request named by `id` was sent, handing back the
@@ -2894,51 +3080,54 @@ pub async fn mark_request_sent(id: &str, response_json: &str) -> Result<(), Sess
     let transaction_id: OwnedTransactionId = <&TransactionId>::from(id).to_owned();
     let body = response_json.as_bytes().to_vec();
 
-    // The account is read in the same trip as the mark, not from a later
-    // one, for the reason `take_outgoing_requests` gives for reading it
-    // alongside the requests: it is the account this response was just
-    // applied to, and only one trip can guarantee that.
-    let (account, result) = with_machine(move |machine| {
-        Box::pin(async move {
-            let outcome = mark_sent(machine, kind, transaction_id, body).await;
-            (machine.user_id().to_owned(), outcome)
-        })
+    // The mark and the read of what upstream made of it happen in the same
+    // trip, not in two, for the reason `take_outgoing_requests` gives for
+    // reading the account alongside the requests: this is the machine the
+    // response was just applied to, and only one trip can guarantee that.
+    let settled = with_machine(move |machine| {
+        Box::pin(async move { mark_sent(machine, kind, transaction_id, body).await })
     })
     .await?;
 
-    if result.is_ok() {
+    if let Ok(settled) = settled {
         let mut state = STATE.lock().expect("request registry poisoned");
         state.pending.remove(id);
-        // Recorded here and nowhere else: upstream has accepted an answer to
-        // a question this process asked about its own account, **and that
-        // answer said something about this account**. Both halves are
-        // load-bearing and each was the whole rule at some point.
+        // Recorded here and nowhere else, and what is recorded is what
+        // **upstream** knows, not what this module made of the bytes.
         //
         // Handing the request out is not enough: a caller can drain the pump
-        // and never send anything. The kind alone is not enough either, and
-        // that is the half this comment used to get wrong -- it said the
-        // response "cannot say whether it was asked about this account or
-        // somebody else", which is true of the response *alone* and false
-        // here, where the question is in hand. A body carrying only another
-        // user's keys, or only a `failures` map, is a body that answered
-        // somebody else's question; it lifted this gate, and the next
-        // `bootstrap_identity` minted a fresh identity over the account's
-        // existing one. See `answer_speaks_about` for the rule and for the
-        // three homeservers it was measured against.
+        // and never send anything. The kind alone is not enough either: a
+        // body carrying only another user's keys answered somebody else's
+        // question, and it used to lift this gate. Nor is "the answer names
+        // this account" enough, which is the rule this replaces: it read the
+        // map key and never the value, so an answer *carrying this
+        // account's published master key* lifted the gate while upstream had
+        // stored no identity at all, and the next `bootstrap_identity`
+        // minted over it. See `answer_about_this_account` for the whole of
+        // that and for the rule that ends it.
         //
-        // This is the "have we asked, and were we answered" half of
-        // `signing.rs`'s ordering gate; the "and what did the answer say"
-        // half is a separate read of the store.
-        if matches!(
-            kind,
-            PendingKind::AccountKeysQuery | PendingKind::AccountKeysQueryOutOfBand
-        ) && answer_speaks_about(response_json, &account)
-        {
-            state.account_keys_answered = true;
+        // `Unsettled` is recorded too, and that is the second half of this
+        // change. It is the one state a product could not otherwise observe
+        // -- the send succeeded, the server answered, and the gate is still
+        // shut -- and leaving it unrecorded is what made the documented
+        // remedy for `AccountKeysNotFetched` a loop that cannot terminate
+        // against a server that omits an unknown user. It is not recorded
+        // over an already-lifted gate: once upstream knows, a later answer
+        // that settles nothing does not un-know it.
+        match settled {
+            AnswerAboutAccount::NotAsked => {}
+            AnswerAboutAccount::Settled => {
+                state.account_keys_answered = true;
+                state.account_keys_answer_unsettled = false;
+            }
+            AnswerAboutAccount::Unsettled if !state.account_keys_answered => {
+                state.account_keys_answer_unsettled = true;
+            }
+            AnswerAboutAccount::Unsettled => {}
         }
     }
 
-    result
+    settled.map(|_| ())
 }
 
 /// Whether `status` is one a request that was **refused** can carry.

@@ -152,11 +152,25 @@ pub enum MachineError {
     /// different, stricter question: *have we asked, and did the answer say
     /// there is none.* An empty local identity implies neither.
     ///
-    /// Recoverable, and recoverable through the ordinary loop: the call that
-    /// returns this also queues the key query that lifts it, so a caller
-    /// drains the outbound pump, sends what it finds, reports it sent, and
-    /// calls again. Nothing else is required of the caller and no
-    /// credential is involved.
+    /// Usually recoverable through the ordinary loop: the call that returns
+    /// this also queues the key query that lifts it, so a caller drains the
+    /// outbound pump, sends what it finds, reports it sent, and calls again.
+    /// Nothing else is required of the caller and no credential is involved.
+    ///
+    /// **"Usually" is load-bearing, and this variant cannot say which case
+    /// you are in.** It covers two: nobody has asked, and a query was asked
+    /// and answered by a server whose answer settled nothing, which is what
+    /// the Matrix specification prescribes for a user a reachable server does
+    /// not know. In the second the loop above repeats forever, and it was
+    /// measured doing so. `IdentityStatus::account_keys_answer_unsettled` is
+    /// what tells them apart, and its own doc comment says what to do about
+    /// the second.
+    ///
+    /// A variant of its own would say it better. It is not added because the
+    /// wire ordinals after this enum's last variant are reserved by work in
+    /// flight, and UniFFI numbers variants by declaration position, so one
+    /// appended here would be misdecoded by every binding generated before
+    /// it. When those land, splitting this is the change to make.
     ///
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("the account's keys have not been fetched yet")]
