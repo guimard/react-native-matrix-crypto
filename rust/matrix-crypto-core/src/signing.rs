@@ -67,15 +67,25 @@
 //! why the remainder cannot be closed from a body, is stated once at
 //! `session::refuse_a_non_response` and deliberately not repeated here.**
 //! What a maintainer of this file needs from it is the consequence: a body
-//! shaped like a key query answer lifts this gate, whatever status it
-//! actually arrived with, and the empty object is inside that shape because
-//! it is the real answer for an account the server knows no identity for.
+//! shaped like a key query answer is *accepted*, whatever status it actually
+//! arrived with.
 //!
-//! Only the HTTP status separates that answer from a 502 that carried
-//! nothing, which is why a caller that got a non-2xx must say so through
-//! `session::mark_request_failed` instead. Reporting nothing at all is
-//! equally safe here: the gate needs a positive mark to open, so silence
-//! leaves it shut.
+//! **Accepted is no longer the same as lifting this gate**, and that is the
+//! narrower thing to know. `session::answer_speaks_about` additionally
+//! requires the accepted body to **name this account** in one of the maps a
+//! key query answer keys by user id. So an answer about other users, a body
+//! whose only substance is a `failures` map, and the empty object all pass
+//! `mark_request_sent` and leave this gate shut. Three homeservers were
+//! measured to settle that the empty object belongs on that list: none of
+//! them answers a key query about a local account with `{}`, however little
+//! it has to report about that account.
+//!
+//! Reporting nothing at all is equally safe here: the gate needs a positive
+//! mark to open, so silence leaves it shut. A caller that got a non-2xx
+//! should still say so through `session::mark_request_failed`, which is what
+//! keeps a refused request resolvable and is the only way to close the same
+//! collision on the signing-keys upload, where `{}` really is the whole
+//! success response.
 //!
 //! Fact (1) is also "asked at some point in this process", not "asked
 //! recently": a bootstrap long after the answer decides on stale

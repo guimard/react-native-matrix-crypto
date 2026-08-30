@@ -135,7 +135,7 @@ export interface DeviceStatus {
  * | `kind` | Method & path | `responseJson` must contain |
  * |---|---|---|
  * | `'keys_upload'` | `POST /_matrix/client/v3/keys/upload` | `{ one_time_key_counts: { [algorithm: string]: number } }` |
- * | `'keys_query'` | `POST /_matrix/client/v3/keys/query` | `{ device_keys?, master_keys?, self_signing_keys?, user_signing_keys?, failures? }` (all optional; `{}` is valid) |
+ * | `'keys_query'` | `POST /_matrix/client/v3/keys/query` | `{ device_keys?, master_keys?, self_signing_keys?, user_signing_keys?, failures? }` (all optional; `{}` is valid). **Accepted is not the same as answered here.** A query about your own account only satisfies {@link bootstrapCrossSigning}'s ordering gate when the body names that account in one of the four user-keyed maps, which is what every measured homeserver sends even for an account it holds nothing for. See {@link markRequestFailed} |
  * | `'keys_claim'` | `POST /_matrix/client/v3/keys/claim` | `{ one_time_keys: {...}, failures? }` |
  * | `'to_device'` | `PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}` | `{}`, and only `{}`. The machine ignores the contents and the response type declares no fields, so there is no field that could widen the shape: an object with any key at all is rejected here |
  * | `'signature_upload'` | `POST /_matrix/client/v3/keys/signatures/upload` | `{ failures? }` (optional; `{}` is valid) |
@@ -761,14 +761,24 @@ export async function markRequestSent(id: string, responseJson: string): Promise
  * page, and a bare `{"message":"Internal server error"}`. What it accepts is
  * every genuine success and, unavoidably, any failure whose body falls
  * inside the same shape. **The member that matters is the object with no
- * keys:** `{}` is what `/keys/query` answers for an account it knows no
- * identity for, and it is the entire success response of the signing-keys
- * upload, so a 503 that carried nothing and a 200 with nothing to say are
- * the same bytes. An empty body is turned into `{}` before parsing.
+ * keys:** `{}` is the entire success response of the signing-keys upload, so
+ * a 503 that carried nothing and a 200 with nothing to say are the same
+ * bytes. An empty body is turned into `{}` before parsing.
  *
  * That is the gap this call exists to let you close, and it can only be
  * closed from your side, by branching on the status before you choose which
  * of the two calls to make.
+ *
+ * **On the key query, the same body no longer reaches as far as it did.**
+ * This paragraph used to say `{}` was what `/keys/query` answers for an
+ * account with no signing identity; measured against Synapse, Dendrite and
+ * continuwuity, all three name the queried account even when they hold
+ * nothing for it. So a key query answer that does not name your account is
+ * accepted here and does not satisfy {@link bootstrapCrossSigning}'s ordering
+ * gate, and a 503's empty body reported through {@link markRequestSent}
+ * leaves that gate shut rather than authorising a mint. Reporting the status
+ * is still the right thing to do, and still the only thing that closes the
+ * same collision on the signing-keys upload.
  *
  * The one confusion of the pair this library *can* catch is a 2xx passed
  * here, which is rejected with `not_a_failure_status`: a success has a body

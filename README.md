@@ -98,10 +98,22 @@ received, or `0` if nothing came back at all.
 The library rejects a body it can show is not a response, which covers a Matrix
 error, an authentication challenge, a gateway page and a bare
 `{"message":"Internal server error"}`. What it accepts is any body shaped like
-that endpoint's answer, and the one that matters is an empty object: `{}` is
-what a key query returns for an account with no signing identity, and a 503
-that carried no body arrives as the same bytes. No HTTP status crosses this
-boundary on `markRequestSent`, so only your branch can tell them apart.
+that endpoint's answer, and the one that matters is an empty object: `{}` is the
+whole success response of the signing-keys upload, and a 503 that carried no
+body arrives as the same bytes. No HTTP status crosses this boundary on
+`markRequestSent`, so only your branch can tell them apart.
+
+A key query answer is held to one thing more, because the gate it lifts is the
+one that decides whether an identity is minted over an account that already has
+one. It must **name your account**, in `device_keys`, `master_keys`,
+`self_signing_keys` or `user_signing_keys`. Synapse, Dendrite and continuwuity
+were each measured over HTTP, on accounts with no signing identity and no
+uploaded device keys, and all three name the queried account even when they
+hold nothing for it. So an answer about other users, an answer whose only
+substance is a `failures` map, and an empty body are all accepted and none of
+them satisfies the gate. That closes the collision above for the key query;
+reporting the status still closes it for the signing-keys upload, and is still
+what keeps a refused request retriable.
 
 Reporting nothing at all is as safe as reporting a failure. Both leave the
 request outstanding and nothing recorded as answered, so a retry is an ordinary

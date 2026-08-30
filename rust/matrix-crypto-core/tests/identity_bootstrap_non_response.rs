@@ -39,12 +39,19 @@
 //!
 //! What that leaves through is not a list of literals, and the acts below are
 //! written to show both halves rather than to enumerate a residue. The member
-//! that matters is the object with no keys, since `{}` is the genuine
-//! `/keys/query` answer for an account the server knows no identity for,
-//! which is the exact fact that authorises minting one, and the whole success
-//! response of the signing-keys upload. Nothing in those bytes separates that
-//! answer from a 502 that carried none. That is what `mark_request_failed` is
-//! for, and act 3 is its test.
+//! that matters is the object with no keys: it is the whole success response
+//! of the signing-keys upload, and nothing in those bytes separates it from a
+//! 502 that carried none. That is what `mark_request_failed` is for, and act
+//! 2 is its test.
+//!
+//! **`{}` used to be described here as the genuine `/keys/query` answer for
+//! an account the server knows no identity for, and it is not.** Measured
+//! against three homeservers, all of them name the account even when they
+//! have nothing to report about it, so the bootstrap gate now requires an
+//! answer that does (`session::answer_speaks_about`, and
+//! `tests/identity_bootstrap_silent_body.rs`). That narrows this file's
+//! residue for the key query rather than widening it, and act 2 says which
+//! of its rows still discriminates because of it.
 //!
 //! Its own process, for the reason `tests/pump_eviction.rs` gives: the
 //! machine registry and the pump's bookkeeping are process-wide. The acts run
@@ -133,8 +140,14 @@ const HYBRID_FLOWS: &str =
 /// server. This must be accepted: only the top level is inspected, and
 /// refusing this would break every key query that touches a server that is
 /// down. This is the half of the new `error` rule that has to be right.
-const FAILURE_WITH_NESTED_ERROR: &str =
-    r#"{"device_keys":{},"failures":{"example.org":{"errcode":"M_UNKNOWN","error":"boom"}}}"#;
+///
+/// `device_keys` names this account, because that is what a real homeserver
+/// sends and because the gate now reads it. It was `{"device_keys":{}}` when
+/// this constant was written, which named nobody: the answer below would be
+/// accepted, as it must be, and would then lift the gate on a body whose
+/// only substance is that some *other* server did not answer. See
+/// `session::answer_speaks_about`.
+const FAILURE_WITH_NESTED_ERROR: &str = r#"{"device_keys":{"@alice:example.org":{}},"failures":{"example.org":{"errcode":"M_UNKNOWN","error":"boom"}}}"#;
 
 #[test]
 fn a_body_that_is_not_a_response_cannot_open_the_bootstrap_gate() {
@@ -261,15 +274,27 @@ fn a_body_that_is_not_a_response_cannot_open_the_bootstrap_gate() {
             );
         }
 
-        // --- Act 2: the body no check separates, in its three spellings ----
+        // --- Act 2: reporting a refusal must never answer the query --------
         //
-        // All three are an object with no keys by the time anything looks,
-        // and that object is a *real* `/keys/query` answer meaning "this
-        // account has no identity", which is the one fact that authorises a
-        // mint. A 502 whose body was empty produces the same bytes. There is
-        // nothing in them to tell apart, so a product that branches on the
-        // status says so with `mark_request_failed` and the gate stays shut.
-        // That is the whole reason the call exists.
+        // The first three are an object with no keys by the time anything
+        // looks. **They no longer lift this gate through `mark_request_sent`
+        // either**, because no measured homeserver answers a key query that
+        // way and the gate now requires an answer that names this account
+        // (`session::answer_speaks_about`). They are still driven, because
+        // `mark_request_failed`'s contract is the same for every body and a
+        // 503 that carried nothing is still the shape a product meets most
+        // often -- but on their own they would now pass this act even if
+        // this call did nothing at all.
+        //
+        // What still discriminates is not a row here. `mark_request_failed`
+        // takes an id and a status and no body at all, so the bodies in this
+        // loop are narrative and could not be otherwise. The discrimination
+        // is across the file: this act reports a failure against `query.id`
+        // and asserts the gate stays shut and the entry stays pending, and
+        // the last act reports a real answer against **that same id** and
+        // asserts the gate lifts. Delete this call's effect and the last act
+        // still passes; delete this act and nothing shows the failure report
+        // left the request resolvable.
         for (body, status) in [
             (EMPTY_OBJECT, 502u16),
             (EMPTY_BODY, 503u16),
