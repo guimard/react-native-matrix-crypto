@@ -119,6 +119,35 @@
 //! account key query -- which is the request where reporting a refusal as a
 //! success is actually dangerous.
 //!
+//! # WHAT THIS WAS WATCHED FAILING AGAINST
+//!
+//! Every claim above was checked by breaking the thing it rests on and
+//! observing the failure, because a green run of a test nobody has seen fail
+//! is a green run of nothing. Six mutations, each reverted:
+//!
+//! * `sender_verification` answering `Verified` for every event: caught at
+//!   step 12, `left: Some(Verified)`, `right: Some(UnsignedDevice)`.
+//! * `sender_verification` answering `UnsignedDevice` for every event:
+//!   caught at step 13, which is the collapsed-mapping defect the control
+//!   exists for.
+//! * `may_mint` serving every bootstrap: caught at step 6.
+//! * `mark_request_failed` setting the answered flag, which is the shape of
+//!   a product that reports a refusal through `mark_request_sent`: caught at
+//!   step 7 by the gate-is-still-shut assertion, not by anything earlier.
+//! * `identity_probe` reporting a non-zero cross-signing vocabulary: caught
+//!   at step 11. Reporting zero because it swept no files at all: caught by
+//!   the separate assertion that it read the package, which is the "an
+//!   absence is not a finding" guard.
+//! * The `signature_upload` never sent: caught at step 10 by the
+//!   homeserver's own view. With step 10 also neutered, the control at step
+//!   13 drops to `UnsignedDevice` -- so the value it reports is produced by
+//!   the real chain over the real homeserver and not by anything this test
+//!   arranged.
+//!
+//! One mutation was **not** caught, and it is recorded at its own site
+//! rather than here: removing the explicit re-query loop in step 13 changes
+//! nothing, because step 12's sync loop answers an account key query anyway.
+//!
 //! # The floor, which is the same one the other two proofs have
 //!
 //! matrix-nio 0.26 moved its ratchet to `vodozemac`, the crate
@@ -860,6 +889,19 @@ fn a_signing_identity_published_to_a_real_homeserver_and_what_a_sender_then_read
     // learns it from a key query, which is the same silent step
     // `verified_sender.rs` calls step seven. So the account is queried again
     // first, and that query is asserted rather than assumed.
+    //
+    // WHAT REMOVING THIS LOOP DOES, MEASURED. Nothing: the run still passes.
+    // Step 12's sync loop pumps as well, and the signing-keys upload changes
+    // this account's device list, so a key query naming it is handed out and
+    // answered there whether or not this loop exists. That is a fact about
+    // the loop above rather than about the requirement, and it is written
+    // down because the alternative is a reader assuming this block is what
+    // produces the value below. What does produce it was measured too:
+    // skipping the `signature_upload` at step 9 drops the assertion at the
+    // end of this section from `Verified` to `UnsignedDevice`, which is the
+    // same value the counterparty gets. The chain is load-bearing; this loop
+    // makes its ordering explicit and independent of what step 12 happens to
+    // do.
     let mut queried_after_signing = false;
     let deadline = Instant::now() + PATIENCE;
     while Instant::now() < deadline && !queried_after_signing {

@@ -212,18 +212,19 @@ describe('step 2 reports its own round trip', () => {
 })
 
 /**
- * The two steps this runner cannot reach, and why.
+ * The steps this runner cannot reach, and why.
  *
  * Step 1 subscribes, and the first subscriber installs this process's native
  * observer across the boundary. Step 5 creates a crypto machine and reads
- * its identity keys. Both need the JSI host object, which no Node process
- * has, so both report `unexpected` here.
+ * its identity keys. Step 7 creates a group session, encrypts one payload
+ * and decrypts the result. All three need the JSI host object, which no Node
+ * process has, so all three report `unexpected` here.
  *
  * Asserted rather than skipped. A hole nobody names is how a suite comes to
  * look like it covers a screen it does not, and the whole reason this file
- * exists is that this package looked covered while covering nothing. If
- * either of these ever passes here, something has stubbed the native
- * boundary and this file's claim about what it proves has to be rewritten.
+ * exists is that this package looked covered while covering nothing. If any
+ * of these ever passes here, something has stubbed the native boundary and
+ * this file's claim about what it proves has to be rewritten.
  */
 const UNREACHABLE_IN_NODE: FlowStep['id'][] = [
   'subscribe',
@@ -247,7 +248,7 @@ const UNREACHABLE_IN_NODE: FlowStep['id'][] = [
 ]
 
 describe('the whole flow, in the order the screen runs it', () => {
-  it('settles every step, and only the two that need a device report unexpected', async () => {
+  it('settles every step, and only the ones that need a device report unexpected', async () => {
     const ctx = freshContext()
     const { outcomes, commit } = recorder()
 
