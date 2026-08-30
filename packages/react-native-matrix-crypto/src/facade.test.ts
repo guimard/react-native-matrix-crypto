@@ -1608,6 +1608,11 @@ describe('the signing identity chain, driven through the public surface', () => 
     finishTheFlow(): void
     /** A later `/sync` says the peer's devices changed. */
     peerDevicesChanged(): Promise<void>
+    /**
+     * The account gains an identity this device does not hold the private
+     * keys for, which no call in this file can otherwise produce.
+     */
+    anotherDeviceOfOursPublishedAnIdentity(): void
   }
 
   function installFake(): Fake {
@@ -1780,6 +1785,15 @@ describe('the signing identity chain, driven through the public surface', () => 
       async peerDevicesChanged() {
         await receiveSyncChanges({ changed_devices: { changed: [PEER] } })
       },
+      anotherDeviceOfOursPublishedAnIdentity() {
+        // The row a fresh login on an old account lands on, and the only
+        // way to reach it: everywhere else in this file `identityKnown` and
+        // `privateKeysHeld` move together, because a bootstrap this device
+        // performs sets both. The account can have an identity this device
+        // does not hold the keys for, and that is the state the second
+        // refusal exists for.
+        identityKnown = true
+      },
     }
   }
 
@@ -1941,5 +1955,64 @@ describe('the signing identity chain, driven through the public surface', () => 
       { deviceId: 'BOBDEVICE', trust: 'verified' },
       { deviceId: 'BOBPHONE', trust: 'verified' },
     ])
+  })
+
+  /**
+   * The other refusal, which the chain above can never reach.
+   *
+   * A review found the model's `IdentityAlreadyExists` branch was dead
+   * code: everywhere in the chain, `identityKnown` and `privateKeysHeld`
+   * move together, because a bootstrap this device performs sets both. So
+   * `identityKnown && !privateKeysHeld` never held, the branch read as
+   * coverage and was not, and deleting
+   * `['IdentityAlreadyExists', 'identity_already_exists']` from
+   * `errors.ts` passed every test in this repository.
+   *
+   * That is the same defect this task fixed one variant over, seen from
+   * the other side: there the entry was missing and nothing could notice;
+   * here the entry was present and nothing defended it. Both end with a
+   * product being handed kind `'unknown'` and the message "crypto error:
+   * unknown" for a refusal it has to act on.
+   *
+   * `errors.test.ts` holds the mapping itself, walked over every generated
+   * variant so the class cannot reopen. This holds the half that file
+   * cannot: that the refusal survives the facade, arrives as its own kind
+   * rather than the *other* refusal's, and leaves nothing queued for a
+   * caller to send.
+   */
+  it('refuses to publish over an identity this device does not hold, as its own kind', async () => {
+    const fake = installFake()
+
+    // Ask first, because nothing is served before the server has been
+    // asked. This is the other refusal, and the two must not collapse.
+    await expect(bootstrapCrossSigning()).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'account_keys_not_fetched',
+    )
+    expect(await pump()).toEqual(['keys_query'])
+
+    // The answer names an identity this device does not hold: the ordinary
+    // shape of a fresh login on an account that has been in use for years.
+    fake.anotherDeviceOfOursPublishedAnIdentity()
+    expect(await getIdentityStatus()).toEqual({
+      accountKeysFetched: true,
+      identityKnown: true,
+      privateKeysHeld: false,
+    })
+
+    await expect(bootstrapCrossSigning()).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'identity_already_exists',
+    )
+
+    // Not the same kind as the first refusal, which has a remedy this one
+    // does not. A map that folded them, or lost either entry, would make
+    // both arrive as `'unknown'` and this assertion is what says so.
+    const refusal = await bootstrapCrossSigning().catch((e: unknown) => e)
+    expect(isCryptoError(refusal) && refusal.kind).toBe('identity_already_exists')
+    expect(isCryptoError(refusal) && refusal.kind).not.toBe('account_keys_not_fetched')
+    expect(isCryptoError(refusal) && refusal.retriable).toBe(false)
+
+    // And it queued nothing: unlike the first refusal, there is no request
+    // a caller could send that would change the answer.
+    expect(await takeOutgoingRequests()).toEqual([])
   })
 })
