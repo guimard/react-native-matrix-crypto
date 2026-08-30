@@ -262,5 +262,46 @@
       "artifact": "artifact-sizes-release",
       "note": "Taken from the artifact the release run uploads, not from its log. The measurement ran on the runner with REQUIRE_BUILD_PROVENANCE set, both legs read IDENTITY against the tagged commit, and the row is byte-identical to the uploaded file. It is copied here by hand because the release workflow holds contents:read and cannot commit."
     }
+  },
+  {
+    "label": "m5-scanned-code",
+    "xcframeworkKB": 155904,
+    "aarKB": 0,
+    "tarballKB": 67851,
+    "tarballUnpackedKB": 198106,
+    "tarballLargestContributors": [
+      {
+        "component": "MatrixCryptoFramework.xcframework",
+        "unpackedKB": 155899
+      },
+      {
+        "component": "android",
+        "unpackedKB": 41437
+      },
+      {
+        "component": "src",
+        "unpackedKB": 397
+      }
+    ],
+    "tarballIncludesXcframework": true,
+    "tarballIncludesAar": false,
+    "provenance": {
+      "method": "build-stamp",
+      "treeCommit": "397e5d2b9ee25e11e785db42b3de029810dd894b",
+      "checks": [
+        {
+          "leg": "ios",
+          "method": "build-stamp",
+          "path": "packages/react-native-matrix-crypto/MatrixCryptoFramework.xcframework",
+          "evidence": "397e5d2b9ee25e11e785db42b3de029810dd894b"
+        },
+        {
+          "leg": "android",
+          "method": "build-stamp",
+          "path": "packages/react-native-matrix-crypto/android/src/main/jniLibs",
+          "evidence": "397e5d2b9ee25e11e785db42b3de029810dd894b"
+        }
+      ]
+    }
   }
 ]
