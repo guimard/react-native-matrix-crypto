@@ -587,13 +587,22 @@ impl From<matrix_crypto_core::SyncOutcome> for SyncOutcome {
 /// The order itself is not this crate's choice and is not the core's
 /// either -- both take it from upstream's own `VerificationState` and
 /// `VerificationLevel` declarations, so the three lists can be read side by
-/// side. The core's own enum documents what each value means, and which of
-/// them this build cannot produce; this mirror deliberately repeats none of
-/// it, so the two cannot drift into saying different things.
+/// side. The core's own enum documents what each value means and what
+/// reaching it costs; this mirror deliberately repeats none of it, so the
+/// two cannot drift into saying different things.
 ///
-/// It said "which three of them" until 0.1.0, and repeating a count was
-/// exactly the drift this paragraph forbids: the count was wrong, and this
-/// file had no way to know.
+/// That sentence has now gone stale twice, one level of generality apart,
+/// and both corrections belong here because the second is the one a reader
+/// would otherwise repeat. It said "which three of them this build cannot
+/// produce" until 0.1.0, and the count was wrong. Dropping the count left
+/// "which of them this build cannot produce", which was a promise about
+/// what the core's enum says rather than a count, and M4 made that false
+/// too: the core stopped describing a category of unproducible values and
+/// started describing what each value costs to reach, because after
+/// cross-signing the category was down to one variant nothing in this
+/// repository can construct. A pointer to another file's comment is a claim
+/// about that comment, and it goes stale exactly like a count does, with
+/// nothing here able to notice.
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
 pub enum SenderVerification {
     Verified,
