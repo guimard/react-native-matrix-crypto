@@ -190,6 +190,43 @@ export interface SasMaterial {
 }
 
 /**
+ * A code for a person to hold up to another camera, in both of the forms a
+ * product needs to draw one.
+ *
+ * **Two forms and not one, and the second is not a convenience.** `payload`
+ * is binary and is not text: it carries two raw signing keys and a random
+ * shared secret, and there is no string it can honestly be turned into. A
+ * product handed only bytes reaches for a JavaScript component that draws a
+ * code from a string, and draws a square that decodes to something else.
+ * `modules` is the symbol this library's own encoder built, at the version
+ * and error-correction level it fixes because mobile clients have trouble
+ * decoding otherwise, so a product that draws the grid draws what the
+ * protocol meant rather than a re-encoding of it.
+ *
+ * **Drawing it.** `modules` is row-major and has exactly `width * width`
+ * entries; `true` is a dark square. A product draws `width` rows of `width`
+ * squares, leaves the usual quiet margin around them, and shows it. There is
+ * no image here and there never will be: this library has no encoder to draw
+ * one with and no business choosing a size.
+ *
+ * **Treat this value as secret while the flow is open**, exactly as
+ * {@link SasMaterial} is treated. The payload carries the shared secret the
+ * whole method rests on, and the grid is that same secret drawn as squares.
+ * Anything that learns either learns what an interposed party would need to
+ * answer the flow as though it had read the screen. Do not log it, do not
+ * persist it, do not put it in a crash report. The Rust core redacts its own
+ * copy and cannot reach across this boundary to do the same here.
+ */
+export interface ScannableCode {
+  /** The bytes the protocol defines. About 126 of them, binary. */
+  payload: Uint8Array
+  /** The side length, in squares, of the symbol below. */
+  width: number
+  /** The symbol, row-major, `width * width` entries. `true` is dark. */
+  modules: boolean[]
+}
+
+/**
  * The five fields `receiveSyncChanges` reads. Named as the native call names
  * them, not as a `/sync` response names them: the two vocabularies have no
  * member in common, and renaming here would only move the rename into a

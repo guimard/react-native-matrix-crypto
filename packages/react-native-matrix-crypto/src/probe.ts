@@ -27,8 +27,13 @@ export interface ProbeSignal {
  * Slicing when the view is not the whole buffer is load-bearing: a bare
  * `.buffer` would hand the native side the entire backing store rather than
  * the caller's window onto it.
+ *
+ * Exported for `facade.ts`'s `submitScannedCode`, which has the same trap to
+ * avoid on a value that is even likelier to arrive as a view: the bytes a
+ * scanner library hands a product. Not part of the package's public surface
+ * -- `index.ts` decides that, and does not export it.
  */
-function toArrayBuffer(view: Uint8Array): ArrayBuffer {
+export function toArrayBuffer(view: Uint8Array): ArrayBuffer {
   const isWholeBuffer =
     view.byteOffset === 0 && view.byteLength === view.buffer.byteLength
   return isWholeBuffer ? (view.buffer as ArrayBuffer) : view.slice().buffer

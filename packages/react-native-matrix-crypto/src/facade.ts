@@ -5,6 +5,7 @@ import type {
   SenderVerification,
   SasEmoji,
   SasMaterial,
+  ScannableCode,
   SyncDelta,
   TrustState,
   VerificationStage,
@@ -15,6 +16,7 @@ import {
   acceptVerification as nativeAcceptVerification,
   bootstrapIdentity as nativeBootstrapIdentity,
   cancelVerification as nativeCancelVerification,
+  confirmScan as nativeConfirmScan,
   confirmVerification as nativeConfirmVerification,
   createCryptoMachine as nativeCreateCryptoMachine,
   createRecovery as nativeCreateRecovery,
@@ -32,9 +34,11 @@ import {
   requestVerification as nativeRequestVerification,
   shareScopeKey as nativeShareScopeKey,
   startVerificationComparison as nativeStartVerificationComparison,
+  submitScannedCode as nativeSubmitScannedCode,
   takeOutgoingRequests as nativeTakeOutgoingRequests,
   SenderVerification as NativeSenderVerification,
   TrustState as NativeTrustState,
+  verificationCode as nativeVerificationCode,
   verificationMaterial as nativeVerificationMaterial,
   verificationStage as nativeVerificationStage,
   VerificationStage as NativeVerificationStage,
@@ -43,6 +47,13 @@ import {
 // in the Rust record must be a compile error here rather than a silently
 // absent value. `sasMaterialOf` below is the one place that reads it.
 import type { SasMaterial as NativeSasMaterial } from './generated/matrix_crypto'
+// Shared with `runProbe` rather than restated here, and the sharing is the
+// point: the conversion has one trap in it -- a `Uint8Array` that is a view
+// onto a longer buffer must cross as the view and not as the whole backing
+// store -- and a second copy is a second place to get it wrong.
+// `submitScannedCode` below is this file's only caller, and a scanner's
+// output is exactly the kind of value that arrives as a view.
+import { toArrayBuffer } from './probe'
 
 function notImplemented(name: string): Promise<never> {
   return Promise.reject(toCryptoError({ name: 'NotImplemented', reason: `${name} is not implemented yet` }))
@@ -1525,6 +1536,169 @@ export async function confirmVerification(verificationId: string, data: SasMater
 export async function cancelVerification(verificationId: string): Promise<void> {
   try {
     await nativeCancelVerification(verificationId)
+  } catch (e) {
+    throw toCryptoError(e)
+  }
+}
+
+/**
+ * The code for this flow, for a person to hold up to another camera.
+ *
+ * # What your product has to do, and what this library will not
+ *
+ * **You own the scanner, the camera permission and the screen.** Nothing in
+ * this library sees an image, asks for a permission, or draws anything. It
+ * produces the value a code carries and it consumes one back; everything
+ * between that value and a person's eyes is yours.
+ *
+ * **Draw {@link ScannableCode.modules}, not {@link ScannableCode.payload}.**
+ * That is the reason two forms come back rather than one, and it is not a
+ * convenience. The payload is about 126 bytes of binary that is not text: it
+ * carries two raw signing keys and a random shared secret. There is no
+ * string it can honestly be turned into, so a JavaScript code-drawing
+ * component -- which nearly always takes a string -- cannot be given it. The
+ * grid is the symbol this protocol's own encoder built, at a version and
+ * error-correction level it fixes deliberately, in its own words because
+ * mobile clients have trouble decoding otherwise. Draw `width` rows of
+ * `width` squares from it, leave a quiet margin, and what a camera reads is
+ * what the protocol meant. Re-encoding the payload yourself produces a code
+ * this library's own scanner would read back and another client may not.
+ *
+ * The payload is there because a product may need to move it -- to a
+ * component of its own, to a test -- not because it should be turned into a
+ * picture by hand.
+ *
+ * **Treat both as secret while the flow is open**, exactly as
+ * {@link SasMaterial} is treated: anything that learns either learns what an
+ * interposed party would need to answer the flow as though it had read the
+ * screen.
+ *
+ * # After it is drawn
+ *
+ * The other device scans it and this side learns nothing about that by
+ * itself: ask a person, and call {@link confirmScan} when they say yes.
+ * That is the step this method's security rests on, exactly as
+ * {@link confirmVerification} is for a short string.
+ *
+ * # Refusals
+ *
+ * Every one of them is a sentence a product can show, which is the whole
+ * point: the layer underneath answers seven different conditions with an
+ * empty code and a warning nobody reads, and this call names them instead.
+ *
+ * - `'code_not_offered'` -- the other device never offered to scan. Waiting
+ *   will never help; offer a short-string comparison instead.
+ * - `'identity_not_known'` -- this account has no signing identity for the
+ *   code to carry. See {@link bootstrapCrossSigning}.
+ * - `'peer_identity_not_known'` -- the *other* user has none, and nothing
+ *   this device does will produce one.
+ * - `'private_keys_not_held'` -- verifying another user puts this account's
+ *   own key in the code and this device cannot prove it holds one. See
+ *   {@link bootstrapCrossSigning} or {@link recoverIdentity}. Verifying your
+ *   own new login does not need them.
+ * - `'wrong_stage'` -- nobody has agreed to this flow yet, or it is over.
+ * - `'unknown_flow'` -- no flow of that id.
+ *
+ * Calling it twice is legal and produces a code for the same flow. Draw the
+ * newer one: it is the live one.
+ */
+export async function getVerificationCode(verificationId: string): Promise<ScannableCode> {
+  try {
+    const code = await nativeVerificationCode(verificationId)
+    // Destructured, not returned directly: a field added to the generated
+    // record later must be a deliberate choice to expose rather than
+    // something that crosses this boundary unreviewed. See Global
+    // Constraints.
+    const { payload, width, modules } = code
+    return {
+      // The generated binding speaks ArrayBuffer; this surface speaks
+      // Uint8Array, the idiomatic React Native shape and the one
+      // `EventEnvelope.ciphertext` already uses.
+      payload: new Uint8Array(payload),
+      width,
+      modules,
+    }
+  } catch (e) {
+    throw toCryptoError(e)
+  }
+}
+
+/**
+ * Hands in the payload your scanner read off the other device's screen.
+ *
+ * # The obligation this call puts on a product, and it is the sharp one
+ *
+ * **`payload` must be the raw bytes the code carried, not a decoded
+ * string.** React Native's popular scanners -- vision camera's code scanner,
+ * expo's barcode handler -- surface a decoded `value: string`, and that
+ * string cannot carry this payload: it is binary, it is not valid text, and
+ * a string round trip replaces every byte that could not be represented.
+ * Reach for the raw byte output your scanner offers, and if it offers none,
+ * that scanner cannot be used for this.
+ *
+ * This library cannot undo that damage; what it can do is name it. A payload
+ * that went through a string arrives as `'scanned_code_malformed'`, which is
+ * the one signal a product gets that its scanner is the problem rather than
+ * the person holding the phone.
+ *
+ * **This is one call and two protocol steps.** The scan is registered and
+ * the message that tells the other side the code was read is queued for the
+ * pump. Drain it: a scan nobody hears about leaves both sides waiting.
+ *
+ * # Refusals, and why there are four of them
+ *
+ * A product must be able to say four different things here, so four
+ * different kinds arrive:
+ *
+ * - `'scanned_code_unrecognised'` -- not one of these codes at all. Point
+ *   the camera at the code the other device is showing.
+ * - `'scanned_code_malformed'` -- the bytes did not survive. Scan again, and
+ *   check that your scanner yields bytes rather than text.
+ * - `'scanned_code_for_another_flow'` -- a real code, for a different
+ *   verification. Nothing is wrong; the wrong screen was read.
+ * - `'scanned_code_refused'` -- a code for this flow whose keys are not the
+ *   ones expected. **The only one of the four that can mean something is
+ *   wrong rather than that somebody aimed badly.** Refuse and start again
+ *   from a fresh request; do not invite a retry of the same code.
+ *
+ * Scanning also needs a signing identity on both sides, so
+ * `'identity_not_known'` and `'peer_identity_not_known'` are reachable here
+ * too, and name which side is missing one.
+ *
+ * **Scanning is not verifying.** When this resolves, nothing is verified
+ * yet: the other side has still to confirm, and messages have to cross.
+ * Pump, and watch {@link getVerificationStage}.
+ */
+export async function submitScannedCode(verificationId: string, payload: Uint8Array): Promise<void> {
+  try {
+    await nativeSubmitScannedCode(verificationId, toArrayBuffer(payload))
+  } catch (e) {
+    throw toCryptoError(e)
+  }
+}
+
+/**
+ * Says the other device really did scan the code this one showed.
+ *
+ * The one thing a person still has to do in a flow with no string to
+ * compare, and it is the same act {@link confirmVerification} asks for:
+ * *that was my other phone, not somebody's screenshot*. **Ask before calling
+ * this.** A product that confirms on its own has verified nothing, however
+ * well-formed its arguments were, because whether a person recognised the
+ * device that scanned is not observable from inside this process.
+ *
+ * Rejects with `'wrong_stage'` when nobody has scanned this device's code
+ * yet, and also when the flow is over. Those want opposite things done --
+ * wait, versus start again -- and this release cannot tell them apart here;
+ * {@link getVerificationStage} does not yet distinguish the states a code
+ * flow passes through, which is named as a limit rather than hidden.
+ *
+ * **Skipping it does not fail loudly, but it does fail.** A flow nobody
+ * confirms sits open until the protocol's own ten-minute timeout retires it.
+ */
+export async function confirmScan(verificationId: string): Promise<void> {
+  try {
+    await nativeConfirmScan(verificationId)
   } catch (e) {
     throw toCryptoError(e)
   }
