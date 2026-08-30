@@ -54,8 +54,10 @@ const stage: VerificationStage = 'keys-exchanged'
 // `SenderVerification` is CLOSED too, and closed in two places at once: the
 // `state` tag and the `reason` behind it. A product switching on both
 // exhaustively must be told by the compiler when a later version adds a
-// case, which is the entire argument for declaring the three values this
-// release cannot produce rather than adding them later.
+// case, which is the entire argument for declaring values a product cannot
+// meet yet rather than adding them later. This said "the three values this
+// release cannot produce"; the count was wrong before 0.1.0 shipped and is
+// wrong again since M4, which is the argument for not carrying one.
 // @ts-expect-error SenderVerification is closed: a fabricated state is not assignable
 const fabricatedState: SenderVerification = { state: 'x-fabricated-state' }
 // @ts-expect-error SenderVerification is closed: a fabricated reason is not assignable
