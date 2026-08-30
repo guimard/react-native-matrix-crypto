@@ -1812,10 +1812,12 @@ export interface RecoverySetup {
  * sit in the one place your product cannot adjust it. You know your users
  * and your threat model; choose a policy and apply it before calling.
  *
- * The recovery key is not affected by any of that. It is thirty-two random
- * bytes whatever the passphrase is, so a user who keeps it is protected
- * even if the passphrase is guessable, which is the other reason to make
- * them record it.
+ * **A strong recovery key does not make up for a weak passphrase.** Secret
+ * storage opens on either credential, so anyone who can read this account
+ * data has to beat only the weaker of the two: thirty-two random bytes are
+ * no help while `''` opens the same ciphertext. What the recovery key
+ * protects is your user's own access, not the secret's confidentiality, and
+ * that is the reason to make them record it.
  *
  * # This is Matrix's own format, not one this library invented
  *
@@ -1861,19 +1863,41 @@ export interface RecoverySetup {
  * client, where the key that stops working is one somebody wrote down and
  * was told to keep forever. Both arrive here as the same call.
  *
- * To replace a recovery deliberately, clear the account's existing
- * `'m.secret_storage.default_key'` and its `'m.secret_storage.key.<id>'`
- * first (`PUT {}` to each, which is how the client-server API clears
- * account data), read the account data again, and call this. That is the
- * same two endpoints you are already using, and it puts the destructive
- * step in your own code where a review can see it.
+ * **To replace a recovery deliberately, call this again with the same
+ * `accountData` minus the `'m.secret_storage.default_key'` entry.** Filter
+ * that one entry out of the array; write nothing to your homeserver to
+ * arrange it. The refusal lifts because nothing points at a key any more,
+ * everything else is still there so the ciphertexts still merge, and the
+ * recovery the account has goes on working until your last `PUT`, of the
+ * new pointer, switches it over. There is no window in which your user has
+ * no working recovery, and nothing to undo if you stop halfway.
  *
- * **This call believes the account data you hand it.** Passing `[]` asserts
- * the account has no recovery and the refusal believes you, exactly as
- * {@link bootstrapCrossSigning}'s gate believes a key query you reported as
- * answered. That is unavoidable in a library that performs no request, and
- * it is said rather than left to be discovered: what the refusal buys is
- * that you have to have *looked* before anything is destroyed.
+ * **Do not clear the key description.** That is irreversible: the
+ * description holds the salt, the iteration count and the MAC, so once it
+ * is gone no passphrase and no recovery key can open the ciphertexts it
+ * protected, ever. The refusal reads the pointer and only the pointer.
+ *
+ * Two other routes lift the refusal, and both cost something the one above
+ * does not:
+ *
+ * - **Clearing the pointer on your homeserver** (`PUT {}`, which is how the
+ *   client-server API deletes account data) works, and the merge survives.
+ *   What it costs is a window: from that write until your last one the
+ *   account resolves no recovery, and a crash in between leaves it there.
+ * - **Passing `[]`** works too, and costs the merge. This call merges into
+ *   what you hand it, so handed nothing it merges into nothing and every
+ *   other key's ciphertext, including another client's, is dropped from
+ *   the events you then write. Use it only for an account you know has no
+ *   account data.
+ *
+ * **This call believes the account data you hand it**, which is what makes
+ * all three possible. Passing `[]` asserts the account has no recovery and
+ * the refusal believes you, exactly as {@link bootstrapCrossSigning}'s gate
+ * believes a key query you reported as answered. That is unavoidable in a
+ * library that performs no request, and it is said rather than left to be
+ * discovered: what the refusal buys is not that destruction is impossible,
+ * but that you have to have *looked*, and that the cheapest way past it is
+ * also the one that destroys nothing.
  *
  * `'account_keys_not_fetched'` means this process has not yet asked the
  * server about this account. The private keys this device holds may belong
@@ -1995,8 +2019,19 @@ export async function createRecovery(
  *
  * `'recovery_not_set_up'` means the account data you handed over carries no
  * complete recovery. Either this account has none, or you did not fetch all
- * of it. This library sees only what it was given, so it cannot tell those
- * apart, and the list above is what to check.
+ * of it, or its `'m.secret_storage.default_key'` has been **cleared** and
+ * now points at nothing. This library sees only what it was given, so it
+ * cannot tell those apart, and the list above is what to check.
+ *
+ * **A cleared pointer belongs here and not with the two refusals above**,
+ * and the difference matters to your user. `PUT {}` is the only way the
+ * client-server API can delete an account data event, so a cleared pointer
+ * is what a half-finished replacement leaves behind: the key description
+ * and every ciphertext are still on your homeserver, and writing the
+ * pointer back makes the same passphrase work again. Nothing has been
+ * destroyed, so do not show your user the sentence for
+ * `'recovery_data_malformed'`, which sends them to set recovery up again
+ * and is the one action that would destroy it.
  *
  * `'account_keys_not_fetched'` and `'identity_not_known'` are the same pair
  * {@link bootstrapCrossSigning} and {@link requestSelfVerification} report,
