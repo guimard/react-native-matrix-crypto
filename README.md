@@ -14,7 +14,9 @@ Two checks stand behind that. On every pull request, a job packs this repository
 
 **A third-party Matrix client decrypts what this library encrypts.** [`matrix-nio`](https://github.com/matrix-nio/matrix-nio) is a Matrix client written in Python by people who have never seen this code. It decrypts an event this library encrypted, this library decrypts an event it encrypted, and each test flips a single character of each ciphertext to watch both refusals happen. Both run over a real homeserver, and anyone can run them: one drives the Rust core, one drives the published TypeScript API on an emulator with a second Matrix user as the counterparty. Two of our own crypto machines agreeing would prove only that the implementation is self consistent, because a consistent misreading of the protocol passes that cleanly on both sides. See [running the proofs](#running-the-proofs), and read the floor under [limits](#limits-you-must-design-around) before you weigh it.
 
-**Every build gate has been watched rejecting a real violation**, not merely passing. There are nine, they all run in CI, and a gate nobody has watched fail is not known to work.
+**Every build gate has been watched rejecting a real violation**, not merely passing. There are ten, they all run in CI, and a gate nobody has watched fail is not known to work.
+
+**There is a working application to start from.** `packages/example-app` is a neutral React Native app that drives the whole surface live on a device: it creates a machine, drains the outbound queue, encrypts and decrypts a real event, reads identity keys, and shows for each step the exact TypeScript a consumer would write next to what it got back. It imports from `react-native-matrix-crypto` and from nothing else, so what you read there is what you can write, with no private entry point doing the interesting part off screen. Copying from it is a reasonable way to start.
 
 ## Install
 
