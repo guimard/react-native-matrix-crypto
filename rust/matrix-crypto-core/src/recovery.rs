@@ -366,21 +366,61 @@ fn existing_ciphertexts(
 /// another client, where the key that stops working is one somebody wrote
 /// down and was told to keep forever. Both arrive here as the same call.
 ///
-/// **To replace a recovery deliberately, call this again with the same
-/// account data minus the `m.secret_storage.default_key` entry.** Drop that
-/// one entry from the list; write nothing to the server to arrange it. The
+/// **To add a recovery deliberately, call this again with the same account
+/// data minus the `m.secret_storage.default_key` entry.** Drop that one
+/// entry from the list; write nothing to the server to arrange it. The
 /// refusal lifts because nothing points at a key any more, everything else
 /// is still in the list so the ciphertexts still merge, and the recovery the
 /// account has goes on working until the last `PUT` of the new pointer
 /// switches it over. There is no window in which the account has no working
 /// recovery, and nothing to roll back if the product stops halfway.
 ///
-/// **Do not clear the key description.** An earlier version of this
-/// paragraph said to clear it alongside the pointer. That is irreversible
-/// and buys nothing: the description is where the salt, the iteration count
-/// and the MAC live, so once it is gone no secret can be turned back into
-/// the key and the ciphertexts it protected are unreadable for good. The
-/// refusal reads the pointer and only the pointer.
+/// # Adding a key is not revoking one, and this call cannot do the second
+///
+/// **That route re-points the account. It does not revoke anything.** When
+/// it finishes, the old key description is still on the server and the old
+/// key's ciphertext is still in every `encrypted` map, because the merge is
+/// exactly what the route is recommended for. Anyone holding the old
+/// passphrase and able to read this account's account data can still open
+/// the account's private signing keys, by reading the old description
+/// directly instead of following the pointer. `recover_identity` will not do
+/// that, because it follows the pointer; nothing else is stopped, and a
+/// homeserver operator or anyone with a live access token is not obliged to
+/// follow pointers.
+///
+/// That is the right default and it is not what every caller wants. The
+/// refusal above names two callers it cannot tell apart, and the first of
+/// them, a user replacing a passphrase they no longer trust, needs the old
+/// key to stop working. **This call cannot decide that for them**, for the
+/// same reason it refuses in the first place: the entry it would have to
+/// drop is indistinguishable from another client's, and dropping the wrong
+/// one takes away a recovery key somebody was told to keep forever.
+///
+/// So revocation is one further act, performed by the product, on data this
+/// call has already handed back:
+///
+/// 1. take the returned `account_data` and remove the **old** key id from
+///    each `m.cross_signing.*` entry's `encrypted` map, leaving the new one;
+/// 2. `PUT` the entries in the order they were handed back, pointer last, as
+///    always;
+/// 3. **afterwards**, and only afterwards, `PUT {}` to
+///    `m.secret_storage.key.<old id>`.
+///
+/// The cost is stated plainly because it is the same destruction this
+/// refusal exists to prevent, performed on purpose: after step 1 the old key
+/// opens nothing on this account, whoever it belonged to. Do it only for a
+/// key this product created.
+///
+/// **Do not clear the key description before the new pointer is live.** That
+/// ordering is what makes the difference between a rotation and a loss: the
+/// description is where the salt, the iteration count and the MAC live, so a
+/// key whose description is gone can never be reconstructed from any secret,
+/// and clearing it while it is still the account's default leaves the
+/// account with a pointer at nothing recoverable. Step 3 above is the same
+/// write performed after the switchover, when the key it describes is no
+/// longer the one the account resolves. The refusal itself reads the pointer
+/// and only the pointer, so clearing the description buys nothing at all
+/// before step 2.
 ///
 /// Two other routes lift the refusal, and both cost something the route
 /// above does not:
@@ -404,7 +444,9 @@ fn existing_ciphertexts(
 /// its own, and it is said rather than left to be discovered: what this
 /// refusal buys is not that destruction is impossible, but that a product
 /// has to have *looked*, and that the cheapest way past it is also the one
-/// that destroys nothing.
+/// that destroys nothing. What it does not buy, and what nothing in this
+/// call can buy, is that the key it replaced has stopped working: that is
+/// the further act above.
 ///
 /// [`MachineError::AccountKeysNotFetched`] if this process has not yet asked
 /// the server about this account. The keys this device holds may belong to
@@ -869,6 +911,9 @@ mod tests {
     /// `MachineConfig`. Neither opens anything outside this test process.
     const PASSPHRASE: &str = "recovery-test-passphrase";
     const WRONG_PASSPHRASE: &str = "not-the-recovery-test-passphrase";
+    /// The one a user rotates *to*, in the test that drives what
+    /// happens to the one they rotated away from.
+    const NEW_PASSPHRASE: &str = "the-second-recovery-test-passphrase";
 
     /// A `/keys/query` answer naming no identity for this account: the server
     /// has been asked, it has answered **about this account**, and what it holds
@@ -2211,8 +2256,15 @@ mod tests {
     ///
     /// `PUT {}`, not a delete: the client-server API has no way to remove a
     /// global account data event, so an empty content object is what
-    /// "cleared" looks like on a real homeserver, and it is what
-    /// [`create_recovery`]'s documented remedy tells a product to write.
+    /// "cleared" looks like on a real homeserver.
+    ///
+    /// **This is not what [`create_recovery`]'s recommended route does**,
+    /// and this comment said it was until the route changed under it. The
+    /// recommendation writes nothing to the server; it drops the pointer
+    /// from the list handed over. Clearing on the server is the second of
+    /// the routes past the refusal, the one documented with a window, and
+    /// it is also the state a product that stopped halfway is left in,
+    /// which is why this file goes on constructing it.
     fn with_the_pointer_cleared(account_data: &[AccountDataEntry]) -> Vec<AccountDataEntry> {
         with_replaced_content(
             account_data,
@@ -2272,9 +2324,17 @@ mod tests {
     ///
     /// `create_recovery` refuses to write over a recovery the account
     /// already has and tells a product how to get past that. Every route
-    /// past it involves the account's pointer no longer naming a key, and
-    /// on a real homeserver the only spelling of that is `PUT {}`, because
-    /// the client-server API has no delete for account data.
+    /// past it involves the account's pointer no longer naming a key **in
+    /// the list handed over**, and one of them, the one a product is left
+    /// in the middle of if it stops halfway, spells that on the homeserver
+    /// as `PUT {}`, because the client-server API has no delete for account
+    /// data.
+    ///
+    /// The recommended route does not write that, and this paragraph said
+    /// it was the only spelling until the route changed under it. The state
+    /// still arrives, from the route that clears on the server and from any
+    /// interrupted replacement, and what this test is about is what the
+    /// library says when it does.
     ///
     /// `restore` used to parse that pointer into ruma's own content type
     /// and report the parse failure as `RecoveryDataMalformed`, whose
@@ -2342,9 +2402,11 @@ mod tests {
                 .await
                 .expect("answering the account key query must not fail");
 
-            // (1) The state the library's own remedy creates. `PUT {}` is
-            //     the only way to clear account data, so this is what a
-            //     product that followed the instruction is looking at.
+            // (1) The state a product is looking at after clearing the
+            //     pointer on the server: the second documented route, and
+            //     also where any interrupted replacement stops. `PUT {}` is
+            //     the only way to clear account data, so this is what
+            //     "cleared" is.
             let cleared = with_the_pointer_cleared(&recovery.account_data);
             assert_eq!(
                 recover_identity(PASSPHRASE, &cleared).await,
@@ -2412,19 +2474,41 @@ mod tests {
     /// handed the account's existing account data, and it silently did the
     /// destructive thing in both cases.
     ///
+    /// It still cannot see the difference, and that is why it refuses rather
+    /// than choosing. What this test covers is the half that is safe for
+    /// both callers: adding a key without taking one away. The other half,
+    /// which only the first caller wants, is a further act performed by the
+    /// product on what this call hands back.
+    ///
     /// # What is asserted, in order
     ///
     /// 1. Handed a recovery, it refuses, and the refusal is its own variant
     ///    rather than one of the four that already existed.
-    /// 2. Handed the same account data with the pointer cleared, which is
-    ///    the documented remedy and the only way a product can clear an
-    ///    account data event, it is served.
+    /// 2. Handed the same account data with the pointer **omitted**, which
+    ///    is the recommended route and writes nothing to the server, it is
+    ///    served.
     /// 3. What it then produces **merges** rather than replaces: the master
     ///    key's `encrypted` map carries the old key id with its original
     ///    ciphertext, byte for byte, alongside the new one. That is the
     ///    difference between adding a key to this account's secret storage
     ///    and evicting every other client's key from it.
-    /// 4. The new secret opens the merged result.
+    /// 4. The account's existing recovery still opens while the new one is
+    ///    being written, which is the property the recommended route has
+    ///    and the other two do not.
+    /// 5. The two other routes past the refusal, with what each costs: an
+    ///    empty list is pinned at one ciphertext and a cleared pointer at
+    ///    two, so the documentation's claims about both are checkable
+    ///    rather than prose.
+    /// 6. The new secret opens the merged result.
+    ///
+    /// # What is deliberately not asserted here
+    ///
+    /// That the old key stops working. It does not, and
+    /// [`replacing_a_recovery_re_points_it_and_revoking_it_is_a_further_act`]
+    /// is where that is driven. Act 3's merge is precisely why: the entry it
+    /// keeps under the old key id is, for a caller replacing their own
+    /// passphrase, their own old key. Revoking is a further act and it has
+    /// its own test.
     #[test]
     fn a_second_recovery_refuses_rather_than_taking_the_first_one_away() {
         let _guard = futures::executor::block_on(lock_for_test());
@@ -2567,6 +2651,231 @@ mod tests {
             recover_identity(&second.recovery_key, &stored)
                 .await
                 .expect("the second recovery must open with its own recovery key");
+        }));
+
+        reset_for_test();
+        destroy(&store_dir);
+    }
+
+    /// The account data a homeserver would hold after `written` has been
+    /// `PUT` over `server`, one event per type, last write wins.
+    fn applied_over(
+        server: &[AccountDataEntry],
+        written: &[AccountDataEntry],
+    ) -> Vec<AccountDataEntry> {
+        let mut stored = server.to_vec();
+        for entry in written {
+            match stored
+                .iter_mut()
+                .find(|existing| existing.event_type == entry.event_type)
+            {
+                Some(existing) => existing.content = entry.content.clone(),
+                None => stored.push(entry.clone()),
+            }
+        }
+        stored
+    }
+
+    /// A copy of `account_data` whose pointer names `key_id`.
+    ///
+    /// Used to ask the one question `recover_identity` will not ask by
+    /// itself: whether a key the account no longer resolves is still
+    /// openable. Following the pointer is this library's rule; it is not a
+    /// rule that binds a homeserver operator, anyone holding an access
+    /// token, or another client that remembers an old key id, so putting the
+    /// pointer back is the honest way to model what those readers reach.
+    fn pointed_at(account_data: &[AccountDataEntry], key_id: &str) -> Vec<AccountDataEntry> {
+        with_replaced_content(
+            account_data,
+            |event_type| event_type == "m.secret_storage.default_key",
+            &serde_json::json!({ "key": key_id }).to_string(),
+        )
+    }
+
+    /// A copy of `account_data` with `key_id` dropped from every secret's
+    /// `encrypted` map.
+    ///
+    /// The revocation step, performed as a product performs it: on the
+    /// entries this library handed back, before they are written.
+    fn without_the_key(account_data: &[AccountDataEntry], key_id: &str) -> Vec<AccountDataEntry> {
+        let mut stripped = account_data.to_vec();
+        let mut removed = 0;
+        for entry in stripped.iter_mut() {
+            if !SECRETS.iter().any(|name| name.as_str() == entry.event_type) {
+                continue;
+            }
+            let mut content: serde_json::Value =
+                serde_json::from_str(&entry.content).expect("this module wrote well-formed JSON");
+            let encrypted = content
+                .get_mut("encrypted")
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("a stored secret always carries an encrypted map");
+            if encrypted.remove(key_id).is_some() {
+                removed += 1;
+            }
+            entry.content = content.to_string();
+        }
+        assert_eq!(
+            removed,
+            SECRETS.len(),
+            "revoking a key must drop it from all three secrets, or the \
+             fixture is not the one this test says it is"
+        );
+        stripped
+    }
+
+    /// **Replacing a recovery re-points the account. It does not revoke the
+    /// key it replaced**, and this test is what stops the documentation
+    /// pretending otherwise.
+    ///
+    /// # Why this exists
+    ///
+    /// `create_recovery` refuses to write over a recovery the account
+    /// already has, and the first caller its own rationale names is a user
+    /// replacing a passphrase they no longer trust, "where the old recovery
+    /// key is meant to stop working". The route the documentation recommends
+    /// does not do that. Two instructions guarantee it, and each is right on
+    /// its own: the ciphertexts **merge**, which is the reason that route is
+    /// recommended, and the old key description is left alone, which is what
+    /// keeps the merge reversible. Between them the old key stays openable
+    /// by anyone who reads the account data without following the pointer.
+    ///
+    /// A reader of the prose could not have known that. Every other route
+    /// past the refusal has its cost named; this one did not, on the path
+    /// being recommended, for the caller named first.
+    ///
+    /// # What is asserted
+    ///
+    /// 1. After the replacement this library refuses the old passphrase,
+    ///    because `restore` follows the pointer.
+    /// 2. **And the old key is still open**, which makes act 1 a property of
+    ///    this library rather than of the account: put the pointer back and
+    ///    the old passphrase imports a complete identity.
+    /// 3. Revocation, performed as the documentation now describes it,
+    ///    closes that, and its two steps are asserted separately because
+    ///    they do different work. Dropping the old key id from each secret
+    ///    is what revokes: the key still reconstructs and there is nothing
+    ///    left encrypted to it. Clearing the old description afterwards
+    ///    changes the answer again, which is how each step is shown to be
+    ///    load-bearing rather than riding on the other. The new passphrase
+    ///    is unaffected throughout.
+    /// 4. And the prohibition gains an executable reason: clearing the
+    ///    description **before** the switchover, while the account still
+    ///    resolves that key, leaves a recovery no secret can open and that
+    ///    restoring the pointer does not bring back.
+    #[test]
+    fn replacing_a_recovery_re_points_it_and_revoking_it_is_a_further_act() {
+        let _guard = futures::executor::block_on(lock_for_test());
+        reset_for_test();
+        let before = futures::executor::block_on(in_runtime(before_the_reinstall()));
+        let store_dir = before.store_dir.clone();
+
+        futures::executor::block_on(in_runtime(async move {
+            let first = before.recovery;
+            let old_key_id = pointed_key_id(&first.account_data)
+                .expect("the fixture's account data names the key it wrote");
+
+            // The recommended route, driven: nothing is written to arrange
+            // it, and what comes back is applied as a homeserver would.
+            let second = create_recovery(NEW_PASSPHRASE, &without_the_pointer(&first.account_data))
+                .await
+                .expect("the recommended route lifts the refusal");
+            let server = applied_over(&first.account_data, &second.account_data);
+
+            // (1) Through this library the old passphrase is now wrong,
+            //     because `restore` follows the pointer and the pointer
+            //     names the new key.
+            assert_eq!(
+                recover_identity(PASSPHRASE, &server).await,
+                Err(MachineError::RecoveryKeyIncorrect),
+                "after the switchover the account resolves the new key, so \
+                 the old passphrase is a wrong secret for it"
+            );
+
+            // (2) And that is a fact about this library, not about the
+            //     account. The old description and the old ciphertext are
+            //     both still on the server, so a reader that does not follow
+            //     the pointer opens the identity with the old passphrase. A
+            //     homeserver operator, anyone holding an access token, and
+            //     any client that remembers the old key id are such readers.
+            recover_identity(PASSPHRASE, &pointed_at(&server, &old_key_id))
+                .await
+                .expect(
+                    "the old key is still openable after the recommended \
+                     route, which is what the documentation has to say and \
+                     for one release did not",
+                );
+
+            // (3a) Revocation, step one: drop the old key id from each
+            //      secret. Asserted on its own, before the description is
+            //      touched, because the two steps do different work and a
+            //      test that ran them together would pin neither. The old
+            //      passphrase still reconstructs its key here, since the
+            //      description is untouched, and finds nothing stored under
+            //      it: that answer is what says the ciphertext is gone
+            //      rather than the key.
+            let revoked = without_the_key(&second.account_data, &old_key_id);
+            let server = applied_over(&server, &revoked);
+            assert_eq!(
+                recover_identity(PASSPHRASE, &pointed_at(&server, &old_key_id)).await,
+                Err(MachineError::RecoveryNotSetUp),
+                "dropping the old key id from the secrets is what actually \
+                 revokes it: the key still reconstructs from its description \
+                 and there is no longer anything encrypted to it"
+            );
+
+            // (3b) Step two, and only now: clear the old description, so
+            //      nothing on the account describes a key it no longer
+            //      uses. The answer changes, which is how this assertion
+            //      shows the step did something rather than riding on the
+            //      one before.
+            let server = with_replaced_content(
+                &server,
+                |event_type| event_type == format!("m.secret_storage.key.{old_key_id}"),
+                "{}",
+            );
+            assert_eq!(
+                recover_identity(PASSPHRASE, &pointed_at(&server, &old_key_id)).await,
+                Err(MachineError::RecoveryDataMalformed),
+                "with the description gone the key cannot be reconstructed at \
+                 all, which is a different answer from (3a) and the reason \
+                 this step is last rather than first"
+            );
+            assert_eq!(
+                recover_identity(PASSPHRASE, &server).await,
+                Err(MachineError::RecoveryKeyIncorrect),
+                "and through the pointer it is still simply the wrong secret"
+            );
+
+            // The point of the whole exercise: the new passphrase works.
+            recover_identity(NEW_PASSPHRASE, &server)
+                .await
+                .expect("revoking the old key must not touch the new one");
+
+            // (4) The prohibition, with its reason executable. Clearing the
+            //     description while the account still resolves that key is
+            //     the same write at the wrong time, and it is not a window
+            //     but a loss: putting the pointer back does not help,
+            //     because there is nothing left to reconstruct the key from.
+            let too_early = with_replaced_content(
+                &first.account_data,
+                |event_type| event_type.starts_with("m.secret_storage.key."),
+                "{}",
+            );
+            assert_eq!(
+                recover_identity(PASSPHRASE, &too_early).await,
+                Err(MachineError::RecoveryDataMalformed),
+                "a cleared description is unreadable stored data, which is \
+                 the one thing no secret fixes"
+            );
+            assert_eq!(
+                recover_identity(PASSPHRASE, &pointed_at(&too_early, &old_key_id)).await,
+                Err(MachineError::RecoveryDataMalformed),
+                "and unlike a cleared pointer, restoring what was cleared \
+                 does not bring it back: the salt, the iteration count and \
+                 the MAC went with it. That is why the description is \
+                 cleared after the switchover and never before"
+            );
         }));
 
         reset_for_test();
