@@ -18,12 +18,19 @@
  * and `GuidedFlow.tsx` keeps every line that touches a component.
  */
 import {
+  asCryptoScopeId,
+  bootstrapCrossSigning,
   createCryptoMachine,
+  decryptEvent,
+  encryptEvent,
   exportSecrets,
   getDeviceIdentityKeys,
+  getIdentityStatus,
   isCryptoError,
   onCryptoSignal,
   runProbe,
+  shareScopeKey,
+  type SenderVerification,
   type Unsubscribe,
 } from 'react-native-matrix-crypto'
 // The bounded wait only, not the suite: this screen explains the bridge to a
@@ -32,7 +39,12 @@ import {
 // of the caller. See `awaitSignalDelivery` for what happened when the two
 // had separate copies.
 import { awaitSignalDelivery } from 'react-native-matrix-crypto/interop/suite'
-import { DEMO_DEVICE_ID, DEMO_USER_ID, demoMachineConfig } from './cryptoConfig'
+import {
+  DEMO_DEVICE_ID,
+  DEMO_SENDER_SCOPE,
+  DEMO_USER_ID,
+  demoMachineConfig,
+} from './cryptoConfig'
 import { FLOW_STEPS, type FlowStep } from './steps'
 import { nthSignal } from './signalOrder'
 
@@ -239,7 +251,130 @@ export async function runIdentity(ctx: RunContext, commit: Commit): Promise<void
   }
 }
 
-// Step 6: deliberately triggers the not-implemented path.
+/**
+ * UTF-8, written out: React Native ships no `TextDecoder`.
+ *
+ * A third copy in this repository, and the reason is the same one
+ * `levelTwoSuite.ts` gives for its own: this module must stay free of
+ * imports the library does not publish, and neither of the other two is on
+ * the published surface. Six lines of decoding is a smaller cost than a
+ * dependency that would make this file unloadable outside a device.
+ */
+function utf8Decode(bytes: Uint8Array): string {
+  let out = ''
+  for (const byte of bytes) {
+    // Every payload this card decodes is JSON this same process encoded, so
+    // it is ASCII by construction. Anything outside that range is reported
+    // rather than guessed at.
+    out += byte < 0x80 ? String.fromCharCode(byte) : '�'
+  }
+  return out
+}
+
+/** How a `SenderVerification` reads on one line. */
+function describeSender(verification: SenderVerification | undefined): string {
+  if (verification === undefined) return 'absent'
+  return verification.state === 'unverified'
+    ? `${verification.state} / ${verification.reason}`
+    : verification.state
+}
+
+// Step 6: the signing-identity gate, observed refusing.
+//
+// The refusal IS the demonstration, and the card says so. This app has no
+// homeserver, so no key query naming the account has been answered, and
+// `bootstrapCrossSigning` will not mint an identity on a question nobody has
+// answered. A walkthrough that got past this would have to invent a key
+// query response, which is the exact mistake `markRequestSent`'s own
+// documentation spends a page on.
+//
+// `getIdentityStatus` is called first and its three fields are reported,
+// because the refusal only means what it means alongside them: with
+// `accountKeysFetched` false, `identityKnown` false says "nobody has asked",
+// not "the account has none".
+export async function runSigningIdentity(_ctx: RunContext, commit: Commit): Promise<void> {
+  try {
+    const status = await getIdentityStatus()
+    const shape =
+      `accountKeysFetched: ${status.accountKeysFetched}, ` +
+      `identityKnown: ${status.identityKnown}, ` +
+      `privateKeysHeld: ${status.privateKeysHeld}`
+    try {
+      await bootstrapCrossSigning()
+      commit('signingIdentity', {
+        status: 'unexpected',
+        headline: 'Unexpected: an identity was minted with no server ever asked',
+        detail: shape,
+      })
+    } catch (e) {
+      const kind = isCryptoError(e) ? e.kind : undefined
+      commit(
+        'signingIdentity',
+        kind === 'account_keys_not_fetched'
+          ? {
+              status: 'ok',
+              headline: 'Refused, as it must be, with kind "account_keys_not_fetched"',
+              detail: `${shape}\nThe key query that lifts this refusal is already queued: drain takeOutgoingRequests, send it, report it, call again.`,
+            }
+          : { status: 'unexpected', headline: `Unexpected error shape: ${String(e)}`, detail: shape },
+      )
+    }
+  } catch (e) {
+    commit('signingIdentity', { status: 'unexpected', headline: `Unexpected: ${String(e)}` })
+  }
+}
+
+// Step 7: one real event, decrypted, and what it says about who sent it.
+//
+// The event is this device's own, which is the only sender a walkthrough
+// with no homeserver and no counterparty has. That is enough for the claim
+// the card makes: the value is produced by the same code path that reads a
+// stranger's event, and the reason it reports is the one every product meets
+// first. What it cannot show is a value above `unsigned_device`; those need
+// a peer whose client published a cross-signing identity, which is what
+// rust/matrix-crypto-core/tests/level_two_identity.rs drives.
+export async function runSenderCheck(_ctx: RunContext, commit: Commit): Promise<void> {
+  try {
+    const scope = asCryptoScopeId(DEMO_SENDER_SCOPE)
+    // One share is what creates the group session this card then uses. It
+    // delivers nothing to anybody -- there is no homeserver to carry it --
+    // and the card does not claim it does.
+    await shareScopeKey(scope, [DEMO_USER_ID])
+
+    const sealed = await encryptEvent(scope, 'm.room.message', {
+      msgtype: 'm.text',
+      body: 'who sent this?',
+    })
+    // `encryptEvent` hands back the encrypted *content*. `decryptEvent`
+    // takes the whole event a homeserver would have delivered, so the
+    // envelope around it is built here.
+    const opened = await decryptEvent(scope, {
+      sender: sealed.sender,
+      event_id: '$sender-demo:example.org',
+      origin_server_ts: 1700000000000,
+      content: JSON.parse(utf8Decode(sealed.ciphertext)) as unknown,
+    })
+
+    const verification = opened.senderVerification
+    const expected =
+      verification !== undefined &&
+      verification.state === 'unverified' &&
+      verification.reason === 'unsigned_device'
+    commit('senderCheck', {
+      status: expected ? 'ok' : 'unexpected',
+      headline: expected
+        ? 'Decrypted, and the sender reads: unverified / unsigned_device'
+        : `Unexpected sender verification: ${describeSender(verification)}`,
+      detail: expected
+        ? 'Not a placeholder. Step 6 refused to publish an identity, so no signature exists for this device and the library says exactly that.'
+        : 'This card expects unsigned_device, because nothing in this walkthrough publishes a signing identity.',
+    })
+  } catch (e) {
+    commit('senderCheck', { status: 'unexpected', headline: `Unexpected: ${String(e)}` })
+  }
+}
+
+// Step 8: deliberately triggers the not-implemented path.
 //
 // THIS STEP HAS NOW GONE STALE TWICE, and the reason is structural rather
 // than careless. The card asserts an implementation detail of the library,
@@ -283,7 +418,7 @@ export async function runNotYet(_ctx: RunContext, commit: Commit): Promise<void>
   }
 }
 
-// Step 7: closing tally. Purely local -- everything above already crossed
+// Step 9: closing tally. Purely local -- everything above already crossed
 // all five layers; this just names them.
 export async function runLayers(_ctx: RunContext, commit: Commit): Promise<void> {
   commit('layers', {
@@ -298,6 +433,8 @@ export const STEP_RUNNERS: Record<FlowStep['id'], (ctx: RunContext, commit: Comm
   signal: runSignal,
   typedError: runTypedError,
   identity: runIdentity,
+  signingIdentity: runSigningIdentity,
+  senderCheck: runSenderCheck,
   notYet: runNotYet,
   layers: runLayers,
 }

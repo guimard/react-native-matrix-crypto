@@ -375,15 +375,24 @@ pub fn addresses(body: &str, user_id: &str, device_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Sends one request the pump handed out, to the endpoint its `kind` names,
-/// and returns the homeserver's response body for `mark_request_sent`.
+/// Where one request the pump handed out has to be sent, and with what body.
 ///
 /// The `kind` -> endpoint mapping is spec section 3bis's, extended for the
-/// claim step section 3ter added. An unrecognised kind panics rather than
-/// being skipped: `kind` is an open tag, and a tag this harness cannot route
-/// is a finding about the surface, not something to swallow.
-pub fn send_outgoing(homeserver: &Homeserver, token: &str, request: &OutgoingRequest) -> String {
-    let (method, path, body) = match request.kind.as_str() {
+/// claim step section 3ter added and for the two publication steps M4 added.
+/// An unrecognised kind panics rather than being skipped: `kind` is an open
+/// tag, and a tag this harness cannot route is a finding about the surface,
+/// not something to swallow.
+///
+/// Separate from [`send_outgoing`] because one of the seven kinds cannot be
+/// posted the way the other six can. `signing_keys_upload` goes to a
+/// user-interactive endpoint that refuses the first attempt with a `401` and
+/// a challenge, so a caller has to send it, read the refusal, and send it
+/// again with an `auth` object merged in. That loop is a proof rather than
+/// plumbing -- it is where a product decides what to report through
+/// `mark_request_failed` and what through `mark_request_sent` -- so it lives
+/// in the test that makes the claim, and only the addressing lives here.
+pub fn endpoint(request: &OutgoingRequest) -> (&'static str, String, String) {
+    match request.kind.as_str() {
         "keys_upload" => (
             "POST",
             "/_matrix/client/v3/keys/upload".to_string(),
@@ -397,6 +406,21 @@ pub fn send_outgoing(homeserver: &Homeserver, token: &str, request: &OutgoingReq
         "keys_claim" => (
             "POST",
             "/_matrix/client/v3/keys/claim".to_string(),
+            request.body.clone(),
+        ),
+        // The two M4 added. `signing_keys_upload` is the user-interactive
+        // one; see this function's own header for why its refusal loop is
+        // not here. `signature_upload`'s body is the signed-keys map at the
+        // top level rather than a wrapper around it, which is what
+        // `describe_outgoing` already builds.
+        "signing_keys_upload" => (
+            "POST",
+            "/_matrix/client/v3/keys/device_signing/upload".to_string(),
+            request.body.clone(),
+        ),
+        "signature_upload" => (
+            "POST",
+            "/_matrix/client/v3/keys/signatures/upload".to_string(),
             request.body.clone(),
         ),
         "to_device" => {
@@ -429,7 +453,17 @@ pub fn send_outgoing(homeserver: &Homeserver, token: &str, request: &OutgoingReq
              the endpoint is missing from spec section 3bis's mapping, or the harness is \
              behind it."
         ),
-    };
+    }
+}
+
+/// Sends one request the pump handed out, to the endpoint [`endpoint`] names,
+/// and returns the homeserver's response body for `mark_request_sent`.
+///
+/// Insists on a 2xx, so this is the wrong call for a `signing_keys_upload`:
+/// that request's first attempt is *supposed* to be refused. See
+/// [`endpoint`] for where its loop lives instead.
+pub fn send_outgoing(homeserver: &Homeserver, token: &str, request: &OutgoingRequest) -> String {
+    let (method, path, body) = endpoint(request);
 
     let (status, response) = homeserver.call(method, &path, Some(token), Some(&body));
     assert!(

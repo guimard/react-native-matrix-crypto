@@ -33,7 +33,14 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { FLOW_STEPS, type FlowStep } from './steps'
-import { runCall, runFlow, runSignal, type Outcome, type RunContext } from './flowRunners'
+import {
+  runCall,
+  runFlow,
+  runSignal,
+  runSigningIdentity,
+  type Outcome,
+  type RunContext,
+} from './flowRunners'
 
 /**
  * How long after `probeWithObserver` resolves the fake observer callback is
@@ -55,11 +62,40 @@ const SIGNAL_DELAY_MS = 60
 let signalDeliveredBeforeResolve = true
 let signalFired = false
 
+/**
+ * Whether the faked native `bootstrapIdentity` refuses, and with what.
+ *
+ * Step 6's card asserts that the library refuses to mint a signing identity
+ * before any key query has been answered, and reports the refusal by kind.
+ * That is a claim about the *facade*, the same class as step 4's typed
+ * error, so it is faked at the same seam and in the same way: the mock
+ * throws the real generated error class and the real `toCryptoError` decides
+ * what kind reaches the runner.
+ *
+ * Settable so the card can be made to face the outcome it must reject: a
+ * bootstrap that is served when nothing has asked the server. See the second
+ * test in that block.
+ */
+let bootstrapRefuses = true
+
 vi.mock('react-native-matrix-crypto/src/generated/matrix_crypto', async importOriginal => {
   const actual =
     await importOriginal<typeof import('react-native-matrix-crypto/src/generated/matrix_crypto')>()
   return {
     ...actual,
+    // The three facts the machine reports about the account, in the state
+    // this app is really in: it has no homeserver, so nothing has been
+    // asked and nothing is known.
+    identityStatus: vi.fn(async () => ({
+      accountKeysFetched: false,
+      identityKnown: false,
+      privateKeysHeld: false,
+    })),
+    bootstrapIdentity: vi.fn(async () => {
+      if (bootstrapRefuses) {
+        throw new actual.MachineFfiError.AccountKeysNotFetched()
+      }
+    }),
     probeWithObserver: vi.fn(
       async (input: string, payload: ArrayBuffer, observer: { onSignal(s: { kind: string; detail: string }): void }) => {
         // The real core rejects empty input with `ProbeError::Rejected`
@@ -105,6 +141,7 @@ function recorder() {
 beforeEach(() => {
   signalDeliveredBeforeResolve = true
   signalFired = false
+  bootstrapRefuses = true
 })
 
 describe('step 3 reads a value step 2 has finished writing', () => {
@@ -175,23 +212,43 @@ describe('step 2 reports its own round trip', () => {
 })
 
 /**
- * The two steps this runner cannot reach, and why.
+ * The steps this runner cannot reach, and why.
  *
  * Step 1 subscribes, and the first subscriber installs this process's native
  * observer across the boundary. Step 5 creates a crypto machine and reads
- * its identity keys. Both need the JSI host object, which no Node process
- * has, so both report `unexpected` here.
+ * its identity keys. Step 7 creates a group session, encrypts one payload
+ * and decrypts the result. All three need the JSI host object, which no Node
+ * process has, so all three report `unexpected` here.
  *
  * Asserted rather than skipped. A hole nobody names is how a suite comes to
  * look like it covers a screen it does not, and the whole reason this file
- * exists is that this package looked covered while covering nothing. If
- * either of these ever passes here, something has stubbed the native
- * boundary and this file's claim about what it proves has to be rewritten.
+ * exists is that this package looked covered while covering nothing. If any
+ * of these ever passes here, something has stubbed the native boundary and
+ * this file's claim about what it proves has to be rewritten.
  */
-const UNREACHABLE_IN_NODE: FlowStep['id'][] = ['subscribe', 'identity']
+const UNREACHABLE_IN_NODE: FlowStep['id'][] = [
+  'subscribe',
+  'identity',
+  // Step 7 creates a real group session, encrypts one payload with it and
+  // decrypts the result. There is no crypto machine here, so it reports
+  // `unexpected`.
+  //
+  // **Deliberately not faked, unlike step 6 above it.** Stubbing the native
+  // encrypt and decrypt would make this file report a `senderVerification`
+  // this file itself wrote, and that is precisely the shape
+  // `cardClaims.test.ts` opens by refusing: a claim about the library
+  // checked against a fake of the library is not checked at all. Worse here
+  // than anywhere, because the value in question is the one the library's
+  // own documentation spends pages warning must never be manufactured. What
+  // the card actually reports is proven where a real event exists: on a
+  // device, and in
+  // `rust/matrix-crypto-core/tests/level_two_identity.rs` against a real
+  // homeserver.
+  'senderCheck',
+]
 
 describe('the whole flow, in the order the screen runs it', () => {
-  it('settles every step, and only the two that need a device report unexpected', async () => {
+  it('settles every step, and only the ones that need a device report unexpected', async () => {
     const ctx = freshContext()
     const { outcomes, commit } = recorder()
 
@@ -212,6 +269,39 @@ describe('the whole flow, in the order the screen runs it', () => {
     })
 
     expect(seen).toEqual(FLOW_STEPS.map(step => step.id))
+  })
+})
+
+describe('step 6 reports the signing-identity gate refusing', () => {
+  it('reports ok, and names the three facts the refusal only means anything beside', async () => {
+    const { outcomes, commit } = recorder()
+
+    await runSigningIdentity(freshContext(), commit)
+
+    expect(outcomes.signingIdentity?.status, outcomes.signingIdentity?.headline).toBe('ok')
+    expect(outcomes.signingIdentity?.headline).toContain('"account_keys_not_fetched"')
+    // With `accountKeysFetched` false, `identityKnown` false means "nobody
+    // has asked", not "the account has none". A card that printed only the
+    // second would be printing the one reading that authorises minting.
+    expect(outcomes.signingIdentity?.detail).toContain('accountKeysFetched: false')
+    expect(outcomes.signingIdentity?.detail).toContain('identityKnown: false')
+    expect(outcomes.signingIdentity?.detail).toContain('privateKeysHeld: false')
+  })
+
+  it('reports unexpected when the bootstrap is served with nothing having asked the server', async () => {
+    // The outcome the card exists to notice. A library that minted here
+    // would replace whatever identity the account already had, and the
+    // damage is to other people's trust rather than to anything this
+    // process can afterwards detect. Without this test, a card that had
+    // silently started passing on a served bootstrap would look identical
+    // to one reporting a refusal.
+    bootstrapRefuses = false
+    const { outcomes, commit } = recorder()
+
+    await runSigningIdentity(freshContext(), commit)
+
+    expect(outcomes.signingIdentity?.status).toBe('unexpected')
+    expect(outcomes.signingIdentity?.headline).toContain('minted')
   })
 })
 

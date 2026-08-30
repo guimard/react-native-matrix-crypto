@@ -23,6 +23,19 @@ export const DEMO_DEVICE_ID = 'DEVICE1'
 export const DEMO_SCOPE = '!crypto-demo:example.org'
 
 /**
+ * A second scope, for the walkthrough card that decrypts one event and reads
+ * what it says about its sender.
+ *
+ * Distinct from `DEMO_SCOPE` on purpose. Both screens mount in the same
+ * process and share the one machine, and the diagnostics suite creates and
+ * uses a group session for `DEMO_SCOPE` on every launch. Two screens sharing
+ * one session would work today and would make each of them depend on the
+ * other having run first, which is the kind of coupling that turns into an
+ * unreproducible failure the first time the mount order changes.
+ */
+export const DEMO_SENDER_SCOPE = '!sender-demo:example.org'
+
+/**
  * Not a secret, and it must not be read as an example of how to choose one:
  * a real product supplies a passphrase it derived or stored itself. It is a
  * literal here because this app has no user, no keychain and no secret to

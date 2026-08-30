@@ -28,13 +28,14 @@ Nothing is ever printed outside that protocol, and nothing is written to disk
 except nio's own crypto store, in a temporary directory the caller supplies
 and removes.
 
-# Two proofs, one counterparty
+# Three proofs, one counterparty
 
-This process serves both level 2 tests. `level_two_interop.rs` uses the
+This process serves all three level 2 tests. `level_two_interop.rs` uses the
 encryption operations (`send`, `collect`); `level_two_verification.rs` uses
-the `sas_*` ones. They share the login, the sync pump and the store, which is
-the whole reason they share a file: a second script would be a second,
-slightly different idea of what "settle" means.
+the `sas_*` ones; `level_two_identity.rs` uses `identity_probe` alongside
+`send`. They share the login, the sync pump and the store, which is the whole
+reason they share a file: a second script would be a second, slightly
+different idea of what "settle" means.
 
 # Credentials
 
@@ -423,6 +424,91 @@ class Party:
             # The same digest, written the two ways.
             "hex": digest.hex(),
             "unpadded_base64": base64.b64encode(digest).decode().rstrip("="),
+        }
+
+    # ------------------------------------------------------------------
+    # Cross-signing, which matrix-nio 0.26.0 does not implement
+    #
+    # The Rust side needs to be able to say, with evidence, why an event
+    # from this counterparty cannot read anything better than "the sending
+    # device carries no signature from its owner". The reason is not in
+    # that library and not on the wire: nio has no cross-signing at all.
+    # It never publishes a master key, and it drops the ones a homeserver
+    # hands it.
+    #
+    # So this is attribution from inside the counterparty, the same job
+    # `sas_commitment_probe` does for the verification proof. Every fact
+    # below is computed here, at run time, from the pinned install --
+    # never asserted on the Rust side against a version number.
+    # ------------------------------------------------------------------
+
+    async def op_identity_probe(self, cmd):
+        """What nio sees, and keeps, of an account that has published an identity.
+
+        Four facts, in increasing order of how hard they are to argue with:
+
+        1. what the homeserver actually returned to *nio's own*
+           `/keys/query` for that user, read off the raw body;
+        2. what nio's own `KeysQueryResponse` retains of it, read off the
+           dataclass rather than off documentation;
+        3. whether anything in nio can publish a cross-signing identity,
+           by looking for the endpoint in its own source;
+        4. how many times the installed package mentions the cross-signing
+           vocabulary at all.
+
+        Nothing here is secret. A master key and a device key are both
+        already public, and only field *names* are returned, never a key.
+        """
+        import dataclasses
+        import pathlib
+
+        import nio as nio_package
+        from nio.responses import KeysQueryResponse
+
+        user_id = cmd["user_id"]
+
+        # 1. The raw answer, over nio's own authenticated session.
+        method, path, data = Api.keys_query(self.client.access_token, {user_id})
+        response = await self.client.send(method, path, data)
+        raw = await response.json()
+        raw_fields = sorted(raw.keys())
+        # Read positively, on the field the whole question turns on, rather
+        # than by the absence of something.
+        raw_carries_master_key = bool(raw.get("master_keys", {}).get(user_id))
+
+        # 2. What nio keeps of it. `from_dict` is what nio runs on every key
+        # query it makes, so this is the real parse and not a description
+        # of one.
+        parsed = KeysQueryResponse.from_dict(raw)
+        parsed_fields = sorted(f.name for f in dataclasses.fields(parsed))
+
+        # 3. Anything that could publish one. Searched for by endpoint
+        # rather than by method name, because a name can be anything and an
+        # endpoint cannot.
+        sources = sorted(pathlib.Path(nio_package.__file__).parent.rglob("*.py"))
+        texts = [f.read_text() for f in sources]
+        publishes_from = sorted(
+            f.name for f, text in zip(sources, texts) if "device_signing/upload" in text
+        )
+
+        # 4. The vocabulary, counted rather than characterised.
+        vocabulary = (
+            "master_key",
+            "self_signing",
+            "user_signing",
+            "cross_signing",
+            "cross-signing",
+        )
+        mentions = sum(text.count(word) for text in texts for word in vocabulary)
+
+        return {
+            "ok": True,
+            "raw_fields": raw_fields,
+            "raw_carries_master_key": raw_carries_master_key,
+            "parsed_fields": parsed_fields,
+            "publishes_from": publishes_from,
+            "vocabulary_mentions": mentions,
+            "source_files_read": len(sources),
         }
 
     async def op_quit(self, cmd):

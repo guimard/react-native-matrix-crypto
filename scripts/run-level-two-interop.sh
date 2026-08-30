@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Runs both level 2 interoperability proofs (design doc section 8) against a
-# Matrix homeserver this script starts, provisions, and destroys.
+# Runs all three level 2 interoperability proofs (design doc section 8)
+# against a Matrix homeserver this script starts, provisions, and destroys.
 #
 #   * `level_two_interop` -- a third-party client decrypts what this library
 #     encrypts, and this library decrypts what it sends. M2's final exit
@@ -21,6 +21,23 @@ set -euo pipefail
 #     own process; the completion and the refusal are proven at level 1, in
 #     rust/matrix-crypto-core/tests/sas_two_party.rs, against a machine this
 #     library does not control. That file's header has the whole of it.
+#
+#   * `level_two_identity` -- this library mints a signing identity, a real
+#     homeserver accepts it and serves it back, and a decrypted event then
+#     reports what it reports about its sender. M4's.
+#
+#     Read that literally too: **an event from the third-party client reads
+#     `unsigned_device`, and nothing here can move it.** matrix-nio 0.26.0
+#     implements no cross-signing at all -- it never publishes a master key
+#     and drops the ones it is sent -- so it cannot be constructed as a
+#     cross-signed peer, and `unverified_identity` is out of reach against
+#     it. The test attributes that from inside nio's own process, the same
+#     way the verification proof attributes its halt, and carries its own
+#     control: an event from a device that IS signed, in the same run,
+#     reading something else. `unverified_identity` from a cross-signed peer
+#     is proven at level 1 in
+#     rust/matrix-crypto-core/tests/cross_signed_peer.rs, and `verified` in
+#     rust/matrix-crypto-core/tests/verified_sender.rs.
 #
 #   ./scripts/run-level-two-interop.sh
 #
@@ -413,12 +430,22 @@ PY
 
 # --- 3. the tests ----------------------------------------------------------
 #
-# TWO proofs, one homeserver. `level_two_interop` asks whether a third-party
+# THREE proofs, one homeserver. `level_two_interop` asks whether a third-party
 # client decrypts what this library encrypts; `level_two_verification` asks
-# whether one will complete a device verification with it. They are separate
-# test binaries because this library holds one crypto machine per process and
-# Cargo gives each file under tests/ its own -- see
-# level_two_verification.rs's header.
+# whether one will complete a device verification with it; `level_two_identity`
+# asks what a decrypted event says about its sender once this library has a
+# signing identity a real homeserver accepted. They are separate test binaries
+# because this library holds one crypto machine per process and Cargo gives
+# each file under tests/ its own -- see level_two_verification.rs's header.
+#
+# Each gets its own account state on the shared container, and the third one
+# publishes a cross-signing identity for the account. That is why it runs
+# LAST: an account's identity can be minted once, and a run of it leaves the
+# account with one. The other two neither read nor write it, so the order
+# below costs them nothing, but reversing it would leave `level_two_identity`
+# facing an account whose identity a previous run had already published --
+# which is the case its own phase-two child constructs deliberately, and
+# would be an accident in its parent.
 
 # --- 4. what actually happened ---------------------------------------------
 #
@@ -516,8 +543,17 @@ run_proof level_two_verification \
   1 \
   "this test spawns no child, so there is exactly one libtest process"
 
+# The identity proof spawns a second copy of itself for the same structural
+# reason the encryption proof does: what it checks is a fact about a machine
+# that holds NO private signing identity, and this process's machine holds one
+# by the time it gets there. TWO of each.
+run_proof level_two_identity \
+  a_signing_identity_published_to_a_real_homeserver_and_what_a_sender_then_reads \
+  2 \
+  "the parent process and the phase-two child it spawns of itself as a fresh login"
+
 echo
-echo "PASS: both level 2 proofs."
+echo "PASS: all three level 2 proofs."
 echo "      A third-party matrix-nio client decrypted what this library encrypted,"
 echo "      and this library decrypted what matrix-nio sent."
 echo "      A verification matrix-nio opened was announced by this library, agreed"
@@ -525,6 +561,13 @@ echo "      to, and carried to a short authentication string. It goes no further
 echo "      and the reason is the commitment encoding matrix-nio 0.26.0 uses; the"
 echo "      second test attributes that from inside nio rather than assuming it."
 echo "      See rust/matrix-crypto-core/tests/level_two_verification.rs."
+echo "      A signing identity this library minted was accepted by the homeserver and"
+echo "      served back with this device's key signed by it, and a fresh login then"
+echo "      refused to mint over it. An event from matrix-nio still reads"
+echo "      unsigned_device, because matrix-nio 0.26.0 implements no cross-signing at"
+echo "      all; the third test establishes that from inside nio and carries a signed"
+echo "      sender in the same run as its control."
+echo "      See rust/matrix-crypto-core/tests/level_two_identity.rs."
 if [ -n "$CONTAINER" ]; then
   echo "      Proven against a throwaway $SERVER_NAME homeserver this script started"
   echo "      and is about to destroy. No credential was read from anywhere."

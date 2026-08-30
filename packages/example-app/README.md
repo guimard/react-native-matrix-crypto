@@ -18,12 +18,20 @@ live in a module of their own with no `react` or `react-native` import in it.
   fake binding whose callback is delivered strictly after the call resolves,
   and asserts that precondition before asserting the result, so a green step 3
   cannot come from a callback that had already arrived.
-* **A card that claims a call throws.** Step 6 says a named library function
+* **A card that claims a call throws.** Step 8 says a named library function
   rejects with `not_implemented`. `src/cardClaims.test.ts` mocks nothing, calls
   that function through the published entry point, and fails if it stops
   rejecting. It also sweeps the whole public surface and pins the set of
   functions still refused in JavaScript, so implementing any one of them turns
   the build red rather than the card.
+* **The signing-identity gate refusing.** Step 6 asks the machine what it knows
+  about the account's signing identity and then asks it to publish one, which
+  it refuses because nothing has asked a homeserver yet. The native call is
+  faked at the same seam step 4's typed error is, so the real facade decides
+  the kind. Both halves are tested: the card reports `ok` on the refusal, and
+  reports `unexpected` when the bootstrap is served instead. The second is the
+  one that matters, because a library that minted an identity there would
+  replace whatever the account already had.
 * **Cards name functions that exist.** Every `react-native-matrix-crypto`
   import in a card's code snippet is checked against the library's exports.
 * **Step ordering, step 2's round trip, step 4's typed error**, and that each
@@ -43,10 +51,20 @@ Consequently **nothing in this suite establishes that the bridge works**. In
 particular these remain exercised only by a human holding a phone, or by
 `scripts/run-probe-on-emulator.sh` and `level-two/run_level_two.py`:
 
-* **Step 1 and step 5 of the walkthrough.** Subscribing installs the native
-  observer, and the identity step opens a real crypto store and reads real
-  keys. Both are asserted to *fail* in `src/flowRunners.test.ts`, deliberately,
-  so the hole is named in the suite rather than hidden by a skip.
+* **Steps 1, 5 and 7 of the walkthrough.** Subscribing installs the native
+  observer; the identity step opens a real crypto store and reads real keys;
+  and step 7 creates a real group session, encrypts one payload and decrypts
+  the result to read what the library says about its sender. All three are
+  asserted to *fail* in `src/flowRunners.test.ts`, deliberately, so the hole is
+  named in the suite rather than hidden by a skip.
+
+  Step 7 is the one that must stay that way. Faking the native encrypt and
+  decrypt would make this suite report a `senderVerification` it had written
+  itself, and that value is the one the library's own documentation is most
+  emphatic must never be manufactured. What the card reports is proven where a
+  real event exists: on a device, and against a real homeserver and a
+  third-party client in
+  `rust/matrix-crypto-core/tests/level_two_identity.rs`.
 * **Everything the fake binding stands in for**: that Rust actually reverses
   the bytes, reports its own crate version, rejects empty input, and invokes
   the observer callback back across the boundary at all. The tests fix what
