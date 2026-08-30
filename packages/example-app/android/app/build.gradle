@@ -156,8 +156,30 @@ android {
         // A test that cannot be run without someone unlocking the phone is not
         // a test a reviewer can re-run, which is the whole point of scripting
         // it.
+        // The set this activity declares it can absorb without being
+        // recreated. The default is exactly what the React Native template
+        // ships and what this app has always declared, so an ordinary build
+        // is unchanged.
+        //
+        // It is a placeholder so that `scripts/run-fold-test.sh` can build the
+        // other case. On a Pixel 10 Pro Fold the default absorbs a fold
+        // completely -- both panels report the same density, and every other
+        // dimension a fold changes is in the list -- so a fold never recreates
+        // the activity and never exercises the unsubscribe and resubscribe
+        // path this library's signal channel depends on. That is a true result
+        // about this manifest and a misleading one about folding: a product
+        // that does not declare these is recreated on every fold, and that
+        // product is the one at risk.
+        //
+        // Building the reduced set is how the fold test observes that case
+        // directly, rather than inferring it from a density change that stands
+        // in for a fold.
+        def defaultConfigChanges =
+            "keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
         manifestPlaceholders = [
-            showWhenLocked: (project.findProperty("showWhenLocked") ?: "false").toString()
+            showWhenLocked: (project.findProperty("showWhenLocked") ?: "false").toString(),
+            activityConfigChanges:
+                (project.findProperty("activityConfigChanges") ?: defaultConfigChanges).toString()
         ]
     }
     signingConfigs {
