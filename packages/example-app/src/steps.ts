@@ -33,7 +33,7 @@ export const FLOW_STEPS: FlowStep[] = [
     title: '2. Round-trip a record and bytes',
     call: "import { runProbe } from 'react-native-matrix-crypto';\n\nconst result = await runProbe(\n  'hello',\n  new Uint8Array([1, 2, 3]),\n  signal => console.log(signal.kind),\n);",
     crosses:
-      'A string and three bytes cross via JSI into the Rust core, which reverses the bytes and reports its own crate version -- proof this is the real crate replying, not a mock echoing its input back unread. The third argument also receives a callback invocation from Rust while the call is still running -- step 3 reports what it caught.',
+      "A string and three bytes cross via JSI into the Rust core, which reverses the bytes and reports its own crate version -- proof this is the real crate replying, not a mock echoing its input back unread. The third argument also receives a callback invocation from Rust while the call is still running. That callback and the call's own result travel back independently, so this step is not finished until both have settled: the result is back, and the callback has either arrived or used up the time this library allows it. Step 3 then reports what it caught, waiting for nothing itself.",
     why: 'The most basic proof this library does anything at all: a call reaches Rust and comes back.',
   },
   {
