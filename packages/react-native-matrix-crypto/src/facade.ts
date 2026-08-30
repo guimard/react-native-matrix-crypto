@@ -561,21 +561,36 @@ export async function shareScopeKey(scope: CryptoScopeId, userIds: string[]): Pr
  * one and built on it has to be able to find out that it changed.
  *
  * **{@link markRequestSent} is not the only thing that ends a request's
- * life. A later call to this function ends some of them too.** Three of the
- * kinds handed out here -- `keys_upload`, `keys_query` and `keys_claim` --
- * are evicted the moment a *subsequent* call hands out a fresh request of
- * the same kind, whether or not the older one was ever marked sent.
- * `markRequestSent` then rejects that older id with `unknown_request`.
+ * life. A later call to this function ends some of them too.** Four of the
+ * kinds handed out here -- `keys_upload`, `keys_query`, `keys_claim` and
+ * `signing_keys_upload` -- are evicted the moment a *subsequent* call hands
+ * out a fresh request of the same kind, whether or not the older one was
+ * ever marked sent. `markRequestSent` then rejects that older id with
+ * `unknown_request`.
  *
  * That is designed, not a defect, and it is worth knowing why, because
  * `unknown_request` for an id a product is legitimately holding otherwise
- * reads as a library bug. Those three requests describe a standing need
+ * reads as a library bug. The first three describe a standing need
  * ("these keys want uploading", "these users want querying") rather than
  * one message. `matrix-sdk-crypto` re-derives that need from current state
  * on every call, mints a new and uncorrelated id for it, and forgets the id
  * it handed out last. So once a fresh one exists, the older id names
  * nothing the machine is still waiting to hear about, and the fresh request
  * in that same batch carries what the older one was for.
+ *
+ * **`signing_keys_upload` is in that group for a different reason and on a
+ * narrower trigger, and it is the one that will actually catch a product
+ * out.** Nothing upstream forgets its id; this library re-derives it, and
+ * only when {@link bootstrapCrossSigning} is called again. A second bootstrap
+ * publishes the identical three keys, so keeping both entries would hand a
+ * caller two ids for one publication and two rounds of user-interactive
+ * authentication to finish it. **An ordinary second drain does not touch
+ * it**, because no fresh one exists to evict it; a second bootstrap followed
+ * by a drain does. That matters because this is the one id a product is
+ * meant to hold across a slow loop with a person in the middle of it: it
+ * survives any number of refused attempts, since only success consumes an
+ * entry, and it does not survive being superseded. Do not call
+ * `bootstrapCrossSigning` again while an authentication loop is in flight.
  *
  * **What a caller must do about it: resolve a batch before drawing the
  * next.** Drain, send in order, `markRequestSent` each response, and only
@@ -671,11 +686,14 @@ export async function takeOutgoingRequests(): Promise<OutgoingRequest[]> {
  * comment for what a product observes if it is skipped.
  *
  * **`unknown_request` does not always mean the id was never real.** A
- * `keys_upload`, `keys_query` or `keys_claim` id is evicted when a later
- * `takeOutgoingRequests` hands out a fresh request of the same kind, so an
- * id held across a second drain rejects here even though this library did
- * hand it out. See {@link takeOutgoingRequests} for why that is deliberate
- * and what to do instead of retrying.
+ * `keys_upload`, `keys_query`, `keys_claim` or `signing_keys_upload` id is
+ * evicted when a later `takeOutgoingRequests` hands out a fresh request of
+ * the same kind, so an id held across a second drain rejects here even
+ * though this library did hand it out. The first three are re-derived on
+ * every drain; a fresh `signing_keys_upload` exists only after another
+ * {@link bootstrapCrossSigning}, so that one survives an ordinary second
+ * drain and not a second bootstrap. See {@link takeOutgoingRequests} for why
+ * that is deliberate and what to do instead of retrying.
  */
 export async function markRequestSent(id: string, responseJson: string): Promise<void> {
   try {

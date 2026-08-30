@@ -110,6 +110,8 @@ full division.
 
 **Do not let a second drain overlap an unfinished one.** `takeOutgoingRequests` hands out three kinds that describe a standing need rather than one message, `keys_upload`, `keys_query` and `keys_claim`, and a later call that hands out a fresh request of one of those kinds retires the older id: `markRequestSent` then rejects it with `unknown_request`. That is deliberate, because the machine mints a new id for the same need each time and forgets the old one, but it means two pumps racing, or a pump on a timer alongside a pump after a write, will fail on ids you are legitimately holding. If you do see `unknown_request` for an id from an earlier batch, discard that response and pump again rather than retrying it; nothing is lost, because the need was re-derived rather than dropped. `takeOutgoingRequests`' own doc comment carries the full rule.
 
+A fourth kind, `signing_keys_upload`, is retired the same way and on a narrower trigger: a fresh one exists only after another `bootstrapCrossSigning`, so an ordinary second drain leaves it alone. It matters more than the other three because it is the one id you are meant to hold for a while, across an authentication loop with your user in the middle of it. Refused attempts never retire it; a second bootstrap followed by a drain does. `to_device`, `signature_upload` and `room_message` ids are never retired this way at all.
+
 ## Creating this account's signing identity
 
 A signing identity is what lets one device vouch for another without a person comparing anything, and what lets a decrypted event say who sent it rather than only which key it arrived under. Without one, `senderVerification` can never read `verified`, however many strings your users compare.
