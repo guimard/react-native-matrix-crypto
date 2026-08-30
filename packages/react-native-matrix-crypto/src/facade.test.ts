@@ -26,6 +26,7 @@ import {
   importSecrets,
   markRequestFailed,
   markRequestSent,
+  offerScannableCodes,
   openCryptoStore,
   receiveSyncChanges,
   recoverIdentity,
@@ -53,6 +54,7 @@ import {
   MachineFfiError,
   markRequestFailed as nativeMarkRequestFailed,
   markRequestSent as nativeMarkRequestSent,
+  offerScanning as nativeOfferScanning,
   openCryptoStore as nativeOpenCryptoStore,
   receiveSyncChanges as nativeReceiveSyncChanges,
   recoverIdentity as nativeRecoverIdentity,
@@ -205,6 +207,12 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
     })),
     submitScannedCode: vi.fn(async () => undefined),
     confirmScan: vi.fn(async () => undefined),
+    // Not `async`, unlike every other mock here, because the real one is
+    // not: the switch sets a process-wide flag and cannot fail. A mock that
+    // returned a promise would let a facade that forgot to make its own call
+    // synchronous pass, and the whole point of the synchronous shape is that
+    // an unawaited call cannot land after the flow it was meant to affect.
+    offerScanning: vi.fn((_enabled: boolean) => undefined),
     // The signing identity. Stateless defaults, and deliberately the
     // "nobody has asked" row rather than a served one: a test that forgot
     // to install the chain fake below gets the refusal the real core would
@@ -1125,6 +1133,8 @@ beforeEach(() => {
   vi.mocked(nativeSubmitScannedCode).mockResolvedValue(undefined)
   vi.mocked(nativeConfirmScan).mockReset()
   vi.mocked(nativeConfirmScan).mockResolvedValue(undefined)
+  vi.mocked(nativeOfferScanning).mockReset()
+  vi.mocked(nativeOfferScanning).mockImplementation(() => undefined)
   // The seven the signing-identity chain reimplements. Same defaults as the
   // module-level factory declares, restated here rather than shared with it
   // because that factory runs once and this runs before every test.
@@ -1402,6 +1412,86 @@ describe('getVerificationMaterial', () => {
     await expect(getVerificationMaterial(FLOW)).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'wrong_stage',
     )
+  })
+})
+
+/**
+ * The switch that decides whether this build takes part in code
+ * verification at all.
+ *
+ * **What this file can and cannot see.** The claim the design's exit
+ * criteria rest on is about the wire: with the switch untouched, the method
+ * list this library announces equals the pre-M5 list entire. That is proven
+ * where the wire is, in the core's own `qr_announcement.rs`, which reads all
+ * three call sites off the pump. Native is mocked away here, so no
+ * announcement is visible at all.
+ *
+ * What *is* only visible here is the crossing, and it has two ways of going
+ * wrong that no Rust test can see:
+ *
+ * 1. **The boolean.** A bridge that raised the switch rather than storing
+ *    what it was handed, or that coerced the argument, is invisible to a
+ *    core that only ever sees the value it was given.
+ * 2. **Somebody else calling it.** The default only survives if nothing in
+ *    this surface turns the switch on for its own convenience, and a
+ *    product that never calls it has no way to notice that something did.
+ */
+describe('offering scannable codes at all', () => {
+  it('carries true through to the native switch, and exactly true', () => {
+    offerScannableCodes(true)
+
+    const calls = vi.mocked(nativeOfferScanning).mock.calls
+    expect(calls.length).toBe(1)
+    // `toBe`, not truthiness: a bridge handing the native side `1` or
+    // `'true'` satisfies every loose check and this is where it fails.
+    expect(calls.at(-1)?.[0]).toBe(true)
+  })
+
+  it('carries false as well, rather than only ever raising the switch', () => {
+    offerScannableCodes(false)
+
+    expect(vi.mocked(nativeOfferScanning).mock.calls.at(-1)?.[0]).toBe(false)
+  })
+
+  /**
+   * **The default survives the crossing.**
+   *
+   * Every other call a product makes on this surface is driven here, twice,
+   * and the switch must never be touched by any of them. Twice on purpose:
+   * a bridge that turned codes on once some flow had been opened would pass
+   * a test that only ever made one round of calls, and there is a real
+   * upstream behaviour in this area that only shows up on a second
+   * verification.
+   *
+   * `createCryptoMachine` and `openCryptoStore` are in the list because
+   * start-up is the likeliest place for a well-meaning "turn everything on"
+   * to be added later, and it would silently undo the choice the whole
+   * switch exists to give a product.
+   */
+  it('is never called by anything else on this surface, over two rounds', async () => {
+    for (let round = 0; round < 2; round += 1) {
+      const config = {
+        userId: '@a:example.org',
+        deviceId: 'ADEVICE',
+        storePath: '/store',
+        storePassphrase: null,
+      }
+      await createCryptoMachine(config)
+      await openCryptoStore(config)
+      await requestVerification('@b:example.org', 'BDEVICE')
+      await requestSelfVerification()
+      await acceptVerification(FLOW)
+      await startVerificationComparison(FLOW)
+      await getVerificationStage(FLOW)
+      await getVerificationMaterial(FLOW)
+      await confirmVerification(FLOW, NATIVE_MATERIAL)
+      await getVerificationCode(FLOW)
+      await submitScannedCode(FLOW, new Uint8Array([1, 2, 3]))
+      await confirmScan(FLOW)
+      await cancelVerification(FLOW)
+    }
+
+    expect(vi.mocked(nativeOfferScanning)).not.toHaveBeenCalled()
   })
 })
 
@@ -2801,6 +2891,37 @@ describe('server-side recovery', () => {
     // the first is a different secret, and nothing resolves the second.
     expect((incorrect as CryptoError).retriable).toBe(false)
     expect((malformed as CryptoError).retriable).toBe(false)
+  })
+
+  /**
+   * A cleared pointer is a third answer, and it must not be either of the
+   * two above.
+   *
+   * `PUT {}` is the only way the client-server API can delete an account
+   * data event, so a cleared `'m.secret_storage.default_key'` is what a
+   * half-finished replacement leaves on a real homeserver, and
+   * `createRecovery`'s own documented route past its refusal creates it.
+   * The key description and every ciphertext are still there, so the state
+   * is reversible and the kind a product shows must not be the one whose
+   * remedy is to set recovery up again.
+   *
+   * The Rust side proves which kind is produced. This proves the kind
+   * survives the crossing and reaches a product as something it can tell
+   * apart from `'recovery_data_malformed'`, which is a separate claim with
+   * a separate way of being wrong.
+   */
+  it('reports a cleared pointer as not-set-up rather than as unreadable data', async () => {
+    vi.mocked(nativeRecoverIdentity).mockRejectedValue(new MachineFfiError.RecoveryNotSetUp())
+    const cleared = await recoverIdentity('the right one', [
+      { eventType: DEFAULT_KEY, content: {} },
+    ]).catch((e: unknown) => e)
+
+    vi.mocked(nativeRecoverIdentity).mockRejectedValue(new MachineFfiError.RecoveryDataMalformed())
+    const malformed = await recoverIdentity('the right one', []).catch((e: unknown) => e)
+
+    expect(isCryptoError(cleared) && cleared.kind).toBe('recovery_not_set_up')
+    expect(isCryptoError(malformed) && malformed.kind).toBe('recovery_data_malformed')
+    expect((cleared as CryptoError).kind).not.toBe((malformed as CryptoError).kind)
   })
 
   it('reports the other two refusals as their own kinds rather than as unknown', async () => {

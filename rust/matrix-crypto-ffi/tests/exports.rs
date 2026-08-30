@@ -147,3 +147,40 @@ async fn the_scannable_code_calls_reach_the_core() {
         matrix_crypto_ffi::MachineFfiError::NotInitialised
     ));
 }
+
+/// The code-scanning switch reaches the core, and carries its argument.
+///
+/// **The one delegation in this crate with an observable effect and no return
+/// value**, which is why it is asserted through the core's own reader rather
+/// than through an error. A body of `{}` compiles, exports, and passes every
+/// other test in this repository: nothing else in either crate can see that
+/// the switch never moved. What a product would see is a build that asked for
+/// codes, announced none, and was told `CodeNotOffered` on the first flow it
+/// tried, with the one call that could have fixed it already made.
+///
+/// Off first, because the default is what the design's exit criteria rest on,
+/// and then both settings, because a bridge that raised the flag rather than
+/// storing its argument passes an on-only test.
+#[test]
+fn the_code_scanning_switch_reaches_the_core() {
+    assert!(
+        !matrix_crypto_core::scanning_offered(),
+        "a fresh process must not be offering codes: every assertion below is \
+         about a switch that starts off, and this one is the criterion that a \
+         build which never asks says on the wire what it always said"
+    );
+
+    matrix_crypto_ffi::offer_scanning(true);
+    assert!(
+        matrix_crypto_core::scanning_offered(),
+        "the bridge must carry `true` through to the core's own switch"
+    );
+
+    matrix_crypto_ffi::offer_scanning(false);
+    assert!(
+        !matrix_crypto_core::scanning_offered(),
+        "and `false` as well. A bridge that set the switch rather than storing \
+         what it was handed passes the assertion above and fails here, and a \
+         product that turned codes off would go on announcing them"
+    );
+}

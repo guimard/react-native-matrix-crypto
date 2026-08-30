@@ -73,6 +73,7 @@ export {
   importSecrets,
   markRequestFailed,
   markRequestSent,
+  offerScannableCodes,
   openCryptoStore,
   receiveSyncChanges,
   recoverIdentity,

@@ -27,6 +27,7 @@ import {
   identityStatus as nativeIdentityStatus,
   markRequestFailed as nativeMarkRequestFailed,
   markRequestSent as nativeMarkRequestSent,
+  offerScanning as nativeOfferScanning,
   openCryptoStore as nativeOpenCryptoStore,
   receiveSyncChanges as nativeReceiveSyncChanges,
   recoverIdentity as nativeRecoverIdentity,
@@ -146,7 +147,7 @@ export interface DeviceStatus {
  * | `kind` | Method & path | `responseJson` must contain |
  * |---|---|---|
  * | `'keys_upload'` | `POST /_matrix/client/v3/keys/upload` | `{ one_time_key_counts: { [algorithm: string]: number } }` |
- * | `'keys_query'` | `POST /_matrix/client/v3/keys/query` | `{ device_keys?, master_keys?, self_signing_keys?, user_signing_keys?, failures? }` (all optional; `{}` is valid) |
+ * | `'keys_query'` | `POST /_matrix/client/v3/keys/query` | `{ device_keys?, master_keys?, self_signing_keys?, user_signing_keys?, failures? }` (all optional; `{}` is valid). **Accepted is not the same as answered here.** A query about your own account only satisfies {@link bootstrapCrossSigning}'s ordering gate when the body names that account in one of the four user-keyed maps, which is what every measured homeserver sends even for an account it holds nothing for. See {@link markRequestFailed} |
  * | `'keys_claim'` | `POST /_matrix/client/v3/keys/claim` | `{ one_time_keys: {...}, failures? }` |
  * | `'to_device'` | `PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}` | `{}`, and only `{}`. The machine ignores the contents and the response type declares no fields, so there is no field that could widen the shape: an object with any key at all is rejected here |
  * | `'signature_upload'` | `POST /_matrix/client/v3/keys/signatures/upload` | `{ failures? }` (optional; `{}` is valid) |
@@ -772,14 +773,24 @@ export async function markRequestSent(id: string, responseJson: string): Promise
  * page, and a bare `{"message":"Internal server error"}`. What it accepts is
  * every genuine success and, unavoidably, any failure whose body falls
  * inside the same shape. **The member that matters is the object with no
- * keys:** `{}` is what `/keys/query` answers for an account it knows no
- * identity for, and it is the entire success response of the signing-keys
- * upload, so a 503 that carried nothing and a 200 with nothing to say are
- * the same bytes. An empty body is turned into `{}` before parsing.
+ * keys:** `{}` is the entire success response of the signing-keys upload, so
+ * a 503 that carried nothing and a 200 with nothing to say are the same
+ * bytes. An empty body is turned into `{}` before parsing.
  *
  * That is the gap this call exists to let you close, and it can only be
  * closed from your side, by branching on the status before you choose which
  * of the two calls to make.
+ *
+ * **On the key query, the same body no longer reaches as far as it did.**
+ * This paragraph used to say `{}` was what `/keys/query` answers for an
+ * account with no signing identity; measured against Synapse, Dendrite and
+ * continuwuity, all three name the queried account even when they hold
+ * nothing for it. So a key query answer that does not name your account is
+ * accepted here and does not satisfy {@link bootstrapCrossSigning}'s ordering
+ * gate, and a 503's empty body reported through {@link markRequestSent}
+ * leaves that gate shut rather than authorising a mint. Reporting the status
+ * is still the right thing to do, and still the only thing that closes the
+ * same collision on the signing-keys upload.
  *
  * The one confusion of the pair this library *can* catch is a 2xx passed
  * here, which is rejected with `not_a_failure_status`: a success has a body
@@ -1545,6 +1556,71 @@ export async function cancelVerification(verificationId: string): Promise<void> 
 }
 
 /**
+ * Says whether this product can show a scannable code and read one.
+ *
+ * **Off until you call this, and a build that never does says on the wire
+ * exactly what it said before codes existed here.** Nothing about a
+ * consumer's verifications changes because this library grew a feature they
+ * do not use. Turning it on is one line and it is yours to write, because
+ * the two claims a code makes are claims about the *product*: it owns the
+ * camera, the screen and the scanner, and this library cannot know whether
+ * you built any of them.
+ *
+ * # Both settings cost something, so both are written down
+ *
+ * **On when you cannot really scan:** the other side's client is told this
+ * one can, so it shows its user a code and asks them to point a camera at
+ * it. Nothing here can read it. **No error reaches either product**, because
+ * nothing was asked of this library, and the flow simply stalls until the
+ * protocol's own ten-minute timeout. The person who pays is a user who did
+ * nothing wrong, and neither product can see it happen.
+ *
+ * **Off when you meant to be on:** {@link getVerificationCode} refuses with
+ * `'code_not_offered'` on the first flow you try it on. A named error, at
+ * integration time, in front of the person who can fix it in one line.
+ *
+ * That asymmetry is the whole argument for the default. A developer holding
+ * an error message is cheap; a user staring at a code nobody can scan, with
+ * the product blind to it, is not.
+ *
+ * # Off does more than stay quiet
+ *
+ * It makes a code unavailable rather than merely unadvertised, in both
+ * directions, and that is not this library's choice: a code exists only if
+ * *both* sides announced their half. So with this off, the peer's own client
+ * produces no code either and falls through to the short string, exactly as
+ * it did against every earlier release.
+ *
+ * # When to call it
+ *
+ * Before opening or answering any flow a code might be used on. What a flow
+ * announces is fixed when that flow is created or agreed to, so calling this
+ * afterwards changes nothing about a verification already under way. Once at
+ * start-up, next to {@link createCryptoMachine}, is the usual place.
+ *
+ * It applies to the whole process rather than to one flow, because it
+ * describes the product, and a product does not have a camera on some of its
+ * verifications and not others.
+ *
+ * **Not asynchronous, unlike almost everything else here.** It sets one flag
+ * and cannot fail, and the shape is deliberate: an awaitable call that a
+ * caller forgot to await could land after the flow it was meant to affect
+ * had already said what it can do.
+ */
+export function offerScannableCodes(enabled: boolean): void {
+  try {
+    nativeOfferScanning(enabled)
+  } catch (e) {
+    // Cannot fail on the Rust side: it stores a boolean and returns nothing.
+    // Wrapped anyway, because the layer between here and there can fail on
+    // its own -- a native module that never installed throws from every call
+    // that reaches for it -- and a product should catch one kind of thing
+    // from this surface rather than two.
+    throw toCryptoError(e)
+  }
+}
+
+/**
  * The code for this flow, for a person to hold up to another camera.
  *
  * # What your product has to do, and what this library will not
@@ -1590,8 +1666,11 @@ export async function cancelVerification(verificationId: string): Promise<void> 
  * point: the layer underneath answers seven different conditions with an
  * empty code and a warning nobody reads, and this call names them instead.
  *
- * - `'code_not_offered'` -- the other device never offered to scan. Waiting
- *   will never help; offer a short-string comparison instead.
+ * - `'code_not_offered'` -- codes were not negotiated on this flow. Waiting
+ *   will never help. Two causes, and you can always tell which: either this
+ *   build never called {@link offerScannableCodes}, or the other device did
+ *   not offer to scan, in which case offer a short-string comparison
+ *   instead.
  * - `'identity_not_known'` -- this account has no signing identity for the
  *   code to carry. See {@link bootstrapCrossSigning}.
  * - `'peer_identity_not_known'` -- the *other* user has none, and nothing
@@ -2011,10 +2090,12 @@ export interface RecoverySetup {
  * sit in the one place your product cannot adjust it. You know your users
  * and your threat model; choose a policy and apply it before calling.
  *
- * The recovery key is not affected by any of that. It is thirty-two random
- * bytes whatever the passphrase is, so a user who keeps it is protected
- * even if the passphrase is guessable, which is the other reason to make
- * them record it.
+ * **A strong recovery key does not make up for a weak passphrase.** Secret
+ * storage opens on either credential, so anyone who can read this account
+ * data has to beat only the weaker of the two: thirty-two random bytes are
+ * no help while `''` opens the same ciphertext. What the recovery key
+ * protects is your user's own access, not the secret's confidentiality, and
+ * that is the reason to make them record it.
  *
  * # This is Matrix's own format, not one this library invented
  *
@@ -2060,19 +2141,41 @@ export interface RecoverySetup {
  * client, where the key that stops working is one somebody wrote down and
  * was told to keep forever. Both arrive here as the same call.
  *
- * To replace a recovery deliberately, clear the account's existing
- * `'m.secret_storage.default_key'` and its `'m.secret_storage.key.<id>'`
- * first (`PUT {}` to each, which is how the client-server API clears
- * account data), read the account data again, and call this. That is the
- * same two endpoints you are already using, and it puts the destructive
- * step in your own code where a review can see it.
+ * **To replace a recovery deliberately, call this again with the same
+ * `accountData` minus the `'m.secret_storage.default_key'` entry.** Filter
+ * that one entry out of the array; write nothing to your homeserver to
+ * arrange it. The refusal lifts because nothing points at a key any more,
+ * everything else is still there so the ciphertexts still merge, and the
+ * recovery the account has goes on working until your last `PUT`, of the
+ * new pointer, switches it over. There is no window in which your user has
+ * no working recovery, and nothing to undo if you stop halfway.
  *
- * **This call believes the account data you hand it.** Passing `[]` asserts
- * the account has no recovery and the refusal believes you, exactly as
- * {@link bootstrapCrossSigning}'s gate believes a key query you reported as
- * answered. That is unavoidable in a library that performs no request, and
- * it is said rather than left to be discovered: what the refusal buys is
- * that you have to have *looked* before anything is destroyed.
+ * **Do not clear the key description.** That is irreversible: the
+ * description holds the salt, the iteration count and the MAC, so once it
+ * is gone no passphrase and no recovery key can open the ciphertexts it
+ * protected, ever. The refusal reads the pointer and only the pointer.
+ *
+ * Two other routes lift the refusal, and both cost something the one above
+ * does not:
+ *
+ * - **Clearing the pointer on your homeserver** (`PUT {}`, which is how the
+ *   client-server API deletes account data) works, and the merge survives.
+ *   What it costs is a window: from that write until your last one the
+ *   account resolves no recovery, and a crash in between leaves it there.
+ * - **Passing `[]`** works too, and costs the merge. This call merges into
+ *   what you hand it, so handed nothing it merges into nothing and every
+ *   other key's ciphertext, including another client's, is dropped from
+ *   the events you then write. Use it only for an account you know has no
+ *   account data.
+ *
+ * **This call believes the account data you hand it**, which is what makes
+ * all three possible. Passing `[]` asserts the account has no recovery and
+ * the refusal believes you, exactly as {@link bootstrapCrossSigning}'s gate
+ * believes a key query you reported as answered. That is unavoidable in a
+ * library that performs no request, and it is said rather than left to be
+ * discovered: what the refusal buys is not that destruction is impossible,
+ * but that you have to have *looked*, and that the cheapest way past it is
+ * also the one that destroys nothing.
  *
  * `'account_keys_not_fetched'` means this process has not yet asked the
  * server about this account. The private keys this device holds may belong
@@ -2194,8 +2297,19 @@ export async function createRecovery(
  *
  * `'recovery_not_set_up'` means the account data you handed over carries no
  * complete recovery. Either this account has none, or you did not fetch all
- * of it. This library sees only what it was given, so it cannot tell those
- * apart, and the list above is what to check.
+ * of it, or its `'m.secret_storage.default_key'` has been **cleared** and
+ * now points at nothing. This library sees only what it was given, so it
+ * cannot tell those apart, and the list above is what to check.
+ *
+ * **A cleared pointer belongs here and not with the two refusals above**,
+ * and the difference matters to your user. `PUT {}` is the only way the
+ * client-server API can delete an account data event, so a cleared pointer
+ * is what a half-finished replacement leaves behind: the key description
+ * and every ciphertext are still on your homeserver, and writing the
+ * pointer back makes the same passphrase work again. Nothing has been
+ * destroyed, so do not show your user the sentence for
+ * `'recovery_data_malformed'`, which sends them to set recovery up again
+ * and is the one action that would destroy it.
  *
  * `'account_keys_not_fetched'` and `'identity_not_known'` are the same pair
  * {@link bootstrapCrossSigning} and {@link requestSelfVerification} report,

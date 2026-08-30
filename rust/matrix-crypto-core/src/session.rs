@@ -1425,10 +1425,16 @@ enum PendingKind {
     /// exists for exactly one reader -- `signing.rs`'s ordering gate, which
     /// must know whether this process has *asked the server about its own
     /// account and received an answer*, not merely whether its local
-    /// identity happens to be empty. Recorded from the outgoing request
-    /// rather than from the incoming response, because a response naming no
-    /// identity for this account and a response about somebody else are
-    /// indistinguishable once the question is gone.
+    /// identity happens to be empty.
+    ///
+    /// **This variant is half of that fact and not the whole of it.** It
+    /// records which question was asked; [`answer_speaks_about`] records
+    /// whether the body that came back said anything about the account the
+    /// question was about. An earlier version stopped here, on the reading
+    /// that "a response naming no identity for this account and a response
+    /// about somebody else are indistinguishable once the question is gone".
+    /// The question is not gone -- this entry is the question -- and the two
+    /// are told apart in [`mark_request_sent`], where both are in hand.
     ///
     /// [`KeysQuery`]: PendingKind::KeysQuery
     AccountKeysQuery,
@@ -1739,14 +1745,28 @@ struct RequestState {
     queued_account_query: Option<(u64, OwnedTransactionId, KeysQueryRequest)>,
     pending: BTreeMap<String, Pending>,
     /// Whether a `/keys/query` naming this machine's own account has been
-    /// answered in this process.
+    /// answered **about that account** in this process.
     ///
-    /// Set only by [`mark_request_sent`], and only once upstream has
-    /// accepted the response: "we asked" is not the fact the gate needs,
-    /// "we asked and were answered" is. Never unset, and deliberately not
-    /// persisted -- a process that reopens a store has not asked anything
-    /// *yet*, and refusing until it does costs one round trip and is the
-    /// safe direction. See `signing.rs`.
+    /// Set only by [`mark_request_sent`], and only when three things hold at
+    /// once: the request was one of the two account-scoped key query kinds,
+    /// upstream accepted the response, and the response names the account in
+    /// one of the maps a key query answer keys by user id
+    /// ([`answer_speaks_about`]). "We asked" is not the fact the gate needs;
+    /// neither is "we asked and something came back". "We asked, and what
+    /// came back spoke about us" is.
+    ///
+    /// Never unset in production, and deliberately not persisted -- a process
+    /// that reopens a store has not asked anything *yet*, and refusing until
+    /// it does costs one round trip and is the safe direction. See
+    /// `signing.rs`.
+    ///
+    /// One boolean, not one per account, and that is safe only because
+    /// `machine::HELD` is a single slot: `init` refuses any config that
+    /// differs from the held one and nothing in the shipped surface clears
+    /// it, so a process holds at most one account for its whole life.
+    /// `machine::reset_for_test` is the one place that swaps the held
+    /// account, and it clears this through
+    /// [`forget_account_keys_answered_for_test`] for exactly that reason.
     account_keys_answered: bool,
     next_sequence: u64,
 }
@@ -1882,6 +1902,28 @@ pub(crate) fn account_keys_answered() -> bool {
         .lock()
         .expect("request registry poisoned")
         .account_keys_answered
+}
+
+/// Forgets that this process was ever answered about its own account, and
+/// forgets nothing else.
+///
+/// For `machine::reset_for_test`, which is the only place in this codebase
+/// where one process holds account A and then account B. Every other field
+/// of [`RequestState`] holds request bodies and ids, which that function's
+/// own comment explains it deliberately leaves alone;
+/// [`RequestState::account_keys_answered`] is not one of those. It is a fact
+/// about *which account* has been asked about, so swapping the account
+/// without clearing it leaves the next machine's gate standing open on the
+/// previous machine's answer -- and any gate test written inside `src/` would
+/// then pass or fail for a reason belonging to whichever test ran before it.
+/// That is why every proof of this gate lives in its own file under `tests/`
+/// today, and clearing it here is what makes a `src/` one possible.
+#[cfg(test)]
+pub(crate) fn forget_account_keys_answered_for_test() {
+    STATE
+        .lock()
+        .expect("request registry poisoned")
+        .account_keys_answered = false;
 }
 
 #[cfg(test)]
@@ -2107,6 +2149,98 @@ fn account_scoped(
         }
         (kind, _) => kind,
     }
+}
+
+/// The four `/keys/query` response fields that are maps **keyed by user id**,
+/// and so are the only places an answer can name an account.
+///
+/// Not `failures`, which is the fifth declared field and is keyed by *server
+/// name*. That difference is the whole of [`answer_speaks_about`]'s second
+/// paragraph and it is stated here, at the list, so the two cannot drift:
+/// a `failures` entry says a server did not answer, which is the opposite of
+/// an answer about anyone it hosts.
+const USER_KEYED_ANSWER_FIELDS: [&str; 4] = [
+    "device_keys",
+    "master_keys",
+    "self_signing_keys",
+    "user_signing_keys",
+];
+
+/// Whether a `/keys/query` response body says anything at all about
+/// `account`: does it name that user in any of the four maps a key query
+/// answer keys by user id.
+///
+/// # Why the gate needs this and the request classification is not enough
+///
+/// [`PendingKind::AccountKeysQuery`] records that the *question* named this
+/// account. It records nothing about the answer, and until this function
+/// existed the gate lifted on the question alone. Measured, five bodies in
+/// five fresh processes against a request that did name the account: another
+/// account's real published identity lifted the gate and the next
+/// `bootstrap_identity` minted over this one; so did `device_keys` carrying
+/// only another user; so did a body whose entire content was a `failures`
+/// map. Each of those is a body that answered somebody else's question, or
+/// nobody's, and each was read as "the server says this account has no
+/// identity" -- the one fact that authorises minting a new one over the
+/// account's existing one.
+///
+/// So the rule is that the answer must speak to the account the question was
+/// about. Silence is not an answer, and an answer about a stranger is
+/// silence about us.
+///
+/// # Presence, not absence, and that is measured rather than assumed
+///
+/// The account is named in the affirmative here. The alternative rule --
+/// accept a body that reports nothing about anybody, on the grounds that a
+/// server with nothing to say answers `{}` -- was the reading this library
+/// shipped with, and it is wrong about real homeservers. Probed directly
+/// over HTTP, on throwaway accounts holding no cross-signing identity and
+/// no uploaded device keys at all:
+///
+/// * **Synapse 1.159.0** answers
+///   `{"device_keys":{"@user:…":{}},"failures":{},"master_keys":{},`
+///   `"self_signing_keys":{},"user_signing_keys":{}}` -- the account named,
+///   with an empty device map, and every other field present and empty.
+/// * **Dendrite 0.15.2** answers byte-identically to Synapse.
+/// * **Continuwuity v26.7.2**, the image this repository's level 2 harness
+///   pins, answers `{"device_keys":{"@user:…":{}}}` -- the account named,
+///   and nothing else at all.
+///
+/// All three name the account for a *local* user that has never uploaded a
+/// key, and all three name one that does not exist on the server at all.
+/// None answers `{}`. An account's own key query always goes to its own
+/// homeserver, which is authoritative for it, so the local case is the only
+/// one this gate ever meets; the one shape that does *not* name a user is
+/// the remote-server failure, which all three report under `failures` and
+/// which cannot be about this account.
+///
+/// **This is why `{}` no longer lifts the gate, and that is the point of the
+/// change rather than a side effect of it.** `{}` is what a completely empty
+/// body becomes before parsing, so it is also what a 503 that carried
+/// nothing arrives as. That collision was documented as the residue only an
+/// HTTP status could close, and closing it here costs no answer any measured
+/// homeserver actually gives.
+///
+/// **What it would cost, if a homeserver did omit a user it has nothing to
+/// say about:** that product's `bootstrap_identity` would refuse with
+/// `AccountKeysNotFetched` and go on refusing. That is a loud, inspectable
+/// stop -- `identity_status` reports `account_keys_fetched: false` -- against
+/// a silent reset of every verification anyone ever made of the account. The
+/// trade is taken in that direction knowingly, and it is the same direction
+/// `signing.rs`'s gate is argued in throughout.
+fn answer_speaks_about(body: &str, account: &UserId) -> bool {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    let Some(object) = parsed.as_object() else {
+        return false;
+    };
+    USER_KEYED_ANSWER_FIELDS.iter().any(|field| {
+        object
+            .get(*field)
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|users| users.contains_key(account.as_str()))
+    })
 }
 
 /// What the product must send to its homeserver, or feed to another
@@ -2488,15 +2622,25 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
 ///
 /// Every genuine success is inside that shape, which is the point of drawing
 /// it there. So is any failure whose body happens to fall inside it, and the
-/// member that matters is the object with no keys. `{}` is what
-/// `/keys/query` answers for an account the server knows no identity for,
-/// which is the exact fact `signing.rs`'s gate mints on, and it is the
-/// entire success response of both fieldless kinds. A completely empty body
-/// is the same input: ruma substitutes `b"{}"` for it before parsing ("If
-/// the body is completely empty, pretend it is an empty JSON object
-/// instead", `ruma-macros-0.19.0/src/api/common.rs:365-371`), as does
-/// `"  {}  "`. So a 503 that carried no body and a 200 that had nothing to
-/// say arrive here as the same bytes.
+/// member that matters is the object with no keys. `{}` is the entire
+/// success response of both fieldless kinds. A completely empty body is the
+/// same input: ruma substitutes `b"{}"` for it before parsing ("If the body
+/// is completely empty, pretend it is an empty JSON object instead",
+/// `ruma-macros-0.19.0/src/api/common.rs:365-371`), as does `"  {}  "`. So a
+/// 503 that carried no body and a 200 that had nothing to say arrive here as
+/// the same bytes.
+///
+/// **This paragraph used to name `/keys/query` first, and say that `{}` is
+/// what it answers for an account the server knows no identity for. It is
+/// not.** Measured against Synapse 1.159.0, Dendrite 0.15.2 and continuwuity
+/// v26.7.2, all three name the queried local account in `device_keys` even
+/// when they hold nothing for it, so no real key query answer is the empty
+/// object. That collision is now closed one level down rather than here:
+/// this function still accepts `{}` for a key query, because it is a
+/// well-formed response and upstream has to see it, and
+/// [`answer_speaks_about`] is what keeps it from lifting `signing.rs`'s
+/// gate. For the two fieldless kinds the collision remains exactly as
+/// described, and [`mark_request_failed`] is still what closes it there.
 ///
 /// For the five kinds whose response type has fields, the shape is wider
 /// than that one member: `{"device_keys":{}}` reported for a refused
@@ -2553,9 +2697,11 @@ fn refuse_a_non_response(kind: PendingKind, body: &str) -> Result<(), SessionErr
     // answerable, because that list is finite and vendored.
     //
     // An empty object is exempt because it has no keys to judge, and it is
-    // a real answer: `/keys/query` returns it for an account the server
-    // knows nothing about, and it is the entire success response of both
-    // fieldless kinds.
+    // the entire success response of both fieldless kinds. This comment used
+    // to add that `/keys/query` returns it for an account the server knows
+    // nothing about; three measured homeservers do not, and the doc comment
+    // above says what replaced that reasoning. The exemption stands anyway:
+    // refusing it here would refuse the two fieldless kinds outright.
     //
     // For the five kinds with fields this is deliberately not
     // `deny_unknown_fields`. A response carrying a field a later
@@ -2769,24 +2915,46 @@ pub async fn mark_request_sent(id: &str, response_json: &str) -> Result<(), Sess
     let transaction_id: OwnedTransactionId = <&TransactionId>::from(id).to_owned();
     let body = response_json.as_bytes().to_vec();
 
-    let result =
-        with_machine(move |machine| Box::pin(mark_sent(machine, kind, transaction_id, body)))
-            .await?;
+    // The account is read in the same trip as the mark, not from a later
+    // one, for the reason `take_outgoing_requests` gives for reading it
+    // alongside the requests: it is the account this response was just
+    // applied to, and only one trip can guarantee that.
+    let (account, result) = with_machine(move |machine| {
+        Box::pin(async move {
+            let outcome = mark_sent(machine, kind, transaction_id, body).await;
+            (machine.user_id().to_owned(), outcome)
+        })
+    })
+    .await?;
 
     if result.is_ok() {
         let mut state = STATE.lock().expect("request registry poisoned");
         state.pending.remove(id);
         // Recorded here and nowhere else: upstream has accepted an answer to
-        // a question this process asked about its own account. Handing the
-        // request out is not enough -- a caller can drain the pump and never
-        // send anything -- and neither is the response alone, which cannot
-        // say whether it was asked about this account or somebody else. This
-        // is the "have we asked" half of `signing.rs`'s ordering gate; the
-        // "and what did it say" half is a separate read of the store.
+        // a question this process asked about its own account, **and that
+        // answer said something about this account**. Both halves are
+        // load-bearing and each was the whole rule at some point.
+        //
+        // Handing the request out is not enough: a caller can drain the pump
+        // and never send anything. The kind alone is not enough either, and
+        // that is the half this comment used to get wrong -- it said the
+        // response "cannot say whether it was asked about this account or
+        // somebody else", which is true of the response *alone* and false
+        // here, where the question is in hand. A body carrying only another
+        // user's keys, or only a `failures` map, is a body that answered
+        // somebody else's question; it lifted this gate, and the next
+        // `bootstrap_identity` minted a fresh identity over the account's
+        // existing one. See `answer_speaks_about` for the rule and for the
+        // three homeservers it was measured against.
+        //
+        // This is the "have we asked, and were we answered" half of
+        // `signing.rs`'s ordering gate; the "and what did the answer say"
+        // half is a separate read of the store.
         if matches!(
             kind,
             PendingKind::AccountKeysQuery | PendingKind::AccountKeysQueryOutOfBand
-        ) {
+        ) && answer_speaks_about(response_json, &account)
+        {
             state.account_keys_answered = true;
         }
     }

@@ -314,23 +314,32 @@ pub enum MachineError {
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("the other user has no signing identity")]
     PeerIdentityNotKnown,
-    /// The other device did not offer to scan a code, so showing one would
-    /// put a square on a screen that nothing on the other end can read.
+    /// Codes were not negotiated on this flow, so showing one would put a
+    /// square on a screen that nothing on the other end can read.
     ///
-    /// Not a stage and not a refusal by anybody: the two sides negotiated
-    /// which methods they can both carry out when the flow became ready, and
+    /// Not a stage and not a refusal by anybody: the two sides settled which
+    /// methods they can both carry out when the flow became ready, and
     /// scanning was not among them. Kept apart from `WrongStage`, which it
     /// was folded into first, because the two call for opposite things. A
-    /// flow at the wrong stage is one to wait on or to restart; a flow whose
-    /// peer cannot scan will never be able to, however long a product waits,
-    /// and the answer is to compare a short string instead.
+    /// flow at the wrong stage is one to wait on or to restart; a flow that
+    /// did not negotiate codes never will, however long a product waits.
     ///
-    /// Reachable against any client that does not implement scanning, which
-    /// includes this library's own releases before this one and every client
-    /// that speaks only the short-string method.
+    /// **Two causes, and a caller can always tell which.** Either this
+    /// process never called `crate::offer_scanning`, in which case this
+    /// library announced no scanning half and the remedy is that one call
+    /// before the next flow; or the other device did not offer to scan,
+    /// which nothing here can change and whose answer is to compare a short
+    /// string instead. The switch is the caller's own state, so the
+    /// distinction needs no second variant to carry it: a product that never
+    /// turned scanning on knows this is the first, and one that did knows it
+    /// is the second.
+    ///
+    /// The second cause is reachable against any client that does not
+    /// implement scanning, which includes this library's own releases before
+    /// this one and every client that speaks only the short-string method.
     ///
     /// Appended, not inserted -- see `UnknownFlow` above.
-    #[error("the other device did not offer to scan a code")]
+    #[error("codes were not negotiated on this flow")]
     CodeNotOffered,
     /// A scanned payload decoded, named this flow, and carries keys this flow
     /// does not expect.
@@ -637,10 +646,16 @@ pub(crate) fn reset_for_test() {
     // `the_registry_is_emptied_before_the_store_it_holds_alive_is_dropped`
     // is what now keeps these two statements in this order.
     //
-    // `session`'s request registry needs no such treatment: it holds
-    // request bodies, not store handles, which is why only this one is
-    // reset from here.
+    // `session`'s request registry needs no such treatment *for this
+    // reason*: it holds request bodies and ids, not store handles, which is
+    // why only this one is reset from here for the ordering above. One field
+    // of it is not a request body, and it is cleared further down.
     crate::verification::reset_flows_for_test();
+    // The product-level choice about announcing scannable codes goes back
+    // to what a fresh process has, so one test's choice is not another's
+    // starting state. Unlike the registry above this has nothing to do
+    // with the store's lifetime and no ordering constraint of its own.
+    crate::verification::reset_scanning_for_test();
 
     // Same reason, one layer up: a recorder installed by one test would
     // otherwise keep receiving another test's signals, and a test that
@@ -655,6 +670,17 @@ pub(crate) fn reset_for_test() {
     // `build` seeds it for every machine created after this point; this
     // covers the window in between.
     crate::signing::seed_private_keys_held(false);
+
+    // The one field of `session`'s registry that is not a request body:
+    // whether this process has been answered a key query about its own
+    // account. That is a fact about *which account* is held, and this
+    // function is the only place in the codebase where the held account
+    // changes, so leaving it set would hand the next machine a gate standing
+    // open on the previous machine's answer. Harmless while every proof of
+    // that gate lives in its own file under `tests/`; the point of clearing
+    // it is that a proof written inside `src/` is then possible, instead of
+    // passing or failing for a reason belonging to its neighbour.
+    crate::session::forget_account_keys_answered_for_test();
 
     // `RwLock`, not `OnceLock`: the registry must be clearable between tests
     // that each need their own fresh machine, all run in one process rather
@@ -760,6 +786,56 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         futures::executor::block_on(create_machine(config_in(dir.path()))).unwrap();
         futures::executor::block_on(create_machine(config_in(dir.path()))).unwrap();
+    }
+
+    /// A second account must not inherit the first one's answer.
+    ///
+    /// This function is the only place in the codebase where one process
+    /// holds account A and then account B, and `account_keys_answered` is a
+    /// fact about *which account* has been asked about. Left standing across
+    /// the swap, the second machine's `bootstrap_identity` would be served
+    /// on the strength of a key query about the first, which is the whole
+    /// defect this boolean exists to prevent, reached through the test
+    /// harness instead of through the wire.
+    ///
+    /// **This test is the reason the clearing exists rather than the other
+    /// way round.** Deleting
+    /// `crate::session::forget_account_keys_answered_for_test()` from
+    /// `reset_for_test` leaves every other test in this crate green,
+    /// measured; the gate's real proofs all live in their own files under
+    /// `tests/`, one process each, so none of them can see this. It is a
+    /// unit test inside `src/` because that is exactly the kind the omission
+    /// would have silently broken.
+    #[test]
+    fn a_test_reset_forgets_that_the_previous_account_was_asked_about() {
+        let _guard = futures::executor::block_on(lock_for_test());
+        reset_for_test();
+        let first = tempfile::tempdir().unwrap();
+        futures::executor::block_on(create_machine(config_in(first.path()))).unwrap();
+
+        let query = futures::executor::block_on(crate::take_outgoing_requests())
+            .expect("draining the pump must not fail")
+            .into_iter()
+            .find(|request| request.kind == "keys_query" && request.body.contains("@alice:"))
+            .expect("a fresh machine owes a key query naming its own account");
+        futures::executor::block_on(crate::mark_request_sent(
+            &query.id,
+            r#"{"device_keys":{"@alice:example.org":{}}}"#,
+        ))
+        .expect("answering the account key query must not fail");
+        assert!(
+            crate::session::account_keys_answered(),
+            "the premise: this account has been asked about and answered, or the reset below \
+             has nothing to undo"
+        );
+
+        reset_for_test();
+
+        assert!(
+            !crate::session::account_keys_answered(),
+            "the reset swaps the held account, so what the previous one was told must not \
+             carry over. A second machine here would mint on an answer about somebody else"
+        );
     }
 
     /// Swapping the machine underneath a running app would strand every

@@ -224,7 +224,7 @@ pub enum MachineFfiError {
     // lands, silently.
     #[error("the other user has no signing identity")]
     PeerIdentityNotKnown,
-    #[error("the other device did not offer to scan a code")]
+    #[error("codes were not negotiated on this flow")]
     CodeNotOffered,
     #[error("the scanned code was refused")]
     ScannedCodeRefused,
@@ -728,6 +728,22 @@ pub async fn submit_scanned_code(
     matrix_crypto_core::submit_scanned_code(&matrix_crypto_core::FlowId(verification_id), &payload)
         .await
         .map_err(Into::into)
+}
+
+/// Says whether this product can show a code and read one. Mirrors
+/// `offer_scanning`; see its own doc comment in
+/// `matrix-crypto-core::verification` for what each setting costs, who pays
+/// it, and why off does more than stay quiet.
+///
+/// **Not `async` and not fallible, unlike every other exported call here.**
+/// It sets one process-wide flag, touches no store and cannot fail, and the
+/// synchronous shape is deliberate rather than incidental: a caller must set
+/// this *before* opening or answering a flow, and an asynchronous one that a
+/// caller forgot to await could land after the flow it was meant to affect
+/// had already announced what it can do.
+#[uniffi::export]
+pub fn offer_scanning(enabled: bool) {
+    matrix_crypto_core::offer_scanning(enabled)
 }
 
 /// Says the other device really did scan the code this one showed. Mirrors

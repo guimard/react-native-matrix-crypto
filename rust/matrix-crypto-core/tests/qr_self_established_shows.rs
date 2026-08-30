@@ -30,8 +30,8 @@
 
 use matrix_crypto_core::{
     bootstrap_identity, confirm_scan, create_machine, device_statuses, flow_stage, identity_status,
-    in_runtime, mark_request_sent, read_code, request_flow, take_outgoing_requests, CryptoSignal,
-    FlowStage, MachineConfig, TrustState,
+    in_runtime, mark_request_sent, offer_scanning, read_code, request_flow, take_outgoing_requests,
+    CryptoSignal, FlowStage, MachineConfig, TrustState,
 };
 use matrix_sdk_common::ruma::{OwnedDeviceId, OwnedUserId, TransactionId};
 use matrix_sdk_crypto::matrix_sdk_qrcode::QrVerificationData;
@@ -65,6 +65,14 @@ fn the_device_that_holds_the_identity_shows_a_code_and_a_new_login_scans_it() {
         subscribe();
         let account: OwnedUserId = ACCOUNT.parse().expect("a literal user id parses");
         let new_device_id: OwnedDeviceId = NEW_DEVICE.into();
+
+        // The product asks to take part in verification by a scannable code.
+        // Off until it does, and off is byte for byte the wire this library
+        // put out before codes existed, so without this line every flow
+        // below negotiates the short string alone and nothing here can
+        // happen. `tests/qr_announcement.rs` is where that default is the
+        // subject rather than the setting.
+        offer_scanning(true);
 
         // ---- The login that has just happened ------------------------------
         let new_login = OlmMachine::new(&account, &new_device_id).await;
@@ -227,10 +235,40 @@ fn the_device_that_holds_the_identity_shows_a_code_and_a_new_login_scans_it() {
              the *showing* device's key first, so a scanner reading this one under \
              that mode would compare the wrong key against the wrong thing"
         );
+        // ---- the polarity of the grid, which nothing else here reads ------
+        //
+        // `true` means dark. A mapping the other way round produces the
+        // photographic negative of a valid code, which most scanners refuse
+        // and some read as a different code -- and it changes no length, no
+        // width and no payload byte, so every other assertion in this
+        // repository passes against it. The only other thing that would
+        // catch it is a person holding a phone at the end of the milestone,
+        // which is the most expensive check there is and the last one.
+        //
+        // The top row of a symbol carries a finder pattern at each end:
+        // seven dark squares, then one light separator between the finder
+        // and the data. Read off the drawn grid at both corners, so this
+        // cannot pass on one that happened to be dark.
         assert_eq!(
-            code.modules.len(),
-            code.width as usize * code.width as usize,
-            "the symbol must be a square of its own declared side"
+            code.width,
+            harness::SYMBOL_WIDTH,
+            "upstream fixes the version of every one of these symbols, so a \
+             different side means it stopped doing that and the finder patterns \
+             below are being read at the wrong offsets"
+        );
+        let side = harness::SYMBOL_WIDTH as usize;
+        let top = harness::row_of(&code, 0);
+        assert!(
+            top[..7].iter().all(|square| *square) && !top[7],
+            "the top-left finder must be seven dark squares and then a light \
+             separator. An inverted grid is the photographic negative of a valid \
+             code and is what a product would hand to a camera: {:?}",
+            &top[..8]
+        );
+        assert!(
+            top[side - 7..].iter().all(|square| *square) && !top[side - 8],
+            "and the top-right finder the same: {:?}",
+            &top[side - 8..]
         );
 
         // ---- The stages a scanned flow passes through ---------------------------

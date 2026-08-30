@@ -177,10 +177,19 @@ export type CryptoErrorKind =
   // that showed one sentence for both would send half its users to set up
   // something that is not broken.
   | 'peer_identity_not_known'
-  // The other device did not offer to scan, so there is nothing to show it.
-  // Not a stage: no amount of waiting changes it, and the answer is to
-  // compare a short string instead. Every client that speaks only the short
-  // string produces this, including this library's own earlier releases.
+  // Codes were not negotiated on this flow, so there is nothing to show.
+  // Not a stage: no amount of waiting changes it.
+  //
+  // **Two causes, and a product can always tell which**, because one of them
+  // is its own state. Either this build never called `offerScannableCodes`,
+  // which is one line before the next flow; or the other device did not
+  // offer to scan, which nobody here can fix and whose answer is to compare
+  // a short string instead. A product that never turned codes on knows it is
+  // the first; one that did knows it is the second, which is why this is one
+  // kind rather than two.
+  //
+  // The second cause is reachable against every client that speaks only the
+  // short string, including this library's own earlier releases.
   | 'code_not_offered'
   // A scanned payload decoded, named this flow, and carries keys this flow
   // does not expect. **The narrowest of the four, and the only one that can

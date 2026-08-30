@@ -36,11 +36,18 @@ use matrix_crypto_core::{
 
 const ACCOUNT: &str = "@alice:example.org";
 
-/// A `/keys/query` answer that names no identity for this account: the
-/// server has been asked and has said there is none. Every field of ruma's
-/// own response type is `#[serde(default)]`, so an empty object is a
-/// well-formed answer meaning exactly that.
-const NO_IDENTITY: &str = r#"{"device_keys":{}}"#;
+/// A `/keys/query` answer naming no identity for this account: the server
+/// has been asked, it has answered **about this account**, and what it holds
+/// for it is nothing.
+///
+/// Continuwuity v26.7.2's real answer for such an account, measured directly
+/// over HTTP; Synapse 1.159.0 and Dendrite 0.15.2 answer the same thing with
+/// `"failures":{}` and the three empty cross-signing maps beside it. The
+/// account is **named**, which the `{"device_keys":{}}` this constant used to
+/// hold was not, and which no measured homeserver omits. A body that names
+/// nobody is silent about this account, and `session::answer_speaks_about`
+/// has why silence does not lift the gate.
+const NO_IDENTITY: &str = r#"{"device_keys":{"@alice:example.org":{}}}"#;
 
 #[test]
 fn a_bootstrap_publishes_one_identity_and_republishes_the_same_one() {
