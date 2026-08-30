@@ -22,6 +22,12 @@
 //!    whenever they pointed the wrong one -- and a scan is the half that
 //!    depends on this library announcing that it can scan at all, which no
 //!    default of upstream's ever does.
+//! 8. **And then with the other person starting it.** Everything above is
+//!    driven by this side asking first. At least half of real use is the
+//!    other way, and it goes through a different call -- [`accept_flow`],
+//!    which is the third and last of the three places this library says what
+//!    it can do. Nothing drove it until this step, so reverting that one
+//!    line to what it said before codes existed left the whole suite green.
 //!
 //! # Which side is the library
 //!
@@ -41,10 +47,10 @@
 //! to one person.
 
 use matrix_crypto_core::{
-    bootstrap_identity, confirm_scan, create_machine, device_statuses, flow_stage, identity_status,
-    in_runtime, mark_request_sent, read_code, receive_sync_changes, request_flow, share_scope_key,
-    submit_scanned_code, take_outgoing_requests, FlowStage, MachineConfig, MachineError,
-    TrustState,
+    accept_flow, bootstrap_identity, confirm_scan, create_machine, device_statuses, flow_stage,
+    identity_status, in_runtime, mark_request_sent, offer_scanning, read_code,
+    receive_sync_changes, request_flow, share_scope_key, submit_scanned_code,
+    take_outgoing_requests, FlowStage, MachineConfig, MachineError, TrustState,
 };
 use matrix_sdk_common::ruma::OwnedUserId;
 use matrix_sdk_crypto::matrix_sdk_qrcode::QrVerificationData;
@@ -53,9 +59,9 @@ use matrix_sdk_crypto::QrVerificationState;
 #[path = "scanned/harness.rs"]
 mod harness;
 use harness::{
-    cross_signed_machine, deliver_verification_request, every_method, mode_of, one_of,
-    pump_bare_to_library, pump_to_bare, queried_users, uploaded_signatures, with_our_signature,
-    MODE_CROSS_USER,
+    cross_signed_machine, deliver_to_bare, deliver_verification_request, every_method, mode_of,
+    one_of, pump_bare_to_library, pump_to_bare, queried_users, uploaded_signatures,
+    with_our_signature, MODE_CROSS_USER,
 };
 
 /// The library.
@@ -80,6 +86,14 @@ fn another_user_verifies_by_scanning_a_code_this_library_showed() {
 
     futures::executor::block_on(in_runtime(async move {
         let alice_user: OwnedUserId = ALICE.parse().expect("a literal user id parses");
+
+        // The product asks to take part in verification by a scannable code.
+        // Off until it does, and off is byte for byte the wire this library
+        // put out before codes existed, so without this line every flow
+        // below negotiates the short string alone and nothing here can
+        // happen. `tests/qr_announcement.rs` is where that default is the
+        // subject rather than the setting.
+        offer_scanning(true);
 
         // ---- The other user ---------------------------------------------
         let bob = cross_signed_machine(BOB, BOB_DEVICE).await;
@@ -246,17 +260,40 @@ fn another_user_verifies_by_scanning_a_code_this_library_showed() {
              A self-verification mode here would mean the library had built a code \
              claiming these two devices belong to one person"
         );
+        // ---- the polarity of the grid, which nothing else here reads ------
+        //
+        // `true` means dark. A mapping the other way round produces the
+        // photographic negative of a valid code, which most scanners refuse
+        // and some read as a different code -- and it changes no length, no
+        // width and no payload byte, so every other assertion in this
+        // repository passes against it. The only other thing that would
+        // catch it is a person holding a phone at the end of the milestone,
+        // which is the most expensive check there is and the last one.
+        //
+        // The top row of a symbol carries a finder pattern at each end:
+        // seven dark squares, then one light separator between the finder
+        // and the data. Read off the drawn grid at both corners, so this
+        // cannot pass on one that happened to be dark.
         assert_eq!(
-            code.modules.len(),
-            code.width as usize * code.width as usize,
-            "the symbol must be a square of its own declared side: a product draws \
-             it row by row and a mismatch is a code nothing can read"
+            code.width,
+            harness::SYMBOL_WIDTH,
+            "upstream fixes the version of every one of these symbols, so a \
+             different side means it stopped doing that and the finder patterns \
+             below are being read at the wrong offsets"
+        );
+        let side = harness::SYMBOL_WIDTH as usize;
+        let top = harness::row_of(&code, 0);
+        assert!(
+            top[..7].iter().all(|square| *square) && !top[7],
+            "the top-left finder must be seven dark squares and then a light \
+             separator. An inverted grid is the photographic negative of a valid \
+             code and is what a product would hand to a camera: {:?}",
+            &top[..8]
         );
         assert!(
-            code.width >= 21,
-            "21 squares is the smallest symbol the format defines; anything below \
-             it is not one: {}",
-            code.width
+            top[side - 7..].iter().all(|square| *square) && !top[side - 8],
+            "and the top-right finder the same: {:?}",
+            &top[side - 8..]
         );
         // The payload is authentication material and must never be
         // printable. Asserted here as well as in the unit test, because
@@ -468,6 +505,119 @@ fn another_user_verifies_by_scanning_a_code_this_library_showed() {
             flow_stage(&next).await.expect("the flow exists"),
             FlowStage::Done,
             "a flow this library finished by scanning must report that it finished"
+        );
+
+        // ---- And now with the other person starting it -------------------------
+        //
+        // The third call site. `request_flow` and `request_self_flow` say
+        // what this library can do when it asks; `accept_flow` says it when
+        // it answers, and a flow the other person opened is the only way to
+        // reach it. Until this ran, reverting that one line to the
+        // short-string-only list every release before this one used left all
+        // four code binaries, `sas_two_party` and every library test green.
+        //
+        // It is also the direction a product's user is in whenever somebody
+        // else starts the verification, which is at least half of real use,
+        // and upstream carries `we_started` into the code it builds -- so
+        // this is a different object from the ones above, not the same one
+        // reached differently.
+        // One empty sync on the other side first, and it is not decoration.
+        // Upstream cancels a *new* request outright whenever another request
+        // with the same user is still in its map and not already cancelled
+        // (`verification/machine.rs:165-192`) -- and the two flows above are
+        // finished, not cancelled. A request born cancelled is not in
+        // `InnerRequest::Created`, so `request_to_device` silently falls back
+        // to upstream's own default method list
+        // (`verification/requests.rs:230-237`) and the invitation goes out
+        // announcing three methods rather than the four it was built with.
+        // That is what this test hit first: the flow below reached `Ready`
+        // and then refused to produce a code, naming a negotiation nobody
+        // had asked for.
+        //
+        // Upstream empties that map at the top of every `receive_sync_changes`,
+        // which is what a real client does constantly and what this line is.
+        deliver_to_bare(&bob.peer, Vec::new()).await;
+
+        let bob_device_handle = bob
+            .peer
+            .get_device(&alice_user, ALICE_DEVICE.into(), None)
+            .await
+            .expect("the other user's store must be readable")
+            .expect("the other user knows this library's device");
+        let (inbound, invitation) =
+            bob_device_handle.request_verification_with_methods(every_method());
+        deliver_verification_request(&invitation, BOB, ALICE, ALICE_DEVICE).await;
+
+        // The identifier a product would be handed on the crypto signal
+        // channel, taken here from the request the other side built, which
+        // is the same string a homeserver relays. Nothing local registered
+        // it, so this also drives the half of `handles` that finds a flow
+        // the other side started.
+        let inbound_flow = matrix_crypto_core::FlowId(inbound.flow_id().as_str().to_string());
+        assert_eq!(
+            flow_stage(&inbound_flow)
+                .await
+                .expect("a flow the other side opened must be answerable"),
+            FlowStage::Requested,
+            "the invitation must have arrived and built a flow, or the agreement \
+             below would be agreeing to nothing"
+        );
+
+        accept_flow(&inbound_flow)
+            .await
+            .expect("an invitation from a known device can be agreed to");
+        let crossed = pump_to_bare(&bob.peer, ALICE, BOB, BOB_DEVICE).await;
+        assert!(
+            crossed.contains(&"m.key.verification.ready".to_string()),
+            "agreeing must reach the other side through the pump: {crossed:?}"
+        );
+
+        // The proof that the agreement carried the scanning half: upstream
+        // refuses to build a code unless *this* side's announced list
+        // contains the showing method and the other side's contains the
+        // scanning one. Both halves of that came from `accept_flow` here.
+        let code = read_code(&inbound_flow)
+            .await
+            .expect("a flow the other person opened can still show a code");
+        assert_eq!(
+            mode_of(&code.payload),
+            MODE_CROSS_USER,
+            "the mode does not depend on who asked first"
+        );
+        let top = harness::row_of(&code, 0);
+        assert!(
+            top[..7].iter().all(|square| *square) && !top[7],
+            "and neither does the polarity of what a product draws: {:?}",
+            &top[..8]
+        );
+
+        let scanned = QrVerificationData::from_bytes(&code.payload)
+            .expect("what this library produced must decode as what the format defines");
+        let bob_code = inbound
+            .scan_qr_code(scanned)
+            .await
+            .expect("a cross-signed peer can scan a cross-signed peer's code")
+            .expect("a ready flow that announced scanning produces a code object");
+        let reciprocation = bob_code
+            .reciprocate()
+            .expect("a scanner must tell the other side it scanned");
+        deliver_verification_request(&reciprocation, BOB, ALICE, ALICE_DEVICE).await;
+
+        confirm_scan(&inbound_flow)
+            .await
+            .expect("a code somebody has scanned can be confirmed");
+        pump_to_bare(&bob.peer, ALICE, BOB, BOB_DEVICE).await;
+        pump_bare_to_library(&bob.peer, BOB, ALICE, ALICE_DEVICE).await;
+
+        assert!(
+            bob_code.is_done(),
+            "a flow the other person opened must finish like any other: {:?}",
+            bob_code.state()
+        );
+        assert_eq!(
+            flow_stage(&inbound_flow).await.expect("the flow exists"),
+            FlowStage::Done,
+            "and this side must say so too"
         );
     }));
 }

@@ -32,9 +32,9 @@
 //! between the two exactly what a homeserver would relay and nothing else.
 
 use matrix_crypto_core::{
-    confirm_scan, create_machine, device_statuses, flow_stage, identity_status, in_runtime,
-    mark_request_sent, read_code, request_self_flow, take_outgoing_requests, FlowStage,
-    MachineConfig, TrustState,
+    cancel_flow, confirm_scan, create_machine, device_statuses, flow_stage, identity_status,
+    in_runtime, mark_request_sent, offer_scanning, read_code, request_self_flow,
+    take_outgoing_requests, FlowStage, MachineConfig, TrustState,
 };
 use matrix_sdk_common::ruma::{OwnedDeviceId, OwnedUserId, TransactionId};
 use matrix_sdk_crypto::matrix_sdk_qrcode::QrVerificationData;
@@ -178,6 +178,55 @@ fn a_new_login_shows_a_code_and_the_account_verifies_it() {
             .await
             .expect("the bare machine must accept a keys-claim response");
 
+        // ---- The third call site, in both of its states ---------------------
+        //
+        // `request_self_flow` is the one of the three that only an account
+        // with another device to fan out to can reach, so it is read here
+        // rather than in `tests/qr_announcement.rs` with the other two. Both
+        // states, because either assertion alone would pass against a switch
+        // that ignored its argument.
+        //
+        // The flow this opens is thrown away. It exists to be read off the
+        // wire and then refused, which is also what makes the real flow
+        // below the second one -- upstream cancels a new request while
+        // another with the same user is still live and uncancelled
+        // (`verification/machine.rs:165-192`).
+        let discarded = request_self_flow()
+            .await
+            .expect("an account with an identity can be asked to verify a new device");
+        let batch = take_outgoing_requests()
+            .await
+            .expect("the pump must be drainable");
+        let invitation = one_of(
+            &batch,
+            "to_device",
+            "the invitation must be queued for the pump",
+        );
+        assert_eq!(
+            harness::methods_announced(&invitation.body, ACCOUNT, OLD_DEVICE),
+            ["m.sas.v1"],
+            "a product that never asked for scannable codes must fan out the \
+             invitation every release before this one fanned out. This is the third \
+             of the three places this library says what it can do, and a switch that \
+             reached the other two would leave a new login's own verification \
+             behaving the old way"
+        );
+        for request in &batch {
+            mark_request_sent(&request.id, "{}")
+                .await
+                .expect("a to-device response must be accepted");
+        }
+        cancel_flow(&discarded)
+            .await
+            .expect("a live flow can be refused");
+        pump_to_bare(&first.peer, ACCOUNT, ACCOUNT, OLD_DEVICE).await;
+        harness::deliver_to_library(Vec::new()).await;
+
+        // The product asks to take part in verification by a scannable code.
+        // Everything below this line depends on it: without it the flow
+        // negotiates the short string alone and no code exists to read.
+        offer_scanning(true);
+
         // ---- The flow ------------------------------------------------------
         //
         // `request_self_flow`, not `request_flow`: a new login does not know
@@ -185,7 +234,33 @@ fn a_new_login_shows_a_code_and_the_account_verifies_it() {
         let flow = request_self_flow()
             .await
             .expect("an account with an identity can be asked to verify a new device");
-        pump_to_bare(&first.peer, ACCOUNT, ACCOUNT, OLD_DEVICE).await;
+        let batch = take_outgoing_requests()
+            .await
+            .expect("the pump must be drainable");
+        let invitation = one_of(
+            &batch,
+            "to_device",
+            "the invitation must be queued for the pump",
+        );
+        assert_eq!(
+            harness::methods_announced(&invitation.body, ACCOUNT, OLD_DEVICE),
+            [
+                "m.sas.v1",
+                "m.qr_code.show.v1",
+                "m.qr_code.scan.v1",
+                "m.reciprocate.v1",
+            ],
+            "and asking for codes must reach this call site too, on the wire rather \
+             than at the constant behind it"
+        );
+        for request in &batch {
+            mark_request_sent(&request.id, "{}")
+                .await
+                .expect("a to-device response must be accepted");
+        }
+        let event = harness::relay_to(&invitation.body, ACCOUNT, ACCOUNT, OLD_DEVICE)
+            .expect("the invitation addresses the first device");
+        harness::deliver_to_bare(&first.peer, vec![event]).await;
 
         let peer_request = first
             .peer
@@ -213,10 +288,40 @@ fn a_new_login_shows_a_code_and_the_account_verifies_it() {
              mode would claim the showing device already trusts the master key, \
              which this one has no way to know"
         );
+        // ---- the polarity of the grid, which nothing else here reads ------
+        //
+        // `true` means dark. A mapping the other way round produces the
+        // photographic negative of a valid code, which most scanners refuse
+        // and some read as a different code -- and it changes no length, no
+        // width and no payload byte, so every other assertion in this
+        // repository passes against it. The only other thing that would
+        // catch it is a person holding a phone at the end of the milestone,
+        // which is the most expensive check there is and the last one.
+        //
+        // The top row of a symbol carries a finder pattern at each end:
+        // seven dark squares, then one light separator between the finder
+        // and the data. Read off the drawn grid at both corners, so this
+        // cannot pass on one that happened to be dark.
         assert_eq!(
-            code.modules.len(),
-            code.width as usize * code.width as usize,
-            "the symbol must be a square of its own declared side"
+            code.width,
+            harness::SYMBOL_WIDTH,
+            "upstream fixes the version of every one of these symbols, so a \
+             different side means it stopped doing that and the finder patterns \
+             below are being read at the wrong offsets"
+        );
+        let side = harness::SYMBOL_WIDTH as usize;
+        let top = harness::row_of(&code, 0);
+        assert!(
+            top[..7].iter().all(|square| *square) && !top[7],
+            "the top-left finder must be seven dark squares and then a light \
+             separator. An inverted grid is the photographic negative of a valid \
+             code and is what a product would hand to a camera: {:?}",
+            &top[..8]
+        );
+        assert!(
+            top[side - 7..].iter().all(|square| *square) && !top[side - 8],
+            "and the top-right finder the same: {:?}",
+            &top[side - 8..]
         );
 
         // ---- The established device scans it ---------------------------------

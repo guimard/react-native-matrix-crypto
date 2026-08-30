@@ -19,21 +19,29 @@
 //! Two acts, because the same root cause has two victims with different
 //! shapes:
 //!
-//! 1. A standard Matrix error body reported for a key query.
+//! 1. A standard Matrix error body reported for a key query, and the same
+//!    two shapes with the wrong JSON *type*: a numeric `errcode` and a
+//!    `flows` object rather than an array. An earlier version of the check
+//!    required `errcode` to be a string and `flows` to be an array, so both
+//!    slipped through and lifted the gate. Presence is what is tested now,
+//!    because no success shape of any endpoint here declares either key at
+//!    all, so there is no legitimate body to refuse by mistake. The act
+//!    closes on that half: a real success carrying a *nested* `errcode`
+//!    must still be accepted, and it must still lift the gate.
 //! 2. A user-interactive authentication challenge reported for the
 //!    signing-keys upload. That endpoint's success response is `Response {}`,
 //!    so a reported challenge would succeed and mark an identity *published*
 //!    that never was -- undetectably, because nothing afterwards disagrees.
 //!    This one carries no `errcode` at all, so it is caught by a different
 //!    test than act 1 and both need driving.
-//! 3. The same two shapes with the wrong JSON *type*. Neither is a
-//!    conformant response, and an earlier version of the check required
-//!    `errcode` to be a string and `flows` to be an array, so both slipped
-//!    through and lifted the gate. Presence is what is tested now, because
-//!    no success shape of any endpoint here declares either key at all --
-//!    so there is no legitimate body to refuse by mistake. The last
-//!    assertion is that half: a real success carrying a *nested* `errcode`
-//!    must still be accepted.
+//!
+//! Act 1 was two acts until the key query fixtures were corrected to name
+//! this account, which is what a real homeserver sends. Upstream then
+//! considers the account answered and stops volunteering a second key query,
+//! so the type-confusion shapes are driven against the first one, which a
+//! refusal leaves exactly as pending as before. That upstream applies the
+//! same "the answer must name the user" rule the gate now applies is worth
+//! noticing rather than working around.
 //!
 //! Its own process, for the reason `tests/pump_eviction.rs` gives: the
 //! machine registry and the pump's bookkeeping are process-wide.
@@ -57,9 +65,6 @@ const RATE_LIMITED: &str =
 const CHALLENGE: &str =
     r#"{"flows":[{"stages":["m.login.password"]}],"params":{},"session":"a-session-handle"}"#;
 
-/// A `/keys/query` answer naming no identity for this account.
-const NO_IDENTITY: &str = r#"{"device_keys":{}}"#;
-
 /// Non-conformant shapes of the same two things: a numeric `errcode` and a
 /// `flows` object rather than an array. Both used to pass.
 const ERRCODE_NOT_A_STRING: &str = r#"{"errcode":429,"error":"Too Many Requests"}"#;
@@ -68,8 +73,15 @@ const FLOWS_NOT_AN_ARRAY: &str = r#"{"flows":{"0":{"stages":["m.login.password"]
 /// A real `/keys/query` success whose per-server `failures` map carries an
 /// `errcode` **nested** inside it. This must be accepted: refusing it would
 /// break every key query that touches an unreachable server.
-const FAILURE_WITH_NESTED_ERRCODE: &str =
-    r#"{"device_keys":{},"failures":{"example.org":{"errcode":"M_UNKNOWN","error":"boom"}}}"#;
+///
+/// `device_keys` names this account, which is what makes it a real answer
+/// *to this request* as well as a real success: continuwuity v26.7.2 answers
+/// `{"device_keys":{"@user:…":{}}}` for an account with no cross-signing
+/// identity, and Synapse 1.159.0 and Dendrite 0.15.2 add the empty
+/// `failures` and cross-signing maps beside it. It held `{"device_keys":{}}`
+/// before, which names nobody; that is still accepted, but it no longer
+/// lifts the gate, and `session::answer_speaks_about` has why.
+const FAILURE_WITH_NESTED_ERRCODE: &str = r#"{"device_keys":{"@alice:example.org":{}},"failures":{"example.org":{"errcode":"M_UNKNOWN","error":"boom"}}}"#;
 
 #[test]
 fn a_failed_request_reported_as_sent_neither_lifts_the_gate_nor_publishes() {
@@ -93,36 +105,67 @@ fn a_failed_request_reported_as_sent_neither_lifts_the_gate_nor_publishes() {
             .expect("draining the pump must not fail");
         let account_query = find(&batch, "keys_query", names_the_account);
 
-        let refused = mark_request_sent(&account_query.id, RATE_LIMITED).await;
-        assert_eq!(
-            refused,
-            Err(SessionError::MalformedPayload),
-            "an error body is not this endpoint's response and must be refused. Accepted, it \
-             deserialises into a successful empty key query and tells the gate the account has \
-             no identity"
-        );
+        // All three refusals against the same still-pending request: a
+        // refusal changes no state, so they compose, and this is the only
+        // ordering available. Upstream stops volunteering a key query for
+        // this account once it has been answered *about* this account, so
+        // there is no second one to drive them against later -- which is
+        // itself worth noticing, because it is upstream applying the same
+        // "the answer must name the user" rule the gate now applies.
+        //
+        // The two non-conformant shapes were an act of their own until then.
+        for (body, what) in [
+            (
+                RATE_LIMITED,
+                "an error body is not this endpoint's response. Accepted, it deserialises into \
+                 a successful empty key query and tells the gate the account has no identity",
+            ),
+            (
+                ERRCODE_NOT_A_STRING,
+                "a numeric `errcode` is still not a response. Testing the JSON type rather \
+                 than the key's presence let this through, and it lifts the gate",
+            ),
+            (
+                FLOWS_NOT_AN_ARRAY,
+                "a `flows` object is still a challenge. Same mistake, other key",
+            ),
+        ] {
+            assert_eq!(
+                mark_request_sent(&account_query.id, body).await,
+                Err(SessionError::MalformedPayload),
+                "{what}"
+            );
 
-        let after_error = identity_status()
-            .await
-            .expect("reading the identity status must not fail");
-        assert!(
-            !after_error.account_keys_fetched,
-            "a request that failed was not answered: {after_error:?}"
-        );
+            let after_error = identity_status()
+                .await
+                .expect("reading the identity status must not fail");
+            assert!(
+                !after_error.account_keys_fetched,
+                "a request that failed was not answered: {after_error:?}"
+            );
 
-        assert_eq!(
-            bootstrap_identity().await,
-            Err(MachineError::AccountKeysNotFetched),
-            "a failed key query must leave the gate exactly as closed as it was. This is the \
-             assertion the whole file exists for: served here, a server error mints a second \
-             identity for the account"
-        );
+            assert_eq!(
+                bootstrap_identity().await,
+                Err(MachineError::AccountKeysNotFetched),
+                "a failed key query must leave the gate exactly as closed as it was. This is \
+                 the assertion the whole file exists for: served here, a server error mints a \
+                 second identity for the account"
+            );
+        }
 
-        // The refusal is retriable, not terminal: the entry survives, so the
+        // The half that has to be right, or the cure is worse than the
+        // disease: `errcode` appears legitimately *inside* a key query's own
+        // `failures` map, once per unreachable server, and only the top level
+        // is inspected. Driven on the same id, which also makes the point the
+        // refusals above set up -- they are retriable, not terminal, so the
         // caller that got a 429 sends again and reports the real answer.
-        mark_request_sent(&account_query.id, NO_IDENTITY)
+        mark_request_sent(&account_query.id, FAILURE_WITH_NESTED_ERRCODE)
             .await
-            .expect("the same id must still be resolvable after a refused body");
+            .expect(
+                "a success whose `failures` map carries a nested `errcode` must be accepted; \
+                 refusing it would break every key query that touches an unreachable server, \
+                 and this id must still be resolvable after three refused bodies",
+            );
         assert!(
             identity_status()
                 .await
@@ -157,36 +200,6 @@ fn a_failed_request_reported_as_sent_neither_lifts_the_gate_nor_publishes() {
         mark_request_sent(&signing_keys.id, "{}")
             .await
             .expect("the same id must still be resolvable after a refused challenge");
-
-        // --- Act 3: presence, not type, and no false refusal ---
-
-        let batch = take_outgoing_requests()
-            .await
-            .expect("draining the pump must not fail");
-        let query = find(&batch, "keys_query", names_the_account);
-
-        assert_eq!(
-            mark_request_sent(&query.id, ERRCODE_NOT_A_STRING).await,
-            Err(SessionError::MalformedPayload),
-            "a numeric `errcode` is still not a response. Testing the JSON type rather than \
-             the key's presence let this through, and it lifts the gate"
-        );
-        assert_eq!(
-            mark_request_sent(&query.id, FLOWS_NOT_AN_ARRAY).await,
-            Err(SessionError::MalformedPayload),
-            "a `flows` object is still a challenge. Same mistake, other key"
-        );
-
-        // The half that has to be right, or the cure is worse than the
-        // disease: `errcode` appears legitimately *inside* a key query's own
-        // `failures` map, once per unreachable server. Only the top level is
-        // inspected.
-        mark_request_sent(&query.id, FAILURE_WITH_NESTED_ERRCODE)
-            .await
-            .expect(
-                "a success whose `failures` map carries a nested `errcode` must be accepted; \
-                 refusing it would break every key query that touches an unreachable server",
-            );
     });
 }
 
