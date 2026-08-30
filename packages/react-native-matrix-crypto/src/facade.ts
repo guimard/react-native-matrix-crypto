@@ -1863,7 +1863,7 @@ export interface RecoverySetup {
  * client, where the key that stops working is one somebody wrote down and
  * was told to keep forever. Both arrive here as the same call.
  *
- * **To replace a recovery deliberately, call this again with the same
+ * **To add a recovery deliberately, call this again with the same
  * `accountData` minus the `'m.secret_storage.default_key'` entry.** Filter
  * that one entry out of the array; write nothing to your homeserver to
  * arrange it. The refusal lifts because nothing points at a key any more,
@@ -1872,10 +1872,42 @@ export interface RecoverySetup {
  * new pointer, switches it over. There is no window in which your user has
  * no working recovery, and nothing to undo if you stop halfway.
  *
- * **Do not clear the key description.** That is irreversible: the
- * description holds the salt, the iteration count and the MAC, so once it
- * is gone no passphrase and no recovery key can open the ciphertexts it
- * protected, ever. The refusal reads the pointer and only the pointer.
+ * # Adding a key is not revoking one
+ *
+ * **That route re-points the account. It does not revoke anything.** When it
+ * finishes, the old key description is still on your homeserver and the old
+ * key's ciphertext is still in every `encrypted` map, because keeping them
+ * is what the merge is for. Anyone holding the old passphrase who can read
+ * this account's account data can still open the account's private signing
+ * keys, by reading the old key description directly instead of following
+ * the pointer. {@link recoverIdentity} will not do that, because it follows
+ * the pointer; a homeserver operator, anyone with a live access token, and
+ * any client that remembers the old key id are not obliged to.
+ *
+ * That is the right default and it is not what every caller wants. **If your
+ * user is replacing a passphrase they no longer trust, re-pointing is not
+ * enough**, and this call cannot do the rest for you: the entry it would
+ * have to drop is indistinguishable from another client's, which is the same
+ * reason it refuses in the first place. Revocation is one further act, on
+ * the array this call already handed you:
+ *
+ * 1. remove the **old** key id from each `'m.cross_signing.*'` entry's
+ *    `encrypted` object, leaving the new one;
+ * 2. `PUT` the entries in the order you were given them, pointer last;
+ * 3. **afterwards**, and only afterwards, `PUT {}` to
+ *    `'m.secret_storage.key.<old id>'`.
+ *
+ * After step 1 the old key opens nothing on this account, whoever it
+ * belonged to. Do it only for a key your own product created.
+ *
+ * **Do not clear the key description before the new pointer is live.** The
+ * ordering is the whole difference between a rotation and a loss: the
+ * description holds the salt, the iteration count and the MAC, so a key
+ * whose description is gone can never be reconstructed from any secret, and
+ * clearing it while it is still the account's default leaves your user
+ * pointing at something nothing can open. Step 3 is that same write after
+ * the switchover, when the key it describes is no longer the one the account
+ * resolves.
  *
  * Two other routes lift the refusal, and both cost something the one above
  * does not:
@@ -1897,7 +1929,9 @@ export interface RecoverySetup {
  * library that performs no request, and it is said rather than left to be
  * discovered: what the refusal buys is not that destruction is impossible,
  * but that you have to have *looked*, and that the cheapest way past it is
- * also the one that destroys nothing.
+ * also the one that destroys nothing. What it does not buy, and what no
+ * argument to this call can buy, is that the key you replaced has stopped
+ * working. That is the further act above.
  *
  * `'account_keys_not_fetched'` means this process has not yet asked the
  * server about this account. The private keys this device holds may belong
