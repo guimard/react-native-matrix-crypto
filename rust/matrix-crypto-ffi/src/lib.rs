@@ -198,8 +198,10 @@ pub enum MachineFfiError {
     // Appended last, like every variant above and for the same wire-ordinal
     // reason. It mirrors the one the core's `MachineError` grew when
     // `create_recovery` stopped writing over a recovery the account already
-    // had; `IdentityAlreadyExists`, eight variants up, is the same refusal
+    // had; `IdentityAlreadyExists`, six variants up, is the same refusal
     // about the identity rather than about the recovery that protects it.
+    // That said eight and was never true: this variant is ordinal 17 and
+    // `IdentityAlreadyExists` is 11, both read off the generated switch.
     #[error("this account already has a server-side recovery")]
     RecoveryAlreadyExists,
     // Appended last, like every variant above and for the same
@@ -214,14 +216,16 @@ pub enum MachineFfiError {
     // and because this branch was written against 16 as the highest and
     // would have collided at 17 had it not been re-read after the merge.
     //
-    // Nothing in this file returns them yet: the core produces them and
-    // the task that crosses the scannable code to TypeScript is what will
-    // call the functions that do. They are declared here now for the
-    // reason the pair above them was, which that comment states in full --
-    // the `From` impl below is exhaustive by rule, and folding a refusal
-    // that means something else onto an existing variant to avoid
-    // declaring it puts a wrong error on the wire the moment the bridge
-    // lands, silently.
+    // This said nothing in this file returned them yet, and that the task
+    // crossing the scannable code to TypeScript would be what called the
+    // functions that do. That task has landed in the same file:
+    // `verification_code`, `submit_scanned_code` and `confirm_scan` are
+    // exported below and every one of these reaches a caller through the
+    // `From` impl. They were declared ahead of that for the reason the pair
+    // above them was, which that comment states in full -- the `From` impl
+    // below is exhaustive by rule, and folding a refusal that means
+    // something else onto an existing variant to avoid declaring it puts a
+    // wrong error on the wire the moment the bridge lands, silently.
     #[error("the other user has no signing identity")]
     PeerIdentityNotKnown,
     #[error("codes were not negotiated on this flow")]

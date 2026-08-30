@@ -9,8 +9,10 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
 // `matrix-sdk-crypto` does NOT re-export `ruma` at its own crate root (verified by
-// reading its vendored source: only `vodozemac` and, behind the `qrcode` feature,
-// `matrix_sdk_qrcode` get a `pub use` there). `matrix-sdk-common` does
+// reading its vendored source: only `vodozemac` and `matrix_sdk_qrcode` get a
+// `pub use` there, the second behind the `qrcode` feature). That feature read as
+// a counterfactual when this was written and is on now, and `verification.rs`
+// imports through exactly that re-export. `matrix-sdk-common` does
 // (`pub use ruma;`, unconditional), and `matrix-sdk-crypto` 0.18.0 itself depends on
 // `matrix-sdk-common = "0.18.0"`, so pinning the same version here guarantees Cargo
 // unifies on a single `ruma` in the tree rather than resolving two independently
@@ -94,8 +96,8 @@ pub enum MachineError {
     /// it named has finished and the registry has since released it -- see
     /// `verification.rs`'s own eviction rule for exactly when that happens.
     ///
-    /// **Appended, not inserted.** The three variants from here down were
-    /// added after this enum already had a mirror carrying UniFFI's error
+    /// **Appended, not inserted.** Every variant from here down was added
+    /// after this enum already had a mirror carrying UniFFI's error
     /// derive, and UniFFI assigns each variant's wire ordinal by
     /// declaration position: inserting one renumbers every variant after it
     /// and makes bindings generated before the insert decode the wrong
@@ -106,7 +108,9 @@ pub enum MachineError {
     /// The call is one this flow supports, but not at the stage the flow is
     /// currently at -- accepting a flow nobody has requested, starting a
     /// comparison before both sides are ready, confirming or cancelling a
-    /// flow that has already finished. This is what upstream reports by
+    /// flow that has already finished, asking a bare-start flow for a
+    /// scannable code, handing a scanned code to a flow nobody has agreed
+    /// to, or confirming a scan nobody has made. This is what upstream reports by
     /// returning `None` from an otherwise infallible call; returned as a
     /// named error rather than passed on as an absence, because "did
     /// nothing, successfully" is the one answer a verification call must
@@ -116,7 +120,11 @@ pub enum MachineError {
     /// The flow has not exchanged keys yet, so there is no short
     /// authentication string to show.
     ///
-    /// This is the loud form of the one silent failure this flow has.
+    /// This is the loud form of one of the two silent failures a flow has.
+    /// The other belongs to the scannable code and cannot be made loud from
+    /// here: a displayed code that loses the race with a short-string
+    /// comparison is cancelled with no error returned to anybody, because
+    /// nothing was asked. `verification.rs`'s own header carries it.
     /// Upstream advances from "accepted" to "keys exchanged" only when the
     /// caller reports the key message as sent, through the same outbound
     /// pump every other request goes through. A caller that drains the pump
@@ -175,14 +183,24 @@ pub enum MachineError {
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("this account already has a signing identity this device does not hold")]
     IdentityAlreadyExists,
-    /// This machine holds no public signing identity for the account, so
-    /// there is nothing for this device to verify itself against.
+    /// This machine holds no public signing identity for the account.
     ///
-    /// The mirror image of `IdentityAlreadyExists`, and the pair says the
-    /// whole rule between them: a device that does not hold the private keys
-    /// **joins** the identity the account has, and a device facing an account
-    /// with no identity at all has nothing to join. Only one of the two calls
-    /// is ever the right one, and each names the other's precondition.
+    /// **Two things say that, and this variant is both of them.** Written
+    /// for self-verification, where it means there is nothing for this
+    /// device to verify itself against, it is now also what
+    /// `crate::read_code` and `crate::submit_scanned_code` answer with when
+    /// the identity a code has to carry is *ours* and is missing. Not
+    /// folded onto `PeerIdentityNotKnown`, which says the same about the
+    /// other user: the two remedies point at different people, and a
+    /// product showing one sentence for both would send half its users to
+    /// fix something that is not broken.
+    ///
+    /// Still the mirror image of `IdentityAlreadyExists`, and that pair
+    /// says the whole rule between them: a device that does not
+    /// hold the private keys **joins** the identity the account has, and a
+    /// device facing an account with no identity at all has nothing to
+    /// join. Only one of the two calls is ever the right one, and each
+    /// names the other's precondition.
     ///
     /// Distinguished from `AccountKeysNotFetched` by the same question
     /// `signing.rs`'s gate asks and for the same reason: this one means the
@@ -195,15 +213,25 @@ pub enum MachineError {
     #[error("this account has no signing identity to verify against")]
     IdentityNotKnown,
     /// This device does not hold the account's complete private signing
-    /// keys, so there is nothing for it to write into server-side storage.
+    /// keys.
+    ///
+    /// **Two calls produce it and they mean it differently.**
+    /// `crate::create_recovery` means there is nothing for this device to
+    /// write into server-side storage. `crate::read_code` means a
+    /// cross-user code must carry this account's own master key and this
+    /// device cannot prove it holds one; showing a code to verify this
+    /// account's *own* new login needs none of them, so that direction is
+    /// unaffected. The sentence here described the first alone until the
+    /// second existed.
     ///
     /// Distinguished from `IdentityNotKnown`, which is about the *account*
     /// having no identity at all, and from `IdentityAlreadyExists`, which is
     /// a bootstrap refusing. This one says the account's identity is not the
-    /// question: whatever the account has, this device cannot write a copy
-    /// of what it does not hold. The remedy is whichever of
-    /// `crate::bootstrap_identity` or `crate::request_self_flow` applies,
-    /// and `IdentityStatus` is what says which.
+    /// question: whatever the account has, this device cannot use what it
+    /// does not hold. The remedy is whichever of
+    /// `crate::bootstrap_identity`, `crate::recover_identity` or
+    /// `crate::request_self_flow` applies, and `IdentityStatus` is what says
+    /// which.
     ///
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("this device does not hold the account's private signing keys")]

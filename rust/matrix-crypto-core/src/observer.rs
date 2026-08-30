@@ -228,6 +228,15 @@ pub enum CryptoSignal {
     /// A comparison this process took part in completed, and a device
     /// belonging to `user` now reports `state`.
     ///
+    /// **A comparison and not a scan.** A verification finished by scanning
+    /// a code moves the same device to the same value and emits nothing
+    /// here: see `verification::take_pending_completions`, which reads only
+    /// the comparison's own state. A product that needs to know either way
+    /// reads [`crate::device_statuses`], which is what this variant tells
+    /// it to do anyway. Closing the gap belongs to the task that grows the
+    /// stage vocabulary, so read the version you have rather than this
+    /// paragraph.
+    ///
     /// Carries the user rather than the device, matching the shape the
     /// TypeScript union has declared since M1. Which of that user's devices
     /// moved is [`crate::device_statuses`]' answer, and reading it there is
