@@ -118,6 +118,13 @@ pub fn subscribe() {
 /// gets the long bound because nothing may have happened yet; everything
 /// after it gets the short one, because the pass that produced the first is
 /// already running.
+///
+/// **What this returns has no defined order** once it holds more than one
+/// element: `emit_crypto` detaches every signal into its own task. Every
+/// caller today asserts a single-element vector with `assert_eq!`, which is
+/// safe for exactly that reason. A caller that comes to expect two must sort
+/// or compare as a set. `CryptoSignal::VerificationCompleted` says where the
+/// second producer is likely to come from.
 pub fn drain_signals(expected: &str) -> Vec<CryptoSignal> {
     let held = SIGNALS
         .lock()
