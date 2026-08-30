@@ -1044,6 +1044,24 @@ export async function bootstrapCrossSigning(): Promise<void> {
  * "some device here reads verified" is true of an installation that has
  * never run a verification in its life. What carries a claim is a device of
  * *another* user changing from `'unverified'` to `'verified'`.
+ *
+ * # After verifying **another person** by code, pump once more
+ *
+ * A code verification with somebody else produces one thing: a signature
+ * your account makes over their identity. Whether they read `'verified'`
+ * here depends on that signature being in your store, and making it does
+ * not put it there. Only the homeserver's answer to a `'keys_query'` about
+ * them does.
+ *
+ * **This library queues that query for you**, on the sync that completes the
+ * flow, so there is no extra call to find. But queued is not answered: the
+ * request comes out of {@link takeOutgoingRequests} like any other, and this
+ * value does not move until you have sent it and reported it with
+ * {@link markRequestSent}. So when `onCryptoSignal` announces
+ * `'verification_completed'` for a flow with another person, **drain the
+ * pump once more before reading this**, and expect `'unverified'` if you
+ * read it in between. Verifying one of your **own** devices needs none of
+ * that: it reads `'verified'` the moment the flow finishes.
  */
 export async function getDeviceStatuses(userId: string): Promise<DeviceStatus[]> {
   try {
