@@ -59,14 +59,32 @@
 //!
 //! Both directions read the pointer, and they read it through one function,
 //! [`pointed_key_id`], rather than through one shared paragraph. That is
-//! deliberate. This rule was already written down once, on
-//! [`names_a_recovery`]'s ancestor, and [`restore`] four hundred lines away
-//! read the same bytes the other way and reported a cleared pointer as
-//! `RecoveryDataMalformed`, whose remedy is to set recovery up again. A
-//! user whose recovery was intact and reversibly cleared was told to
-//! destroy it. A shared paragraph did not prevent that and a third reader
-//! would not have read it either, so the rule lives in code that both
-//! callers must go through.
+//! deliberate. The rule was written down once before, on the predecessor of
+//! that function, and [`restore`] four hundred lines away read the same
+//! bytes the other way and reported a cleared pointer as
+//! `RecoveryDataMalformed`, whose remedy is to set recovery up again. A user
+//! whose recovery was intact and reversibly cleared was told to destroy it.
+//! A shared paragraph did not prevent that and a third reader would not have
+//! read it either.
+//!
+//! **What stops a third reader is a debug assertion in [`entry`], not the
+//! type system, and the difference is worth stating.** `pointed_key_id` is
+//! the only function that reads this event type today, but nothing about
+//! Rust's visibility rules makes that so: `entry` is module-visible and the
+//! event type is a string anyone can write. A reader that went around it
+//! used to compile, format, pass `clippy -D warnings`, pass every gate and
+//! leave every test in this file green, which was demonstrated rather than
+//! supposed. It now panics the first time it runs under `cargo test`.
+//!
+//! A debug assertion rather than a visibility rule, on purpose. Hiding the
+//! event type behind a private module would stop a reader that calls
+//! [`default_key_event_type`] and would not stop one that writes
+//! `"m.secret_storage.default_key"` by hand, which is the same hole one
+//! keystroke further away. The assertion catches both, at the cost of being
+//! a test-time check rather than a compile-time one: in a release build it
+//! is compiled out and nothing stands there at all. That is the honest
+//! shape of it, and it is a barrier where there was none rather than a
+//! guarantee.
 //!
 //! The same reasoning applies one level out and is worth knowing before
 //! adding a third reader: `{}` is also the real `/keys/query` answer for an
@@ -176,6 +194,23 @@ fn default_key_event_type() -> String {
 /// an accident, and it is the one a `/sync` response's own ordering
 /// produces.
 fn entry<'a>(account_data: &'a [AccountDataEntry], event_type: &str) -> Option<&'a str> {
+    // The default-key pointer is read through `pointed_key_id` and through
+    // nothing else, and this is what makes that a rule rather than a habit.
+    // Two functions reading these bytes and disagreeing about `{}` is the
+    // defect this module was corrected for; a third reader is one `entry`
+    // call away, and before this line it compiled, linted and tested clean.
+    //
+    // `debug_assert!`, so a release build carries no check and no panic: the
+    // audience for this is whoever adds the third reader, and they run the
+    // tests. See this module's own documentation for why the alternative,
+    // hiding the event type, would close less of the hole than it looks.
+    debug_assert!(
+        event_type != default_key_event_type(),
+        "read the default-key pointer through `pointed_key_id`, which is \
+         where the rule about what an empty content object means lives. \
+         Reading it here means two functions decide that question, which is \
+         the defect this module was corrected for."
+    );
     account_data
         .iter()
         .find(|entry| entry.event_type == event_type)
@@ -213,7 +248,14 @@ fn entry<'a>(account_data: &'a [AccountDataEntry], event_type: &str) -> Option<&
 /// [`MachineError::RecoveryDataMalformed`], because none of the three says
 /// anything is damaged.
 fn pointed_key_id(account_data: &[AccountDataEntry]) -> Option<String> {
-    entry(account_data, &default_key_event_type())
+    // Not through `entry`: that helper refuses this event type, which is
+    // what makes this function the only reader. The lookup is three lines
+    // and duplicating them here is the price of the guard being real.
+    let pointer = default_key_event_type();
+    account_data
+        .iter()
+        .find(|entry| entry.event_type == pointer)
+        .map(|entry| entry.content.as_str())
         .and_then(|content| serde_json::from_str::<serde_json::Value>(content).ok())
         .and_then(|content| content.get("key")?.as_str().map(str::to_owned))
         .filter(|key_id| !key_id.is_empty())
@@ -1921,6 +1963,46 @@ mod tests {
         *ciphertext = serde_json::Value::String(altered);
         entry.content = content.to_string();
         damaged
+    }
+
+    /// A second reader of the default-key pointer is refused, and this test
+    /// is what makes the refusal real rather than a comment.
+    ///
+    /// # What it is defending
+    ///
+    /// Two functions read this account data and disagreed about what an
+    /// empty content object means; one said "cleared", the other said
+    /// "destroyed", and a user with an intact recovery was told to destroy
+    /// it. The correction routed both through [`pointed_key_id`]. A review
+    /// then built the third reader that correction is supposed to prevent, a
+    /// function calling [`entry`] with the same event type and parsing the
+    /// bytes itself, and observed it compile, format, pass
+    /// `clippy -D warnings`, pass every gate, and leave all eight recovery
+    /// tests green. One function with a doc comment on it is a paragraph
+    /// with better placement, and a paragraph is exactly what failed here
+    /// before.
+    ///
+    /// The `debug_assert!` in `entry` is what changed that, and this is what
+    /// keeps it. Deleting the assertion makes this test fail.
+    ///
+    /// # What it is not
+    ///
+    /// Not a compile-time guarantee. In a release build the assertion is
+    /// compiled out and nothing stands in the way, and even in a test build
+    /// a reader determined to scan `account_data` by hand never calls
+    /// `entry` at all. What it removes is the accident: the reader that
+    /// reaches for the obvious helper, which is the one the review built to
+    /// prove the point.
+    #[test]
+    #[should_panic(expected = "pointed_key_id")]
+    fn reading_the_pointer_around_the_one_reader_is_refused() {
+        // The review's own sabotage, the same in shape: the same helper, the
+        // same event type, a second opinion about the same bytes.
+        let account_data = [AccountDataEntry {
+            event_type: "m.secret_storage.default_key".to_string(),
+            content: "{}".to_string(),
+        }];
+        let _second_opinion = entry(&account_data, "m.secret_storage.default_key");
     }
 
     /// Every `DecodeError` this build can construct, classified one by one.
