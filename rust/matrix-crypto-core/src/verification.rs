@@ -1842,11 +1842,12 @@ pub async fn submit_scanned_code(flow: &FlowId, payload: &[u8]) -> Result<(), Ma
 /// Two conditions arrive as [`MachineError::WrongStage`]: *nobody has
 /// scanned this code yet*, and *this flow is over*. They want opposite
 /// things done about them -- wait, versus start again -- and this call
-/// cannot tell a caller which. [`flow_stage`] is the answer everywhere else
-/// in this module, and for a flow that became a code it is not the answer
-/// yet: it reports [`FlowStage::Started`] through every state a code has.
-/// The design's section 5 is where that is closed. Until it is, this fold
-/// is visible rather than hidden.
+/// still cannot tell a caller which. [`flow_stage`] is the answer everywhere
+/// else in this module, and it is the answer here too, which it was not when
+/// this fold was written: [`FlowStage::Started`] is nobody has scanned yet,
+/// [`FlowStage::CodeScanned`] is the one stage this call succeeds at, and
+/// [`FlowStage::Done`] or [`FlowStage::Cancelled`] is over. Reading it first
+/// leaves this fold reachable only by a race.
 pub async fn confirm_scan(flow: &FlowId) -> Result<(), MachineError> {
     let handles = handles(flow).await?;
     let code = handles.code.ok_or(MachineError::WrongStage)?;
