@@ -205,7 +205,8 @@ interface NativeModuleInterface {
     config: Uint8Array
   ): bigint;
   ubrn_uniffi_matrix_crypto_ffi_fn_func_create_recovery(
-    passphrase: Uint8Array
+    passphrase: Uint8Array,
+    accountData: Uint8Array
   ): bigint;
   ubrn_uniffi_matrix_crypto_ffi_fn_func_decrypt_event(
     scope: Uint8Array,

@@ -309,14 +309,21 @@ export async function createCryptoMachine(
  * Mirrors `create_recovery`; see its own doc comment in
  * `matrix-crypto-core::recovery` for what a product owes its user about
  * the recovery key, for why the account data is handed back rather than
- * sent, and for the one refusal.
+ * sent, for why nothing is said about passphrase strength, and for the
+ * refusals.
+ *
+ * `account_data` is the account's **existing** global account data. It is
+ * required rather than optional because this call will not write over a
+ * recovery the account already has, and an empty list is a caller saying
+ * there is none.
  *
  * **Nothing here reaches the network.** The returned account data is
  * written by the product, one `PUT` per entry, in the order it is handed
- * back.
+ * back, with the default-key pointer last.
  */
 export async function createRecovery(
   passphrase: string,
+  accountData: Array<AccountDataEntry>,
   asyncOpts_?: { signal: AbortSignal }
 ): Promise<RecoverySetup> /*throws*/ {
   const __stack = uniffiIsDebug ? new Error().stack : undefined;
@@ -325,7 +332,11 @@ export async function createRecovery(
       /*rustCaller:*/ uniffiCaller,
       /*rustFutureFunc:*/ () => {
         return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_create_recovery(
-          FfiConverterString.lower(passphrase, nativeModule().rustbuffer_alloc)
+          FfiConverterString.lower(passphrase, nativeModule().rustbuffer_alloc),
+          FfiConverterSequenceTypeAccountDataEntry.lower(
+            accountData,
+            nativeModule().rustbuffer_alloc
+          )
         );
       },
       /*pollFunc:*/ nativeModule()
@@ -2608,6 +2619,7 @@ export enum MachineFfiError_Tags {
   RecoveryNotSetUp = "RecoveryNotSetUp",
   RecoveryKeyIncorrect = "RecoveryKeyIncorrect",
   RecoveryDataMalformed = "RecoveryDataMalformed",
+  RecoveryAlreadyExists = "RecoveryAlreadyExists",
 }
 /**
  * Mirror of the core's machine error, carrying the UniFFI error derive.
@@ -3083,6 +3095,35 @@ export const MachineFfiError = (() => {
     }
   }
 
+  type RecoveryAlreadyExists__interface = {
+    tag: MachineFfiError_Tags.RecoveryAlreadyExists;
+  };
+  class RecoveryAlreadyExists_
+    extends UniffiError
+    implements RecoveryAlreadyExists__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.RecoveryAlreadyExists;
+    constructor() {
+      super("MachineFfiError", "RecoveryAlreadyExists");
+    }
+
+    static new(): RecoveryAlreadyExists_ {
+      return new RecoveryAlreadyExists_();
+    }
+
+    static instanceOf(obj: any): obj is RecoveryAlreadyExists_ {
+      return obj.tag === MachineFfiError_Tags.RecoveryAlreadyExists;
+    }
+    static hasInner(obj: any): obj is RecoveryAlreadyExists_ {
+      return false;
+    }
+  }
+
   function instanceOf(obj: any): obj is MachineFfiError {
     return obj[uniffiTypeNameSymbol] === "MachineFfiError";
   }
@@ -3105,6 +3146,7 @@ export const MachineFfiError = (() => {
     RecoveryNotSetUp: RecoveryNotSetUp_,
     RecoveryKeyIncorrect: RecoveryKeyIncorrect_,
     RecoveryDataMalformed: RecoveryDataMalformed_,
+    RecoveryAlreadyExists: RecoveryAlreadyExists_,
   });
 })();
 /**
@@ -3131,7 +3173,8 @@ export type MachineFfiError = InstanceType<
     | "PrivateKeysNotHeld"
     | "RecoveryNotSetUp"
     | "RecoveryKeyIncorrect"
-    | "RecoveryDataMalformed"]
+    | "RecoveryDataMalformed"
+    | "RecoveryAlreadyExists"]
 >;
 
 // FfiConverter for enum MachineFfiError
@@ -3176,6 +3219,8 @@ const FfiConverterTypeMachineFfiError = (() => {
           return new MachineFfiError.RecoveryKeyIncorrect();
         case 16:
           return new MachineFfiError.RecoveryDataMalformed();
+        case 17:
+          return new MachineFfiError.RecoveryAlreadyExists();
         default:
           throw new UniffiInternalError.UnexpectedEnumCase();
       }
@@ -3250,6 +3295,10 @@ const FfiConverterTypeMachineFfiError = (() => {
           c.writeI32(16);
           return;
         }
+        case MachineFfiError_Tags.RecoveryAlreadyExists: {
+          c.writeI32(17);
+          return;
+        }
         default:
           // Throwing from here means that MachineFfiError_Tags hasn't matched an ordinal.
           throw new UniffiInternalError.UnexpectedEnumCase();
@@ -3309,6 +3358,9 @@ const FfiConverterTypeMachineFfiError = (() => {
           return 4;
         }
         case MachineFfiError_Tags.RecoveryDataMalformed: {
+          return 4;
+        }
+        case MachineFfiError_Tags.RecoveryAlreadyExists: {
           return 4;
         }
         default:
@@ -4504,7 +4556,7 @@ function uniffiEnsureInitialized() {
   }
   if (
     nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_create_recovery() !==
-    29695
+    13929
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       "uniffi_matrix_crypto_ffi_checksum_func_create_recovery"
