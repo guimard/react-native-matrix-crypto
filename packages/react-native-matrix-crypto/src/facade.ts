@@ -818,9 +818,16 @@ export interface IdentityStatus {
  * What this library will say about this account's signing identity right
  * now. Reads only: it asks the server nothing and creates nothing.
  *
- * See {@link IdentityStatus} for why two of the three fields have to be
- * read together, and {@link bootstrapCrossSigning} for the call that
- * changes them.
+ * See {@link IdentityStatus} for why two of the three fields have to be read
+ * together. Two calls change them: {@link bootstrapCrossSigning} creates the
+ * identity, and {@link requestSelfVerification} joins one the account already
+ * has.
+ *
+ * **This is the durable answer the signal channel sends you to.** Nothing
+ * returns to a caller when a join's seeds arrive; what happens instead is a
+ * `'trust_changed'` for your own user id on `onCryptoSignal`, and reading
+ * `privateKeysHeld` here is what that signal means. It is the same variant a
+ * completed comparison produces, so read this rather than counting signals.
  */
 export async function getIdentityStatus(): Promise<IdentityStatus> {
   try {
@@ -919,7 +926,18 @@ export async function getIdentityStatus(): Promise<IdentityStatus> {
  * `'identity_already_exists'` means the answer named an identity this device
  * does not hold the private keys for. There is no remedy through this call
  * and there should not be: this device joins that identity, it does not
- * replace it. Joining is a later release.
+ * replace it. **{@link requestSelfVerification} is the call that joins it**,
+ * and it is where a second login goes from here.
+ *
+ * # After a join, this call starts being served again
+ *
+ * A device that has joined holds the account's private keys, so this
+ * republishes the identity it now holds rather than being refused, and the
+ * `'signing_keys_upload'` in the batch needs the same user-interactive
+ * authentication as the first time. "Call it on every launch" is still the
+ * right advice, but a joined device following it meets an authentication
+ * challenge, and a product that only expected one during setup should expect
+ * this one too.
  */
 export async function bootstrapCrossSigning(): Promise<void> {
   try {

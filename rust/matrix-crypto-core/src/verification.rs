@@ -1233,15 +1233,24 @@ const START_EVENT_TYPE: &str = "m.key.verification.start";
 /// this library has -- and it is why the TypeScript side uninstalls the
 /// observer on the last unsubscribe rather than leaving it latched.
 ///
-/// **With somebody listening, one `tracked_users()` and one
-/// `get_verification_requests` per tracked user, per sync.** Measured
-/// against an empty sync on an account with one tracked user, the
-/// difference was below the resolution of the measurement -- but
-/// `tracked_users` clones the whole tracked-user set into a fresh
-/// `HashSet<OwnedUserId>` (`machine/mod.rs:482`), so on an account tracking
-/// thousands that is an allocation proportional to the account on this
-/// library's most frequent call. Nothing here has measured that case, and
-/// the small-account figure must not be read as covering it.
+/// **With somebody listening, one `tracked_users()`, one
+/// `get_verification_requests` per tracked user, and one
+/// `cross_signing_status()`, per sync.** Measured against an empty sync on
+/// an account with one tracked user, the difference was below the
+/// resolution of the measurement -- but `tracked_users` clones the whole
+/// tracked-user set into a fresh `HashSet<OwnedUserId>`
+/// (`machine/mod.rs:482`), so on an account tracking thousands that is an
+/// allocation proportional to the account on this library's most frequent
+/// call. Nothing here has measured that case, and the small-account figure
+/// must not be read as covering it.
+///
+/// The third is the one this milestone added, and it is the cheap one: it
+/// takes two in-memory locks and reads three `Option`s
+/// (`machine/mod.rs:2765-2767`), touching neither the store nor the
+/// tracked-user set. It is listed rather than folded into the sentence
+/// above because this block is read as an enumeration, and one that quietly
+/// stopped enumerating would be worse than one that says a cheap thing
+/// costs something.
 ///
 /// # A verification begun without a request
 ///

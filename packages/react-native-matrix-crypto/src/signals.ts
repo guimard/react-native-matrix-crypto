@@ -267,10 +267,14 @@ function trustStateOf(trust: NativeTrustState): TrustState {
  * not lose **those** -- with the one exception named below, which is a real
  * exception and not a hedge.
  *
- * Four things it genuinely does not do. A `trust_changed` that fired while
- * you were away is not re-offered -- ask {@link getDeviceStatuses}, or
- * {@link getIdentityStatus} for the private-keys one, which are the durable
- * answers and always were.
+ * Four things it genuinely does not do. **A comparison's `trust_changed` is
+ * not re-offered** -- ask {@link getDeviceStatuses}, which is the durable
+ * answer and always was. Its sibling behaves the other way and the two are
+ * worth keeping apart: the private-keys arrival **is** re-offered, because
+ * the latch that makes it fire once is only touched while somebody is
+ * listening, so an arrival that happened while you were away is announced on
+ * the first sync after you resubscribe. {@link getIdentityStatus} is still
+ * the durable answer to it, and reading that is still the rule.
  * A hot reload leaves the previous module copy's observer installed
  * until something subscribes again; an invitation arriving in that window
  * is consumed by a listener set nothing can reach. An unsubscribe can land

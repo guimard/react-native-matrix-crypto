@@ -170,7 +170,9 @@ const id = await requestSelfVerification()
 
 **The seeds arrive after the comparison, on a later sync, and nothing returns to you when they do.** Once both sides have confirmed, this library asks your other devices for the cross-signing seeds this one lacks. They go out as ordinary entries in `takeOutgoingRequests`, and the encrypted answer comes back in a `receiveSyncChanges` you feed it. `getIdentityStatus().privateKeysHeld` then reads `true`, which is the moment this device can sign with the account's identity rather than only recognise it. `trust_changed` for your own user id is what tells you to look; do not poll for it. It is the same signal a completed comparison produces, which is why the handler above reads the status rather than counting signals.
 
-Two refusals, and they want opposite things done about them. `account_keys_not_fetched` means nobody has asked the server about this account yet: drain the pump, send, report sent, and call again. `identity_not_known` means the server answered and this account has no identity at all, so there is nothing to join and `bootstrapCrossSigning` is the call you want.
+**After the join, `bootstrapCrossSigning` stops being refused and starts being served.** This device now holds the account's private keys, so it republishes the identity it holds rather than creating a second one, which is correct and is what "call it on every launch" is for. What it also means is that the batch carries a `signing_keys_upload` again, and that request needs the same user-interactive authentication as the first time. A joined device that calls it on the next launch meets an authentication challenge, so ask your user for it rather than treating it as a failure.
+
+Two refusals, and they want opposite things done about them. `account_keys_not_fetched` means nobody has asked the server about this account yet, and this call queues that key query as it refuses: drain the pump, send, report sent, and call again. `identity_not_known` means the server answered and this account has no identity at all, so there is nothing to join and `bootstrapCrossSigning` is the call you want.
 
 ## Verifying a device
 
