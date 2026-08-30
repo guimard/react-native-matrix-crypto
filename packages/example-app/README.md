@@ -1,3 +1,61 @@
+# Tests
+
+```sh
+yarn --cwd packages/example-app test        # vitest, on this machine, no device
+yarn --cwd packages/example-app typecheck
+```
+
+Vitest, the same runner `packages/react-native-matrix-crypto` uses, wired into
+the `gates` job in `.github/workflows/ci.yml`. It runs the guided walkthrough's
+real step functions out of `src/flowRunners.ts`, which is why those functions
+live in a module of their own with no `react` or `react-native` import in it.
+`src/GuidedFlow.tsx` renders what they report and re-implements none of them.
+
+## What it covers
+
+* **Step 3 reads a settled value.** Step 2 waits, bounded, for its own observer
+  callback before it reports, so step 3 can be a plain read. The test drives a
+  fake binding whose callback is delivered strictly after the call resolves,
+  and asserts that precondition before asserting the result, so a green step 3
+  cannot come from a callback that had already arrived.
+* **A card that claims a call throws.** Step 6 says a named library function
+  rejects with `not_implemented`. `src/cardClaims.test.ts` mocks nothing, calls
+  that function through the published entry point, and fails if it stops
+  rejecting. It also sweeps the whole public surface and pins the set of
+  functions still refused in JavaScript, so implementing any one of them turns
+  the build red rather than the card.
+* **Cards name functions that exist.** Every `react-native-matrix-crypto`
+  import in a card's code snippet is checked against the library's exports.
+* **Step ordering, step 2's round trip, step 4's typed error**, and that each
+  run starts from an empty signal log rather than accumulating.
+
+## What it cannot reach, and why
+
+**No JSI turbo module.** The published entry point installs a Rust crate onto a
+JSI host object and then runs a checksum handshake with it. There is no such
+object in Node and no React Native runtime to ask for one, so `vitest.config.mts`
+replaces exactly one module in the graph, the generated bootstrap, and leaves
+every other line of the library real. If that stub ever stops applying, every
+test in the package fails at import; there is no path where it quietly stops
+working and the suite still reports success.
+
+Consequently **nothing in this suite establishes that the bridge works**. In
+particular these remain exercised only by a human holding a phone, or by
+`scripts/run-probe-on-emulator.sh` and `level-two/run_level_two.py`:
+
+* **Step 1 and step 5 of the walkthrough.** Subscribing installs the native
+  observer, and the identity step opens a real crypto store and reads real
+  keys. Both are asserted to *fail* in `src/flowRunners.test.ts`, deliberately,
+  so the hole is named in the suite rather than hidden by a skip.
+* **Everything the fake binding stands in for**: that Rust actually reverses
+  the bytes, reports its own crate version, rejects empty input, and invokes
+  the observer callback back across the boundary at all. The tests fix what
+  each step does with those answers, not that the answers are real.
+* **`ProbeHarness`, `LevelTwoHarness`, `FoldWatch` and `App.tsx`**, which are
+  React components and are not covered here.
+* **Signal timing.** `PROBE_SIGNAL_MS` and `PROBE_SIGNAL_NTH` are measurements
+  of a real device under a real race. A host machine cannot produce them.
+
 This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
 
 # Getting Started
