@@ -333,7 +333,12 @@ impl From<MachineError> for SessionError {
             | MachineError::WrongStage
             | MachineError::MaterialNotReady
             | MachineError::AccountKeysNotFetched
-            | MachineError::IdentityAlreadyExists => SessionError::Failed,
+            | MachineError::IdentityAlreadyExists
+            // `verification.rs`'s third refusal, and it belongs to that
+            // module for the same reason as the three flow kinds above:
+            // unreachable through this conversion, listed by name so a
+            // future variant still has to be ruled on here.
+            | MachineError::IdentityNotKnown => SessionError::Failed,
         }
     }
 }

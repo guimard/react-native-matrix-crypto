@@ -169,6 +169,14 @@ pub enum MachineFfiError {
     AccountKeysNotFetched,
     #[error("this account already has a signing identity this device does not hold")]
     IdentityAlreadyExists,
+    // Appended last, like every variant above it and for the same
+    // wire-ordinal reason. It mirrors the one the core's `MachineError` grew
+    // for self-verification, and `request_self_verification` below is what
+    // returns it: the account has no identity for this device to join, which
+    // is the mirror image of the variant just above and needs the opposite
+    // thing done about it.
+    #[error("this account has no signing identity to verify against")]
+    IdentityNotKnown,
 }
 
 impl From<matrix_crypto_core::MachineError> for MachineFfiError {
@@ -188,6 +196,7 @@ impl From<matrix_crypto_core::MachineError> for MachineFfiError {
             matrix_crypto_core::MachineError::UnknownDevice => Self::UnknownDevice,
             matrix_crypto_core::MachineError::AccountKeysNotFetched => Self::AccountKeysNotFetched,
             matrix_crypto_core::MachineError::IdentityAlreadyExists => Self::IdentityAlreadyExists,
+            matrix_crypto_core::MachineError::IdentityNotKnown => Self::IdentityNotKnown,
         }
     }
 }
@@ -460,6 +469,28 @@ pub async fn request_verification(
     device_id: String,
 ) -> Result<String, MachineFfiError> {
     matrix_crypto_core::request_flow(&user_id, &device_id)
+        .await
+        .map(|flow| {
+            // Destructured, not field-accessed. See Global Constraints.
+            let matrix_crypto_core::FlowId(id) = flow;
+            id
+        })
+        .map_err(Into::into)
+}
+
+/// Asks this account's other devices to verify this one, so that this device
+/// can join the signing identity the account already has. Mirrors
+/// `request_self_flow`; see its own doc comment in
+/// `matrix-crypto-core::verification` for the three ways it differs from
+/// `request_verification` above, and for why it is not, and must not become,
+/// a way around `bootstrap_identity`'s gate.
+///
+/// **No parameters, and in particular no device id.** The invitation goes to
+/// every other device of ours that the account's identity has signed, and a
+/// new login is in no position to choose between them.
+#[uniffi::export]
+pub async fn request_self_verification() -> Result<String, MachineFfiError> {
+    matrix_crypto_core::request_self_flow()
         .await
         .map(|flow| {
             // Destructured, not field-accessed. See Global Constraints.

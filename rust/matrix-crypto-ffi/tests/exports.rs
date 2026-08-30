@@ -53,3 +53,24 @@ async fn the_signing_identity_calls_reach_the_core() {
         matrix_crypto_ffi::MachineFfiError::NotInitialised
     ));
 }
+
+/// The call a device joins an identity with reaches the core too, and is the
+/// same one-line delegation with the same three ways of going wrong.
+///
+/// Separate from the test above rather than a third line inside it, because
+/// it belongs to a different call on the product's surface: joining is a
+/// verification, not a bootstrap, and the two must never be reached for
+/// interchangeably. The same limit applies as above -- a body of
+/// `Err(MachineFfiError::NotInitialised)` would pass this, and the core's own
+/// `tests/self_verification*.rs` are what drive the served path and both
+/// refusals against a real store.
+#[tokio::test]
+async fn the_self_verification_call_reaches_the_core() {
+    let err = matrix_crypto_ffi::request_self_verification()
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        matrix_crypto_ffi::MachineFfiError::NotInitialised
+    ));
+}

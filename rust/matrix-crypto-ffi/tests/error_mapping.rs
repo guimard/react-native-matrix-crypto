@@ -271,4 +271,21 @@ fn every_machine_error_maps_to_the_matching_ffi_variant() {
          here: this device joins the identity the account already has, it does \
          not replace it"
     );
+
+    // The self-verification refusal, which completes the same triangle. It
+    // is the mirror image of `IdentityAlreadyExists`: that one says "there is
+    // an identity and you are not it", this one says "there is no identity at
+    // all", and a product told the wrong one either creates a second identity
+    // over the account's or waits forever for one that does not exist.
+    assert!(
+        matches!(
+            MachineFfiError::from(MachineError::IdentityNotKnown),
+            MachineFfiError::IdentityNotKnown
+        ),
+        "MachineError::IdentityNotKnown must not arrive as another kind -- a \
+         product told AccountKeysNotFetched instead would drain the pump and \
+         ask again forever, and one told IdentityAlreadyExists would conclude \
+         the account has an identity it must not touch when the truth is that \
+         it has none and creating one is exactly what is needed"
+    );
 }

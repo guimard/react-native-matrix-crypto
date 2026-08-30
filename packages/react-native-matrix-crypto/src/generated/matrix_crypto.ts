@@ -912,6 +912,65 @@ export async function receiveSyncChanges(
 }
 
 /**
+ * Asks this account's other devices to verify this one, so that this device
+ * can join the signing identity the account already has. Mirrors
+ * `request_self_flow`; see its own doc comment in
+ * `matrix-crypto-core::verification` for the three ways it differs from
+ * `request_verification` above, and for why it is not, and must not become,
+ * a way around `bootstrap_identity`'s gate.
+ *
+ * **No parameters, and in particular no device id.** The invitation goes to
+ * every other device of ours that the account's identity has signed, and a
+ * new login is in no position to choose between them.
+ */
+export async function requestSelfVerification(asyncOpts_?: {
+  signal: AbortSignal;
+}): Promise<string> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_request_self_verification();
+      },
+      /*pollFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule()
+        .ubrn_ffi_matrix_crypto_ffi_rust_future_free_rust_buffer,
+      // Async returns always go through the JS-side converter: the
+      // FFI symbol returns the future handle (u64), and the user-level
+      // RustBuffer comes back via the shared `rust_future_complete_*`
+      // export. The bytes the runtime hands back must be deserialized
+      // here using the per-callable return-type converter.
+      // Borrowed view over foreign memory: the call site owns the free,
+      // as on the sync paths. Unconditional — a no-op where buffers are
+      // already JS-owned.
+      /*liftFunc:*/ (__rb) => {
+        try {
+          return FfiConverterString.lift(__rb);
+        } finally {
+          nativeModule().rustbuffer_free(__rb);
+        }
+      },
+      /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeMachineFfiError.lift.bind(
+        FfiConverterTypeMachineFfiError
+      )
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+
+/**
  * Asks a device to verify itself against this one, returning the opaque
  * identifier every other call below addresses the flow by. Mirrors
  * `request_flow`; see its own doc comment in
@@ -2309,6 +2368,7 @@ export enum MachineFfiError_Tags {
   UnknownDevice = "UnknownDevice",
   AccountKeysNotFetched = "AccountKeysNotFetched",
   IdentityAlreadyExists = "IdentityAlreadyExists",
+  IdentityNotKnown = "IdentityNotKnown",
 }
 /**
  * Mirror of the core's machine error, carrying the UniFFI error derive.
@@ -2639,6 +2699,35 @@ export const MachineFfiError = (() => {
     }
   }
 
+  type IdentityNotKnown__interface = {
+    tag: MachineFfiError_Tags.IdentityNotKnown;
+  };
+  class IdentityNotKnown_
+    extends UniffiError
+    implements IdentityNotKnown__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.IdentityNotKnown;
+    constructor() {
+      super("MachineFfiError", "IdentityNotKnown");
+    }
+
+    static new(): IdentityNotKnown_ {
+      return new IdentityNotKnown_();
+    }
+
+    static instanceOf(obj: any): obj is IdentityNotKnown_ {
+      return obj.tag === MachineFfiError_Tags.IdentityNotKnown;
+    }
+    static hasInner(obj: any): obj is IdentityNotKnown_ {
+      return false;
+    }
+  }
+
   function instanceOf(obj: any): obj is MachineFfiError {
     return obj[uniffiTypeNameSymbol] === "MachineFfiError";
   }
@@ -2656,6 +2745,7 @@ export const MachineFfiError = (() => {
     UnknownDevice: UnknownDevice_,
     AccountKeysNotFetched: AccountKeysNotFetched_,
     IdentityAlreadyExists: IdentityAlreadyExists_,
+    IdentityNotKnown: IdentityNotKnown_,
   });
 })();
 /**
@@ -2677,7 +2767,8 @@ export type MachineFfiError = InstanceType<
     | "MaterialNotReady"
     | "UnknownDevice"
     | "AccountKeysNotFetched"
-    | "IdentityAlreadyExists"]
+    | "IdentityAlreadyExists"
+    | "IdentityNotKnown"]
 >;
 
 // FfiConverter for enum MachineFfiError
@@ -2712,6 +2803,8 @@ const FfiConverterTypeMachineFfiError = (() => {
           return new MachineFfiError.AccountKeysNotFetched();
         case 11:
           return new MachineFfiError.IdentityAlreadyExists();
+        case 12:
+          return new MachineFfiError.IdentityNotKnown();
         default:
           throw new UniffiInternalError.UnexpectedEnumCase();
       }
@@ -2766,6 +2859,10 @@ const FfiConverterTypeMachineFfiError = (() => {
           c.writeI32(11);
           return;
         }
+        case MachineFfiError_Tags.IdentityNotKnown: {
+          c.writeI32(12);
+          return;
+        }
         default:
           // Throwing from here means that MachineFfiError_Tags hasn't matched an ordinal.
           throw new UniffiInternalError.UnexpectedEnumCase();
@@ -2810,6 +2907,9 @@ const FfiConverterTypeMachineFfiError = (() => {
           return 4;
         }
         case MachineFfiError_Tags.IdentityAlreadyExists: {
+          return 4;
+        }
+        case MachineFfiError_Tags.IdentityNotKnown: {
           return 4;
         }
         default:
@@ -4083,6 +4183,14 @@ function uniffiEnsureInitialized() {
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       "uniffi_matrix_crypto_ffi_checksum_func_receive_sync_changes"
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_request_self_verification() !==
+    43434
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      "uniffi_matrix_crypto_ffi_checksum_func_request_self_verification"
     );
   }
   if (

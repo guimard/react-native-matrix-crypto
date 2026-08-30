@@ -175,6 +175,25 @@ pub enum MachineError {
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("this account already has a signing identity this device does not hold")]
     IdentityAlreadyExists,
+    /// This machine holds no public signing identity for the account, so
+    /// there is nothing for this device to verify itself against.
+    ///
+    /// The mirror image of `IdentityAlreadyExists`, and the pair says the
+    /// whole rule between them: a device that does not hold the private keys
+    /// **joins** the identity the account has, and a device facing an account
+    /// with no identity at all has nothing to join. Only one of the two calls
+    /// is ever the right one, and each names the other's precondition.
+    ///
+    /// Distinguished from `AccountKeysNotFetched` by the same question
+    /// `signing.rs`'s gate asks and for the same reason: this one means the
+    /// server was asked and named no identity, so the remedy is to create one
+    /// with `crate::bootstrap_identity`. `AccountKeysNotFetched` means nobody
+    /// has asked, and asking is the remedy. Collapsing them would send a
+    /// caller to create an identity on the strength of a question never put.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("this account has no signing identity to verify against")]
+    IdentityNotKnown,
 }
 
 struct Held {
@@ -226,6 +245,14 @@ async fn build(config: MachineConfig) -> Result<Held, MachineError> {
                 detail: store_error_detail(&other),
             },
         })?;
+
+    // Seeded from the store this machine has just opened, not left at its
+    // default. A process reopening a store that already holds the account's
+    // private signing keys has not just acquired them, and the arrival
+    // signal `verification::announce_state_changes` produces would otherwise
+    // fire on every launch of a device that finished setting itself up
+    // months ago. See `signing::note_private_keys_held`.
+    crate::signing::seed_private_keys_held(machine.cross_signing_status().await.is_complete());
 
     Ok(Held {
         config,
@@ -403,6 +430,14 @@ pub(crate) fn reset_for_test() {
     // asserts on "exactly one signal" would fail for a reason belonging to
     // its neighbour.
     crate::observer::reset_crypto_observer_for_test();
+
+    // Same reason again, one layer across: the latch is process-wide, and a
+    // test whose machine held the private signing keys would otherwise leave
+    // the next test's fresh machine looking as though it already had them,
+    // so the arrival that test exists to observe would never be announced.
+    // `build` seeds it for every machine created after this point; this
+    // covers the window in between.
+    crate::signing::seed_private_keys_held(false);
 
     // `RwLock`, not `OnceLock`: the registry must be clearable between tests
     // that each need their own fresh machine, all run in one process rather
