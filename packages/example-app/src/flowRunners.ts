@@ -5,8 +5,10 @@
  * screen runs, can be run by a test on a host machine. They were private to
  * a file that imports `react-native`, which no Node process can load, so the
  * only way anyone had checked them was by holding a phone. Two defects lived
- * here because of that, and one of them, step 6's, had been on screen since
- * M3 telling every reader that a working function was unimplemented.
+ * here because of that, and one of them, the `notYet` card's, had been on
+ * screen since M3 telling every reader that a working function was
+ * unimplemented. This said "step 6's", which was the card's position at the
+ * time and is not its position now.
  *
  * `flowRunners.test.ts` and `cardClaims.test.ts` import this module and call
  * these exact functions. A transcription of them into a test file was written
