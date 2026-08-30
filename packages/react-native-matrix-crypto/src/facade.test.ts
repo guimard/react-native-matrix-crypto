@@ -665,52 +665,77 @@ describe('decryptEvent wiring to the native layer', () => {
   })
 
   /**
-   * **Nothing this release can produce comes out as `'verified'`.**
+   * **`'verified'` comes from the native `Verified` and from nothing
+   * else.**
    *
-   * The M3 design ruling on this type binds the suite to hold no case that
-   * appears to produce `'verified'`: a fixture faking it would teach
-   * exactly the belief the ruling exists to prevent, and completing a
-   * verification does not make an event read it -- that changes a
-   * *device*, and `getDeviceStatuses` is where it shows.
+   * ## What this test used to be called, and why the name had to change
    *
-   * So the `'verified'` arm is checked from the other side, which is the
-   * direction the damage runs in. What would hurt is not "`'verified'`
-   * fails to arrive"; it is "something else arrives *as* `'verified'`" --
-   * an unsigned device, or worse a mismatched sender, presented to a
-   * product as an authentic one. This asserts that over every native value
-   * this release can produce, and never constructs a `Verified` to do it.
+   * It was `never reports verified for any native value this release can
+   * produce`, and it listed the six native values that were not `Verified`
+   * because those were the only ones the library could produce. The M3
+   * design ruling bound the suite to hold no case that appeared to produce
+   * `'verified'`: a fixture faking it would teach exactly the belief the
+   * ruling existed to prevent.
    *
-   * The remaining arm is covered by the compiler, and that is a claim this
-   * file previously made while it was false. `senderVerificationOf` returned
-   * `SenderVerification | undefined`, so a missing `case` fell off the end
-   * and compiled; review deleted the `Verified` arm and `tsc` exited 0 with
-   * every test here green. The function now takes and returns non-optional
-   * values, with the absent case handled at its call site, so falling off
-   * the end is `TS2366` -- verified by deleting an arm and reading the
-   * error, not assumed. Two other checks stand behind the Rust half: the
-   * core's own `match` and the FFI `From` are exhaustive over upstream enums
-   * that are not `#[non_exhaustive]`, so an upstream addition fails the Rust
-   * build before it can reach this file.
+   * M4 gives the core a cross-signing identity, and
+   * `matrix-crypto-core/tests/verified_sender.rs` now reaches `Verified`
+   * through the whole chain against a counterparty that process does not
+   * control. So the native layer can hand this facade a `Verified`, and
+   * the old name became a false statement about the library while the body
+   * stayed green: nothing here was ever going to force the correction,
+   * which is what makes this shape the dangerous one rather than the
+   * merely untidy one.
+   *
+   * The ruling was replaced rather than dropped, and the replacement is
+   * stricter: **nothing except the real chain produces `verified`.** It is
+   * written at the type, on `matrix_crypto_core::SenderVerification`. What
+   * this file holds is the boundary half of the complement, in both
+   * directions at once. Something else arriving *as* `'verified'` (an
+   * unsigned device, or worse a mismatched sender, presented to a product
+   * as authentic) is still the failure that hurts most. Since M4 there is
+   * a second one: a `Verified` the chain really did earn being quietly
+   * downgraded on the way through this mapping, which a product would read
+   * as a verification that simply never took effect.
+   *
+   * ## What the compiler covers, and a claim this file once got wrong
+   *
+   * `senderVerificationOf` used to return `SenderVerification | undefined`,
+   * so a missing `case` fell off the end and compiled; review deleted the
+   * `Verified` arm and `tsc` exited 0 with every test here green. The
+   * function now takes and returns non-optional values, with the absent
+   * case handled at its call site, so falling off the end is `TS2366`,
+   * confirmed by deleting an arm and reading the error rather than
+   * assumed. Two more checks stand behind the Rust half: the core's own
+   * `match` and the FFI `From` are exhaustive over upstream enums that are
+   * not `#[non_exhaustive]`, so an upstream addition fails the Rust build
+   * before it can reach this file.
    */
-  it('never reports verified for any native value this release can produce', async () => {
-    const producible = [
+  it('reports verified for the native verified value and for nothing else', async () => {
+    const everyNativeValue = [
+      // Reachable in the core since M4, through the chain
+      // `matrix-crypto-core/tests/verified_sender.rs` drives end to end.
+      // It is an input here for that reason and not as a fixture inventing
+      // an authenticity claim, which is what the M3 ruling forbade and the
+      // replacement still forbids.
+      NativeSenderVerification.Verified,
       NativeSenderVerification.UnsignedDevice,
       NativeSenderVerification.NoDeviceMissing,
       NativeSenderVerification.NoDeviceInsecureSource,
       NativeSenderVerification.MismatchedSender,
-      // Producible today, and this list said otherwise until 0.1.0. It
-      // depends on the sender's cross-signing identity rather than on ours,
-      // so any peer whose client has cross-signing set up produces it. The
-      // most important entry here for that reason: "cross-signed" read as
-      // "trusted" is how it would end up mapped to `verified`.
+      // Producible since before 0.1.0, and this list said otherwise until
+      // then. It depends on the sender's cross-signing identity rather than
+      // on ours, so any peer whose client has cross-signing set up produces
+      // it. The most important entry here for that reason: "cross-signed"
+      // read as "trusted" is how it would end up mapped to `verified`.
       NativeSenderVerification.UnverifiedIdentity,
-      // Genuinely not producible: it needs a previous verification by us,
-      // which needs a cross-signing identity this release cannot create.
-      // Here so that it must map to itself on the day it can arrive.
+      // Reachable only past `Verified`, for a sender whose chain completed
+      // and whose identity then changed. No fixture in this repository
+      // builds that situation; this entry is what holds the mapping on the
+      // day one does.
       NativeSenderVerification.VerificationViolation,
     ]
 
-    for (const value of producible) {
+    for (const value of everyNativeValue) {
       vi.mocked(nativeDecryptEvent).mockResolvedValueOnce({
         scope: '!native-scope:example.org',
         algorithm: 'm.native.algorithm',
@@ -722,7 +747,13 @@ describe('decryptEvent wiring to the native layer', () => {
 
       const envelope = await decryptEvent(scope, { type: 'm.room.encrypted' })
 
-      expect(envelope.senderVerification?.state).toBe('unverified')
+      // A single two-sided expectation rather than two loops: the failure
+      // that invents `'verified'` and the failure that drops it are the
+      // same defect seen from opposite sides, and one assertion that names
+      // both is what stops either being added back without the other.
+      expect(envelope.senderVerification?.state).toBe(
+        value === NativeSenderVerification.Verified ? 'verified' : 'unverified',
+      )
     }
   })
 })

@@ -244,35 +244,61 @@ fn a_device_status_keeps_its_identifier_and_its_trust_together() {
     );
 }
 
-/// Every sender-verification value this build can produce, each to its own.
+/// Every sender-verification value, each to its own.
 ///
-/// # Why `Verified` is not an input anywhere in this file
+/// # Why `Verified` is an input here now, and was not before
 ///
-/// It is not an oversight and it is not laziness. The M3 design ruling on
-/// this type (spec section 7, question 3) binds the implementation to two
-/// things: document the unreachable values at the type, and keep the
-/// test suite free of any case that appears to produce `Verified`. A
-/// `From` test taking `SenderVerification::Verified` as a literal is such a
-/// case -- read out of context it says this library produces that value,
-/// which it does not, and the whole reason the ruling exists is that
-/// believing otherwise is the expensive mistake.
+/// Until M4 this list stopped one variant short of the enum, and the
+/// omission was deliberate rather than careless. The M3 design ruling on
+/// this type (spec section 7, question 3) bound the implementation to two
+/// things: document the unreachable values at the type, and keep the test
+/// suite free of any case that appears to produce `Verified`. A `From`
+/// test taking `SenderVerification::Verified` as a literal was exactly
+/// such a case. Read out of context it said this library produces that
+/// value, and at the time this library did not.
 ///
-/// So the `Verified` arm is covered from the other side instead, which is
-/// where the danger actually lives. What would hurt is not "`Verified` fails
-/// to arrive"; it is "something else arrives *as* `Verified`" -- the same
-/// sentence this file's own header calls the worst one this library could
-/// say, one enum over. `nothing_this_build_produces_crosses_as_verified`
-/// below asserts exactly that, over every value this build can produce, and
-/// never constructs a `Verified` to do it. Between the two, the only arm no
-/// assertion touches is one the compiler already proves total: the `From`
-/// impl matches exhaustively with no wildcard, so the arm exists and a
-/// variant added to either side fails the build.
+/// It does now. `matrix-crypto-core/tests/verified_sender.rs` reaches
+/// `Verified` through the whole chain (bootstrap, publish, sign, upload,
+/// re-query, decrypt) against a counterparty that process does not
+/// control, with nothing anywhere fabricating the value on the way. So the
+/// literal below is no longer a fiction a reader has to take on trust: it
+/// is a value the core demonstrably makes, and carrying it across this
+/// boundary is the next hop.
+///
+/// The ruling was replaced rather than dropped, and the replacement is
+/// stricter rather than looser: **nothing except the real chain produces
+/// `Verified`.** It is written at the type, on
+/// `matrix_crypto_core::SenderVerification`, which is where a reader meets
+/// the claim. The complement is
+/// [`only_verified_crosses_the_boundary_as_verified`] below: every other
+/// value must still arrive as itself, which is the mapping defect that
+/// would turn "a device this machine has merely heard of" into "this
+/// message is authentic" on a product's screen.
+///
+/// # The name lost a word
+///
+/// It was `every_reachable_sender_verification_maps_to_the_matching_ffi_variant`,
+/// and that qualifier existed only to excuse the arm it was leaving out.
+/// With the arm present there is no subset left for the word to describe,
+/// and keeping it would offer the next omission somewhere to hide. This is
+/// the shape the M4 design calls the dangerous one: a test that keeps
+/// passing while its name turns into a false statement, so nothing ever
+/// forces the correction.
 ///
 /// One assertion per variant rather than a loop, for the reason the flow
 /// stage test above gives: a loop would need the two enums to be relatable
 /// by something other than this mapping, which is the thing under test.
 #[test]
-fn every_reachable_sender_verification_maps_to_the_matching_ffi_variant() {
+fn every_sender_verification_maps_to_the_matching_ffi_variant() {
+    assert!(
+        matches!(
+            FfiSenderVerification::from(SenderVerification::Verified),
+            FfiSenderVerification::Verified
+        ),
+        "the one value that guarantees authenticity must cross as itself; \
+         anything else here discards, without a sound, a verification a \
+         product paid all seven steps of the chain for"
+    );
     assert!(
         matches!(
             FfiSenderVerification::from(SenderVerification::UnsignedDevice),
@@ -323,30 +349,59 @@ fn every_reachable_sender_verification_maps_to_the_matching_ffi_variant() {
          overstate it"
     );
 
-    // `VerificationViolation` genuinely is unreachable here, and unlike
-    // `Verified` there is no fixture hazard in naming it: it is not a claim
-    // of authenticity. It needs the sender's identity to have been verified
-    // by us once, which needs a cross-signing identity of our own, which
-    // this build has no way to create.
+    // `VerificationViolation` needs the sender's identity to have been
+    // verified by us once and to have changed since. This file used to say
+    // the first half was impossible, because it needs a cross-signing
+    // identity of our own and this build had no way to create one. M4
+    // gives it one, so the value now sits one step *past* `Verified`
+    // rather than beside it: reachable only for a sender whose chain
+    // completed and whose identity then changed. No test in this
+    // repository constructs that situation, which is a fact about the
+    // fixtures and is no longer a fact about the build.
     assert!(matches!(
         FfiSenderVerification::from(SenderVerification::VerificationViolation),
         FfiSenderVerification::VerificationViolation
     ));
 }
 
-/// No value this build produces crosses the boundary as `Verified`.
+/// `Verified` crosses this boundary as `Verified`, and nothing else does.
 ///
 /// The complement of the test above, and the one that would catch the
 /// expensive defect. A `From` arm sending `UnsignedDevice` to `Verified`
-/// compiles, passes clippy, and passes every other test in this repository
-/// -- and it turns "a device this machine has merely heard of" into "this
-/// message is guaranteed to be authentic" on a product's screen.
+/// compiles, passes clippy, and passes every other test in this
+/// repository, and it turns "a device this machine has merely heard of"
+/// into "this message is guaranteed to be authentic" on a product's
+/// screen.
 ///
-/// Constructs no `Verified` of its own, deliberately: see the previous
-/// test's doc comment.
+/// # What the old name said, and why a rename was the fix
+///
+/// This was `nothing_this_build_produces_crosses_as_verified`. It iterated
+/// the six values that were not `Verified`, because those were the only
+/// ones the build produced, and it asserted that none of them arrived as
+/// `Verified`. The body never stopped being correct. The name stopped
+/// being true the day cross-signing bootstrap landed, and because the body
+/// stays green forever, nothing was ever going to force the correction:
+/// exactly the failure the M4 design names as the dangerous one. The
+/// property worth keeping is not "nothing produces `Verified`" but
+/// **"nothing except the real chain does"**, and that is what the name now
+/// says.
+///
+/// # The list is the whole enum now, and the assertion is two-sided
+///
+/// A prohibition became a biconditional, which is strictly stronger than
+/// what it replaces. While `Verified` could never arrive, a mapping that
+/// *dropped* it was harmless. Now that the chain reaches it, dropping it
+/// loses a verification a product paid seven steps for, silently, and the
+/// old shape of this test could not have seen that. Both directions were
+/// watched failing before this was committed.
 #[test]
-fn nothing_this_build_produces_crosses_as_verified() {
+fn only_verified_crosses_the_boundary_as_verified() {
     for produced in [
+        // The one value that must arrive as `Verified`. Reached through
+        // the real chain in `matrix-crypto-core/tests/verified_sender.rs`,
+        // which is what makes it an input here rather than a fixture
+        // fabricating an authenticity claim: see the test above.
+        SenderVerification::Verified,
         SenderVerification::UnsignedDevice,
         SenderVerification::NoDeviceMissing,
         SenderVerification::NoDeviceInsecureSource,
@@ -358,17 +413,24 @@ fn nothing_this_build_produces_crosses_as_verified() {
         // likely to be folded into `Verified` by someone reading
         // "cross-signed" as "trusted".
         SenderVerification::UnverifiedIdentity,
-        // Unreachable in this build, and here so that it must arrive as
-        // itself on the day it is not.
+        // Reachable only past `Verified`, for a sender whose chain
+        // completed and whose identity then changed. No fixture here
+        // constructs that, and this entry is what makes the mapping hold
+        // on the day one does.
         SenderVerification::VerificationViolation,
     ] {
-        assert!(
-            !matches!(
+        assert_eq!(
+            matches!(
                 FfiSenderVerification::from(produced),
                 FfiSenderVerification::Verified
             ),
-            "{produced:?} crossed the boundary as Verified -- the one value \
-             this build cannot honestly report about a decrypted event"
+            matches!(produced, SenderVerification::Verified),
+            "only `Verified` may cross this boundary as `Verified`, and it \
+             must. Left is whether {produced:?} crossed as `Verified`, right \
+             is whether it was entitled to: left `true` means the mapping \
+             invented authenticity for a value that carries none, and left \
+             `false` means it threw away a verification the chain really did \
+             earn"
         );
     }
 }
