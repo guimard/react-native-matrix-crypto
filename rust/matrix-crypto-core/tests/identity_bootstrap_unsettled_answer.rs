@@ -57,9 +57,9 @@
 //! stopped working.
 
 use matrix_crypto_core::{
-    bootstrap_identity, create_machine, create_recovery, identity_status, in_runtime,
-    mark_request_sent, recover_identity, take_outgoing_requests, MachineConfig, MachineError,
-    OutgoingRequest,
+    bootstrap_identity, create_identity, create_machine, create_recovery, identity_status,
+    in_runtime, mark_request_sent, recover_identity, take_outgoing_requests, MachineConfig,
+    MachineError, OutgoingRequest,
 };
 
 const ACCOUNT: &str = "@alice:example.org";
@@ -196,9 +196,9 @@ fn an_answer_that_settles_nothing_says_so_instead_of_looping_in_silence() {
             "and the diagnosis must clear, or a product that met one omitting answer \
              would be told forever that its answers settle nothing: {status:?}"
         );
-        bootstrap_identity()
+        create_identity()
             .await
-            .expect("and the bootstrap that answer authorises must be served");
+            .expect("and the creation that answer authorises must be served");
     }));
 }
 

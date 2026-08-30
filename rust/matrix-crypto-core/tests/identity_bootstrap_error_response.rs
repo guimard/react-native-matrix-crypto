@@ -47,8 +47,8 @@
 //! machine registry and the pump's bookkeeping are process-wide.
 
 use matrix_crypto_core::{
-    bootstrap_identity, create_machine, identity_status, mark_request_sent, take_outgoing_requests,
-    MachineConfig, MachineError, OutgoingRequest, SessionError,
+    bootstrap_identity, create_identity, create_machine, identity_status, mark_request_sent,
+    take_outgoing_requests, MachineConfig, MachineError, OutgoingRequest, SessionError,
 };
 
 const ACCOUNT: &str = "@alice:example.org";
@@ -174,9 +174,9 @@ fn a_failed_request_reported_as_sent_neither_lifts_the_gate_nor_publishes() {
             "a real answer, on the same id, must lift the gate"
         );
 
-        bootstrap_identity()
+        create_identity()
             .await
-            .expect("bootstrapping after a real answer must be served");
+            .expect("creating an identity after a real answer must be served");
 
         // --- Act 2: a challenge must not publish the identity ---
 

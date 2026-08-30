@@ -52,6 +52,19 @@ async fn the_signing_identity_calls_reach_the_core() {
         err,
         matrix_crypto_ffi::MachineFfiError::NotInitialised
     ));
+
+    // The creating call is exported and delegates too. It is asserted here
+    // beside the publishing one rather than folded into it, because the two
+    // are now different acts and an export that existed for only one of them
+    // would leave a product unable to reach the other at all. Which of the
+    // two a caller gets is checked where a swap is visible: the core's own
+    // `tests/identity_race_with_a_stale_answer.rs`, and the facade's
+    // "publishing and creating are not the same native call".
+    let err = matrix_crypto_ffi::create_identity().await.unwrap_err();
+    assert!(matches!(
+        err,
+        matrix_crypto_ffi::MachineFfiError::NotInitialised
+    ));
 }
 
 /// The call a device joins an identity with reaches the core too, and is the

@@ -128,8 +128,14 @@ A fourth kind, `signing_keys_upload`, is retired the same way and on a narrower 
 
 A signing identity is what lets one device vouch for another without a person comparing anything, and what lets a decrypted event say who sent it rather than only which key it arrived under. Without one, `senderVerification` can never read `verified`, however many strings your users compare.
 
+**Two calls, and only one of them is safe to run unattended.** `bootstrapCrossSigning` publishes the identity this device already holds. `createCrossSigningIdentity` makes the account's first one, and making one over an identity the account already has resets the trust of every device and every person who ever verified it. The second is a decision your product makes, not a fallback your error handler runs. The section below this one says why.
+
 ```ts
-import { bootstrapCrossSigning, getIdentityStatus } from 'react-native-matrix-crypto'
+import {
+  bootstrapCrossSigning,
+  createCrossSigningIdentity,
+  getIdentityStatus,
+} from 'react-native-matrix-crypto'
 
 try {
   await bootstrapCrossSigning()
@@ -146,6 +152,10 @@ try {
   if (accountKeysAnswerUnsettled) throw new Error('the homeserver said nothing about this account')
   await bootstrapCrossSigning()
 }
+// 'identity_not_known' from either call means the server was asked and this
+// account has no identity. Do NOT handle it by calling
+// createCrossSigningIdentity here: that is the decision, and an error handler
+// is not where it belongs. See the next section.
 
 for (const request of await takeOutgoingRequests()) {
   // In the order you were handed them: device keys, then signing_keys_upload,
@@ -156,6 +166,24 @@ for (const request of await takeOutgoingRequests()) {
   else await markRequestFailed(request.id, res.status)
 }
 ```
+
+### When to create the first identity, and why this library will not decide it for you
+
+`createCrossSigningIdentity` is the one destructive call on this surface. Creating an identity over one the account already has replaces it on the server, and every device and every person who had verified the old one silently loses that. There is no undo and nothing afterwards can detect it.
+
+The library refuses to create one until it has asked the server and been told the account has none. **That is necessary and it is not sufficient**, and the reason is timing rather than trust. A `/keys/query` answer is true of the instant the server sent it and of nothing later. Measured against a live homeserver with every party behaving correctly: a device asked about its own fresh account, the server honestly answered "no identity" because at that instant there was none, another device of the same account published one in the window, and the answer was then reported. Nothing in that answer could say so.
+
+That used to be enough to lose an identity, because creating was part of the call you make on every launch. It no longer is. What you supply instead is the fact the library cannot have: **that this account is meant to be getting its first identity now.** Anything you know is a better basis than the answer alone:
+
+* the user has just created the account, and this is the sign-up flow rather than a relaunch;
+* `GET /_matrix/client/v3/devices` lists no other session for the account;
+* a person was asked and said yes.
+
+Whatever you use, do not call this on every launch and do not make it the automatic handler for `'identity_not_known'`. Both put the decision back where it was.
+
+**What the library does about the window it cannot close.** The batch `createCrossSigningIdentity` queues carries a `'keys_query'` for your own account after the publication, so your ordinary send-and-report loop asks the server once more straight after. That does not prevent the race: the publication is handed to you first, and if you send it you have sent it. It prevents the state the race otherwise leaves behind, which was also measured. A device that lost the race held an identity the account did not have, reported `identityKnown` and `privateKeysHeld` like a healthy device, and asked the server nothing ever again. With that query in the batch, the next answer carries the identity the account really has, the keys that disagree with it are dropped, and `getIdentityStatus` reports the truth.
+
+**Do not count on the server's authentication challenge to stop you.** It was measured and it does not. The homeserver refused the replacement upload with a `401` and a password challenge; answering it with the password the product already had, which is exactly what the paragraph above tells you to do for an ordinary first publication, returned `200` and completed the overwrite.
 
 **The `signing_keys_upload` request needs user-interactive authentication, and this library will not do it for you.** Send it. If it comes back `401`, that body is a challenge: read the session out of it, ask your user, merge an `auth` object into `request.body`, which is opaque JSON this library never interprets, and send the same body again. The id survives any number of refused attempts, because only a success consumes it.
 
@@ -226,9 +254,9 @@ for (const request of await takeOutgoingRequests()) {
 
 **There is no `auth` parameter, and there will not be one.** The challenge is only known after the first request has been refused, so an argument on `bootstrapCrossSigning` would have to be guessed before the server had said what it wants. The cost is stated rather than hidden: you cannot complete this step without implementing an authentication flow this library gives you no help with. What you get for it is that this library has never touched an account credential.
 
-**Call it on every launch.** It republishes the identity this device already holds rather than creating a second one. What it will not do is create one over an identity the account already has: that would reset the trust of everyone who had verified the old one, and it is refused with `identity_already_exists` instead. That refusal is where a second login belongs, and the next section is what it does instead.
+**Call `bootstrapCrossSigning` on every launch.** It republishes the identity this device already holds and it cannot create one, so there is no state in which running it unattended costs anything. On an account whose identity this device does not hold it is refused with `identity_already_exists`, which is where a second login belongs and the next section is what it does instead; on an account with no identity at all it is refused with `identity_not_known`, which is the decision described above.
 
-`getIdentityStatus` reports four separate facts, and two of them have to be read together: `identityKnown === false` means "nobody has asked" while `accountKeysFetched` is false, and "the server says there is none" once it is true. Only the second is a basis for creating one.
+`getIdentityStatus` reports four separate facts, and two of them have to be read together: `identityKnown === false` means "nobody has asked" while `accountKeysFetched` is false, and "the server says there is none" once it is true. Only the second is a basis for creating one, and only alongside something your product knows: see the decision above.
 
 **`accountKeysAnswerUnsettled` is the field to read when a refusal will not go away.** `account_keys_not_fetched` covers two situations, and the pump loop above only fixes one of them. With this field false, nobody has asked and pumping is the whole remedy. With it true, the query was sent, the server answered, the answer was accepted, and this library still cannot say whether the account has an identity, so the next round of the loop does what the last one did.
 
@@ -260,7 +288,7 @@ const id = await requestSelfVerification()
 
 **After the join, `bootstrapCrossSigning` stops being refused and starts being served.** This device now holds the account's private keys, so it republishes the identity it holds rather than creating a second one, which is correct and is what "call it on every launch" is for. What it also means is that the batch carries a `signing_keys_upload` again, and you still send it through the loop above. It will normally be accepted without a challenge, because the keys in it are the ones the account already has and neither continuwuity nor Synapse challenges an upload that changes nothing: Synapse short-circuits an identical re-upload to `200` before it considers authentication at all. Do not treat that as the request having been skipped, and do not assume the challenge either. Send it and handle both answers.
 
-Two refusals, and they want opposite things done about them. `account_keys_not_fetched` means this library cannot yet say what identity this account has, and this call queues that key query as it refuses: drain the pump, send, report sent, and call again, checking `accountKeysAnswerUnsettled` as above before you loop. `identity_not_known` means the server answered and this account has no identity at all, so there is nothing to join and `bootstrapCrossSigning` is the call you want.
+Two refusals, and they want opposite things done about them. `account_keys_not_fetched` means this library cannot yet say what identity this account has, and this call queues that key query as it refuses: drain the pump, send, report sent, and call again, checking `accountKeysAnswerUnsettled` as above before you loop. `identity_not_known` means the server answered and this account has no identity at all, so there is nothing to join and `createCrossSigningIdentity` is the call, once your product has decided this account should be getting its first identity.
 
 ## Verifying a device
 

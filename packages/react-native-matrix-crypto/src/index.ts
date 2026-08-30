@@ -55,6 +55,7 @@ export {
   bootstrapCrossSigning,
   cancelVerification,
   confirmVerification,
+  createCrossSigningIdentity,
   createCryptoMachine,
   createRecovery,
   decryptEvent,

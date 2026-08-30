@@ -2354,7 +2354,60 @@ async fn answer_about_this_account(
     };
 
     if !claims_an_identity(response, account) {
-        return if response.device_keys.contains_key(account) {
+        // An answer that asserts no cross-signing key for this account is a
+        // homeserver saying the account has none. Two things have to hold
+        // before that settles anything.
+        //
+        // **It has to have covered the account at all**, which is
+        // `device_keys` naming it. That is upstream's own criterion for
+        // "this response covered this user", used for
+        // `mark_tracked_users_as_up_to_date` and for removing a server from
+        // the failures cache (`manager.rs:152,205-211`).
+        //
+        // **And nothing this machine already holds may contradict it.** A
+        // store that already holds a public identity for the account, or a
+        // complete private identity for it, is a store saying "this account
+        // has an identity" while the answer says "it has none". Those cannot
+        // both be current: the Matrix protocol has no way to unpublish an
+        // identity, so an account that had one still has one. The answer is
+        // therefore stale, or from a server that omitted the account, and it
+        // settles nothing.
+        //
+        // **The check is on the public identity alone, and that is a
+        // measured decision rather than an oversight.** It was written as
+        // "a public identity *or* a complete private one", and sabotaging
+        // the private half away turned no test red. It is not merely
+        // untested, it is unreachable: upstream writes private cross-signing
+        // keys in exactly two places, and neither can produce them without a
+        // public identity beside them. `bootstrap_cross_signing` stores both
+        // together, and `Store::import_cross_signing_keys`
+        // (`matrix-sdk-crypto-0.18.0/src/store/mod.rs:961-1002`) begins
+        // `if let Some(public_identity) = self.get_identity(...)` and, with
+        // no public identity, imports nothing at all and logs "No public
+        // identity found while importing cross-signing keys". So a store
+        // holding private keys and no public identity is a store nothing
+        // writes, and a clause guarding it would be decoration.
+        //
+        // This is not a hypothetical shape. A store restored from a backup
+        // holds exactly that complete private identity, and upstream's own
+        // defence against republishing it -- `check_private_identity`
+        // calling `clear_if_differs` (`manager.rs:418-443`) -- is reached
+        // **only from inside the `master_keys` loop**, which an answer with
+        // no master key for this account never enters. So before this check
+        // existed, an omitting answer lifted the gate, left the stale
+        // private keys reading as held, and `bootstrap_identity` and
+        // `create_recovery` both proceeded: measured, a republication of a
+        // stale identity over the account's newer one and a recovery written
+        // for keys the account had already replaced. That is the exact
+        // destruction `tests/recovery_stale_identity.rs` exists to prevent,
+        // in the one case that file never exercised.
+        //
+        // The cost is a device whose store holds an identity meeting a
+        // server that genuinely reports none: it refuses rather than
+        // republishing, and says so through
+        // `IdentityStatus::account_keys_answer_unsettled`. That is the same
+        // trade this whole gate is argued in, taken in the same direction.
+        return if response.device_keys.contains_key(account) && stored.is_none() {
             AnswerAboutAccount::Settled
         } else {
             AnswerAboutAccount::Unsettled

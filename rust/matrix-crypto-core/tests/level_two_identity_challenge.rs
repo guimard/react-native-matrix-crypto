@@ -152,7 +152,7 @@
 //! and no credential.
 
 use matrix_crypto_core::{
-    bootstrap_identity, create_machine, identity_status, mark_request_failed, mark_request_sent,
+    create_identity, create_machine, identity_status, mark_request_failed, mark_request_sent,
     take_outgoing_requests, MachineConfig, OutgoingRequest,
 };
 use serde_json::{json, Value};
@@ -330,7 +330,7 @@ fn a_signing_keys_upload_refused_by_a_real_challenge_answered_and_published() {
     );
 
     // ---- 5. The identity, minted --------------------------------------
-    run(bootstrap_identity()).expect("an account the server says has no identity may mint one");
+    run(create_identity()).expect("an account the server says has no identity may mint one");
 
     let batch = run(take_outgoing_requests()).expect("the pump must be drainable");
     let kinds: Vec<&str> = batch.iter().map(|request| request.kind.as_str()).collect();

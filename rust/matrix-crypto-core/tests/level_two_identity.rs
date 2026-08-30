@@ -173,8 +173,8 @@ use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use matrix_crypto_core::{
-    bootstrap_identity, create_machine, decrypt_event, encrypt_event, identity_status,
-    mark_request_failed, mark_request_sent, receive_sync_changes, share_scope_key,
+    bootstrap_identity, create_identity, create_machine, decrypt_event, encrypt_event,
+    identity_status, mark_request_failed, mark_request_sent, receive_sync_changes, share_scope_key,
     take_outgoing_requests, MachineConfig, MachineError, OutgoingRequest, SenderVerification,
     SessionError,
 };
@@ -599,7 +599,7 @@ fn a_signing_identity_published_to_a_real_homeserver_and_what_a_sender_then_read
     );
 
     // ---- 9. The identity, minted and published --------------------------
-    run(bootstrap_identity()).expect("an account the server says has no identity may mint one");
+    run(create_identity()).expect("an account the server says has no identity may mint one");
 
     let batch = run(take_outgoing_requests()).expect("the pump must be drainable");
     let kinds: Vec<&str> = batch.iter().map(|request| request.kind.as_str()).collect();

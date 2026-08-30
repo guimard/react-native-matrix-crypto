@@ -461,7 +461,8 @@ fn existing_ciphertexts(
 /// write would be worse than none: it would leave account data that opens
 /// with the right passphrase and restores an incomplete identity.
 /// [`crate::identity_status`] says which of the two remedies applies, which
-/// are [`crate::bootstrap_identity`] for an account with no identity and
+/// are [`crate::create_identity`] for an account with no identity, once the
+/// product has decided this account should be getting its first one, and
 /// [`crate::request_self_flow`] for one this device has not joined yet.
 pub async fn create_recovery(
     passphrase: &str,
@@ -759,24 +760,40 @@ async fn restore(
     secret: &str,
     account_data: &[AccountDataEntry],
 ) -> Result<(), MachineError> {
-    // The cheap precondition first, and it is a precondition rather than a
-    // courtesy: without the account's public identity in the store,
+    // The cheap preconditions first, and they are preconditions rather than
+    // courtesies: without the account's public identity in the store,
     // upstream's import checks nothing and stores nothing. Deriving a key
     // from a passphrase costs half a million PBKDF2 iterations, so a caller
     // that has not asked the server yet is turned away before paying for
     // it.
+    //
+    // **The gate is checked first and on its own**, and it used to be
+    // nested inside `!identity_known`, which meant a store that already
+    // held a public identity skipped it entirely. This comment and
+    // `recover_identity`'s own doc both said this call "carries the same
+    // gate" as `bootstrap_identity` and `create_recovery`; for that one
+    // shape it did not.
+    //
+    // The shape is not exotic. It is the restored backup: a store holding a
+    // *stale* public identity and the private keys that match it, in a
+    // process that has asked the server nothing. Reached there, this call
+    // imports a recovery's private keys, checks them against the stale
+    // public identity, finds them consistent, and leaves the device holding
+    // keys for an identity the account has replaced -- the same destruction
+    // `tests/identity_bootstrap_contradicted_answer.rs` closes for the
+    // other two callers, arrived at through the one that was not checking.
     let status = crate::signing::read_status(machine).await?;
+    if !status.account_keys_fetched {
+        // Queued by the refusal, exactly as `bootstrap_identity` does and
+        // for the same reason: upstream volunteers an own-account key query
+        // only while the account is not yet tracked, so on any process that
+        // has already shared a key this refusal would otherwise be
+        // permanent.
+        let (id, request) = machine.query_keys_for_users(std::iter::once(machine.user_id()));
+        crate::session::queue_account_key_query(id, request);
+        return Err(MachineError::AccountKeysNotFetched);
+    }
     if !status.identity_known {
-        if !status.account_keys_fetched {
-            // Queued by the refusal, exactly as `bootstrap_identity` does
-            // and for the same reason: upstream volunteers an own-account
-            // key query only while the account is not yet tracked, so on
-            // any process that has already shared a key this refusal would
-            // otherwise be permanent.
-            let (id, request) = machine.query_keys_for_users(std::iter::once(machine.user_id()));
-            crate::session::queue_account_key_query(id, request);
-            return Err(MachineError::AccountKeysNotFetched);
-        }
         return Err(MachineError::IdentityNotKnown);
     }
 
@@ -876,7 +893,7 @@ mod tests {
         decrypt_event, mark_request_sent, receive_sync_changes, share_scope_key,
         take_outgoing_requests, OutgoingRequest, SenderVerification,
     };
-    use crate::signing::{bootstrap_identity, identity_status};
+    use crate::signing::{create_identity, identity_status};
     use matrix_sdk_common::ruma::api::client::keys::claim_keys::v3::Response as KeysClaimResponse;
     use matrix_sdk_common::ruma::api::client::keys::get_keys::v3::Response as KeysQueryResponse;
     use matrix_sdk_common::ruma::api::client::keys::upload_keys::v3::Response as KeysUploadResponse;
@@ -1236,9 +1253,10 @@ mod tests {
             .await
             .expect("answering the account key query must not fail");
 
-        bootstrap_identity()
-            .await
-            .expect("bootstrapping after the account keys have been fetched must be served");
+        create_identity().await.expect(
+            "creating this account's identity after the keys have been fetched must \
+                     be served",
+        );
 
         // The publication the bootstrap queued is what a `/keys/query` for
         // this account answers with from here on, so the reinstalled device
