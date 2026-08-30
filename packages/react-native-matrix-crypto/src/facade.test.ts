@@ -1497,54 +1497,96 @@ describe('a verification driven end to end through the public surface', () => {
 
 /**
  * The seven-step chain that makes a decrypted event read `'verified'`,
- * driven from end to end through the functions this package publishes and
- * through nothing else.
+ * driven through the functions this package publishes and through nothing
+ * else, against a hand-written model of the core.
  *
- * # What this proves and, carefully, what it does not
+ * # The line falls in an unobvious place, so read this before the tick
  *
- * The cryptography is not on trial here and could not be: there is no JSI
- * host object under vitest, so no test in this directory has ever executed
- * a line of Rust. `matrix-crypto-core/tests/verified_sender.rs` is where
- * the chain is proved, against a counterparty that process does not
- * control, and it is the only thing entitled to say the value is earned.
+ * **The boundary is exactly one module: `./generated/matrix_crypto`.**
+ * Everything above it runs for real. Everything below it is this file's
+ * model. A green run here is evidence about the first and no evidence at
+ * all about the second, and the two halves are set out separately below so
+ * that nobody has to infer which is which.
  *
- * What was missing until this release is the other half, and it is the half
- * a product lives in: **that every step of that chain can be reached, in
- * order, through the published TypeScript surface.** The core has reached
- * `Verified` since M4 and no product could get there, because the call that
- * creates this account's identity was not bridged. This test is what says
- * it is, and it is the first time the value has been read off an
- * `EventEnvelope` anywhere in this repository.
+ * ## What a green run does prove
  *
- * # Why the fake is a model and not a constant
+ * * **Every published call in the chain exists, and composes in this
+ *   order.** `bootstrapCrossSigning`, `getIdentityStatus`,
+ *   `takeOutgoingRequests`, `markRequestSent`, `markRequestFailed`,
+ *   `receiveSyncChanges`, `requestVerification`, `acceptVerification`,
+ *   `startVerificationComparison`, `getVerificationStage`,
+ *   `getVerificationMaterial`, `confirmVerification`, `decryptEvent` and
+ *   `getDeviceStatuses`, each taking what the one before it returns. That
+ *   is the milestone's actual claim about TypeScript, and it is what was
+ *   missing: the core has reached `Verified` since M4's second task and no
+ *   product could get there, because the call that creates this account's
+ *   identity stopped at the FFI crate.
+ * * **Error translation, unmocked.** `vi.mock` wraps `importOriginal`, so
+ *   the real generated `MachineFfiError` and `SessionFfiError` classes
+ *   cross this boundary and `errors.ts` runs on them untouched. The
+ *   `'account_keys_not_fetched'`, `'identity_already_exists'` and
+ *   `'material_not_ready'` assertions are real assertions about that map;
+ *   any of the three reverting to `'unknown'` fails here.
+ * * **Value translation, unmocked, against the real enums.**
+ *   `senderVerificationOf`, `trustStateOf` and `flowStageOf` run on genuine
+ *   generated enum members carrying the real wire ordinals, not hand-typed
+ *   numbers. The `{ state: 'verified' }` at the end is the first time that
+ *   value has been read off an `EventEnvelope` anywhere in this repository.
+ * * **Argument forwarding.** The model throws `UnknownRequest` for an id it
+ *   did not hand out, so a facade that dropped or mangled an id fails.
+ *
+ * ## What a green run does not prove, and where that proof lives instead
+ *
+ * **Not one line of Rust executes.** There is no JSI host object under
+ * vitest, so no test in this directory has ever run any. The cryptography
+ * is proved in `rust/matrix-crypto-core/tests/verified_sender.rs`, by
+ * `the_whole_chain_makes_an_event_read_verified` against a
+ * counterparty that process does not control, and that test is the only
+ * thing entitled to say the value is earned.
+ *
+ * **Every outcome below is decided by `installFake`, not by the library.**
+ * The refusal and the key query it queues, the batch and its order, the
+ * `401` leaving the id alive, the device moving, and `'verified'` itself
+ * are all the model's five-boolean conjunction agreeing with the model's
+ * own `queue()` calls. So the three interleaved negative assertions do not
+ * fail on a library defect. What they do catch is narrower and still worth
+ * having: they fail if the facade stops driving the published call that
+ * flips a given boolean, which is a real regression guard on the order
+ * above. **Do not read them as evidence that an incomplete chain is unsafe
+ * in the library.** `verified_sender.rs`'s
+ * `omitting_the_second_key_fetch_leaves_the_sender_below_verified` is what
+ * holds that, against real cryptography.
+ *
+ * # Why the model is a model and not a constant
  *
  * The M3 ruling this file already carries -- restated at
  * `matrix_crypto_core::SenderVerification` as **nothing except the real
  * chain produces `verified`** -- forbids a fixture that simply hands back
- * the value. So the fake below does not. It holds the five facts the real
- * gate holds and reports `Verified` only when all five are true, each
- * having been set by a *different* published call resolving a *different*
- * request. Skip any one of them and this test fails on the assertion
- * naming that step, which is what the interleaved negative assertions are
- * for: three of them sit at points where the chain looks finished from the
- * outside and the value is still one rung below.
+ * the value, because such a fixture teaches the belief the ruling exists to
+ * prevent. So the model does not. It holds the five facts the real gate
+ * holds, each set by a different published call resolving a different
+ * request, and reports `Verified` only when all five are true. That keeps
+ * the fixture honest about the *shape* of the rule even though it can
+ * prove nothing about the rule's implementation.
  *
- * The sharpest is step six. Nothing caches the signature a comparison
- * produces, so uploading it and not fetching it back leaves every event
- * reading `'unverified_identity'` while every call in the flow returned
- * success and the device reads `'verified'`. That is asserted here
- * explicitly rather than passed over.
+ * The sharpest of the five is step six. Nothing caches the signature a
+ * comparison produces, so uploading it and not fetching it back leaves
+ * every event reading `'unverified_identity'` while every call in the flow
+ * returned success and the device reads `'verified'`. The model reproduces
+ * that shape so this file's reader meets it; `verified_sender.rs` is what
+ * proves it.
  *
- * # What the fake deliberately does not model
+ * # What the model deliberately does not reproduce at all
  *
  * Response-body validation, which `markRequestSent` performs in Rust over
- * each endpoint's declared fields and which the core's own tests cover;
- * the within-a-batch ordering rule, which the verification arc above
- * covers; and the eviction rule, which is documented at
+ * each endpoint's declared fields and which the core's own tests cover
+ * (this file reports `'{}'` for a `keys_upload`, which the real core
+ * rejects); the within-a-batch ordering rule, which the verification arc
+ * above covers; and the eviction rule, which is documented at
  * `takeOutgoingRequests` and belongs to the pump rather than to this
- * chain. A fake that modelled everything would be the thing under test.
+ * chain. A model that reproduced everything would be the thing under test.
  */
-describe('a signing identity driven end to end through the public surface', () => {
+describe('the signing identity chain, driven through the public surface', () => {
   const PEER = '@bob:example.org'
 
   interface Chain {
@@ -1607,7 +1649,7 @@ describe('a signing identity driven end to end through the public surface', () =
       if (identityKnown && !privateKeysHeld) throw new MachineFfiError.IdentityAlreadyExists()
       identityKnown = true
       privateKeysHeld = true
-      // Upstream's order, and the batch is longer than the three requests
+      // Upstream's order, and the batch is longer than the four requests
       // that belong to the bootstrap. See `bootstrapCrossSigning`.
       queue('keys_upload', '{"device_keys":{}}')
       queue('signing_keys_upload', '{"master_key":{}}')
@@ -1748,7 +1790,7 @@ describe('a signing identity driven end to end through the public surface', () =
     return batch.map((request) => request.kind)
   }
 
-  it('reaches verified on a decrypted event, and not one step earlier', async () => {
+  it('drives every published call of the chain, in order, and translates what it is handed', async () => {
     const fake = installFake()
 
     // ---- Step 1: nothing is known, and the refusal says which nothing ----
@@ -1777,7 +1819,7 @@ describe('a signing identity driven end to end through the public surface', () =
       privateKeysHeld: true,
     })
 
-    // The batch is longer than the three requests the bootstrap owns, and
+    // The batch is longer than the four requests the bootstrap owns, and
     // it is in the order that lets a signature follow the key it names.
     const batch = await takeOutgoingRequests()
     expect(batch.map((request) => request.kind)).toEqual([
@@ -1862,11 +1904,18 @@ describe('a signing identity driven end to end through the public surface', () =
     // ---- Step 6: upload the signature the comparison produced ----
     expect(await pump()).toEqual(['signature_upload'])
 
-    // **Still not verified**, and this is the assertion the whole test is
-    // for. Every call so far returned success, the comparison finished, the
-    // device reads verified and the signature really did reach the server.
-    // Nothing anywhere reports a problem, and the sender sits one rung
-    // below where a product would put it.
+    // **Still not verified.** Every call so far returned success, the
+    // comparison finished, the device reads verified and the signature
+    // really did reach the server; nothing anywhere reports a problem, and
+    // the sender sits one rung below where a product would put it.
+    //
+    // Read this for what it is: the model reproducing that shape, so a
+    // reader of this file meets it. It fails if the facade stops driving
+    // the call that flips `signatureFetchedBack`, and it cannot fail on a
+    // library defect, because the value it reads is this file's own
+    // conjunction. What proves the library behaves this way is
+    // `verified_sender.rs`'s
+    // `omitting_the_second_key_fetch_leaves_the_sender_below_verified`.
     expect((await decryptEvent(scope, { type: 'm.room.encrypted' })).senderVerification).toEqual({
       state: 'unverified',
       reason: 'unverified_identity',
