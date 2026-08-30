@@ -20,7 +20,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { FLOW_STEPS, type FlowStep } from './steps'
-// The seven steps themselves live in a module of their own, with no `react`
+// The steps themselves live in a module of their own, with no `react`
 // or `react-native` import anywhere in it, so `flowRunners.test.ts` can call
 // these exact functions on a host machine. Nothing here re-implements a step
 // and nothing here decides what a step reports; this file renders what they
@@ -159,7 +159,8 @@ export function GuidedFlow({ storeDir }: { storeDir: string }) {
   return (
     <View style={styles.container}>
       <Text style={styles.intro}>
-        Seven steps through this library's public API, from a bare connectivity check to real cryptography, ending
+        {FLOW_STEPS.length} steps through this library's public API, from a bare connectivity check to real
+        cryptography, ending
         honestly on what is not built yet. Every result below is live: computed by this build, on this device, right
         now -- not a canned example. The steps below already ran once, automatically, when this screen opened;
         "Run all" and each card's own re-run button only repeat that.

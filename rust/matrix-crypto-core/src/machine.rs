@@ -585,9 +585,10 @@ pub(crate) fn reset_for_test() {
     // `the_registry_is_emptied_before_the_store_it_holds_alive_is_dropped`
     // is what now keeps these two statements in this order.
     //
-    // `session`'s request registry needs no such treatment: it holds
-    // request bodies, not store handles, which is why only this one is
-    // reset from here.
+    // `session`'s request registry needs no such treatment *for this
+    // reason*: it holds request bodies and ids, not store handles, which is
+    // why only this one is reset from here for the ordering above. One field
+    // of it is not a request body, and it is cleared further down.
     crate::verification::reset_flows_for_test();
     // The product-level choice about announcing scannable codes goes back
     // to what a fresh process has, so one test's choice is not another's
@@ -608,6 +609,17 @@ pub(crate) fn reset_for_test() {
     // `build` seeds it for every machine created after this point; this
     // covers the window in between.
     crate::signing::seed_private_keys_held(false);
+
+    // The one field of `session`'s registry that is not a request body:
+    // whether this process has been answered a key query about its own
+    // account. That is a fact about *which account* is held, and this
+    // function is the only place in the codebase where the held account
+    // changes, so leaving it set would hand the next machine a gate standing
+    // open on the previous machine's answer. Harmless while every proof of
+    // that gate lives in its own file under `tests/`; the point of clearing
+    // it is that a proof written inside `src/` is then possible, instead of
+    // passing or failing for a reason belonging to its neighbour.
+    crate::session::forget_account_keys_answered_for_test();
 
     // `RwLock`, not `OnceLock`: the registry must be clearable between tests
     // that each need their own fresh machine, all run in one process rather
@@ -713,6 +725,56 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         futures::executor::block_on(create_machine(config_in(dir.path()))).unwrap();
         futures::executor::block_on(create_machine(config_in(dir.path()))).unwrap();
+    }
+
+    /// A second account must not inherit the first one's answer.
+    ///
+    /// This function is the only place in the codebase where one process
+    /// holds account A and then account B, and `account_keys_answered` is a
+    /// fact about *which account* has been asked about. Left standing across
+    /// the swap, the second machine's `bootstrap_identity` would be served
+    /// on the strength of a key query about the first, which is the whole
+    /// defect this boolean exists to prevent, reached through the test
+    /// harness instead of through the wire.
+    ///
+    /// **This test is the reason the clearing exists rather than the other
+    /// way round.** Deleting
+    /// `crate::session::forget_account_keys_answered_for_test()` from
+    /// `reset_for_test` leaves every other test in this crate green,
+    /// measured; the gate's real proofs all live in their own files under
+    /// `tests/`, one process each, so none of them can see this. It is a
+    /// unit test inside `src/` because that is exactly the kind the omission
+    /// would have silently broken.
+    #[test]
+    fn a_test_reset_forgets_that_the_previous_account_was_asked_about() {
+        let _guard = futures::executor::block_on(lock_for_test());
+        reset_for_test();
+        let first = tempfile::tempdir().unwrap();
+        futures::executor::block_on(create_machine(config_in(first.path()))).unwrap();
+
+        let query = futures::executor::block_on(crate::take_outgoing_requests())
+            .expect("draining the pump must not fail")
+            .into_iter()
+            .find(|request| request.kind == "keys_query" && request.body.contains("@alice:"))
+            .expect("a fresh machine owes a key query naming its own account");
+        futures::executor::block_on(crate::mark_request_sent(
+            &query.id,
+            r#"{"device_keys":{"@alice:example.org":{}}}"#,
+        ))
+        .expect("answering the account key query must not fail");
+        assert!(
+            crate::session::account_keys_answered(),
+            "the premise: this account has been asked about and answered, or the reset below \
+             has nothing to undo"
+        );
+
+        reset_for_test();
+
+        assert!(
+            !crate::session::account_keys_answered(),
+            "the reset swaps the held account, so what the previous one was told must not \
+             carry over. A second machine here would mint on an answer about somebody else"
+        );
     }
 
     /// Swapping the machine underneath a running app would strand every

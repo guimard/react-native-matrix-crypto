@@ -2585,6 +2585,37 @@ describe('server-side recovery', () => {
     expect((malformed as CryptoError).retriable).toBe(false)
   })
 
+  /**
+   * A cleared pointer is a third answer, and it must not be either of the
+   * two above.
+   *
+   * `PUT {}` is the only way the client-server API can delete an account
+   * data event, so a cleared `'m.secret_storage.default_key'` is what a
+   * half-finished replacement leaves on a real homeserver, and
+   * `createRecovery`'s own documented route past its refusal creates it.
+   * The key description and every ciphertext are still there, so the state
+   * is reversible and the kind a product shows must not be the one whose
+   * remedy is to set recovery up again.
+   *
+   * The Rust side proves which kind is produced. This proves the kind
+   * survives the crossing and reaches a product as something it can tell
+   * apart from `'recovery_data_malformed'`, which is a separate claim with
+   * a separate way of being wrong.
+   */
+  it('reports a cleared pointer as not-set-up rather than as unreadable data', async () => {
+    vi.mocked(nativeRecoverIdentity).mockRejectedValue(new MachineFfiError.RecoveryNotSetUp())
+    const cleared = await recoverIdentity('the right one', [
+      { eventType: DEFAULT_KEY, content: {} },
+    ]).catch((e: unknown) => e)
+
+    vi.mocked(nativeRecoverIdentity).mockRejectedValue(new MachineFfiError.RecoveryDataMalformed())
+    const malformed = await recoverIdentity('the right one', []).catch((e: unknown) => e)
+
+    expect(isCryptoError(cleared) && cleared.kind).toBe('recovery_not_set_up')
+    expect(isCryptoError(malformed) && malformed.kind).toBe('recovery_data_malformed')
+    expect((cleared as CryptoError).kind).not.toBe((malformed as CryptoError).kind)
+  })
+
   it('reports the other two refusals as their own kinds rather than as unknown', async () => {
     vi.mocked(nativeCreateRecovery).mockRejectedValue(new MachineFfiError.PrivateKeysNotHeld())
     await expect(createRecovery('a passphrase', [])).rejects.toSatisfy(
