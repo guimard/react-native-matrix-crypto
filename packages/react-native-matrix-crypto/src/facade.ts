@@ -20,6 +20,7 @@ import {
   deviceIdentityKeys as nativeDeviceIdentityKeys,
   deviceStatuses as nativeDeviceStatuses,
   encryptEvent as nativeEncryptEvent,
+  markRequestFailed as nativeMarkRequestFailed,
   markRequestSent as nativeMarkRequestSent,
   openCryptoStore as nativeOpenCryptoStore,
   receiveSyncChanges as nativeReceiveSyncChanges,
@@ -98,22 +99,23 @@ export interface DeviceStatus {
  * homeserver returned it, and nothing this library adds or removes.
  *
  * **A wrong `responseJson` is not reliably rejected**, so do not treat the
- * column below as validated input. It is checked as far as it can be: a
- * Matrix error body and an authentication challenge are always rejected
- * with `malformed_payload`, and the three kinds whose response carries a
- * required field (`keys_upload`, `keys_claim`, `room_message`) reject a
- * body that lacks it. What is *not* checked: `keys_query`'s fields are all
- * optional, so it accepts any JSON object -- `{}` included, since `{}` is
- * a real answer meaning "nothing known" -- and `to_device` accepts anything
- * at all, because its response type has no fields and no parse is generated
- * for it. See {@link markRequestSent}.
+ * column below as validated input. It is checked as far as a body can be: a
+ * Matrix error body, an authentication challenge, a gateway error carrying
+ * `error` without `errcode`, and anything that is not a JSON object are all
+ * rejected with `malformed_payload`, and the three kinds whose response
+ * carries a required field (`keys_upload`, `keys_claim`, `room_message`)
+ * also reject a body that lacks it. What is *not* checked, for any kind:
+ * `{}` and an empty body, which are a real answer for several of these
+ * endpoints and are what {@link markRequestFailed} exists for. `keys_query`
+ * accepts any JSON object beyond that, since all of its fields are optional.
+ * See {@link markRequestSent}.
  *
  * | `kind` | Method & path | `responseJson` must contain |
  * |---|---|---|
  * | `'keys_upload'` | `POST /_matrix/client/v3/keys/upload` | `{ one_time_key_counts: { [algorithm: string]: number } }` |
  * | `'keys_query'` | `POST /_matrix/client/v3/keys/query` | `{ device_keys?, master_keys?, self_signing_keys?, user_signing_keys?, failures? }` (all optional; `{}` is valid) |
  * | `'keys_claim'` | `POST /_matrix/client/v3/keys/claim` | `{ one_time_keys: {...}, failures? }` |
- * | `'to_device'` | `PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}` | `{}` -- the machine ignores the body and nothing validates it; any bytes are accepted, so send the real one |
+ * | `'to_device'` | `PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}` | `{}`. The machine ignores the contents, and its response type has no fields, so only "is a JSON object" is checked. Send the real one |
  * | `'signature_upload'` | `POST /_matrix/client/v3/keys/signatures/upload` | `{ failures? }` (optional; `{}` is valid) |
  * | `'room_message'` | `PUT /_matrix/client/v3/rooms/{roomId}/send/{eventType}/{txnId}` | `{ event_id: string }` |
  *
@@ -631,42 +633,36 @@ export async function takeOutgoingRequests(): Promise<OutgoingRequest[]> {
  * unwrapped** -- see {@link OutgoingRequest}'s own doc comment for the
  * table mapping each `kind` to what it must contain.
  *
- * **How much of that this library can enforce depends on the `kind`, and
- * for two kinds it is nothing.** A Matrix error body (top-level `errcode`)
- * and an authentication challenge (top-level `flows`) are always rejected
- * with `malformed_payload`. Beyond those, `keys_upload`, `keys_claim`,
- * `room_message` and `keys_query` are parsed against the real response
- * shape and a body that does not fit is rejected -- but `keys_query`'s
- * fields are all optional, so any JSON object fits, `{}` included. And
- * `to_device` is not parsed at all, because its response type has no
- * fields; any bytes are accepted there. When a body *is* rejected the
- * request named by `id` stays outstanding, so the same `id` can be retried
- * with corrected input.
+ * **Call this only for a 2xx. Send everything else to
+ * {@link markRequestFailed}.** `markRequestSent(id, await res.text())`
+ * without branching on the status is the obvious wrapper and it is wrong.
+ * No HTTP status crosses this boundary on this call, and every field of the
+ * `keys_query` response is optional, so a body that carries no recognisable
+ * failure marker parses as a flawless *empty success* there. Reported that
+ * way, an errored `keys_query` tells the machine the server answered and
+ * this account has no signing identity, which is exactly the fact that
+ * authorises minting a new one over whatever the account already had.
  *
- * **Call this only for a 2xx, and never for an error or a challenge.**
- * `markRequestSent(id, await res.text())` without branching on the status
- * is the obvious wrapper and it is wrong. No HTTP status crosses this
- * boundary, and every field of the `keys_query` response is optional, so a
- * homeserver error body parses as a flawless *empty success* there -- an
- * errored `keys_query` reported this way tells the machine the server
- * answered and this account has no signing identity, which is exactly the
- * fact that authorises minting a new one over whatever the account already
- * had. An empty body does it too: it is substituted with `{}` before
- * parsing.
+ * **What is rejected for you.** Four shapes, none of which can be a real
+ * response to any of these endpoints, all reported as `malformed_payload`:
+ * a Matrix error body (top-level `errcode`), an authentication challenge
+ * (top-level `flows`), a non-conformant gateway error (top-level `error`
+ * with no `errcode`, such as `{"error":"Bad Gateway"}`), and anything that
+ * is not a JSON object, meaning an array, a bare string, `null`, a number,
+ * or a proxy's HTML page. Beyond that, `keys_upload`, `keys_claim` and
+ * `room_message` also reject a body missing their one required field. When
+ * a body is rejected the request named by `id` stays outstanding, so the
+ * same `id` can be retried with corrected input, and the ordinary "retry
+ * with `auth` merged in" flow after a 401 needs nothing special.
  *
- * A standard Matrix error body (top-level `errcode`) and a user-interactive
- * authentication challenge (top-level `flows`) are both rejected with
- * `malformed_payload`, and the id stays outstanding, so the ordinary
- * "retry with `auth` merged in" flow needs nothing special: report nothing
- * for the challenge, and report the eventual success.
- *
- * What cannot be rejected for you is a failure that survives the parse for
- * that `kind`. For `keys_query`, observed: `{}`, an empty body, and a
- * gateway's own JSON error with no `errcode` all pass, while a proxy's HTML
- * page, a bare JSON string and `null` are rejected. For `to_device`
- * everything passes, since nothing is parsed at all. Only the HTTP status
- * separates the survivors from a real answer, and the status is not on this
- * signature. Branch on `res.ok` before calling.
+ * **What cannot be rejected for you, and never will be: `{}` and an empty
+ * body.** Those are a genuine success here. `{}` is what `/keys/query`
+ * answers for an account it knows no identity for, and it is the entire
+ * success response of the signing-keys upload; an empty body is turned into
+ * `{}` before parsing. A 502 that carried nothing produces the same bytes as
+ * a 200 that had nothing to say, so no inspection of the body can tell them
+ * apart. Only the status can, and the status is not on this signature.
+ * Branch on `res.ok` and call {@link markRequestFailed} instead.
  *
  * **This call is what stops `id` being handed out again**, not a courtesy
  * notification after the fact -- see {@link takeOutgoingRequests}'s own doc
@@ -682,6 +678,64 @@ export async function takeOutgoingRequests(): Promise<OutgoingRequest[]> {
 export async function markRequestSent(id: string, responseJson: string): Promise<void> {
   try {
     await nativeMarkRequestSent(id, responseJson)
+  } catch (e) {
+    throw toCryptoError(e)
+  }
+}
+
+/**
+ * Reports that the request named by `id` (from {@link takeOutgoingRequests})
+ * was **refused**: you sent it, and what came back was not a success. Pass
+ * the HTTP status you received, or `0` if nothing came back at all, such as
+ * a dropped connection, a DNS failure, or a timeout.
+ *
+ * An addition to the frozen surface, not a change to it. This is the
+ * counterpart to {@link markRequestSent}, and the reason that call is no
+ * longer the only thing you can say. A 502 from a proxy, or a 503 with an
+ * empty body, used to have nowhere to go but the success path.
+ *
+ * ```ts
+ * const res = await fetch(url, { method, body: request.body })
+ * if (res.ok) await markRequestSent(request.id, await res.text())
+ * else await markRequestFailed(request.id, res.status)
+ * ```
+ *
+ * **This changes nothing about what the library knows, deliberately.** A
+ * refused request taught it nothing. The request stays outstanding, so the
+ * retry is an ordinary second send, and no gate opens. In particular the one
+ * `bootstrapCrossSigning` reads needs a *successful* mark, and gets none
+ * here.
+ *
+ * **Forgetting to call this is safe.** A request you never report stays
+ * pending exactly as if you had reported it refused, the bootstrap gate
+ * stays shut, and `bootstrapCrossSigning` refuses with
+ * `account_keys_not_fetched` rather than minting an identity. The failure
+ * mode of silence is a bootstrap that will not proceed, which you will
+ * notice, and never an identity destroyed.
+ *
+ * **What is not safe is calling {@link markRequestSent} for a response the
+ * server refused, and this library cannot detect that for you in every
+ * case.** It sees a body and no status. Most refusals it can now recognise
+ * from the body alone and rejects before parsing: a Matrix error, an
+ * authentication challenge, a gateway's `{"error":"Bad Gateway"}`, and
+ * anything that is not a JSON object. Two it cannot, ever: `{}` and an empty
+ * body are a real success for several of these endpoints, so a 503 that
+ * carried nothing is byte-identical to a 200 that had nothing to say. That
+ * is the gap this call exists to let you close, and it can only be closed
+ * from your side, by branching on the status before you choose which of the
+ * two calls to make.
+ *
+ * The one confusion of the pair this library *can* catch is a 2xx passed
+ * here, which is rejected with `not_a_failure_status`: a success has a body
+ * worth reporting, and it belongs in {@link markRequestSent}. Statuses
+ * outside `0` and `300`-`599` are rejected the same way.
+ *
+ * `unknown_request` means the same thing it does on {@link markRequestSent},
+ * including the eviction case described there.
+ */
+export async function markRequestFailed(id: string, status: number): Promise<void> {
+  try {
+    await nativeMarkRequestFailed(id, status)
   } catch (e) {
     throw toCryptoError(e)
   }

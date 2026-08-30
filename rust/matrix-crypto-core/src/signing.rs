@@ -71,9 +71,10 @@
 //! `{}` for it before parsing), and no body-based check will ever refuse
 //! them, because they are the genuine answer for an account the server knows
 //! no identity for. Only the HTTP status separates that answer from a 502
-//! that carried nothing, and no status crosses this boundary, so a caller
-//! that got a non-2xx must report nothing at all. That is safe: the gate
-//! needs a positive mark to open, so silence leaves it shut.
+//! that carried nothing, which is why a caller that got a non-2xx must say
+//! so through `session::mark_request_failed` instead. Reporting nothing at
+//! all is equally safe here: the gate needs a positive mark to open, so
+//! silence leaves it shut.
 //!
 //! Fact (1) is also "asked at some point in this process", not "asked
 //! recently": a bootstrap long after the answer decides on stale
@@ -284,8 +285,9 @@ pub async fn identity_status() -> Result<IdentityStatus, MachineError> {
 /// # Report only what a success returned
 ///
 /// **Never report a non-2xx body through [`crate::mark_request_sent`]**,
-/// and that includes the 401 challenge above. Report nothing for the
-/// challenge and report the eventual success. This matters
+/// and that includes the 401 challenge above. Send it to
+/// [`crate::mark_request_failed`] instead, or report nothing at all, and
+/// report the eventual success through `mark_request_sent`. This matters
 /// more here than anywhere else on the surface: a failed key query reported
 /// as a success is read by the gate below as "the server answered and this
 /// account has no identity", which is the one fact that authorises a mint;
@@ -305,7 +307,7 @@ pub async fn identity_status() -> Result<IdentityStatus, MachineError> {
 /// an account with no identity, and it is the signing-keys upload's entire
 /// success response. Only the status tells those from a refusal, and the
 /// status is yours. See `session::refuse_a_non_response` for the mechanism
-/// and the exact division.
+/// and [`crate::mark_request_failed`] for the division in full.
 ///
 /// # Refusals
 ///

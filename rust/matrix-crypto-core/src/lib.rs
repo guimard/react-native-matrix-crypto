@@ -24,9 +24,9 @@ pub use observer::{
 pub use probe::{probe, ProbeReport};
 pub use runtime::in_runtime;
 pub use session::{
-    decrypt_event, encrypt_event, mark_request_sent, receive_sync_changes, share_scope_key,
-    take_outgoing_requests, Envelope, OutgoingRequest, SenderVerification, SessionError,
-    SyncOutcome,
+    decrypt_event, encrypt_event, mark_request_failed, mark_request_sent, receive_sync_changes,
+    share_scope_key, take_outgoing_requests, Envelope, OutgoingRequest, SenderVerification,
+    SessionError, SyncOutcome,
 };
 pub use signing::{bootstrap_identity, identity_status, IdentityStatus};
 pub use verification::{

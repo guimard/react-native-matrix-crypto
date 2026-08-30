@@ -188,6 +188,24 @@ pub enum SessionError {
     /// nonsense".
     #[error("the request id does not match a pending request")]
     UnknownRequest,
+    /// [`mark_request_failed`] was given a `status` that is not one a
+    /// refused request can carry.
+    ///
+    /// Accepted are `0`, meaning no response reached the caller at all, and
+    /// `300` through `599`. Everything else is rejected, and the case worth
+    /// naming is a **2xx**: a caller passing one has confused this call with
+    /// [`mark_request_sent`], and since a refusal changes no state, being
+    /// told nothing would let that confusion stand. This is the one misuse
+    /// of the pair the library can see for itself, and it is the argument,
+    /// never the body. See [`mark_request_failed`] for why the body cannot
+    /// be made to give the same answer.
+    ///
+    /// Declared next to [`UnknownRequest`](Self::UnknownRequest), which it
+    /// reads beside, rather than appended: this enum has no wire
+    /// representation, so its order is free. Its FFI mirror does have one,
+    /// and is appended last there.
+    #[error("the status is not one a refused request can carry")]
+    NotAFailureStatus,
     /// [`decrypt_event`] either found no record at all of the group
     /// session that encrypted this event, or found the session but could
     /// not use it because its ratchet has already advanced past this
@@ -2358,8 +2376,8 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
 ///
 /// **It is not a substitute for the status**, and what it leaves uncovered
 /// no longer differs by kind. It used to, because ruma only emits a body
-/// parse when the response type has fields -- `BodyFields::Empty => None`
-/// at `ruma-macros-0.19.0/src/api/common.rs:329-331` -- so `to_device` and
+/// parse when the response type has fields (`BodyFields::Empty => None` at
+/// `ruma-macros-0.19.0/src/api/common.rs:329-331`), so `to_device` and
 /// `signing_keys_upload`, whose responses are `Response {}`, had no parse
 /// behind this check and took literally any bytes, `not json at all !!!`
 /// and an HTML 502 page included. Requiring a JSON object closed that: the
@@ -2376,26 +2394,28 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
 /// A 503 that carried no body produces the same bytes as a 200 that had
 /// nothing to say. Nothing in a body distinguishes them.
 ///
-/// Only the HTTP status does, and no status crosses this boundary at all.
-/// The "report only a 2xx" obligation is therefore stated in prose at
+/// Only the HTTP status does, and no status crosses this boundary through
+/// [`mark_request_sent`]. That is what [`mark_request_failed`] is for, and
+/// where the reasoning is written down for the caller who has to act on
+/// it. The "report only a 2xx" obligation is stated in prose there, at
 /// [`mark_request_sent`], at `signing::bootstrap_identity` and in the facade
 /// rather than left to this check, because this check cannot finish the job.
 fn refuse_a_non_response(body: &str) -> Result<(), SessionError> {
     // A *completely* empty body is accepted, and it is the one input here
     // that is waved through knowing exactly what it might be hiding. ruma
     // substitutes an empty object for it before parsing, so by the time
-    // anything downstream sees it, it is `{}` -- and `{}` is a real answer
+    // anything downstream sees it, it is `{}`, and `{}` is a real answer
     // for several of these endpoints. Nothing in these bytes distinguishes
     // a 200 that carried no body from a 503 that carried no body. See the
     // doc comment above for why that is the residue rather than an
-    // oversight.
+    // oversight, and `mark_request_failed` for what a caller says instead.
     if body.is_empty() {
         return Ok(());
     }
     // Every response body of every endpoint this module handles is a JSON
-    // object. Anything else -- an array, a bare string, a number, `null`,
-    // a proxy's HTML page, an empty-but-not-empty body of spaces -- is not
-    // one, so refusing it here costs no legitimate answer. This is not
+    // object. Anything else is not one, so refusing it here costs no
+    // legitimate answer: an array, a bare string, a number, `null`, a
+    // proxy's HTML page, a body of nothing but spaces. This is not
     // belt-and-braces for the kinds whose response type has fields, whose
     // own parse would reject most of it a moment later: `to_device` and
     // `signing_keys_upload` have `Response {}`, ruma emits no parse for
@@ -2580,12 +2600,13 @@ async fn mark_sent(
 /// no body parse behind it and used to take any bytes whatsoever.
 ///
 /// **Two bodies are left and always will be: `{}` and a completely empty
-/// one.** Both are a real success here -- `{}` is what `/keys/query` answers
+/// one.** Both are a real success here. `{}` is what `/keys/query` answers
 /// for an account with no identity, and it is the whole success response of
-/// the signing-keys upload -- so nothing in the bytes separates them from a
-/// 502 that happened to carry none. No HTTP status crosses this boundary, so
-/// that remainder is the caller's obligation rather than something this
-/// module can verify: branch on the status and report only a 2xx here.
+/// the signing-keys upload, so nothing in the bytes separates them from a
+/// 502 that happened to carry none. No HTTP status crosses this boundary on
+/// *this* call, so that remainder is the caller's obligation: branch on the
+/// status, send a 2xx here, and send everything else to
+/// [`mark_request_failed`], whose doc comment sets out the whole division.
 ///
 /// A refused body leaves the request exactly as pending as before, by the
 /// same rule as any other failure here, so the ordinary
@@ -2632,6 +2653,112 @@ pub async fn mark_request_sent(id: &str, response_json: &str) -> Result<(), Sess
     }
 
     result
+}
+
+/// Whether `status` is one a request that was **refused** can carry.
+///
+/// `0` is accepted and means no response reached the caller at all: a
+/// dropped connection, a DNS failure, a timeout. A product that meets one
+/// has a request it certainly did not get an answer to and no status to
+/// describe it with, and inventing a plausible 5xx to satisfy this argument
+/// would be worse than having a value that says exactly what happened.
+///
+/// `300` through `599` are accepted. A 2xx is not, and that is the whole
+/// point of the check rather than an edge of it; see
+/// [`SessionError::NotAFailureStatus`]. Above 599, and between 1 and 299,
+/// are rejected as the caller-side mistakes they are.
+fn is_a_failure_status(status: u16) -> bool {
+    status == 0 || (300..=599).contains(&status)
+}
+
+/// Reports that the request named by `id` was **refused**: it was sent, and
+/// what came back was not a success.
+///
+/// This is the counterpart to [`mark_request_sent`] and the reason that call
+/// is no longer the only thing a product can say. Before it existed, a
+/// caller that received a 502 from a proxy, or a 503 with an empty body, had
+/// one call available and reporting the failure through it read as a
+/// success.
+///
+/// # What this changes, which is deliberately nothing
+///
+/// A refused request taught this library nothing, so nothing it knows
+/// changes. The `pending` entry is looked up and left exactly where it was,
+/// by the same rule that makes a refused `response_json` retriable: the
+/// request is still outstanding, and the retry is an ordinary second send.
+/// In particular the ordering gate `signing.rs` reads is untouched, which is
+/// the property that matters. Only a *successful* mark sets it, so a request
+/// that is refused, or never reported at all, leaves the gate shut.
+///
+/// **A product that never calls this behaves exactly as it did before.**
+/// That is safe rather than merely tolerable, and the direction is worth
+/// being explicit about: silence leaves a request pending, the gate needs a
+/// positive mark to open, and [`crate::bootstrap_identity`] then refuses
+/// with `AccountKeysNotFetched` rather than minting. The failure mode of
+/// forgetting this call is a bootstrap that will not proceed, which is loud,
+/// and never an identity destroyed.
+///
+/// # What this library cannot tell, and will not pretend to
+///
+/// The unsafe case is not omission. It is calling [`mark_request_sent`] with
+/// the body of a response the server refused, and **the library cannot
+/// detect that from the body in every case, because in two cases the body
+/// does not differ.**
+///
+/// Most of it is detectable and is now refused before parsing: a standard
+/// Matrix error, a user-interactive authentication challenge, a
+/// non-conformant gateway error carrying `error` without `errcode`, and
+/// anything that is not a JSON object at all, such as an array, a bare
+/// string, `null`, or a proxy's HTML page. See [`refuse_a_non_response`] for
+/// the whole rule and for what was measured rather than assumed.
+///
+/// What is left is `{}` and a completely empty body, which ruma turns into
+/// `{}` before parsing. Those bytes are a **real success** for several of
+/// these endpoints: `{}` is exactly what `/keys/query` answers for an
+/// account it knows no identity for, and it is the entire success response
+/// of the signing-keys upload. Nothing in them separates that answer from a
+/// 503 that happened to carry no body. Only the HTTP status does, and no
+/// status crosses this boundary, which is why this call takes one.
+///
+/// So the obligation is real and it is the caller's: **branch on the status
+/// first.** A 2xx goes to [`mark_request_sent`] with the body; anything else
+/// comes here. `mark_request_sent(id, res.text())` without that branch is
+/// the first-draft wrapper this whole mechanism exists to survive, and on a
+/// refused `/keys/query` it tells the gate the server answered and this
+/// account has no identity, which is the one fact that authorises minting a
+/// new one over whatever the account already had.
+///
+/// # Refusals
+///
+/// [`SessionError::UnknownRequest`] if `id` names nothing outstanding, by
+/// the same rule and with the same meaning as in [`mark_request_sent`],
+/// including the eviction case that call's doc comment describes.
+///
+/// [`SessionError::NotAFailureStatus`] if `status` is not one a refused
+/// request can carry. A 2xx is the case that matters: it means this call and
+/// [`mark_request_sent`] have been swapped, and since a refusal changes no
+/// state, accepting it silently would let that confusion stand. It is the
+/// single misuse of the pair this library can see for itself, and it sees it
+/// in the argument rather than in the body.
+///
+/// The id is checked before the status, matching [`mark_request_sent`],
+/// which also answers `UnknownRequest` before it looks at anything else.
+pub async fn mark_request_failed(id: &str, status: u16) -> Result<(), SessionError> {
+    {
+        let state = STATE.lock().expect("request registry poisoned");
+        if !state.pending.contains_key(id) {
+            return Err(SessionError::UnknownRequest);
+        }
+    }
+
+    if !is_a_failure_status(status) {
+        return Err(SessionError::NotAFailureStatus);
+    }
+
+    // No machine lock, no parse, no write. The entry stays pending on
+    // purpose: see this function's own doc comment. Returning `Ok` here
+    // means "recorded that you got nothing usable", not "recorded a result".
+    Ok(())
 }
 
 #[cfg(test)]

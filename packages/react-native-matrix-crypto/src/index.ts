@@ -57,6 +57,7 @@ export {
   getVerificationMaterial,
   getVerificationStage,
   importSecrets,
+  markRequestFailed,
   markRequestSent,
   openCryptoStore,
   receiveSyncChanges,

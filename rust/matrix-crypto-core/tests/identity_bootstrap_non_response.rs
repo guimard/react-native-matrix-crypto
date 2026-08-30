@@ -22,13 +22,13 @@
 //! `not json at all !!!` included. Accepting one marks the account's identity
 //! *published* when the server holds nothing.
 //!
-//! # What is refusable, and what is not
+//! # The two groups, and why they are handled differently
 //!
 //! Most of that list is refusable from the body alone at no cost, because no
 //! success body of any endpoint this crate handles is anything other than a
 //! JSON **object**, and none of them declares `errcode`, `error` or `flows`
 //! at the top level. Verified against the vendored response types rather than
-//! assumed. That is what both acts below drive.
+//! assumed. Those cases are act 1 and act 3 below.
 //!
 //! Two are not refusable and never will be: `{}` and a completely empty body,
 //! which ruma substitutes `{}` for before parsing. Those bytes are a genuine
@@ -36,9 +36,8 @@
 //! for this account", which is the exact fact that authorises minting one.
 //! The library cannot tell that success from a 502 whose body happened to be
 //! empty, because the only thing that separates them is the HTTP status and
-//! no status crosses this boundary. They are deliberately absent from the
-//! cases below: there is no body a check could reject them by, and asserting
-//! that they are accepted is what the last act of this file already does.
+//! no status crosses this boundary. That is what `mark_request_failed` is
+//! for, and act 2 is its test.
 //!
 //! Its own process, for the reason `tests/pump_eviction.rs` gives: the
 //! machine registry and the pump's bookkeeping are process-wide. The acts run
@@ -47,8 +46,8 @@
 //! one accepted body finally lifts the gate.
 
 use matrix_crypto_core::{
-    bootstrap_identity, create_machine, identity_status, mark_request_sent, take_outgoing_requests,
-    MachineConfig, MachineError, OutgoingRequest, SessionError,
+    bootstrap_identity, create_machine, identity_status, mark_request_failed, mark_request_sent,
+    take_outgoing_requests, MachineConfig, MachineError, OutgoingRequest, SessionError,
 };
 
 const ACCOUNT: &str = "@alice:example.org";
@@ -72,6 +71,16 @@ const WHITESPACE_ONLY: &str = "   ";
 const BARE_STRING: &str = r#""nope""#;
 const JSON_NULL: &str = "null";
 const JSON_NUMBER: &str = "42";
+
+/// The two bodies that cannot be refused and never will be. Both are a real
+/// `/keys/query` success meaning "the server answered and knows no identity
+/// for this account", and `{}` is the entire success response of the
+/// signing-keys upload. ruma substitutes `{}` for a completely empty body
+/// before parsing, so the two are the same bytes by the time anything looks.
+/// They are here to be reported through `mark_request_failed`, which is the
+/// only thing that can tell them from the answer they are identical to.
+const EMPTY_OBJECT: &str = "{}";
+const EMPTY_BODY: &str = "";
 
 /// A real `/keys/query` success whose per-server `failures` map carries both
 /// an `errcode` and an `error` **nested** inside it, once per unreachable
@@ -164,6 +173,65 @@ fn a_body_that_is_not_a_response_cannot_open_the_bootstrap_gate() {
                 "{body:?} is not a key query response and must stay refused"
             );
         }
+
+        // --- Act 2: the two bodies no check can ever separate ---------------
+        //
+        // `{}` and a completely empty body are a *real* `/keys/query` answer
+        // meaning "this account has no identity", which is the one fact that
+        // authorises a mint. A 502 whose body was empty produces the same
+        // bytes. There is nothing in them to tell apart, so a product that
+        // branches on the status says so with `mark_request_failed` and the
+        // gate stays shut. That is the whole reason the call exists.
+        for (body, status) in [(EMPTY_OBJECT, 502u16), (EMPTY_BODY, 503u16)] {
+            mark_request_failed(&query.id, status).await.expect(
+                "a product that received this body with a non-2xx status must be able to say \
+                 so; before this call existed its only option was to report it as a success",
+            );
+            assert!(
+                !identity_status()
+                    .await
+                    .expect("reading the identity status must not fail")
+                    .account_keys_fetched,
+                "reporting a refusal must not answer the query. The body was {body:?}, which \
+                 is byte-identical to a real answer, so only the status this call carries \
+                 distinguishes them"
+            );
+            assert_eq!(
+                bootstrap_identity().await,
+                Err(MachineError::AccountKeysNotFetched),
+                "a refused key query must leave the gate closed, whatever its body looked like"
+            );
+        }
+
+        // The misuse the library *can* see, and the only one: the pair
+        // swapped. A refusal changes no state, so accepting a 2xx here would
+        // let that confusion stand with nothing to show for it.
+        assert_eq!(
+            mark_request_failed(&query.id, 200).await,
+            Err(SessionError::NotAFailureStatus),
+            "a 2xx is not a refusal. A caller passing one has confused this call with \
+             `mark_request_sent`, and that is the one misuse of the pair this library can \
+             detect for itself"
+        );
+        assert_eq!(
+            mark_request_failed(&query.id, 600).await,
+            Err(SessionError::NotAFailureStatus),
+            "600 is not an HTTP status"
+        );
+
+        // A transport failure carries no status at all. Inventing a plausible
+        // 5xx to satisfy the argument would be worse than saying what
+        // happened, so `0` is accepted and means exactly that.
+        mark_request_failed(&query.id, 0)
+            .await
+            .expect("a dropped connection has no status and must still be reportable");
+
+        // Same id rule as `mark_request_sent`, and for the same reason.
+        assert_eq!(
+            mark_request_failed("not-a-request-this-machine-issued", 502).await,
+            Err(SessionError::UnknownRequest),
+            "an id this machine never handed out is unknown here too"
+        );
 
         // --- The half that has to be right: no false refusal ---------------
 
