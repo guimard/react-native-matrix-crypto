@@ -50,6 +50,17 @@ const listeners = new Set<(s: CryptoSignal) => void>()
  * Tracked here so it can be kept in lockstep with `listeners`: installed
  * when the set becomes non-empty, uninstalled when it becomes empty again.
  * Nothing else may write it.
+ *
+ * **Written after the call it describes, never before, in both directions.**
+ * This is a record of something that has happened, not an intention to make
+ * it happen, and the two functions below are the only places the difference
+ * can be got wrong. Setting it first is what shipped in `0.1.1`: a
+ * `setCryptoObserver` that threw left this reading `true`, the early return
+ * in `installNativeObserver` then swallowed every later subscribe, and the
+ * channel was silent for the rest of the process with nothing thrown and
+ * nothing logged. The failure it hid is the one this channel exists to
+ * prevent, since an inbound verification request a product is never told
+ * about expires ten minutes after it was sent.
  */
 let nativeInstalled = false
 
@@ -65,15 +76,24 @@ let nativeInstalled = false
  * Not wrapped in a `try`/`catch`: if the native module is not installed,
  * subscribing must throw where the mistake is rather than return an
  * unsubscribe function for a channel that will never deliver.
+ *
+ * **A throw must therefore leave this module exactly as it found it.** The
+ * flag is written after `setCryptoObserver` returns, so a failed install
+ * records nothing and the next subscribe attempts it again. Retrying is the
+ * right answer rather than a hopeful one: the condition that makes this
+ * call fail is a JSI host object that is not there yet, which `index.ts`
+ * describes and which is a property of the runtime at one moment rather
+ * than of this process forever. Remembering the failure instead would be
+ * the same defect with its sign reversed, and just as quiet.
  */
 function installNativeObserver(): void {
   if (nativeInstalled) return
-  nativeInstalled = true
   setCryptoObserver({
     onSignal(signal: NativeCryptoSignal): void {
       emitCryptoSignal(cryptoSignalOf(signal))
     },
   })
+  nativeInstalled = true
 }
 
 /**
@@ -122,11 +142,22 @@ function installNativeObserver(): void {
  * outlives this function: a component remounting before the delivery thread
  * runs receives the signal into the same set. The loss needs the set to be
  * empty at that instant and to stay empty until the invitation expires.
+ *
+ * **The same ordering rule as its counterpart, for a smaller but real
+ * gain.** The flag is written after `clearCryptoObserver` returns, so a
+ * clear that throws leaves it reading `true`, which is what it is: the native
+ * side still holds the observer this module built, and that observer
+ * dispatches into `listeners`, which is module state the failed unsubscribe
+ * did not touch. Recording it as gone would lay a second registration over
+ * a first that never left, and would make the next empty set take the early
+ * return above instead of retrying the clear, which is the one thing that
+ * can still put this right. The throw propagates, for the same reason its
+ * counterpart's does.
  */
 function uninstallNativeObserver(): void {
   if (!nativeInstalled) return
-  nativeInstalled = false
   clearCryptoObserver()
+  nativeInstalled = false
 }
 
 /**
@@ -248,10 +279,39 @@ function trustStateOf(trust: NativeTrustState): TrustState {
  * A listener that throws does not affect the others, and does not affect
  * the sync that produced the signal: delivery happens on a thread of the
  * library's own, after the call that caused it has completed.
+ *
+ * # It throws rather than hand you a channel that is not there
+ *
+ * **Returning normally has exactly one meaning: the native observer is
+ * installed and this listener is on it.** Installing is the only thing this
+ * call does that can fail, and it fails as a whole, so a failure is
+ * reported by throwing out of here and never by returning an unsubscribe
+ * function for something that will not deliver. The realistic cause is the
+ * native module not being reachable, which `index.ts` describes; the throw
+ * is whatever the generated binding raised, not a type of this library's
+ * own, because there is nothing this layer could add to it.
+ *
+ * Nothing is left behind by a throw. The listener is not registered, so a
+ * caller that catches one is not subscribed and is not silently holding the
+ * observer open behind an empty set, and the next call here attempts the
+ * install again rather than assuming it is beyond help.
+ *
+ * The ordinary integration subscribes inside an effect, where a throw
+ * reaches the nearest error boundary rather than the code that called this,
+ * and that is the intended outcome and not a wrinkle: it is the same
+ * treatment the rest of this surface gives an unusable native module, and
+ * it is louder than any value this function could return, all of which a
+ * caller is free to ignore. What a product must never be able to do is wait
+ * on this channel for a signal that was never going to arrive.
  */
 export function onCryptoSignal(cb: (s: CryptoSignal) => void): Unsubscribe {
-  listeners.add(cb)
+  // Install first, then register. Not a style choice: it is what makes a
+  // failed subscribe leave nothing behind, with no rollback path to get
+  // wrong. Nothing can be delivered in between, because `setCryptoObserver`
+  // stores a handle and returns without calling through it, and this
+  // function holds the JavaScript thread throughout.
   installNativeObserver()
+  listeners.add(cb)
   return () => {
     listeners.delete(cb)
     // The last one out uninstalls. See `uninstallNativeObserver` for why an

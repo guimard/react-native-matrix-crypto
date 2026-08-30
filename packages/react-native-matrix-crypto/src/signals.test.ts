@@ -11,10 +11,29 @@ import type { CryptoSignal } from './signals'
  * `vi.hoisted` because `vi.mock`'s factory is hoisted above the imports and
  * cannot close over an ordinary module-level `const`.
  */
-const { installed, cleared } = vi.hoisted(() => ({
+const { installed, cleared, failNextInstall, failNextClear } = vi.hoisted(() => ({
   installed: [] as Array<{ onSignal: (signal: NativeCryptoSignal) => void }>,
   cleared: { count: 0 },
+  // Armed by a test, disarmed by the call it fires on, so a test that arms
+  // one is describing a single failing call rather than a broken module.
+  failNextInstall: { pending: false },
+  failNextClear: { pending: false },
 }))
+
+/**
+ * What the generated wrapper actually throws when the bootstrap has not run.
+ *
+ * Both registry wrappers in `./generated/matrix_crypto` reach the JSI host
+ * object through `nativeModule()` and read a function off it. With no host
+ * object there is nothing to read from, and the shape of the failure is a
+ * `TypeError` naming the symbol, which is exactly what `index.ts`'s own
+ * comment records hitting on a real device build. Built here rather than
+ * thrown as a bare `Error` so the assertions below can key on the symbol
+ * name and cannot pass against some other throw.
+ */
+function nativeModuleMissing(symbol: string): TypeError {
+  return new TypeError(`Cannot read property '${symbol}' of undefined`)
+}
 
 // Only the two observer-registry calls are mocked -- there is no JSI host
 // object under vitest (Node), so neither can actually run here. Everything
@@ -29,9 +48,19 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
   return {
     ...actual,
     setCryptoObserver: vi.fn((observer: { onSignal: (signal: NativeCryptoSignal) => void }) => {
+      if (failNextInstall.pending) {
+        failNextInstall.pending = false
+        throw nativeModuleMissing('ubrn_uniffi_matrix_crypto_ffi_fn_func_set_crypto_observer')
+      }
+      // Recorded only on the way out, so `installed` counts registrations
+      // the native side actually took, not attempts.
       installed.push(observer)
     }),
     clearCryptoObserver: vi.fn(() => {
+      if (failNextClear.pending) {
+        failNextClear.pending = false
+        throw nativeModuleMissing('ubrn_uniffi_matrix_crypto_ffi_fn_func_clear_crypto_observer')
+      }
       cleared.count += 1
     }),
   }
@@ -50,6 +79,8 @@ async function freshSignals() {
   vi.resetModules()
   installed.length = 0
   cleared.count = 0
+  failNextInstall.pending = false
+  failNextClear.pending = false
   return import('./signals')
 }
 
@@ -257,5 +288,137 @@ describe('the native producer', () => {
 
     expect(outerReceived).toEqual([TRUST_CHANGED])
     expect(lateReceived).toEqual([])
+  })
+})
+
+/**
+ * The channel's one way to fail without saying so.
+ *
+ * `setCryptoObserver` is the only call `onCryptoSignal` makes that can
+ * fail, and what it fails at is the whole subscription: a listener added
+ * behind a registry call that did not happen is a listener nothing will
+ * ever reach. So the question every test here asks is not whether the
+ * module recovers, but whether the caller is told.
+ */
+describe('an install that throws', () => {
+  it('reports the failure to the subscriber that asked for it', async () => {
+    const { onCryptoSignal } = await freshSignals()
+    failNextInstall.pending = true
+
+    // Not caught and turned into a quiet no-op. `onCryptoSignal` returning
+    // normally has one meaning, and it is that the channel is live.
+    expect(() => onCryptoSignal(() => {})).toThrow(/set_crypto_observer/)
+  })
+
+  it('reports it to the next subscriber too, rather than handing out a dead channel', async () => {
+    const { onCryptoSignal } = await freshSignals()
+    failNextInstall.pending = true
+    expect(() => onCryptoSignal(() => {})).toThrow()
+
+    // The regression this file exists to keep out. `nativeInstalled` was
+    // set before the call it describes, so a throw left the module
+    // believing the observer was installed. Every later subscribe then took
+    // the early return and handed back an unsubscribe function for a
+    // channel that would never deliver: nothing thrown, nothing logged, and
+    // an inbound verification request expiring ten minutes later with a
+    // product still waiting for it.
+    failNextInstall.pending = true
+    expect(() => onCryptoSignal(() => {})).toThrow(/set_crypto_observer/)
+  })
+
+  it('installs on the next subscribe once the native module is there', async () => {
+    const { onCryptoSignal } = await freshSignals()
+    failNextInstall.pending = true
+    expect(() => onCryptoSignal(() => {})).toThrow()
+
+    // Retried, not remembered as broken. The condition behind a real
+    // failure here is a bootstrap that has not run against this runtime
+    // yet, which is true at one moment and false at the next; a flag that
+    // recorded the failure permanently would be this same defect with the
+    // sign reversed, and just as quiet.
+    const received: CryptoSignal[] = []
+    onCryptoSignal((s) => received.push(s))
+
+    expect(installed).toHaveLength(1)
+    installed[0].onSignal(
+      new NativeCryptoSignal.TrustChanged({
+        user: '@alice:example.org',
+        state: NativeTrustState.Verified,
+      }),
+    )
+    expect(received).toEqual([TRUST_CHANGED])
+  })
+
+  it('registers no listener for a subscribe that threw', async () => {
+    const { onCryptoSignal } = await freshSignals()
+    failNextInstall.pending = true
+    const orphan: CryptoSignal[] = []
+    expect(() => onCryptoSignal((s) => orphan.push(s))).toThrow()
+
+    const received: CryptoSignal[] = []
+    const unsubscribe = onCryptoSignal((s) => received.push(s))
+    installed[0].onSignal(
+      new NativeCryptoSignal.TrustChanged({
+        user: '@alice:example.org',
+        state: NativeTrustState.Verified,
+      }),
+    )
+
+    // A caller that caught an exception holds no unsubscribe function and
+    // has every right to believe it is not subscribed, so it must not start
+    // receiving the moment somebody else installs the observer.
+    expect(orphan).toEqual([])
+    expect(received).toEqual([TRUST_CHANGED])
+
+    // And it must not hold the set non-empty behind the last real listener,
+    // which would leave the observer installed over nobody: the state
+    // `uninstallNativeObserver` exists to prevent, and the one that
+    // consumes an invitation irrecoverably.
+    unsubscribe()
+    expect(cleared.count).toBe(1)
+  })
+})
+
+describe('an uninstall that throws', () => {
+  it('reports the failure to the caller that unsubscribed', async () => {
+    const { onCryptoSignal } = await freshSignals()
+    const only = onCryptoSignal(() => {})
+    failNextClear.pending = true
+
+    // The listener is gone either way: `listeners` is this module's own
+    // state and the delete had already happened. What is reported is that
+    // the native side was not told, which is the condition that leaves an
+    // observer running over an empty set.
+    expect(only).toThrow(/clear_crypto_observer/)
+  })
+
+  it('leaves the observer recorded as installed, because it still is', async () => {
+    const { onCryptoSignal } = await freshSignals()
+    const only = onCryptoSignal(() => {})
+    failNextClear.pending = true
+    expect(only).toThrow()
+
+    // The clear did not happen, so the native side still holds the observer
+    // this module built, and that observer dispatches to `listeners`, which
+    // is module state the failed unsubscribe left intact. Recording it as
+    // gone would lay a second registration over a first that never left,
+    // and would make the next empty set skip the clear rather than retry
+    // it.
+    const received: CryptoSignal[] = []
+    const second = onCryptoSignal((s) => received.push(s))
+    expect(installed).toHaveLength(1)
+
+    installed[0].onSignal(
+      new NativeCryptoSignal.TrustChanged({
+        user: '@alice:example.org',
+        state: NativeTrustState.Verified,
+      }),
+    )
+    expect(received).toEqual([TRUST_CHANGED])
+
+    // What the accurate flag buys: the next time the set empties, the clear
+    // is attempted again instead of being skipped as already done.
+    second()
+    expect(cleared.count).toBe(1)
   })
 })
