@@ -598,6 +598,30 @@ fn a_signing_identity_published_to_a_real_homeserver_and_what_a_sender_then_read
          that authorises minting one: {status:?}"
     );
 
+    // ---- 8bis. The creation asks the real homeserver for itself ---------
+    //
+    // The answer just reported was fetched by the step above, not by this
+    // call, and by the time this call would read it, it is as old as
+    // everything in between. So it refuses once and queues a key query of
+    // its own, which the pump then sends to this homeserver and reports
+    // back. **This is the round measured against a real server rather than a
+    // modelled one**: everything about it -- the query body, the
+    // homeserver's answer, what upstream makes of it -- is real here.
+    assert_eq!(
+        run(create_identity()),
+        Err(MachineError::AccountKeysStale),
+        "a creation may not decide on an answer it did not ask for"
+    );
+    let refresh = harness::pump_and_send(&homeserver, &library.token);
+    assert!(
+        refresh.iter().any(|request| request.kind == "keys_query"),
+        "and the refusal must queue the query that lifts it, or the remedy is a dead          end: {:?}",
+        refresh
+            .iter()
+            .map(|request| request.kind.as_str())
+            .collect::<Vec<_>>()
+    );
+
     // ---- 9. The identity, minted and published --------------------------
     run(create_identity()).expect("an account the server says has no identity may mint one");
 

@@ -1285,6 +1285,23 @@ mod tests {
             .await
             .expect("answering the account key query must not fail");
 
+        // **The eleventh round: a creation serves only on an answer it
+        // asked for.** The answer above came from upstream's own volunteered
+        // query, so this call queues one of its own and refuses once. Every
+        // test in this module pays that one round through this helper. See
+        // `signing::PUBLICATION_ASKED_AFTER`.
+        assert_eq!(
+            create_identity().await,
+            Err(MachineError::AccountKeysStale),
+            "a creation may not decide on an answer it did not ask for"
+        );
+        let refresh =
+            drain_for_query_about(ALICE_USER, "the refusal must queue the query that lifts it")
+                .await;
+        mark_request_sent(&refresh.id, NO_IDENTITY)
+            .await
+            .expect("the query that refusal queued must be answerable");
+
         create_identity().await.expect(
             "creating this account's identity after the keys have been fetched must \
                      be served",

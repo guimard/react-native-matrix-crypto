@@ -174,6 +174,26 @@ fn a_failed_request_reported_as_sent_neither_lifts_the_gate_nor_publishes() {
             "a real answer, on the same id, must lift the gate"
         );
 
+        // **The eleventh round: a creation serves only on an answer it asked
+        // for.** The answer above was asked for by something else -- upstream's
+        // own volunteered query, or a bootstrap's refusal -- so this call
+        // queues one of its own and refuses once. That refusal is the whole
+        // point: it is the round in which another device's identity, if there
+        // is one, comes back and stops the publication. See
+        // `signing::PUBLICATION_ASKED_AFTER`.
+        assert_eq!(
+            create_identity().await,
+            Err(MachineError::AccountKeysStale),
+            "a creation may not decide on an answer it did not ask for"
+        );
+        let refreshed = take_outgoing_requests()
+            .await
+            .expect("draining the pump must not fail");
+        let refresh = find(&refreshed, "keys_query", names_the_account);
+        mark_request_sent(&refresh.id, FAILURE_WITH_NESTED_ERRCODE)
+            .await
+            .expect("the query that refusal queued must be answerable");
+
         create_identity()
             .await
             .expect("creating an identity after a real answer must be served");
