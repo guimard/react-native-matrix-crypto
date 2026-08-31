@@ -46,6 +46,9 @@
 //!   empty, and a launch-time refusal that queues nothing.
 //! * **Act three** is the change: the creation refuses
 //!   `AccountKeysStale` and queues its own key query.
+//! * **Act three and a half** is the count's one exclusion: a reply that
+//!   leaves the library no better informed is not the answer this call asked
+//!   for, so it does not launder the older one as fresh.
 //! * **Act four** is the other direction, and it matters as much: answered
 //!   that the account really has no identity, the creation is served and
 //!   hands over the publication. A gate that refused here would brick every
@@ -165,6 +168,29 @@ fn a_creation_decides_on_an_answer_it_asked_for_and_serves_on_nothing_older() {
             kinds(&asked)
         );
         let refresh = account_query_in(&asked);
+
+        // ---- Act three and a half: an answer that settles nothing -----
+        //
+        // **A reply is not an answer, and the count must not treat it as
+        // one.** This body is what the Matrix specification prescribes for a
+        // user a reachable server does not know, and what a real Synapse
+        // sends when the server-name half of the account id differs in case
+        // from its own: accepted, carrying nothing about this account, and
+        // leaving the library exactly as ignorant as before. Counting it
+        // would launder the older answer as fresh, which is the staleness
+        // this whole file is about, arrived at through the front door.
+        mark_request_sent(&refresh.id, r#"{"device_keys":{},"failures":{}}"#)
+            .await
+            .expect("the body is accepted: upstream still has to see it");
+        assert_eq!(
+            create_identity().await,
+            Err(MachineError::AccountKeysStale),
+            "an answer that left this library no better informed is not the answer this              call asked for"
+        );
+        let asked_once_more = take_outgoing_requests()
+            .await
+            .expect("draining the pump must not fail");
+        let refresh = account_query_in(&asked_once_more);
 
         // ---- Act four: and it serves on the answer to that -------------
         //
