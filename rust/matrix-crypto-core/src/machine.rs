@@ -317,6 +317,51 @@ pub enum MachineError {
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("this account already has a server-side recovery")]
     RecoveryAlreadyExists,
+    /// `crate::create_identity` has not been answered about this account
+    /// **since it asked**, so the only thing it could decide on is an answer
+    /// older than the decision.
+    ///
+    /// # Why this is not `AccountKeysNotFetched`
+    ///
+    /// That variant means nobody has asked. This one means somebody asked,
+    /// once, possibly at the first second of the process, and nothing has
+    /// asked since -- which is the state every product ends up in, because
+    /// `IdentityStatus::account_keys_fetched` never goes false again,
+    /// upstream volunteers no key query for an account it already tracks,
+    /// and `IdentityNotKnown` queues nothing.
+    ///
+    /// Folding the two would have been the cheaper change and it would have
+    /// lied in the status: a product meeting `AccountKeysNotFetched` while
+    /// `account_keys_fetched` reads `true` has been told two contradictory
+    /// things about the same fact, and the field it is sent to read next
+    /// (`account_keys_answer_unsettled`) is about the other situation
+    /// entirely.
+    ///
+    /// # The remedy, and it is one round
+    ///
+    /// The call that returns this queues the key query that lifts it, so the
+    /// ordinary loop resolves it: drain `crate::take_outgoing_requests`, send
+    /// what it hands back, report it with `crate::mark_request_sent`, call
+    /// again. Unlike `AccountKeysNotFetched` there is no non-terminating
+    /// case against an honest server -- the answer that settles it is the
+    /// same answer that would have settled the first one.
+    ///
+    /// # What meeting it means, which is the part worth stopping on
+    ///
+    /// It is not a failure and nothing is wrong. It is this library declining
+    /// to create an identity on a fact it has not checked since being asked
+    /// to. **Meeting it and then being served is also how a product finds out
+    /// which of two situations it was in**: if the fresh answer carries an
+    /// identity another of the account's devices published in the meantime,
+    /// the call after this one refuses `IdentityAlreadyExists` and the
+    /// account keeps the identity it has. If it carries nothing, the
+    /// publication proceeds. Before this variant existed there was no moment
+    /// at which those two were told apart, and the second was published over
+    /// the first.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("the account's keys have not been fetched again since this call asked")]
+    AccountKeysStale,
 }
 
 struct Held {
@@ -573,6 +618,15 @@ pub(crate) fn reset_for_test() {
     // it is that a proof written inside `src/` is then possible, instead of
     // passing or failing for a reason belonging to its neighbour.
     crate::session::forget_account_keys_answered_for_test();
+
+    // And the position `signing::create_identity` holds against that
+    // registry's settled-answer count. It is cleared here rather than left to
+    // the count alone because the two are only meaningful together: a
+    // position recorded against the previous account's count, compared
+    // against a count that has just been zeroed, would read as an answer that
+    // has not arrived -- safe, but for a reason belonging to whichever test
+    // ran before, which is what this whole block exists to prevent.
+    crate::signing::forget_publication_ask_for_test();
 
     // `RwLock`, not `OnceLock`: the registry must be clearable between tests
     // that each need their own fresh machine, all run in one process rather

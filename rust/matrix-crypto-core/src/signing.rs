@@ -114,9 +114,14 @@
 //! collision on the signing-keys upload, where `{}` really is the whole
 //! success response.
 //!
-//! Fact (1) is also "asked at some point in this process", not "asked
-//! recently": a bootstrap long after the answer decides on stale
-//! information.
+//! Fact (1) is "asked at some point in this process", not "asked recently",
+//! and that is deliberate for the *publishing* call, which can only ever
+//! re-send what a homeserver has already confirmed. It is **not** enough for
+//! the *creating* call, whose whole subject is an account that has no
+//! identity yet, and which therefore carries a second condition of its own:
+//! an answer that settled after it asked. [`PUBLICATION_ASKED_AFTER`] is
+//! where that is defined and argued, and why "the most recent answer in the
+//! store" is not the same thing.
 //!
 //! # This library never sees a credential
 //!
@@ -134,6 +139,7 @@
 //! pending request.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex as StdMutex;
 
 use matrix_sdk_crypto::{OlmMachine, UserIdentity};
 
@@ -210,11 +216,25 @@ pub(crate) async fn note_identity_minted(machine: &OlmMachine) {
 
 /// Records that the identity this machine holds is one a homeserver has.
 ///
-/// Called from two places, and both are moments at which the server itself
-/// has told us: `session::mark_sent` when a signing-keys upload is reported
-/// as having succeeded, which is the same instant upstream marks its own
-/// private identity shared; and `session::answer_about_this_account` when a
-/// key query answer asserts the very identity this store holds.
+/// **Called from exactly one place**, `session::answer_about_this_account`,
+/// and only when a `/keys/query` answer asserts the very identity this store
+/// holds. The server saying so is the whole of what "published" means here.
+///
+/// # This comment described a second caller that no longer exists
+///
+/// It used to name `session::mark_sent` as well -- the moment a signing-keys
+/// upload is *reported* as having succeeded. That site was removed, because
+/// no HTTP status crosses this library's boundary and the upload's success
+/// response is the empty object, so a caller that reported a dropped
+/// connection cleared the record for a publication that never left the
+/// device. `session.rs`'s own comment at that site says so at length.
+///
+/// The stale sentence is called out rather than quietly deleted because of
+/// where it was. Everything downstream rests on *confirmed means a
+/// homeserver's own answer carried the identity back*, and this function is
+/// where a reader checking that premise arrives. Told there were two
+/// callers, one of them a caller's own report, they would conclude the
+/// premise was false.
 pub(crate) async fn note_identity_published(machine: &OlmMachine) {
     let _ = machine
         .store()
@@ -307,6 +327,135 @@ pub(crate) fn note_private_keys_held(held_now: bool) -> bool {
     held_now && !PRIVATE_KEYS_HELD.swap(held_now, Ordering::SeqCst)
 }
 
+/// Where `session`'s settled-answer count stood when [`create_identity`] last
+/// queued a key query of its own, or `None` when it has no such question
+/// outstanding.
+///
+/// # What this exists to stop, and why nothing already here could
+///
+/// [`create_identity`] decides on one fact: *the account has no identity*.
+/// It reads that fact out of upstream's store, where the last accepted
+/// `/keys/query` answer put it, and **an answer is only ever true of the
+/// instant the server computed it.**
+///
+/// This was described for two releases as a race between that instant and
+/// this call, which reads as though acting quickly were enough. It is not,
+/// and the difference is the whole of this static. The precondition is **as
+/// old as the last answer**, and nothing shortens that on its own:
+///
+/// * `session::account_keys_answered` is sticky for the process, so once one
+///   answer has landed the library never asks again of its own accord;
+/// * upstream volunteers an own-account key query only while the account is
+///   not yet tracked (`identities/manager.rs:836-852`), which after the first
+///   sync it always is;
+/// * and [`bootstrap_identity`]'s [`MachineError::IdentityNotKnown`] refusal
+///   -- the refusal whose documented remedy is this very call -- queues
+///   nothing.
+///
+/// **So it got worse the more careful a product was.** Measured on
+/// continuwuity and on Synapse: a product that drained its pump to empty and
+/// reported every answer honestly before deciding had *no* mechanism left to
+/// refresh the one fact this call reads, and destroyed another device's live
+/// identity. A sloppier product survived the same sequence only because an
+/// unreported leftover key query happened to be sitting in its pump and
+/// refreshed the fact by accident. A safety property that rewards the
+/// accident and punishes the discipline is the wrong way round.
+///
+/// # What "fresh" has to mean, and why nothing weaker will do
+///
+/// **An answer that arrived after this call asked for one** -- not the most
+/// recent answer in the store, and not an answer from within some window.
+///
+/// *Most recent in the store* is exactly `account_keys_answered`, and it is
+/// exactly what was defeated: there is only ever one "most recent" answer,
+/// and after the first one it never changes.
+///
+/// *Recent enough* would need a clock this library does not have and a
+/// constant nobody can justify. It would also refuse in the wrong direction:
+/// the legitimate finish of an interrupted publication can take as long as a
+/// person needs to answer a homeserver's authentication challenge, and a
+/// timeout would brick that while doing nothing about a fast attacker.
+///
+/// What is left is causal order inside this process, which is observable
+/// exactly and needs nothing from outside: this call queued a question at one
+/// moment, and an answer about this account settled at a later one. That is
+/// what the count in `session::account_answers_settled` measures and what the
+/// pair of it and this position compares.
+///
+/// # What it is worth, stated as a bound rather than as a claim
+///
+/// One refusal, one pump, one retry, and the window closes for every product
+/// rather than only for the ones with something left in the pump.
+///
+/// **The window is not zero and is not claimed to be.** What remains is the
+/// gap between the answer this call demanded landing and the retry that
+/// spends it -- the product's own round trip, in the product's own hands,
+/// entered deliberately. What is gone is the unbounded part: the answer can
+/// no longer predate the decision, and a product cannot make its exposure
+/// worse by being thorough.
+///
+/// # Single-use, which is the half that is easy to leave out
+///
+/// The position is cleared when a publication is served, so the *next*
+/// creation asks again. Without that, one fresh answer would authorise every
+/// later call in the process, and the second one could be arbitrarily far
+/// from it -- which is the unbounded window again, one call along.
+///
+/// Process-wide and deliberately not persisted, like `PRIVATE_KEYS_HELD`
+/// above and `session::account_keys_answered`: a process that has just
+/// reopened a store has asked nothing yet, whatever the process before it
+/// did, and refusing until it does costs one round trip in the safe
+/// direction.
+static PUBLICATION_ASKED_AFTER: StdMutex<Option<u64>> = StdMutex::new(None);
+
+/// Records that [`create_identity`] has just queued a key query of its own,
+/// so the answer to it can be told from the one already in hand.
+///
+/// Overwrites unconditionally, and that is a no-op rather than a choice:
+/// this is only ever called on a path that is about to refuse for want of a
+/// fresh answer, and such a path is reached only while the count still stands
+/// where the last ask left it.
+fn note_publication_asked() {
+    *PUBLICATION_ASKED_AFTER
+        .lock()
+        .expect("publication ask poisoned") = Some(crate::session::account_answers_settled());
+}
+
+/// Whether an answer about this account has settled since [`create_identity`]
+/// asked for one.
+///
+/// `false` with no ask outstanding, which is the state a process starts in
+/// and the state a served publication leaves behind. See
+/// [`PUBLICATION_ASKED_AFTER`] for what fresh has to mean and why.
+fn publication_answer_is_fresh() -> bool {
+    matches!(
+        *PUBLICATION_ASKED_AFTER
+            .lock()
+            .expect("publication ask poisoned"),
+        Some(asked_after) if crate::session::account_answers_settled() > asked_after
+    )
+}
+
+/// Spends the fresh answer a publication was served on, so the next creation
+/// asks again.
+fn spend_publication_ask() {
+    *PUBLICATION_ASKED_AFTER
+        .lock()
+        .expect("publication ask poisoned") = None;
+}
+
+/// Forgets any outstanding ask, for `machine::reset_for_test`.
+///
+/// The same reason `session::forget_account_keys_answered_for_test` exists:
+/// this position is counted against a process-wide count that reset clears,
+/// and leaving it set would compare a fresh process's count against the
+/// previous one's position. It is cleared *with* that count rather than
+/// separately, so the pair cannot come apart.
+#[cfg(test)]
+pub(crate) fn forget_publication_ask_for_test() {
+    spend_publication_ask();
+}
+
 /// What this library will say about the account's signing identity.
 ///
 /// Three independent facts, none of which implies another, and the pair that
@@ -394,7 +543,36 @@ pub struct IdentityStatus {
     /// corrected and the core was not, which is why it now says so. From
     /// inside a process, an identity we hold and have never seen accepted is
     /// indistinguishable from one the account has since replaced, and no
-    /// answer settles that, so finishing is a decision rather than a retry.
+    /// answer *already in hand* settles that, so finishing is a decision
+    /// rather than a retry.
+    ///
+    /// # This flag reads identically in two situations, and one of them is
+    /// destructive
+    ///
+    /// `true` means *finish your own publication* and it equally means *you
+    /// are about to overwrite the identity your other phone made while this
+    /// one was offline*. There is no local predicate over this store that
+    /// separates them, and nine rounds of looking for one is why there is
+    /// not.
+    ///
+    /// **What separates them is a fresh answer, and [`create_identity`] now
+    /// forces one before it publishes.** The first call refuses
+    /// [`MachineError::AccountKeysStale`] with the key query already queued;
+    /// after the ordinary drain-send-report round the two situations have
+    /// stopped being identical and the library reports which one this is:
+    ///
+    /// * *Finish your own publication*: the answer carries no other
+    ///   identity, this flag stays `true`, and the next `create_identity`
+    ///   hands back the publication.
+    /// * *Your other device published one*: the answer carries it, upstream
+    ///   adopts it and drops the private keys that disagree, this flag goes
+    ///   **`false`** while `identity_known` stays `true` and
+    ///   `private_keys_held` goes `false`, and the next `create_identity`
+    ///   refuses [`MachineError::IdentityAlreadyExists`].
+    ///
+    /// So the flag on its own is still ambiguous at the moment it is read.
+    /// What changed is that the ambiguity is now **resolved before anything
+    /// is published**, rather than resolved by the publication.
     ///
     /// **Seven calls read this field**, and the list is here because wiring
     /// it into two of them and assuming the rest was the ninth round's
@@ -853,25 +1031,55 @@ fn queue_republication(requests: matrix_sdk_crypto::CrossSigningBootstrapRequest
 /// paragraph is the whole reason the call is separate.
 ///
 /// A `/keys/query` answer is only ever true of the instant the server sent
-/// it. Between that instant and this call, another device of the same
-/// account can publish an identity, and no answer already in hand can say
-/// so. Measured on a live homeserver, with no misbehaviour anywhere: the
-/// server answered "no identity" honestly, a second device published one,
-/// and a mint followed. So the caller has to supply the fact the library
-/// cannot: **that this account is meant to be getting its first identity
-/// now.** A product knows things the library does not -- that the user has
-/// just created the account, that this is the sign-up flow rather than a
+/// it, and another device of the same account can publish an identity after
+/// that instant without anything already in hand being able to say so.
+/// Measured on a live homeserver, with no misbehaviour anywhere: the server
+/// answered "no identity" honestly, a second device published one, and a
+/// mint followed. So the caller has to supply the fact the library cannot:
+/// **that this account is meant to be getting its first identity now.** A
+/// product knows things the library does not -- that the user has just
+/// created the account, that this is the sign-up flow rather than a
 /// relaunch, that no other session is listed on the account, that a person
 /// has been asked and said yes. Calling this on every launch, or as the
 /// automatic remedy for [`MachineError::IdentityNotKnown`], puts that
 /// decision back where it was and the race back with it.
 ///
-/// # The window is not closed, and the confirming query does not close it
+/// # The precondition is as old as the last answer, and this bounds how old
 ///
-/// It queues a fresh account `/keys/query` alongside the publication, so the
-/// product's ordinary pump loop asks the server once more straight after.
-/// What that is worth was overstated here once, and the overstatement was
-/// measured, so it is stated precisely now.
+/// **This section described a race "between that instant and this call" for
+/// two releases, and that wording was wrong in a way that mattered.** It
+/// reads as though acting quickly were enough. It was not. The gap was
+/// unbounded and it did not shrink with care:
+/// [`IdentityStatus::account_keys_fetched`] never goes false again, upstream
+/// volunteers no key query for an account it already tracks, and the
+/// [`MachineError::IdentityNotKnown`] refusal that routes a product here
+/// queues nothing. So a product that had drained its pump to empty and
+/// reported every answer honestly -- the diligent one -- had **no**
+/// mechanism left to refresh the one fact this call reads. Measured on
+/// continuwuity and on Synapse, in exactly that state, it replaced another
+/// device's live identity; a less thorough product survived the same
+/// sequence only because a leftover key query happened to be sitting in its
+/// pump.
+///
+/// So this call **asks for itself, before it publishes, and serves only once
+/// an answer has settled since it asked.** The first call in that state is
+/// refused with [`MachineError::AccountKeysStale`], with the query already
+/// queued, and the ordinary drain-send-report round serves the next one.
+/// [`PUBLICATION_ASKED_AFTER`] is where fresh is defined and argued.
+///
+/// **What that is worth, as a bound rather than as a claim.** The answer can
+/// no longer predate the decision. What remains is the product's own round
+/// trip between the answer landing and the retry that spends it, which is in
+/// the product's hands and entered deliberately, and which shrinks rather
+/// than grows the more carefully a product behaves. That is the opposite of
+/// what stood here before.
+///
+/// # The confirming query afterwards is detection, and only detection
+///
+/// It also queues a fresh account `/keys/query` *after* the publication, so
+/// the product's ordinary pump loop asks the server once more straight
+/// after. What that one is worth was overstated here once, and the
+/// overstatement was measured, so it is stated precisely now.
 ///
 /// **It covers the branch where the publication did not land**: a device
 /// that minted and never published used to hold an identity the account does
@@ -891,7 +1099,8 @@ fn queue_republication(requests: matrix_sdk_crypto::CrossSigningBootstrapRequest
 /// status, in any error, or in any later answer says the account's previous
 /// identity was replaced. There is no path back and this module does not
 /// pretend to offer one. What keeps a caller out of that branch is the
-/// decision this call exists to require, not this query.
+/// fresh-answer condition above and the decision this call exists to
+/// require, not this query.
 ///
 /// # What a caller must do next
 ///
@@ -910,6 +1119,17 @@ fn queue_republication(requests: matrix_sdk_crypto::CrossSigningBootstrapRequest
 /// [`IdentityStatus::account_keys_answer_unsettled`] says whether the remedy
 /// is to pump and call again or to stop and check the account id.
 ///
+/// [`MachineError::AccountKeysStale`] means this process has been answered,
+/// and not since this call asked. The query is queued, so the remedy is the
+/// same one round -- drain, send, report, call again -- and against an
+/// honest server it terminates, because the answer that lifts it is the same
+/// answer that would have lifted the variant above. **Do not read it as a
+/// retry with no consequence.** The answer it forces is the one that can
+/// come back carrying an identity another of the account's devices published
+/// in the meantime, in which case the call after it refuses
+/// [`MachineError::IdentityAlreadyExists`] and the account keeps what it
+/// has. That refusal is this variant working rather than failing.
+///
 /// [`MachineError::IdentityAlreadyExists`] means the account already has an
 /// identity, so there is nothing here to create. It is returned whether or
 /// not this device holds the private keys, because neither case wants this
@@ -924,12 +1144,50 @@ pub async fn create_identity() -> Result<(), MachineError> {
                 if refusal == MachineError::AccountKeysNotFetched {
                     // Queued by the refusal, for `bootstrap_identity`'s
                     // reason, which its own comment states in full.
+                    //
+                    // Recorded as *this call's* ask as well, which is what
+                    // makes the fresh-answer condition below cost nothing on
+                    // the ordinary sign-up path: the query this refusal
+                    // queues is one this call asked for, so the answer to it
+                    // is fresh by the definition
+                    // [`PUBLICATION_ASKED_AFTER`] gives, and the next call
+                    // is served. One refusal, one pump, one retry.
+                    note_publication_asked();
                     let (id, request) =
                         machine.query_keys_for_users(std::iter::once(machine.user_id()));
                     crate::session::queue_account_key_query(id, request);
                 }
                 return Err(refusal);
             }
+
+            // **The condition [`may_create`] cannot express, and the reason
+            // this call was still destructive after ten rounds.**
+            //
+            // Everything above is a reading of the last accepted answer, and
+            // that answer can be arbitrarily old: the gate flag is sticky,
+            // upstream volunteers no query for an account it already tracks,
+            // and the refusal that sends a product here queues nothing. A
+            // product that had drained its pump to empty and reported
+            // everything -- the careful one -- had nothing left that could
+            // refresh it, and replaced another device's live identity.
+            //
+            // So this call asks for itself, before it publishes, and serves
+            // only once an answer has settled since it asked.
+            // [`PUBLICATION_ASKED_AFTER`] is where fresh is defined and
+            // argued, including what this does not close.
+            if !publication_answer_is_fresh() {
+                note_publication_asked();
+                let (id, request) =
+                    machine.query_keys_for_users(std::iter::once(machine.user_id()));
+                crate::session::queue_account_key_query(id, request);
+                return Err(MachineError::AccountKeysStale);
+            }
+
+            // Spent before the mint rather than after it, so that one fresh
+            // answer authorises one publication whatever happens next. A
+            // store failure below then costs one more pump, which is the
+            // direction this module takes everywhere.
+            spend_publication_ask();
 
             let requests = machine
                 .bootstrap_cross_signing(false)
