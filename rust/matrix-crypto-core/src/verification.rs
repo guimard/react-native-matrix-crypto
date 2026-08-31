@@ -1480,6 +1480,27 @@ fn queue(request: impl Into<UpstreamOutgoingRequest>) {
 /// **Another user's flow reads neither**, and that is measured rather than
 /// argued: verifying somebody else needs nothing of our own identity, and an
 /// unconditional check turns `tests/sas_two_party.rs` red at 11 of 13.
+///
+/// # Where each arm is held, since one of them was held nowhere
+///
+/// Two conditions and three doors is six claims, and they are not covered by
+/// one file each. Named here so that deleting either arm reddens something
+/// findable rather than nothing:
+///
+/// * never asked, outgoing: `tests/self_verification_stale_identity.rs`
+/// * never asked, incoming: `tests/self_verification_inbound_stale_identity.rs`
+/// * publication unconfirmed, outgoing:
+///   `tests/identity_publication_interrupted.rs`, which asserts it at both
+///   outgoing doors and at the two recovery calls beside them
+/// * publication unconfirmed, incoming:
+///   `tests/self_verification_inbound_unconfirmed_identity.rs`
+///
+/// The last of those was written after the fact. The tenth round added the
+/// second arm to this one helper, which carried it to all three doors at
+/// once, and only the outgoing pair was ever measured: deleting the arm left
+/// both files that drive `accept_flow` green. What found it was not a review
+/// but a merge, when three M5 tests that mint an identity and never confirm
+/// its publication met this arm for the first time.
 async fn refuse_own_flow_until_the_identity_is_settled(
     other_user: &matrix_sdk_common::ruma::UserId,
 ) -> Result<(), MachineError> {
