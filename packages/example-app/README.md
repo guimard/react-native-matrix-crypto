@@ -123,12 +123,25 @@ something it did not see.
 What the person does, in short, with the full version printed by the run
 itself:
 
-1. Sign in to Element Web or Element Desktop on this machine, at the
-   homeserver URL, account and password the program prints. It is one account
-   on a container that is destroyed on exit.
-2. In Element, open Settings, Sessions, find the phone's session and choose to
-   verify it. **On the phone** the headline changes to *Point the other
-   client's camera at this code* and a black-and-white square appears.
+1. Sign in on a second client **that can scan a QR code**, at the homeserver
+   URL, account and password the program prints. It is one account on a
+   container that is destroyed on exit.
+
+   **Element Web and Element Desktop cannot scan.** They show a code and can
+   be scanned, but neither offers a scanner. This file used to name them and
+   it was wrong. **Element Classic 1.6.62** on Android is what has done it, on
+   an emulator with a webcam as its back camera; any mobile client with a
+   scanner should do, but that is the only one observed. A second emulator
+   needs its own `adb reverse` to reach the homeserver, which the program
+   arranges only for the device it installs the app on.
+2. Let that client create the account's signing identity. The account is new
+   and has none, a code carries cross-signing keys, so no code can exist until
+   it does, and this app cannot mint one because it has no authentication
+   loop. Accept when Element offers to set up recovery or verify the session.
+   Then open Settings, Sessions, find the phone's session and choose to verify
+   it. **On the phone** the headline changes to *Point the other client's
+   camera at this code* and a black-and-white square appears. If it instead
+   says `identity_not_known`, this step has not finished.
 3. In Element, choose *Scan QR code* and fill the viewfinder with the phone's
    screen. **On the phone** the headline becomes *The other device says it
    scanned this code* and a green button appears. Nothing is verified yet:

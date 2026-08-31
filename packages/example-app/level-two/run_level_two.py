@@ -890,8 +890,13 @@ def main():
     # the env file behind is the same nil window the container already had.
     atexit.register(shutil.rmtree, workdir, True)
     passwords = {
-        LIBRARY_LOCALPART: secrets.token_urlsafe(24),
-        NIO_LOCALPART: secrets.token_urlsafe(24),
+        # `token_hex`, not `token_urlsafe`: the url-safe alphabet contains
+        # `-`, which the homeserver's admin parser reads as a flag when this
+        # string is handed to it to create the account. See the same choice,
+        # and the run-in-thirty failure that prompted it, in
+        # `run_camera_proof.py`.
+        LIBRARY_LOCALPART: secrets.token_hex(24),
+        NIO_LOCALPART: secrets.token_hex(24),
     }
     conductor = None
     counterparty = None

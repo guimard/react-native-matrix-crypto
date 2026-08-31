@@ -31,11 +31,26 @@ WHAT THE PERSON NEEDS
 
   * an Android device or emulator on `adb`;
   * a release APK of this example app;
-  * a second Matrix client with a camera, logged in to the same account on
-    the homeserver this program starts. Element Web or Element Desktop on
-    this machine works and reaches the container over loopback; a second
-    phone needs the homeserver reachable from it, which this program
-    deliberately does not arrange.
+  * a second Matrix client **that can scan a QR code**, signed in to the
+    same account on the homeserver this program starts.
+
+    **Element Web and Element Desktop cannot.** Both show a code and both
+    can be scanned, but neither offers a scanner, so neither can play this
+    half of the flow. An earlier version of this file said they worked.
+    Finding out that they do not cost a session, and it is written here so
+    that it costs nobody another one.
+
+    What has actually done it: **Element Classic 1.6.62** on Android, on a
+    second emulator whose back camera was a USB webcam pointed at the
+    screen showing the code. Any mobile client with a working scanner
+    should do. Only that one has been observed, and this file does not
+    claim more than it saw.
+
+    That second client has to reach the homeserver too, and this program
+    deliberately does not arrange it. It runs `adb reverse` for the one
+    device it installs the app on and for nothing else: a second emulator
+    needs its own `adb reverse`, and a physical phone needs the container
+    reachable from the network that phone is on.
 
 CREDENTIALS
 
@@ -143,7 +158,7 @@ def announce(homeserver_port, password, user_id):
     print("  The phone is logged in and the app is running. It is now waiting")
     print("  for another client on the same account to start a verification.")
     print()
-    print("  1. Open Element Web or Element Desktop on this machine and sign in:")
+    print("  1. On your SECOND CLIENT, one that can scan a QR code, sign in:")
     print()
     print(f"       homeserver   http://127.0.0.1:{homeserver_port}")
     print(f"       account      {user_id}")
@@ -151,6 +166,21 @@ def announce(homeserver_port, password, user_id):
     print()
     print("     Element will ask you to pick a custom homeserver. Paste the URL")
     print("     above; it does not resolve a .well-known and does not need to.")
+    print()
+    print("     IT MUST BE ABLE TO SCAN. Element Web and Element Desktop cannot:")
+    print("     they show a code and can be scanned, but neither has a scanner.")
+    print("     Element Classic 1.6.62 on Android has done this; that is the one")
+    print("     that has been observed, on an emulator with a webcam as its back")
+    print("     camera. A second emulator needs its own `adb reverse` to reach")
+    print("     the homeserver, which this program does not arrange for it.")
+    print()
+    print("     THE ACCOUNT IS BRAND NEW AND HAS NO SIGNING IDENTITY. A code")
+    print("     carries cross-signing keys, so none can exist until the account")
+    print("     has one, and this app cannot create it: it has no authentication")
+    print("     loop. Let Element create it. When it offers to set up recovery,")
+    print("     or to verify this session, accept, and let it finish before")
+    print("     going on. If the phone says `identity_not_known` at step 2, this")
+    print("     is the step that has not happened.")
     print()
     print("  2. Element will offer to verify its new session. Skip that: it is")
     print("     asking about ITSELF. Instead open Settings, Sessions, find the")
@@ -249,9 +279,17 @@ def main():
     # Two accounts because `start_homeserver` creates two; only the first is
     # used here, and the second is left alone rather than given a job it does
     # not have.
+    # `token_hex`, not `token_urlsafe`. The url-safe alphabet contains `-`,
+    # the account is created by handing this string to the homeserver's admin
+    # command inside the container, and its parser reads a leading `-` as a
+    # flag: roughly one run in thirty died at account creation with an error
+    # about an unknown option. Hex has no such character, and it is what
+    # `scripts/run-level-two-interop.sh` has always used. A person also has
+    # to type this one into another client by hand, and hex is kinder to type
+    # than a url-safe string with case and punctuation in it.
     passwords = {
-        LIBRARY_LOCALPART: secrets.token_urlsafe(18),
-        NIO_LOCALPART: secrets.token_urlsafe(18),
+        LIBRARY_LOCALPART: secrets.token_hex(24),
+        NIO_LOCALPART: secrets.token_hex(24),
     }
     plan_server = None
     try:
