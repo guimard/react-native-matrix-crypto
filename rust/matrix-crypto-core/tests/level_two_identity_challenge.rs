@@ -153,7 +153,7 @@
 
 use matrix_crypto_core::{
     create_identity, create_machine, identity_status, mark_request_failed, mark_request_sent,
-    take_outgoing_requests, MachineConfig, OutgoingRequest,
+    take_outgoing_requests, MachineConfig, MachineError, OutgoingRequest,
 };
 use serde_json::{json, Value};
 

@@ -86,7 +86,8 @@ use matrix_crypto_core::{
     begin_comparison, confirm_flow, create_identity, create_machine, decrypt_event,
     device_statuses, flow_stage, identity_status, in_runtime, mark_request_sent, read_material,
     receive_sync_changes, request_flow, share_scope_key, take_outgoing_requests, with_machine,
-    FlowId, FlowStage, MachineConfig, OutgoingRequest, SenderVerification, TrustState,
+    FlowId, FlowStage, MachineConfig, MachineError, OutgoingRequest, SenderVerification,
+    TrustState,
 };
 use matrix_sdk_common::ruma::api::client::keys::claim_keys::v3::Response as KeysClaimResponse;
 use matrix_sdk_common::ruma::api::client::keys::get_keys::v3::Response as KeysQueryResponse;
@@ -671,8 +672,9 @@ async fn library() -> serde_json::Value {
     // this call queues one of its own and refuses once. That round is where
     // another device's identity, if this account had gained one, would come
     // back and stop the publication. See `signing::PUBLICATION_ASKED_AFTER`.
-    assert!(
-        create_identity().await.is_err(),
+    assert_eq!(
+        create_identity().await,
+        Err(MachineError::AccountKeysStale),
         "a creation may not decide on an answer it did not ask for"
     );
     let refresh =
