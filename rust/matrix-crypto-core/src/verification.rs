@@ -1478,8 +1478,19 @@ fn queue(request: impl Into<UpstreamOutgoingRequest>) {
 /// signature may reference a key no other client can resolve.
 ///
 /// **Another user's flow reads neither**, and that is measured rather than
-/// argued: verifying somebody else needs nothing of our own identity, and an
-/// unconditional check turns `tests/sas_two_party.rs` red at 11 of 13.
+/// argued: verifying somebody else needs nothing of our own identity. Taking
+/// the scope off this helper reddens four targets, and not one of them is
+/// about what identity this account has: `tests/sas_two_party.rs`,
+/// `tests/verified_sender.rs`, `matrix-crypto-ffi`'s `tests/delegate_order.rs`
+/// and this module's own unit tests.
+///
+/// How many individual tests go red is deliberately not stated here.
+/// `sas_two_party.rs`'s own header says why a count in prose has no way to be
+/// wrong out loud, and this particular count is not even stable: nine to
+/// thirteen of that file's fourteen across repeated runs of one build,
+/// because those tests share a machine and go red in whatever order the
+/// refusal happens to reach them. This sentence said "11 of 13" until the
+/// file gained a fourteenth test on a branch that could not see it.
 ///
 /// # Where each arm is held, since one of them was held nowhere
 ///
@@ -1843,10 +1854,12 @@ pub async fn accept_flow(flow: &FlowId) -> Result<(), MachineError> {
     // self-signing key, with the gate never consulted.
     //
     // **Unconditionally it would be wrong**, and that was measured too:
-    // adding a bare `account_keys_answered()` check here turns nine tests
-    // red, all of them in `tests/sas_two_party.rs`, which verifies another
-    // user. Verifying somebody else needs nothing of our own identity, and
-    // that whole file runs with the gate shut on purpose.
+    // adding a bare `account_keys_answered()` check here reddens
+    // `tests/sas_two_party.rs` and nothing else in the workspace, and that
+    // file verifies another user. Verifying somebody else needs nothing of
+    // our own identity, and that whole file runs with the gate shut on
+    // purpose. The file rather than a number of its tests, for the reason
+    // `refuse_own_flow_until_the_identity_is_settled` gives at more length.
     //
     // So the scope is the distinction `request_self_flow` and `request_flow`
     // already draw between themselves and nobody had written down here: this
