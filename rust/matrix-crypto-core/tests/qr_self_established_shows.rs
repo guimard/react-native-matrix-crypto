@@ -398,6 +398,23 @@ fn the_device_that_holds_the_identity_shows_a_code_and_a_new_login_scans_it() {
             signature.body
         );
 
+        // AND IT OWES NO KEY QUERY, WHICH IS THE OTHER HALF OF THE RULE THAT
+        // MAKES A CROSS-USER CODE VERIFICATION QUEUE ONE.
+        //
+        // `verification::queue_peer_key_queries` asks the homeserver about
+        // the *other party* of a completed code flow, because for another
+        // person nothing this library says changes until our signature comes
+        // back. The other party here is this account itself: this side holds
+        // the private keys, it did the signing, and the assertion below shows
+        // the trust answer has already moved. A query at this moment would be
+        // the cross-user path firing on a self flow, asking the server about
+        // an account whose answer `signing.rs`'s ordering gate reads.
+        assert!(
+            !owed.iter().any(|request| request.kind == "keys_query"),
+            "verifying a device of this account's own must queue no key query: \
+             {owed:?}"
+        );
+
         let statuses = device_statuses(ACCOUNT)
             .await
             .expect("reading device statuses must not fail");

@@ -489,6 +489,17 @@ pub async fn receive_sync_changes(raw_json: &str) -> Result<SyncOutcome, Session
             // of the machine has to be recognised from these, and
             // recognising it from the raw input instead would miss every
             // encrypted one. See `verification::bare_start_candidates`.
+            // Before the announcement, and outside the closure above for the
+            // same reason it is. A cross-user code verification that just
+            // finished owes a `/keys/query` about the person it verified, and
+            // nothing else in this library will ever ask it. Queued first so
+            // that it is already in the pump when a listener is told the flow
+            // completed: `emit_crypto` detaches delivery, so a listener that
+            // reacts by draining can be running before this call returns.
+            // Ungated by the observer, unlike the announcement, because a
+            // product that never subscribes still reads
+            // `device_statuses` and still deserves the right answer.
+            crate::verification::queue_peer_key_queries().await;
             crate::verification::announce_state_changes(&events).await;
             Ok(SyncOutcome {
                 to_device_event_count: events.len() as u32,
@@ -1464,6 +1475,37 @@ enum PendingKind {
     ///
     /// [`AccountKeysQuery`]: PendingKind::AccountKeysQuery
     AccountKeysQueryOutOfBand,
+    /// An out-of-band `/keys/query` naming **another person**, queued by a
+    /// verification that finished by scanning a code.
+    ///
+    /// [`AccountKeysQueryOutOfBand`]'s sibling, built the same way by
+    /// `OlmMachine::query_keys_for_users` and for the same class of reason:
+    /// upstream will not volunteer this question either, and the answer to
+    /// it is the whole product of the verification that queued it. See
+    /// `verification::queue_peer_key_queries` for what that verification is
+    /// and why the query belongs to it.
+    ///
+    /// **A separate variant rather than [`KeysQuery`], for
+    /// [`AccountKeysQueryOutOfBand`]'s reason exactly.** Upstream's
+    /// `build_key_query_for_users` "does not store the details" and several
+    /// such queries can be in flight at once
+    /// (`identities/manager.rs:804-816`), so the "forget about any previous
+    /// key queries in flight" rule that makes ordinary key queries supersede
+    /// each other does not reach it. Folded in with them, an ordinary
+    /// `/keys/query` handed out for some unrelated user would evict this one
+    /// while it was still in flight, and the signature the verification just
+    /// posted would never be read back.
+    ///
+    /// **And a separate variant rather than
+    /// [`AccountKeysQueryOutOfBand`]**, which asks about *this* account and
+    /// whose answer sets [`RequestState::account_keys_answered`]. This one
+    /// names somebody else, so it must set nothing: `signing.rs`'s ordering
+    /// gate would otherwise be lifted by an answer about a stranger, which
+    /// is the exact failure [`answer_speaks_about`] exists to prevent.
+    ///
+    /// [`KeysQuery`]: PendingKind::KeysQuery
+    /// [`AccountKeysQueryOutOfBand`]: PendingKind::AccountKeysQueryOutOfBand
+    PeerKeysQueryOutOfBand,
     KeysClaim,
     ToDevice,
     SignatureUpload,
@@ -1497,7 +1539,8 @@ impl PendingKind {
             PendingKind::KeysUpload => "keys_upload",
             PendingKind::KeysQuery
             | PendingKind::AccountKeysQuery
-            | PendingKind::AccountKeysQueryOutOfBand => "keys_query",
+            | PendingKind::AccountKeysQueryOutOfBand
+            | PendingKind::PeerKeysQueryOutOfBand => "keys_query",
             PendingKind::KeysClaim => "keys_claim",
             PendingKind::ToDevice => "to_device",
             PendingKind::SignatureUpload => "signature_upload",
@@ -1531,7 +1574,8 @@ impl PendingKind {
             PendingKind::KeysUpload => &["one_time_key_counts"],
             PendingKind::KeysQuery
             | PendingKind::AccountKeysQuery
-            | PendingKind::AccountKeysQueryOutOfBand => &[
+            | PendingKind::AccountKeysQueryOutOfBand
+            | PendingKind::PeerKeysQueryOutOfBand => &[
                 "failures",
                 "device_keys",
                 "master_keys",
@@ -1626,6 +1670,15 @@ impl PendingKind {
     /// [`queue_action_request`], and `facade.ts`'s `OutgoingRequest` table
     /// documents each endpoint as live. They are still given no blanket
     /// eviction rule -- one would have been wrong then and is wrong now.
+    ///
+    /// [`PeerKeysQueryOutOfBand`](PendingKind::PeerKeysQueryOutOfBand) joins
+    /// them, and is the one member of this group that is a `/keys/query`.
+    /// It is per-flow in exactly `signature_upload`'s sense: one is queued by
+    /// each completed cross-user code verification, each names the person that
+    /// verification was with, and a query about one person supersedes nothing
+    /// about another. Bounded the same way `signature_upload` is, by there
+    /// being one per verification a caller actually ran rather than by any
+    /// rule here.
     fn eviction_group(self) -> Option<&'static str> {
         match self {
             PendingKind::KeysUpload
@@ -1635,7 +1688,10 @@ impl PendingKind {
             | PendingKind::SigningKeysUpload => Some(self.tag()),
             // Deliberately not `self.tag()`, which is `keys_query`.
             PendingKind::AccountKeysQueryOutOfBand => Some("account_keys_query_out_of_band"),
-            PendingKind::ToDevice | PendingKind::SignatureUpload | PendingKind::RoomMessage => None,
+            PendingKind::ToDevice
+            | PendingKind::SignatureUpload
+            | PendingKind::RoomMessage
+            | PendingKind::PeerKeysQueryOutOfBand => None,
         }
     }
 }
@@ -1746,6 +1802,37 @@ struct RequestState {
     /// (`identities/manager.rs:836-852`), which after the first sync it
     /// always is.
     queued_account_query: Option<(u64, OwnedTransactionId, KeysQueryRequest)>,
+    /// Out-of-band `/keys/query` requests naming **other people**, queued by
+    /// completed cross-user code verifications and not yet handed out.
+    ///
+    /// A `Vec` rather than a slot, and that is the one shape difference from
+    /// `queued_account_query` above. That slot holds one question about one
+    /// account and a second copy of it tells nobody anything; these are one
+    /// question per person, and two verifications with two different people
+    /// completing in the same sync owe two different queries. Collapsing them
+    /// into a slot would silently drop one and leave that person reading
+    /// unverified for ever.
+    ///
+    /// Keyed by nothing and de-duplicated by nothing, because
+    /// `verification.rs` de-duplicates at the only place a duplicate could be
+    /// produced: `FlowRecord::key_query_queued` marks a flow the moment its
+    /// query is queued, and one flow completes once.
+    ///
+    /// **Carries no sequence, unlike the two slots above, and that is the one
+    /// thing about this queue that is load-bearing.** A stamp taken at queue
+    /// time would sort these ahead of everything upstream produced during the
+    /// same sync, and the request they must not overtake is exactly one of
+    /// those: the signature upload the completion made, which is what the
+    /// query exists to read back. Sent first, the query returns a master key
+    /// that does not carry the signature yet and the person stays
+    /// `Unverified`. So they are stamped at hand-out instead, after the block
+    /// that carries upstream's own requests, which puts them behind it in the
+    /// one order this module hands out. **Measured, not reasoned:** with a
+    /// queue-time stamp, `tests/level_two_scanned.rs` reported `Unverified`
+    /// against a real homeserver after a verification that had demonstrably
+    /// succeeded, and no level 1 test could see it because those answer the
+    /// query by hand.
+    queued_peer_queries: Vec<(OwnedTransactionId, KeysQueryRequest)>,
     pending: BTreeMap<String, Pending>,
     /// Whether a `/keys/query` naming this machine's own account has been
     /// answered **about that account** in this process.
@@ -1798,6 +1885,7 @@ static STATE: StdMutex<RequestState> = StdMutex::new(RequestState {
     queued_action: Vec::new(),
     queued_signing_keys: None,
     queued_account_query: None,
+    queued_peer_queries: Vec::new(),
     pending: BTreeMap::new(),
     account_keys_answered: false,
     next_sequence: 0,
@@ -1901,6 +1989,26 @@ pub(crate) fn queue_account_key_query(id: OwnedTransactionId, request: KeysQuery
     state.queued_account_query = Some((sequence, id, request));
 }
 
+/// Queues the out-of-band `/keys/query` for **another person** that a
+/// completed cross-user code verification owes.
+///
+/// [`queue_account_key_query`]'s sibling, with the same rule about the
+/// transaction id: it comes from upstream and must be used verbatim, because
+/// `mark_request_as_sent` passes it on to `receive_keys_query_response`,
+/// which looks it up among the queries it believes are in flight.
+///
+/// Appends rather than replacing, for the reason
+/// [`RequestState::queued_peer_queries`] gives: two verifications with two
+/// people can complete in one sync, and they owe two different questions.
+///
+/// Takes no sequence, which is the other thing that queue says: this request
+/// must not overtake the signature upload the same completion produced, so it
+/// is stamped when it is handed out rather than when it is queued.
+pub(crate) fn queue_peer_key_query(id: OwnedTransactionId, request: KeysQueryRequest) {
+    let mut state = STATE.lock().expect("request registry poisoned");
+    state.queued_peer_queries.push((id, request));
+}
+
 /// Whether a `/keys/query` naming this machine's own account has been asked
 /// *and answered* in this process. `signing.rs`'s ordering gate reads this
 /// and nothing else for the "have we asked" half of its question.
@@ -1941,6 +2049,7 @@ fn reset_request_state_for_test() {
     state.queued_action.clear();
     state.queued_signing_keys = None;
     state.queued_account_query = None;
+    state.queued_peer_queries.clear();
     state.pending.clear();
     state.account_keys_answered = false;
     state.next_sequence = 0;
@@ -2419,6 +2528,30 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
         ));
     }
 
+    // The queries a completed cross-user code verification owes about the
+    // person it verified. Not routed through `account_scoped` either, and for
+    // the opposite half of the same reason: `verification.rs` queues one only
+    // for a flow whose other party is *not* this account, so narrowing could
+    // only ever misclassify.
+    //
+    // **Stamped here rather than at queue time, unlike the two slots above,
+    // and pushed after the block that carries upstream's own requests.** That
+    // ordering is the whole point: the same completion that queued this also
+    // made a signature upload, which upstream holds in its own cache and which
+    // therefore reaches `fresh` in the loop at the top of this function. This
+    // request asks the server to hand back what that upload is about to tell
+    // it, so overtaking it returns a master key without the signature on it
+    // and leaves the person `Unverified`.
+    for (txn_id, query) in &state.queued_peer_queries {
+        let body = describe_keys_query(query)?;
+        fresh.push((
+            None,
+            txn_id.to_string(),
+            PendingKind::PeerKeysQueryOutOfBand,
+            body,
+        ));
+    }
+
     // Read by reference rather than cloned: `AnyOutgoingRequest` is not
     // `Clone` (it is `Debug` and nothing else upstream), and the borrow
     // ends before the drain below. Same "read, not drained, until every
@@ -2492,6 +2625,7 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
     state.queued_action.clear();
     state.queued_account_query = None;
     state.queued_signing_keys = None;
+    state.queued_peer_queries.clear();
 
     // Evict every existing `pending` entry whose kind this batch is about
     // to refresh, once per call rather than once per item -- per-item
@@ -2789,7 +2923,8 @@ async fn mark_sent(
         }
         PendingKind::KeysQuery
         | PendingKind::AccountKeysQuery
-        | PendingKind::AccountKeysQueryOutOfBand => {
+        | PendingKind::AccountKeysQueryOutOfBand
+        | PendingKind::PeerKeysQueryOutOfBand => {
             let response = KeysQueryResponse::try_from_http_response(http_response(body))
                 .map_err(|_| SessionError::MalformedPayload)?;
             machine
@@ -4105,6 +4240,81 @@ mod tests {
             after_one, after_three,
             "repeated idle calls must not grow STATE.pending: {after_one} entries after one call, {after_three} after three"
         );
+    }
+
+    /// The key query a completed cross-user verification queues must survive
+    /// the ordinary key queries handed out beside it and after it.
+    ///
+    /// [`PendingKind::PeerKeysQueryOutOfBand`] is a separate variant for
+    /// exactly this, and nothing else in this crate measures it: its whole
+    /// content is that it shares no eviction group with
+    /// [`PendingKind::KeysQuery`], so a fresh ordinary query for an
+    /// unrelated user does not throw it away while it is still in flight.
+    /// Folded into `keys_query`'s group, the id below is gone by the second
+    /// drain and the caller can never report the answer, which means the
+    /// signature that verification produced is never read back and the
+    /// person stays `Unverified` for the life of the process. That is the
+    /// bug this variant exists to prevent, and this is the assertion that
+    /// would notice it coming back.
+    ///
+    /// Driven through the real path rather than by inspecting the match: the
+    /// query is queued the way `verification.rs` queues it, handed out by
+    /// `take_outgoing_requests`, and then two more idle drains are performed
+    /// so that upstream re-offers its own `keys_upload` and `keys_query` and
+    /// the eviction really runs.
+    #[test]
+    fn a_key_query_owed_to_a_verified_person_survives_the_ordinary_ones() {
+        let _guard = futures::executor::block_on(crate::machine::lock_for_test());
+        crate::machine::reset_for_test();
+        reset_request_state_for_test();
+        let dir = tempfile::tempdir().unwrap();
+
+        futures::executor::block_on(async {
+            crate::machine::create_machine(config_in(dir.path()))
+                .await
+                .unwrap();
+            take_outgoing_requests().await.unwrap();
+
+            let peer: matrix_sdk_common::ruma::OwnedUserId =
+                "@somebody:example.org".parse().unwrap();
+            let id = TransactionId::new();
+            queue_peer_key_query(
+                id.clone(),
+                KeysQueryRequest {
+                    timeout: None,
+                    device_keys: BTreeMap::from([(peer, Vec::new())]),
+                },
+            );
+
+            let handed_out = take_outgoing_requests().await.unwrap();
+            assert!(
+                handed_out.iter().any(|request| request.id == *id),
+                "the queued query must be handed out at all, or the assertion below is \
+                 about an id that never existed: {handed_out:?}"
+            );
+            assert!(
+                handed_out
+                    .iter()
+                    .any(|request| request.id != *id && request.kind == "keys_query"),
+                "and an ordinary key query must be handed out beside it, or nothing in \
+                 this batch could evict anything: {handed_out:?}"
+            );
+
+            // Two more idle drains, each of which re-offers upstream's own
+            // standing requests and therefore runs the eviction.
+            take_outgoing_requests().await.unwrap();
+            take_outgoing_requests().await.unwrap();
+
+            assert!(
+                STATE
+                    .lock()
+                    .expect("request registry poisoned")
+                    .pending
+                    .contains_key(&id.to_string()),
+                "the query owed to the person a verification just signed must still be \
+                 resolvable after ordinary key queries have come and gone"
+            );
+        });
     }
 
     /// A `mark_request_sent` call that fails (malformed `response_json`)

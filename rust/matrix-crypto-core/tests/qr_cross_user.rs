@@ -383,12 +383,13 @@ fn another_user_verifies_by_scanning_a_code_this_library_showed() {
         // Verifying another user signs their master key. Nothing about a
         // *device* changes here at all -- upstream's own completed code
         // names no device in this mode -- and the identity it does name will
-        // not read verified until our signature comes back on a later key
-        // query, which is the step this file performs a few lines below and
-        // calls the homeserver's other half. So a `TrustChanged` saying
-        // `Verified` at this moment would be contradicted by the very call a
-        // product is told to read when one arrives. The assertion under this
-        // one measures that rather than asserting it from a distance.
+        // not read verified until our signature comes back on the key query
+        // this completion queues, which is the step this file performs a few
+        // lines below and calls the homeserver's other half. So a
+        // `TrustChanged` saying `Verified` at this moment would be
+        // contradicted by the very call a product is told to read when one
+        // arrives. The assertion under this one measures that rather than
+        // asserting it from a distance.
         let signals = drain_signals("a code this library showed another user was scanned");
         assert_eq!(
             signals,
@@ -445,36 +446,72 @@ fn another_user_verifies_by_scanning_a_code_this_library_showed() {
             signature.body
         );
         let our_signature = uploaded_signatures(&signature.body, BOB);
-        for request in &owed {
-            mark_request_sent(&request.id, r#"{"failures":{}}"#)
-                .await
-                .expect("a signature upload response must be accepted");
-        }
 
-        // The homeserver's other half, and it is not bookkeeping. Upstream
-        // decides another user's device is trusted by checking *our*
-        // user-signing key's signature on *their* master key, read out of
-        // our own store. Making the signature does not put it there; the
-        // next key query does, which is what a real client does on the next
-        // device-list change. Without this the assertion below is about a
-        // store that has never seen the signature this flow produced.
-        // `tests/verified_sender.rs` calls this step seven and needs it for
-        // exactly the same reason.
-        receive_sync_changes(
-            &serde_json::json!({ "changed_devices": { "changed": [BOB] } }).to_string(),
-        )
-        .await
-        .expect("the library must accept a device-list change");
-        let requery = take_outgoing_requests()
-            .await
-            .expect("the pump must be drainable");
-        let requery = requery
+        // ---- And the question that makes the signature worth anything -------
+        //
+        // THE HOMESERVER'S OTHER HALF, QUEUED BY THE COMPLETION RATHER THAN
+        // ASKED OF THE PRODUCT.
+        //
+        // Upstream decides another user's device is trusted by checking *our*
+        // user-signing key's signature on *their* master key, read out of our
+        // own store. Making the signature does not put it there; a
+        // `/keys/query` does. Nothing used to queue one: upstream volunteers
+        // it only for a user it has newly started tracking
+        // (`store/mod.rs:255-273`), and the other route,
+        // `device_lists.changed`, is a homeserver's to send and it sends it
+        // only for people an encrypted room is shared with. So this library
+        // answered `Unverified` about the person it had just verified, for
+        // the life of the process, and no call on the published surface could
+        // fix it. `verification::queue_peer_key_queries` is what queues it
+        // now, and this is the assertion that says so.
+        //
+        // Read out of the **same drain** as the signature upload, with no
+        // sync, no device-list change and no second call in between: the only
+        // thing that can have produced it is the completion itself.
+        let requery = owed
             .iter()
             .find(|request| {
                 request.kind == "keys_query"
                     && queried_users(&request.body).iter().any(|u| u == BOB)
             })
-            .expect("a sync naming the other user as changed must get a key query issued");
+            .expect(
+                "a completed cross-user code verification must queue a key query about \
+                 the person it verified, or this library reports them unverified for \
+                 the life of the process and nothing a product can call fixes it",
+            );
+        assert_ne!(
+            requery.id, signature.id,
+            "and it must be a request of its own rather than the signature upload read \
+             twice"
+        );
+
+        // AND IT MUST COME OUT BEHIND THE SIGNATURE UPLOAD, NOT IN FRONT OF IT.
+        //
+        // The pump hands out one order and a product sends in it. This query
+        // asks the server to hand back what the upload beside it is about to
+        // tell the server, so a query that went first would be answered with a
+        // master key that does not carry the signature yet, and the person
+        // would read unverified after a verification that succeeded. That is
+        // not hypothetical: it is what a queue-time sequence stamp produced,
+        // and `tests/level_two_scanned.rs` is where it was seen, because a
+        // level 1 test answers the query by hand and cannot notice. This is the
+        // assertion that keeps it from coming back.
+        let position = |id: &str| {
+            owed.iter()
+                .position(|request| request.id == id)
+                .expect("both requests came out of this batch")
+        };
+        assert!(
+            position(&signature.id) < position(&requery.id),
+            "the signature upload must be handed out before the key query that reads it \
+             back: {owed:?}"
+        );
+
+        // Answered in the order a product would send them, which is the order
+        // the pump handed them out.
+        mark_request_sent(&signature.id, r#"{"failures":{}}"#)
+            .await
+            .expect("a signature upload response must be accepted");
         mark_request_sent(
             &requery.id,
             &serde_json::json!({
@@ -494,9 +531,21 @@ fn another_user_verifies_by_scanning_a_code_this_library_showed() {
             statuses.iter().any(
                 |status| status.device_id == BOB_DEVICE && status.trust == TrustState::Verified
             ),
-            "the device on the other end of a completed flow must read verified: \
+            "the device on the other end of a completed flow must read verified, and \
+             the only thing this side did to get there was the ordinary pump loop: \
              {statuses:?}"
         );
+
+        // Everything else the completion left in the pump, answered so the
+        // phases below start from an empty one.
+        for request in &owed {
+            if request.id == signature.id || request.id == requery.id {
+                continue;
+            }
+            mark_request_sent(&request.id, r#"{"failures":{}}"#)
+                .await
+                .expect("the remaining requests of a completed flow must be resolvable");
+        }
 
         // ---- The registry does not keep it ---------------------------------
         //
@@ -510,6 +559,23 @@ fn another_user_verifies_by_scanning_a_code_this_library_showed() {
         //
         // This is the ordinary shape, where the code really did finish. The
         // last phase of this file drives the other one, where it never does.
+        //
+        // One empty sync first, and it is not padding. Upstream cancels a new
+        // request outright while another request with the same person is
+        // still in its map and not cancelled, and a *finished* request is not
+        // a cancelled one (`VerificationMachine::insert_request`,
+        // `verification/machine.rs:165-197`); the only thing that empties
+        // that map is `garbage_collect`, at the top of every
+        // `receive_sync_changes`. This sync used to be a device-list change,
+        // which was doing that job as a side effect while it fetched the
+        // signature back. The completion now queues that key query itself, so
+        // what is left here is the sync alone, which is what a product owes
+        // between two verifications with one person and what
+        // `requestVerification` says in `facade.ts`. Removing it turns the
+        // call below into a `Cancelled` flow, which is how it was found.
+        receive_sync_changes("{}")
+            .await
+            .expect("the library must accept an empty sync");
         let next = request_flow(BOB, BOB_DEVICE)
             .await
             .expect("a known device can be asked to verify again");

@@ -572,6 +572,17 @@ struct FlowRecord {
     /// Eviction is not a substitute: `release_finished` runs on the next
     /// registration, which is later than both.
     completion_announced: bool,
+    /// Whether the key query this flow's completion owes has been queued.
+    ///
+    /// [`completion_announced`](FlowRecord::completion_announced)'s sibling,
+    /// and deliberately not the same flag, because the two passes that set
+    /// them do not run under the same condition. [`announce_state_changes`]
+    /// returns before it touches anything when no observer is registered;
+    /// [`queue_peer_key_queries`] runs on every sync whether or not anybody
+    /// is listening. Sharing one flag would mean a product that never
+    /// subscribes never queued the query, and its answer about the person it
+    /// had just verified would stay wrong for the life of the process.
+    key_query_queued: bool,
 }
 
 impl FlowRecord {
@@ -582,6 +593,7 @@ impl FlowRecord {
             comparison: None,
             code: None,
             completion_announced: false,
+            key_query_queued: false,
         }
     }
 
@@ -607,6 +619,7 @@ impl FlowRecord {
             comparison: Some(comparison),
             code: None,
             completion_announced: false,
+            key_query_queued: false,
         }
     }
 }
@@ -820,6 +833,7 @@ fn stage_from(handles: &Handles) -> FlowStage {
         comparison: handles.comparison.clone(),
         code: handles.code.clone(),
         completion_announced: false,
+        key_query_queued: false,
     };
     stage_of(&mut record)
 }
@@ -861,8 +875,37 @@ fn is_finished(stage: FlowStage) -> bool {
 ///   every `Done` record it inspects, whether or not it produced a signal,
 ///   so the record is sweepable from then on.
 /// * with no observer registered, nothing will ever announce, so nothing is
-///   exempt. That is also what keeps a process that never subscribes on
-///   exactly the retention behaviour it had before this existed.
+///   exempt on that ground.
+///
+/// # The second exemption, which is not gated on an observer
+///
+/// [`queue_peer_key_queries`] loses the same race for the same reason, and
+/// what it loses is not a signal but the answer to *is this person
+/// verified?* It runs on every sync whether or not anybody has subscribed,
+/// so its exemption cannot be gated the way the first one is, and a process
+/// that never subscribes therefore no longer has exactly the retention it
+/// had before this existed.
+///
+/// **The widening is one sync wide and no wider.** A record can only reach
+/// `Done` inside `receive_sync_changes`, and `queue_peer_key_queries` runs
+/// at the end of that same call and marks every `Done` record it inspects.
+/// So by the time a sync returns there is no unmarked `Done` record left,
+/// and the set this exemption can hold back is bounded by the flows that
+/// finished during the sync currently running.
+///
+/// **And nothing in this repository measures it, which is said here rather
+/// than left to be assumed.** Reverting this clause to the single-condition
+/// rule it replaced leaves the whole suite green, which was watched rather
+/// than guessed at. The clause is unobservable outside the interleaving it
+/// exists for: a `register` from another thread landing between
+/// `receive_sync_changes` releasing the machine lock and
+/// `queue_peer_key_queries` taking the registry lock. That cannot be
+/// scheduled from a test here, and it cannot be closed by moving the pass
+/// inside the machine lock either, because `register` is itself called after
+/// its own `with_machine` has returned. So this is reasoning, not a
+/// measurement, and it is kept because the thing it protects is the answer
+/// to *is this person verified?* rather than a signal a caller can go and
+/// read again.
 fn release_finished(flows: &mut BTreeMap<String, FlowRecord>) {
     // Read once, outside the loop: it takes the observer registry's read
     // lock, and this already holds the flow registry's. Nothing anywhere
@@ -873,7 +916,10 @@ fn release_finished(flows: &mut BTreeMap<String, FlowRecord>) {
         if !is_finished(stage) && !request_is_over(record) {
             return true;
         }
-        stage == FlowStage::Done && !record.completion_announced && something_will_announce
+        if stage != FlowStage::Done {
+            return false;
+        }
+        (!record.completion_announced && something_will_announce) || !record.key_query_queued
     });
 }
 
@@ -2019,15 +2065,60 @@ pub async fn confirm_scan(flow: &FlowId) -> Result<(), MachineError> {
 ///
 /// The one call in this module a product must be able to make at any point
 /// a person can look at a screen and say "that is not what I see". It
-/// cancels the comparison if there is one -- which also cancels the request
-/// behind it -- and the request otherwise.
+/// cancels the comparison if there is one, the code if the flow became one,
+/// and the request otherwise. Each of the first two also cancels the request
+/// behind it, because upstream's own handle does that: both
+/// `Sas::cancel_with_code` and `QrVerification::cancel_with_code` open by
+/// cancelling their `RequestHandle`.
+///
+/// # Why the code arm exists, and what its absence cost a person
+///
+/// Reading the comparison and the request was enough for as long as a flow
+/// could only become a comparison. It is not enough for one that became a
+/// code, and the gap was not cosmetic:
+///
+/// * upstream allows **one live verification per person**. Inserting a
+///   second while an older uncancelled one with the same user is in its
+///   cache cancels *both* (`verification/cache.rs:86-104`, "Received a new
+///   verification whilst another one with the same user is ongoing.
+///   Cancelling both verifications"), and its sweep keeps everything that is
+///   neither done nor cancelled (`retain(|_, s| !(s.is_done() ||
+///   s.is_cancelled()))`, same file);
+/// * a code a peer scanned and this side never confirmed is neither of
+///   those, so it stays in that cache and takes the **next two**
+///   verifications with that person down with it, silently, before anybody
+///   has refused anything. `tests/qr_halt_recovery.rs` measures both, and
+///   why it is two rather than one or than all of them;
+/// * and the request behind such a flow is already `Done`, because upstream
+///   advances the two unalike from one `m.key.verification.done`:
+///   `VerificationRequest::receive_done` moves a `Transitioned` request
+///   unconditionally (`verification/requests.rs:934-940`) while
+///   `QrVerification::receive_done` leaves a `Scanned` code exactly where it
+///   is (`verification/qrcode.rs:392-440`). So the request arm has nothing
+///   left to cancel and answers `None`.
+///
+/// Together those made this call answer [`MachineError::WrongStage`] to the
+/// one situation a product most needs it for. A person whose scan went
+/// wrong then had no call that freed them to try that contact again, and
+/// their next attempt died with no error attached to it. Cancelling the code
+/// is what puts the cache entry into the state upstream's own sweep removes.
+/// `tests/qr_halt_recovery.rs` drives the whole sequence, halt then abandon
+/// then verify again, rather than asserting that this call returned success,
+/// and it measures the silent casualty first so that the recovery has
+/// something to be measured against.
+///
+/// **The order is [`stage_of`]'s order and means the same thing.** A flow is
+/// a comparison or a code and never both, because upstream's `Verification`
+/// is one enum over the two, so these are alternatives rather than a
+/// precedence rule to reason about.
 pub async fn cancel_flow(flow: &FlowId) -> Result<(), MachineError> {
     let handles = handles(flow).await?;
-    let outgoing = match (&handles.comparison, &handles.request) {
-        (Some(comparison), _) => comparison.cancel(),
-        (None, Some(request)) => request.cancel(),
+    let outgoing = match (&handles.comparison, &handles.code, &handles.request) {
+        (Some(comparison), _, _) => comparison.cancel(),
+        (None, Some(code), _) => code.cancel(),
+        (None, None, Some(request)) => request.cancel(),
         // Unreachable, for the reason `accept_flow` gives.
-        (None, None) => None,
+        (None, None, None) => None,
     }
     // Upstream returns `None` when the flow is already cancelled. Reported
     // rather than treated as success: "already refused" and "refused by
@@ -2148,6 +2239,150 @@ fn take_pending_completions() -> Pending {
     }
 
     pending
+}
+
+/// Everybody a flow that finished by scanning owes a `/keys/query` about,
+/// marking each record on the way out so one flow owes it once.
+///
+/// [`take_pending_completions`]'s shape, walking the same registry for a
+/// different fact, and marking on the *stage* for the same reason: a record
+/// [`release_finished`] holds back must become sweepable on the next pass
+/// whether or not it turned out to owe anything.
+///
+/// Every completed code flow is collected here, including one with this
+/// account itself. Filtering that out needs the machine's own user id, which
+/// this function has no business taking a lock for;
+/// [`queue_peer_key_queries`] does it where the id is already in hand.
+fn peers_owed_a_key_query() -> Vec<OwnedUserId> {
+    let mut flows = FLOWS.lock().expect("verification registry poisoned");
+    let mut owed = Vec::new();
+
+    for record in flows.values_mut() {
+        if record.key_query_queued {
+            continue;
+        }
+        if stage_of(record) != FlowStage::Done {
+            continue;
+        }
+        record.key_query_queued = true;
+
+        // The code's own `Done`, not the stage, for `take_pending_completions`'
+        // reason at the same question: a flow whose request reached `Done`
+        // without its code doing so is not one that finished by scanning.
+        let other = code_of(record)
+            .filter(|code| matches!(code.state(), QrVerificationState::Done { .. }))
+            .map(|code| code.other_user_id().to_owned());
+        if let Some(other) = other {
+            owed.push(other);
+        }
+    }
+
+    owed
+}
+
+/// Asks the homeserver about the person a code verification just verified,
+/// so that what this library says about them stops being wrong.
+///
+/// # The fact this closes
+///
+/// Verifying **another user** by code produces one thing: our user-signing
+/// key's signature over their master key, made and uploaded in the code's
+/// `Confirmed`/`Reciprocated` to `Done` transition. Nothing local records
+/// it. Upstream marks an identity verified only when it is our own
+/// (`verification/mod.rs:644-649` calls `mark_as_verified` inside
+/// `if let UserIdentityData::Own`), and [`crate::device_statuses`] answers
+/// upstream's `is_verified`, which for another person's device is
+/// `is_locally_trusted() || is_cross_signing_trusted(..)`. A completed code
+/// names no device to trust locally in this mode, and the cross-signing half
+/// asks whether our signature is on their master key **as it stands in our
+/// own store**. So until a `/keys/query` brings that signature back, this
+/// library reports the person it has just verified as unverified.
+///
+/// # Why the query is queued here rather than asked of the product
+///
+/// Because there is no call a product could make. Tracking a user is the
+/// only thing on the published surface that leads to a key query, and
+/// upstream's `update_tracked_users` flags only the users it *newly*
+/// inserts (`store/mod.rs:255-273`), so calling `share_scope_key` again for
+/// somebody already tracked queues nothing at all. The other route,
+/// `device_lists.changed`, is the homeserver's to send and it sends it only
+/// for people an encrypted room is shared with. Making this the product's
+/// job would therefore have meant adding a call whose whole content is a
+/// protocol fact a product should not have to hold, and until it was called
+/// [`crate::device_statuses`] would answer wrongly about a person the
+/// library had just verified. A value that is wrong until an unqueued call
+/// is worse than one documented as needing it, and worse again than one
+/// that simply queues it.
+///
+/// Precedented rather than novel: `signing::bootstrap_identity` and
+/// `recovery`'s writer both queue an out-of-band key query of their own
+/// through `OlmMachine::query_keys_for_users` for the same class of reason,
+/// which is that upstream will not volunteer the question and the caller
+/// cannot ask it.
+///
+/// # What it still asks of a product, and where that is written
+///
+/// **Queued is not answered.** This puts one `keys_query` into
+/// [`crate::take_outgoing_requests`]' output, and the trust answer does not
+/// move until the product has sent it and reported it with
+/// [`crate::mark_request_sent`], which is the same contract every other call
+/// in this library carries. `getDeviceStatuses` in
+/// `packages/react-native-matrix-crypto/src/facade.ts` says so where a
+/// product author reads it.
+///
+/// # Only the cross-user code flow, and why the other shapes are not here
+///
+/// * **Both self modes** already read correctly at completion: the identity
+///   is our own, so upstream does mark it verified, and
+///   `tests/qr_self_new_login_shows.rs` asserts the device reads verified
+///   the moment the flow finishes.
+/// * **A cross-user comparison** already reads correctly too, by a different
+///   route: `SasState::Done` names the device and upstream sets
+///   `LocalTrust::Verified` on it (`verification/mod.rs:683-720`), so
+///   `is_locally_trusted()` answers before any signature comes back. That
+///   this leaves *their other* devices unverified until a key query is older
+///   than this milestone and is `tests/verified_sender.rs`' step seven.
+/// * A flow that was cancelled or that never became a code owes nothing:
+///   nothing was signed.
+///
+/// # Called from `receive_sync_changes`, and before the announcement
+///
+/// It has to be a sync, because that is the only moment a flow can reach
+/// `Done`. It is not folded into [`announce_state_changes`] because that
+/// function returns before it touches anything when no observer is
+/// registered, and a product that never subscribes needs this just as much
+/// as one that does. It runs *before* the announcement so that the query is
+/// already queued when a listener is told the flow finished: `emit_crypto`
+/// detaches delivery into its own task, so a listener that reacts by
+/// draining the pump can be running while this function's caller is still
+/// returning.
+pub(crate) async fn queue_peer_key_queries() {
+    let owed = peers_owed_a_key_query();
+    if owed.is_empty() {
+        return;
+    }
+
+    // A failure here is `NotInitialised` and nothing else, and a process with
+    // no machine has nobody to be wrong about. The marks are spent either
+    // way, which matches `take_pending_completions`' own trade at the same
+    // place.
+    let _ = with_machine(move |machine| {
+        Box::pin(async move {
+            for user in owed {
+                // Our own account never needs this, and cannot be reached by
+                // mode `0x00` in any case. Filtered rather than assumed, so
+                // that a self-mode flow which somehow reached the collector
+                // costs a request nobody wanted rather than a query naming
+                // this account, which `session.rs`'s ordering gate reads.
+                if user == *machine.user_id() {
+                    continue;
+                }
+                let (id, request) = machine.query_keys_for_users(std::iter::once(&*user));
+                crate::session::queue_peer_key_query(id, request);
+            }
+        })
+    })
+    .await;
 }
 
 /// The `(sender, transaction id)` of every `m.key.verification.start` among

@@ -1064,6 +1064,24 @@ export async function bootstrapCrossSigning(): Promise<void> {
  * "some device here reads verified" is true of an installation that has
  * never run a verification in its life. What carries a claim is a device of
  * *another* user changing from `'unverified'` to `'verified'`.
+ *
+ * # After verifying **another person** by code, pump once more
+ *
+ * A code verification with somebody else produces one thing: a signature
+ * your account makes over their identity. Whether they read `'verified'`
+ * here depends on that signature being in your store, and making it does
+ * not put it there. Only the homeserver's answer to a `'keys_query'` about
+ * them does.
+ *
+ * **This library queues that query for you**, on the sync that completes the
+ * flow, so there is no extra call to find. But queued is not answered: the
+ * request comes out of {@link takeOutgoingRequests} like any other, and this
+ * value does not move until you have sent it and reported it with
+ * {@link markRequestSent}. So when `onCryptoSignal` announces
+ * `'verification_completed'` for a flow with another person, **drain the
+ * pump once more before reading this**, and expect `'unverified'` if you
+ * read it in between. Verifying one of your **own** devices needs none of
+ * that: it reads `'verified'` the moment the flow finishes.
  */
 export async function getDeviceStatuses(userId: string): Promise<DeviceStatus[]> {
   try {
@@ -1126,6 +1144,28 @@ export async function getDeviceStatuses(userId: string): Promise<DeviceStatus[]>
  * {@link startVerificationComparison}; the other gets
  * `'comparison_already_started'`, answers the comparison with a second
  * {@link acceptVerification}, and carries on from step 4.
+ *
+ * # One sync between two verifications with the same person
+ *
+ * **Call {@link receiveSyncChanges} at least once between finishing one
+ * verification with somebody and starting the next with that same person.**
+ * Without it the new one comes back already cancelled: nothing was refused,
+ * nothing failed, and {@link getVerificationStage} simply reads
+ * `'cancelled'` from the start.
+ *
+ * This is the layer underneath, not a rule of this library, and it is not
+ * something a workaround here could remove. It allows one live verification
+ * per person, and a verification that **finished** is not a cancelled one,
+ * so a second request opened while the first is still in its map cancels
+ * both. The only thing that empties that map is the sweep it runs at the top
+ * of every sync. An ordinary product never notices, because it syncs
+ * continuously; a product that drives two verifications back to back from
+ * one screen, or from a test, walks straight into it.
+ *
+ * The same applies after a verification you gave up on with
+ * {@link cancelVerification}, and after one that ended any other way. Any
+ * sync will do and it does not have to carry anything: an empty payload is
+ * enough, because it is the sweep that matters and not the contents.
  */
 export async function requestVerification(userId: string, deviceId: string): Promise<string> {
   try {
@@ -1203,6 +1243,12 @@ export async function requestVerification(userId: string, deviceId: string): Pro
  * pass. Showing a code needs none of the account's private signing keys,
  * which is what makes it reachable on the device that is joining. See
  * {@link offerScannableCodes} and {@link getVerificationCode}.
+ *
+ * **Including the one sync between two verifications**, which for this call
+ * means your own account: a second self-verification opened without a
+ * {@link receiveSyncChanges} after the first comes back already cancelled.
+ * `requestVerification` says why, and the reason is the layer underneath
+ * rather than anything either call does.
  *
  * # Refusals
  *
@@ -1632,9 +1678,9 @@ export async function confirmVerification(verificationId: string, data: SasMater
  * at a screen and say "that is not what I see".** Refusing is not a failure
  * of this library; a comparison that can only ever agree proves nothing.
  *
- * Cancels the comparison if one has started -- which cancels the invitation
- * behind it -- and the invitation otherwise. Nothing is verified, on either
- * side.
+ * Cancels the comparison if one has started, the scannable code if the flow
+ * became one, and the invitation otherwise. The first two also cancel the
+ * invitation behind them. Nothing is verified, on either side.
  *
  * Rejects with `'wrong_stage'` for a flow that was already cancelled.
  * "Already refused" and "refused by this call" are the same outcome, but a
@@ -1644,6 +1690,28 @@ export async function confirmVerification(verificationId: string, data: SasMater
  * **Skipping this does not fail silently, but it does fail slowly.** A flow
  * nobody cancels sits open until the protocol's own ten-minute timeout
  * retires it.
+ *
+ * # The one screen this is the only way off
+ *
+ * A flow that reaches `'code-scanned'` is waiting for a person to answer
+ * {@link confirmScan}, and some clients will already have declared
+ * themselves finished by then. When that happens the flow never moves again:
+ * the stage stays `'code-scanned'` however long you pump, and
+ * {@link confirmScan} cannot end it because the other side has stopped
+ * listening.
+ *
+ * **This is the call that ends it, and it matters more than it looks.** A
+ * verification left in that state is still live as far as the layer
+ * underneath is concerned, and it allows one live verification per person,
+ * so it takes the next two attempts with that person down with it. Those two
+ * die quietly: no rejection, no error, just a flow that reads `'cancelled'`
+ * from the start. Cancel the stuck one, sync once (see
+ * {@link requestVerification} for why), and the next verification with that
+ * person behaves normally.
+ *
+ * A product that shows a code should therefore offer a way out of that
+ * screen rather than only a way forward, and call this when a person takes
+ * it.
  */
 export async function cancelVerification(verificationId: string): Promise<void> {
   try {
@@ -1757,6 +1825,26 @@ export function offerScannableCodes(enabled: boolean): void {
  * call {@link confirmScan} when they say yes. That is the step this method's
  * security rests on, exactly as {@link confirmVerification} is for a short
  * string.
+ *
+ * # One thing that can go wrong here and is not yours
+ *
+ * **A flow where you show the code will not complete against a client that
+ * announces itself finished as soon as it has scanned.** The specification
+ * puts that message last, after the person on the showing side has confirmed
+ * the scan, and that confirmation is the entire security argument of this
+ * method. A client that sends it early spends it while this side is still
+ * waiting for a person, and the layer underneath correctly ignores it. The
+ * flow then sits at `'confirmed'` for ever.
+ *
+ * This has been measured against a real third-party client rather than
+ * inferred: its own source calls the message "immediately", the two events
+ * arrive in one sync batch before any confirmation could exist, and the
+ * repository's `rust/matrix-crypto-core/tests/level_two_scanned.rs` asserts
+ * exactly that off the wire. **The deviation is that client's**, and
+ * nothing in this library can make such a flow finish. Scanning *their*
+ * code with {@link submitScannedCode} completes normally against the same
+ * client, and giving a person a way out with {@link cancelVerification} is
+ * what makes the failure recoverable.
  *
  * # Refusals
  *
@@ -1897,6 +1985,18 @@ export async function submitScannedCode(verificationId: string, payload: Uint8Ar
  *
  * **Skipping it does not fail loudly, but it does fail.** A flow nobody
  * confirms sits open until the protocol's own ten-minute timeout retires it.
+ *
+ * **And calling it does not always end the flow, through no fault of yours.**
+ * Some clients declare themselves finished the instant they accept a scan,
+ * before you have been asked anything. That is a deviation from the
+ * specification on their side, which puts that message after the
+ * confirmation you are being asked for; the message that would have
+ * completed this flow was spent then and no second one is coming. This call
+ * still succeeds, the stage moves to `'confirmed'`, and it stays there. See
+ * {@link getVerificationCode} for the measurement behind that. Give the
+ * person a way out of that screen and call {@link cancelVerification} when
+ * they take it, which is the only thing that frees them to verify that
+ * contact again.
  */
 export async function confirmScan(verificationId: string): Promise<void> {
   try {
