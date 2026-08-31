@@ -61,14 +61,17 @@
 //! against this counterparty**, and the reason is in the counterparty rather
 //! than here.
 //!
-//! **Two of the three end with each side reporting the other verified.** The
-//! cross-user one does not, on this side, and the reason is neither the
-//! counterparty's nor this milestone's: what that mode produces is a
-//! signature over the other person's master key, and this library will not
-//! report their devices verified until that signature is read back from the
-//! homeserver. Nothing here queues the key query that would read it back.
-//! Phase 3 asserts the signature was made and posted, and then asserts the
-//! unchanged trust state, so the limit is measured rather than implied.
+//! **All three end with each side reporting the other verified**, and the
+//! cross-user one only does so because of a fix this file used to record the
+//! absence of. What that mode produces is a signature over the other person's
+//! master key, and this library will not report their devices verified until
+//! that signature is read back from the homeserver. Nothing used to queue the
+//! key query that reads it back, and no call on the published surface could:
+//! `share_scope_key` re-queues nothing for a user already tracked, and
+//! `device_lists.changed` is the homeserver's to send. The completion queues
+//! it now. Phase 3 asserts the signature was made and posted, and then asserts
+//! that the trust state **moved**, with nothing between the two but the
+//! ordinary drain-send-report loop.
 //!
 //! **mautrix-go sends `m.key.verification.done` the instant it accepts a
 //! scanned code**, without waiting for the person on the showing side to
@@ -97,17 +100,22 @@
 //! then that the flow is left `Confirmed` and nothing is verified. A
 //! negative result, named and pinned, rather than a phase quietly left out.
 //!
-//! **A halted flow also cannot be cleared up, and that half is this
-//! library's.** Upstream allows one live verification per person and cancels
-//! both when a second is opened while the first is neither done nor
-//! cancelled (`verification/cache.rs:86-104`), so a halted flow blocks every
-//! later verification with that person for the life of the process. The way
-//! out would be to abandon it, and `cancel_flow` cannot: it reaches the
-//! comparison and the request and not the code, and the request behind a
-//! halted flow is already `Done`, so it refuses. Phase 2 asserts that
-//! refusal, and the two phases that leave a halted flow are given a
-//! counterparty account of their own so that what cannot be cleared up is at
-//! least contained.
+//! **A halted flow can be cleared up, and that half was this library's to
+//! fix.** Upstream allows one live verification per person and cancels both
+//! when a second is opened while the first is neither done nor cancelled
+//! (`verification/cache.rs:86-104`), so a halted flow takes the next
+//! verifications with that person down with it, silently. The way out is to
+//! abandon it, and `cancel_flow` could not: it reached the comparison and the
+//! request and not the code, and the request behind a halted flow is already
+//! `Done`, so it refused. It reads the code now. **Phase 2 abandons the halt
+//! and then verifies the same counterparty afterwards**, which is the whole
+//! answer to the finding this file used to record: that phase asserted the
+//! refusal, and asserts the recovery instead.
+//!
+//! `tests/qr_halt_recovery.rs` drives the same sequence at level 1, against a
+//! bare upstream machine, with the two silent casualties measured as its
+//! control. What this file adds is the counterparty that causes the halt in
+//! the first place.
 //!
 //! **What that costs, honestly stated.** The claim "a foreign client reads
 //! the symbol this library renders" is proven here: the counterparty decodes
@@ -133,11 +141,16 @@
 //!    from phase 1 and accepted rather than refused, which is what makes the
 //!    refusal above a refusal of the change rather than of the format. Then
 //!    the ordering defect above, measured. On its own counterparty account,
-//!    because it leaves a flow that cannot be cleared up.
+//!    because it is the account this file deliberately halts a flow on.
+//!    Then, on the same counterparty account, **the halt abandoned and that
+//!    person verified afterwards**: the same mode driven end to end with the
+//!    screens the other way round, ending with this library reporting their
+//!    device verified. Nothing between the halt and it but `cancel_flow` and
+//!    the ordinary sync loop.
 //! 3. **Cross-user, mode `0x00`.** The counterparty shows, this library
 //!    scans, the flow finishes on both sides, the counterparty reports this
-//!    library's owner verified, and this side's own view of them does not
-//!    move for the reason above.
+//!    library's owner verified, and this side's own view of them moves too,
+//!    on the key query the completion queues.
 //! 4. **Self, mode `0x02`.** A second device logs in to this library's own
 //!    account and does not trust the master key, so it shows the untrusted
 //!    self mode. This library scans it.
@@ -175,7 +188,7 @@ use matrix_crypto_core::{
     accept_flow, bootstrap_identity, cancel_flow, confirm_scan, create_machine, device_statuses,
     flow_stage, identity_status, offer_scanning, read_code, receive_sync_changes, request_flow,
     request_self_flow, set_crypto_observer, share_scope_key, submit_scanned_code, CryptoObserver,
-    CryptoSignal, FlowId, FlowStage, MachineConfig, MachineError, TrustState,
+    CryptoSignal, FlowId, FlowStage, MachineConfig, TrustState,
 };
 use serde_json::{json, Value};
 
@@ -810,32 +823,82 @@ fn a_third_party_client_and_this_library_verify_each_other_by_scanning_a_code() 
          Confirmed to Done transition this flow never makes"
     );
 
-    // AND IT CANNOT BE CLEARED UP, WHICH IS THE HALT'S SECOND COST AND A
-    // LIMIT OF THIS LIBRARY RATHER THAN OF THE COUNTERPARTY.
+    // AND IT CAN BE CLEARED UP, WHICH IS THE HALT'S SECOND COST REMOVED AND
+    // THE ONE HALF OF THIS FINDING THAT WAS THIS LIBRARY'S TO FIX.
     //
     // Upstream allows one live verification per person: inserting a new one
     // while an older uncancelled one with the same person is in its cache
     // cancels *both* (`verification/cache.rs:86-104`, "Received a new
     // verification whilst another one with the same user is ongoing.
-    // Cancelling both verifications"). A halted flow is uncancelled for
-    // ever, so it blocks every later verification with that person for the
-    // life of the process.
+    // Cancelling both verifications"). A halted flow is uncancelled for ever,
+    // so it takes the next verifications with that person down with it, and
+    // takes them silently: nothing is refused and no error reaches anybody.
     //
-    // The way out would be to abandon it, which is what a person does with a
-    // screen that never finishes. `cancel_flow` cannot: it reaches the
-    // comparison and the request and **not the code**, and the request
-    // behind a halted flow is already `Done`, so upstream has nothing left
-    // to cancel and the call refuses. The code handle sitting in the same
-    // record is what would answer, and nothing reads it.
-    //
-    // Measured, not reasoned: this assertion is the refusal itself. That is
-    // also why the two phases above are on a counterparty account of their
-    // own -- what cannot be cleared up must at least be contained.
+    // The way out is to abandon it, which is what a person does with a screen
+    // that never finishes. `cancel_flow` could not: it reached the comparison
+    // and the request and **not the code**, and the request behind a halted
+    // flow is already `Done`, so upstream had nothing left to cancel and the
+    // call refused. **This assertion used to be that refusal.** The code
+    // handle sitting in the same record is what answers now.
+    run(cancel_flow(&halted)).expect("a halted code flow must be abandonable through this surface");
     assert_eq!(
-        run(cancel_flow(&halted)),
-        Err(MachineError::WrongStage),
-        "a halted code flow can be neither finished nor abandoned through this surface, \
-         and a product meeting one has no call that frees the person to try again"
+        run(flow_stage(&halted)),
+        Ok(FlowStage::Cancelled),
+        "and the abandonment must be visible on the flow the caller named, not only in \
+         the return value: a product shows a person something on the strength of this"
+    );
+    // The counterparty is told, which is what frees its own side too.
+    pump_and_send(&homeserver, &library.token);
+
+    // =====================================================================
+    // PHASE 2b: AND THE SAME COUNTERPARTY IS VERIFIED AFTERWARDS
+    // =====================================================================
+    // The measurement the abandonment exists for, and it is the one thing a
+    // return value cannot show. Same account, same person, same mode; the only
+    // difference from a first verification is the halted flow behind it, which
+    // was abandoned rather than left.
+    //
+    // Driven with the screens the other way round from the halt above, because
+    // that is the direction that finishes against this counterparty: it shows,
+    // this library scans. Phase 2's own measurement is why. What is being
+    // proven here is that the *person* is reachable again, not that the
+    // counterparty's ordering defect went away.
+    //
+    // One sync first, and it is not padding. Upstream cancels a new request
+    // outright while another request with the same person is still in its map
+    // and not cancelled, and a request that finished is not a cancelled one
+    // (`verification/machine.rs`'s `insert_request`); the map is emptied at
+    // the top of every `receive_sync_changes`. `facade.ts` states that rule
+    // where a product author reads it.
+    session.sync();
+    let recovered = open_and_ready(
+        &mut session,
+        &mut shown_to,
+        &shown_user_id,
+        &shown_device_id,
+    );
+    let their_payload = code_shown_by(&mut shown_to, &recovered, 0x00);
+    run(submit_scanned_code(&recovered, &their_payload))
+        .expect("this library must read a code the counterparty rendered");
+    pump_and_send(&homeserver, &library.token);
+
+    shown_to.sync_until_seen("our_code_scanned");
+    let confirmed = shown_to.call(json!({"op": "confirm", "flow": recovered.0}));
+    assert_eq!(
+        confirmed["confirmed"],
+        json!(true),
+        "the side that showed the code answers for it: {confirmed}"
+    );
+    session.sync_until("the library finished the recovered flow", |session| {
+        stage(&recovered) == FlowStage::Done && session.completed(&recovered)
+    });
+    assert_eq!(
+        library_trust(&shown_user_id, &shown_device_id),
+        TrustState::Verified,
+        "THE RECOVERY. After a halted flow with this person was abandoned, a fresh \
+         verification with the same person runs end to end and this library reports \
+         their device verified. Nothing was done between the halt and this but the \
+         cancellation and the ordinary sync loop"
     );
 
     shown_to.call(json!({"op": "logout"}));
@@ -901,27 +964,34 @@ fn a_third_party_client_and_this_library_verify_each_other_by_scanning_a_code() 
          must have reached the pump: {:?}",
         session.posted
     );
-    // And this library still reports their device unverified, for as long as
-    // this process runs. `device_statuses` answers upstream's `is_verified`,
-    // which for another person's device asks whether *their identity* is
-    // verified, and an identity is verified by our signature being present
-    // on the master key **as the homeserver serves it back**. Nothing marks
-    // it locally (`verification/mod.rs:644-649` marks only our own), and
-    // nothing in this library queues the `/keys/query` that would read it
-    // back: the flow that would have is `device_lists.changed`, which a
-    // homeserver reports only for people we share an encrypted scope with.
+    // AND THIS SIDE'S OWN VIEW OF THEM MOVES, WHICH IT DID NOT UNTIL THE
+    // COMPLETION LEARNED TO ASK.
     //
-    // A limit rather than a defect in the verification: the counterparty's
-    // line above says the verification itself succeeded. It is recorded here
-    // because a product showing a tick from `getDeviceStatuses` after a
-    // cross-user scan would show nothing, and that is worth knowing before
-    // it is discovered on a phone. `tests/qr_cross_user.rs` found the same
-    // shape at level 1; this is it against a real homeserver.
+    // `device_statuses` answers upstream's `is_verified`, which for another
+    // person's device asks whether *their identity* is verified, and an
+    // identity is verified by our signature being present on the master key
+    // **as the homeserver serves it back**. Nothing marks it locally
+    // (`verification/mod.rs:644-649` marks only our own). So making the
+    // signature is not enough, and nothing in this library used to queue the
+    // `/keys/query` that reads it back: the flow that would have is
+    // `device_lists.changed`, which a homeserver reports only for people we
+    // share an encrypted scope with, and no call on the published surface can
+    // stand in for it (`update_tracked_users` flags only users it newly
+    // inserts). This side therefore answered `Unverified` about the person it
+    // had just verified, for the life of the process. **This assertion used
+    // to be that limit.**
+    //
+    // `verification::queue_peer_key_queries` queues it now, on the sync that
+    // completes the flow. Nothing was done here to help it: the `sync_until`
+    // above is the ordinary drain-send-report loop, the same one every other
+    // phase runs, and the query went out and came back inside it.
     assert_eq!(
         library_trust(&scanner_user_id, &scanner_device_id),
-        TrustState::Unverified,
-        "this side's own view of the other person does not move until a later key query \
-         for them is answered, and this library queues none"
+        TrustState::Verified,
+        "a completed cross-user code verification must leave this library reporting the \
+         other person's device verified, which needs their master key read back carrying \
+         our signature and therefore needs a key query nothing but the completion itself \
+         would ever ask for"
     );
 
     scanner.call(json!({"op": "logout"}));
