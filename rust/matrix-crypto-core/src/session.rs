@@ -86,10 +86,12 @@ fn decryption_settings() -> DecryptionSettings {
     //
     // `TrustRequirement` has three tiers and none of them is local trust
     // (`matrix-sdk-crypto-0.18.0/src/lib.rs`: `Untrusted`,
-    // `CrossSignedOrLegacy`, `CrossSigned`). A short-string comparison sets
-    // local trust, so tightening this to either cross-signed tier rejects
-    // every event from a peer whose device carries no cross-signature,
-    // however carefully a person compared strings with it.
+    // `CrossSignedOrLegacy`, `CrossSigned`). A verification sets local
+    // trust, whether the two people compared a short string or one of them
+    // scanned a code, so tightening this to either cross-signed tier
+    // rejects every event from a peer whose device carries no
+    // cross-signature, however carefully a person compared strings with it
+    // or photographed its screen.
     //
     // This used to add "which is every deployment this build supports",
     // and to call the decision one that "becomes makeable when
@@ -474,7 +476,8 @@ pub async fn receive_sync_changes(raw_json: &str) -> Result<SyncOutcome, Session
             // warns against. This is the moment every verification
             // transition this library observes actually happens: an
             // invitation arriving, a peer's confirmation completing a
-            // comparison, a flow timing out. It returns without touching
+            // comparison, a reciprocation saying the far side scanned this
+            // device's code, a flow timing out. It returns without touching
             // the store when nobody has subscribed to the signal channel.
             //
             // The processed events are handed over rather than the payload
@@ -1766,7 +1769,10 @@ struct RequestState {
     /// it, so a process holds at most one account for its whole life.
     /// `machine::reset_for_test` is the one place that swaps the held
     /// account, and it clears this through
-    /// [`forget_account_keys_answered_for_test`] for exactly that reason.
+    /// `forget_account_keys_answered_for_test` for exactly that reason.
+    /// A plain code span rather than a doc link: that function is
+    /// `#[cfg(test)]`, so a doc build cannot resolve it and a link would be
+    /// broken in exactly the way `scripts/assert-doc-links.sh` refuses.
     account_keys_answered: bool,
     next_sequence: u64,
 }
@@ -1807,8 +1813,9 @@ static STATE: StdMutex<RequestState> = StdMutex::new(RequestState {
 /// first, a timeout cancellation -- it queues into its own cache, and
 /// `OlmMachine::outgoing_requests` already returns them. The requests
 /// produced by an *action* the caller took -- requesting a verification,
-/// accepting one, starting a comparison, confirming, cancelling -- it
-/// returns directly and never queues. Nothing sends those unless this
+/// accepting one, starting a comparison, confirming, cancelling, handing in
+/// a scanned code, confirming a scan -- it returns directly and never
+/// queues. Nothing sends those unless this
 /// module holds on to them, and a verification whose first message is
 /// never sent is indistinguishable from one nobody answered.
 ///

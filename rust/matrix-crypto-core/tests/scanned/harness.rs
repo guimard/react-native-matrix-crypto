@@ -748,8 +748,16 @@ pub fn one_of<'a>(
         })
 }
 
-/// Every verification method this library announces, which a counterparty
-/// must answer with if a code is to be produced at all.
+/// Every verification method this library announces **once a product has
+/// called `offer_scanning`**, which a counterparty must answer with if a
+/// code is to be produced at all.
+///
+/// The switch is the load-bearing half of that sentence, and it was missing
+/// from it: a build that has not asked announces `["m.sas.v1"]` alone, and
+/// `tests/qr_announcement.rs` is where that default is the subject rather
+/// than the setting. Every file that uses this helper sets the switch
+/// deliberately before it does, so nothing was ever wrong except what this
+/// comment said.
 ///
 /// Named here so that a test which deliberately answers with *less* than
 /// this -- to drive the refusal a peer that cannot scan produces -- is

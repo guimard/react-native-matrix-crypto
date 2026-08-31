@@ -965,7 +965,7 @@ fn a_second_device_joins_the_identity_by_verifying_itself() {
             .get_verification(&account, &flow.0)
             .expect("the first device must have been told a comparison started")
             .sas_v1()
-            .expect("this library only ever starts short-string comparisons");
+            .expect("a flow this test started through begin_comparison is a comparison, not a code. It said this library only ever starts short-string comparisons, which was a claim about the library and stopped being true when it learned to scan");
         let accept = peer_sas
             .accept()
             .expect("a comparison the other side started can be accepted");

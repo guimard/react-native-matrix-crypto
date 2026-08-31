@@ -228,6 +228,17 @@ pub enum CryptoSignal {
     /// A comparison this process took part in completed, and a device
     /// belonging to `user` now reports `state`.
     ///
+    /// **A comparison and not a scan.** A verification finished by scanning
+    /// a code moves the same device to the same value and emits nothing
+    /// here: `verification::take_pending_completions` reads
+    /// `SasState::Done`'s own `verified_devices` for this variant, and a
+    /// code flow never reaches one. Such a flow announces
+    /// [`CryptoSignal::VerificationCompleted`] instead, which names the
+    /// flow and carries no trust, and that variant is where the asymmetry
+    /// between the two is argued. A product that needs to know either way
+    /// reads [`crate::device_statuses`], which is what both of them tell it
+    /// to do anyway.
+    ///
     /// Carries the user rather than the device, matching the shape the
     /// TypeScript union has declared since M1. Which of that user's devices
     /// moved is [`crate::device_statuses`]' answer, and reading it there is

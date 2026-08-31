@@ -68,13 +68,21 @@
 //! that way exists inside upstream's machine as a comparison and nothing
 //! else -- there is no request object behind it and there never will be.
 //!
-//! Every call on this surface answers both, and a caller does not have to
-//! know which it has: [`accept_flow`] agrees to whatever the flow is
-//! waiting on, [`read_material`] shows the string, [`confirm_flow`] says it
-//! matched, [`cancel_flow`] refuses. The one visible difference is that a
-//! bare-start flow is never [`FlowStage::Ready`] -- it is a comparison from
-//! the moment it exists -- so [`begin_comparison`] has nothing to do on one
-//! and says so.
+//! Every call on the short-string half of this surface answers both, and a
+//! caller does not have to know which it has: [`accept_flow`] agrees to
+//! whatever the flow is waiting on, [`read_material`] shows the string,
+//! [`confirm_flow`] says it matched, [`cancel_flow`] refuses. The one
+//! visible difference is that a bare-start flow is never
+//! [`FlowStage::Ready`] -- it is a comparison from the moment it exists --
+//! so [`begin_comparison`] has nothing to do on one and says so.
+//!
+//! **This said "every call on this surface" and the surface grew past it.**
+//! A code needs a request object to hang off, so [`read_code`] and
+//! [`submit_scanned_code`] refuse a bare-start flow with
+//! [`MachineError::WrongStage`] rather than answering it. That is not a gap
+//! to close: a peer that opened a comparison with no request before it has
+//! announced no methods at all, so there is nothing on such a flow that
+//! could have negotiated a code.
 //!
 //! The two shapes differ in *how many times* a caller agrees, not in what
 //! agreeing means: a request-shaped flow can need [`accept_flow`] twice,
@@ -126,9 +134,14 @@
 //!
 //! # A code and a string race, and the code can lose
 //!
-//! Both methods are announced on every flow this library opens or answers
-//! (see [`ANNOUNCED_METHODS`]), so both are live at once and either side may
-//! move first. Upstream settles it: a *displayed* code may still give way to
+//! On a flow that announced both (see [`announced_methods`], and
+//! [`offer_scanning`] for when that happens), both are live at once and
+//! either side may move first. This paragraph said both were announced on
+//! every flow, and pointed at an `ANNOUNCED_METHODS` constant, which is
+//! what the announcement was before it became a product's choice; neither
+//! the claim nor the name survived, and nothing failed when they stopped
+//! being true, because a doc link into a private module is not checked by
+//! anything this repository runs. Upstream settles it: a *displayed* code may still give way to
 //! a short-string comparison, but once either side has scanned it is too
 //! late (`verification/requests.rs:1404-1422`). A code that loses that race
 //! is cancelled without anybody refusing it, which is a thing a product
@@ -346,8 +359,16 @@ pub fn scanning_offered() -> bool {
     SCANNING_OFFERED.load(Ordering::Relaxed)
 }
 
-/// The methods this library announces, which is every method it can
-/// actually carry out right now.
+/// The methods this library announces, which is a product's own choice and
+/// not the list of what this library can carry out.
+///
+/// Those two were the same thing until [`offer_scanning`] existed, and the
+/// sentence that said so has been corrected rather than struck, because the
+/// distinction is the whole of the switch. Every method named in
+/// [`WITH_SCANNING`] is compiled in and reachable; a build that has not
+/// asked for codes announces [`WITHOUT_SCANNING`] and can carry out more
+/// than it says, deliberately, since a code a product cannot photograph is
+/// worse than one it never offered.
 ///
 /// Read at each of the three call sites that name methods rather than being
 /// captured once, so the answer describes the process at the moment a flow
@@ -425,18 +446,42 @@ impl std::fmt::Debug for ScannableCode {
 
 /// How far along a flow is.
 ///
-/// Deliberately coarser than upstream's two state enums, which between them
-/// distinguish nineteen states. What a caller has to decide is which of a
-/// small set of things to do next -- wait, accept, show the string, or tell
+/// Deliberately coarser than upstream's **three** state enums, which
+/// between them distinguish **nineteen** states: `VerificationRequestState`
+/// 6, `SasState` 7, `QrVerificationState` 6, counted in
+/// `matrix-sdk-crypto-0.18.0`. This said "two enums ... nineteen states",
+/// which is no pairing of the three: two of them distinguish thirteen. The
+/// third is the one the `qrcode` feature brought into this build, so
+/// turning that feature on made the number right and left the noun wrong,
+/// and the sentence was corrected once for what follows the number without
+/// the number in front of it being counted.
+///
+/// **`stage_of` reads all three**, which it did not always: while
+/// `QrVerificationState` was the one enum nothing here consulted, six
+/// states of a real flow had no stage of their own. [`code_of`] records
+/// why that held and [`stage_of_code`] is where the reading happens now.
+///
+/// What a caller has to decide is which of a small set of things to do next
+/// -- wait, accept, show the string, show the code, confirm a scan, or tell
 /// the user it is over -- and every distinction upstream draws that does not
 /// change that answer is one this surface would be inviting a product to
 /// branch on for no reason.
+///
+/// **This vocabulary was the short string's alone, and a flow that became
+/// a code was described in it for want of one of its own. That limit is
+/// lifted.** [`FlowStage::CodeScanned`] names the one state a scanned flow
+/// reaches that a comparison never does, so such a flow is no longer
+/// reported as the nearest string stage, and [`confirm_scan`] can tell a
+/// caller whether to wait or to start again once [`flow_stage`] is read
+/// first. What stays folded is upstream's `Confirmed` and `Reciprocated`,
+/// which are one stage here on purpose: [`stage_of_code`] says why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlowStage {
     /// Asked for, by one side or the other, and not yet answered.
     Requested,
-    /// Both sides have agreed to verify and one of them may now start the
-    /// comparison.
+    /// Both sides have agreed to verify. One of them may now start the
+    /// comparison, and on a flow that negotiated codes either may instead
+    /// show one or hand in a scanned one.
     Ready,
     /// The flow has begun and nothing is waiting on this side yet.
     ///
@@ -445,7 +490,8 @@ pub enum FlowStage {
     /// scanned it: keep it on the screen. Neither asks anything of a person.
     Started,
     /// The short authentication string is available and waiting to be
-    /// compared.
+    /// compared. Not reached by a flow proceeding by a code: there is no
+    /// string on one.
     KeysExchanged,
     /// This side has done what was asked of it; the other side has not
     /// finished.
@@ -455,10 +501,14 @@ pub enum FlowStage {
     /// confirmed that the other device scanned this one's. All three are
     /// the same situation for a person looking at a screen: wait.
     Confirmed,
-    /// Both sides said the strings match. The other device is now verified.
+    /// The flow finished and the other device is now verified, whether both
+    /// sides said the strings matched or one scanned the other's code and
+    /// the shower confirmed it. This said "both sides said the strings
+    /// match", which `tests/qr_cross_user.rs` contradicts while passing:
+    /// it reaches this stage with no string ever produced.
     Done,
     /// Over without a verification, whether because a side refused, a side
-    /// abandoned it, or it timed out.
+    /// abandoned it, a scanned code was refused, or it timed out.
     Cancelled,
     /// The other device has scanned the code this one is showing, and a
     /// person must say whether that was really them.
@@ -540,10 +590,17 @@ impl FlowRecord {
     ///
     /// These two constructors are the only way a record is built, and
     /// between them they keep this module's one structural invariant:
-    /// **every record holds at least one handle.** Neither field is ever
-    /// set back to `None` afterwards, so a record keeps whichever it was
-    /// built with for the life of the entry, and every function below can
-    /// say truthfully which shape it is looking at.
+    /// **every record holds at least one handle.** Neither the request nor
+    /// the comparison field is ever set back to `None` afterwards, so a
+    /// record keeps whichever it was built with for the life of the entry,
+    /// and every function below can say truthfully which shape it is
+    /// looking at.
+    ///
+    /// This said "neither field", which was a two-way word over a two-field
+    /// struct and stopped being one when `code` was added beside them.
+    /// `code` is a cache filled in later and is deliberately outside the
+    /// invariant, as its own field doc says; the invariant is over the two
+    /// named here and nothing else.
     fn from_comparison(comparison: Sas) -> Self {
         FlowRecord {
             request: None,
@@ -1074,11 +1131,14 @@ fn queue(request: impl Into<UpstreamOutgoingRequest>) {
 /// Asks a device to verify itself against this one.
 ///
 /// Advertises [`announced_methods`] rather than upstream's default list, for
-/// the reason that function gives: advertising a method this library cannot
-/// carry out is a claim the far side may act on, and taking a default is
-/// letting somebody else decide what this library claims. Whether a
-/// scannable code is among them is [`offer_scanning`]'s answer, and it is
-/// off until a product says otherwise.
+/// the reason that function gives: taking a default is letting somebody
+/// else decide what this library claims. The reason used to be that
+/// advertising a method this library cannot carry out is a claim the far
+/// side may act on, and it has moved rather than gone: this library can
+/// carry out both methods now, and what it may not claim is that a
+/// *product* can point a camera at a screen. Whether a scannable code is
+/// among them is [`offer_scanning`]'s answer, and it is off until a product
+/// says otherwise.
 pub async fn request_flow(user_id: &str, device_id: &str) -> Result<FlowId, MachineError> {
     // Owned before the closure, not borrowed, for the reason
     // `identity.rs` documents: `with_machine` requires a `'static` closure.
@@ -1174,11 +1234,27 @@ pub async fn request_flow(user_id: &str, device_id: &str) -> Result<FlowId, Mach
 ///
 /// # After it returns
 ///
-/// The flow is driven exactly like [`request_flow`]'s: pump, wait for
-/// [`FlowStage::Ready`], [`begin_comparison`], read the string with
-/// [`read_material`], show it to a person, and [`confirm_flow`] or
-/// [`cancel_flow`]. The person is comparing two of their own screens rather
-/// than talking to somebody else, which changes nothing about the calls.
+/// The flow is driven exactly like [`request_flow`]'s, **by either method**.
+///
+/// By short string: pump, wait for [`FlowStage::Ready`],
+/// [`begin_comparison`], read the string with [`read_material`], show it to
+/// a person, and [`confirm_flow`] or [`cancel_flow`]. The person is
+/// comparing two of their own screens rather than talking to somebody else,
+/// which changes nothing about the calls.
+///
+/// By scanned code, if [`offer_scanning`] is on: from the same
+/// [`FlowStage::Ready`], [`read_code`] and [`confirm_scan`] on the side
+/// showing, or [`submit_scanned_code`] on the side reading. **Two of the
+/// three modes a code has are self modes and both start here**, so this
+/// call is where they are reached from and this paragraph described only
+/// the string until the sweep that is correcting it.
+/// `tests/qr_self_new_login_shows.rs` drives this exact call and then
+/// [`read_code`], touching none of the short-string calls above.
+///
+/// Showing a code to verify this account's own new login needs none of the
+/// account's private signing keys, which is what makes it reachable from
+/// the device that is joining rather than only from the one already
+/// holding them.
 ///
 /// # Refusals
 ///
@@ -1240,8 +1316,11 @@ pub async fn request_self_flow() -> Result<FlowId, MachineError> {
             };
 
             // [`announced_methods`], not upstream's default list, for
-            // `request_flow`'s reason: advertising a method this library
-            // cannot carry out is a claim the far side may act on.
+            // `request_flow`'s reason: what a flow announces is a claim the
+            // far side may act on, and with codes it is a claim about the
+            // product rather than about this library. This is the third of
+            // the three call sites, and the one `qr_self_new_login_shows`
+            // reads off the wire.
             let (request, outgoing) = identity
                 .request_verification_with_methods(announced_methods().to_vec())
                 .await
@@ -1262,8 +1341,11 @@ pub async fn request_self_flow() -> Result<FlowId, MachineError> {
 /// # There are two things a peer can ask, and this call answers both
 ///
 /// An `m.key.verification.request` asks *may we verify?*, and answering it
-/// advertises the methods this library can carry out and moves the flow to
-/// [`FlowStage::Ready`]. An `m.key.verification.start` asks *here is the
+/// advertises [`announced_methods`], which is what the product asked to
+/// take part in rather than everything this library can carry out, and
+/// moves the flow to [`FlowStage::Ready`]. This is one of the three places
+/// that list reaches the wire, and the one a peer opened, which is the
+/// half of real usage no test drove until `tests/qr_announcement.rs`. An `m.key.verification.start` asks *here is the
 /// comparison, will you take part?*, and answering **that** is an
 /// `m.key.verification.accept` naming the protocols both sides support --
 /// the message the peer waits for before it will send its key.
@@ -2495,16 +2577,92 @@ fn announce(signals: Vec<CryptoSignal>) {
 mod tests {
     use super::*;
 
-    /// Every public error this module can produce is a `MachineError`
-    /// variant appended after the five the enum shipped with, and the FFI
-    /// mirror's `From` impl is exhaustive, so this only has to pin the
-    /// mapping this module relies on: three distinct conditions, three
-    /// distinct errors, none of them collapsed into another.
+    /// Every refusal this module can produce is its own `MachineError`
+    /// variant, none of them folded onto another.
+    ///
+    /// **This said "three distinct conditions" and pinned three, and the
+    /// module refused with four on the day it was written.** The count and
+    /// the list have been recounted against the code rather than carried
+    /// forward, because the first correction of this comment got the
+    /// arithmetic wrong in the commit whose whole purpose was to stop
+    /// counts going stale.
+    ///
+    /// Counted at three commits, excluding `NotInitialised` and `Store`
+    /// throughout, and excluding `IdentityAlreadyExists`, which appears in
+    /// this module only as a doc link to `signing::bootstrap_identity`:
+    ///
+    /// * `cff97e3`, where the three-variant test was written: **four**
+    ///   (`MalformedIdentifier`, `MaterialNotReady`, `UnknownFlow`,
+    ///   `WrongStage`).
+    /// * `bdf0545`, the last commit before verification by a scannable
+    ///   code: **seven**. Self-verification added `UnknownDevice`,
+    ///   `AccountKeysNotFetched` and `IdentityNotKnown`.
+    /// * here: **fourteen**. A scannable code added six variants of its own
+    ///   and made this module the second producer of `PrivateKeysNotHeld`,
+    ///   which existed for `create_recovery` and which a cross-user code
+    ///   now needs too.
+    ///
+    /// The name and the list went on agreeing with each other while
+    /// agreeing with nothing else. Extended rather than replaced, and
+    /// pairwise over a list, so that a variant added later and forgotten
+    /// here is the only way it goes stale again. **The list below is the
+    /// authority and this paragraph is not**: if they disagree, the list is
+    /// what the test asserts.
+    ///
+    /// **What this defends, said plainly, because it is less than it
+    /// looks.** `MachineError` derives `PartialEq`, so distinctness is
+    /// nearly free and a fold has to be written by hand to break it. What
+    /// it catches is exactly that: a hand-written `PartialEq`, or a variant
+    /// quietly re-pointed at another. The heavier work is elsewhere and
+    /// stays there: `matrix-crypto-ffi/tests/error_mapping.rs` asserts that
+    /// each of these crosses to its own kind, and `tests/qr_refusals.rs`
+    /// drives **eleven** of the fourteen to a real condition rather than
+    /// asserting them against each other. Counted rather than carried
+    /// forward: this said eight, and eight was never any of the numbers in
+    /// front of it.
+    ///
+    /// The three `qr_refusals.rs` leaves, checked one at a time rather than
+    /// grouped by a guess: `MaterialNotReady` is driven in
+    /// `tests/sas_two_party.rs`; `AccountKeysNotFetched` in
+    /// `tests/self_verification_unasked.rs` and its siblings; and
+    /// `UnknownDevice` in **this module's own test below**,
+    /// `an_unknown_device_is_not_reported_as_a_malformed_identifier`, which
+    /// drives it through `request_flow`, plus across the boundary in
+    /// `matrix-crypto-ffi/tests/delegate_order.rs`. This said `UnknownDevice`
+    /// was driven by no test of this crate at all and named the gap as a
+    /// thing to fill; the test was thirty lines further down the same file,
+    /// which is what a claim about coverage costs when it is written from
+    /// the integration directory alone.
     #[test]
-    fn the_three_flow_errors_are_distinct() {
-        assert_ne!(MachineError::UnknownFlow, MachineError::WrongStage);
-        assert_ne!(MachineError::WrongStage, MachineError::MaterialNotReady);
-        assert_ne!(MachineError::UnknownFlow, MachineError::MaterialNotReady);
+    fn every_refusal_this_module_produces_is_its_own_error() {
+        let refusals = [
+            MachineError::UnknownDevice,
+            MachineError::AccountKeysNotFetched,
+            MachineError::UnknownFlow,
+            MachineError::WrongStage,
+            MachineError::MaterialNotReady,
+            MachineError::MalformedIdentifier {
+                detail: "flow id".to_string(),
+            },
+            MachineError::IdentityNotKnown,
+            MachineError::PeerIdentityNotKnown,
+            MachineError::PrivateKeysNotHeld,
+            MachineError::CodeNotOffered,
+            MachineError::ScannedCodeRefused,
+            MachineError::ScannedCodeUnrecognised,
+            MachineError::ScannedCodeMalformed,
+            MachineError::ScannedCodeForAnotherFlow,
+        ];
+
+        for (i, left) in refusals.iter().enumerate() {
+            for right in refusals.iter().skip(i + 1) {
+                assert_ne!(
+                    left, right,
+                    "two refusals this module produces compare equal, so a caller \
+                     branching on them cannot tell the conditions apart"
+                );
+            }
+        }
     }
 
     /// The redacting `Debug` impls, checked against the strings they must

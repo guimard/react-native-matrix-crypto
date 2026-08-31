@@ -82,6 +82,14 @@ jobs:
       # most of what a product has to go on, and an example that drifts from
       # the proof is worse than none.
       - run: yarn gate:uia-example
+      # A doc link is a claim that a name exists. Nothing checked it, and
+      # three were false at once; the one that mattered pointed at a
+      # constant the code-scanning opt-in had deleted, inside a sentence
+      # that was false for the same reason. It runs after the clippy step
+      # below has warmed nothing, and pays a doc build of two crates and no
+      # dependencies: about two seconds on a machine that has already built
+      # the workspace, which every earlier step in this job has.
+      - run: yarn gate:doc-links
       - run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
       - run: cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
       # gate:boundary already runs matrix-crypto-core's own tests as part of

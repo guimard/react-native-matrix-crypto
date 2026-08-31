@@ -18,12 +18,15 @@ live in a module of their own with no `react` or `react-native` import in it.
   fake binding whose callback is delivered strictly after the call resolves,
   and asserts that precondition before asserting the result, so a green step 3
   cannot come from a callback that had already arrived.
-* **A card that claims a call throws.** Step 8 says a named library function
-  rejects with `not_implemented`. `src/cardClaims.test.ts` mocks nothing, calls
-  that function through the published entry point, and fails if it stops
-  rejecting. It also sweeps the whole public surface and pins the set of
-  functions still refused in JavaScript, so implementing any one of them turns
-  the build red rather than the card.
+* **A card that claims a call throws.** The `notYet` card, step 8 as the
+  walkthrough is numbered today, says a named library function rejects with
+  `not_implemented`. `src/cardClaims.test.ts` mocks nothing, calls that
+  function through the published entry point, and fails if it stops rejecting.
+  It also calls every function the entry point exports and pins the set still
+  refused in JavaScript, so implementing any one of them turns the build red
+  rather than the card. That sweep classifies by outcome rather than by
+  design: everything else fails on the absent native module instead, which is
+  what makes the refused set readable at all.
 * **The signing-identity gate refusing.** Step 6 asks the machine what it knows
   about the account's signing identity and then asks it to publish one, which
   it refuses because nothing has asked a homeserver yet. The native call is
@@ -34,6 +37,11 @@ live in a module of their own with no `react` or `react-native` import in it.
   replace whatever the account already had.
 * **Cards name functions that exist.** Every `react-native-matrix-crypto`
   import in a card's code snippet is checked against the library's exports.
+  One way only: nothing checks that the cards reach every part of the surface,
+  and they do not. **No card touches device verification**, by short string or
+  by scannable code, so the walkthrough shows nothing about either and nothing
+  here notices. What the cards show is the encryption chain, and the surface is
+  wider than the cards.
 * **Step ordering, step 2's round trip, step 4's typed error**, and that each
   run starts from an empty signal log rather than accumulating.
 
@@ -73,6 +81,12 @@ particular these remain exercised only by a human holding a phone, or by
   React components and are not covered here.
 * **Signal timing.** `PROBE_SIGNAL_MS` and `PROBE_SIGNAL_NTH` are measurements
   of a real device under a real race. A host machine cannot produce them.
+* **Verification, by either method.** No card and no probe step opens a
+  verification flow. For a scannable code that gap is the sharp one, because
+  the claim that matters most about a code is that an ordinary phone camera
+  reads what this library rendered, and only a person holding a phone can make
+  it. Reaching it needs a scanner in this app, which is a product-side
+  dependency in a package nobody publishes, and a second device.
 
 This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
 

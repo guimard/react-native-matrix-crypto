@@ -8,10 +8,14 @@ import {
 import type { CryptoScopeId, TrustState } from './types'
 // Imported for the documentation below and used by nothing here.
 // `{@link}` resolves against what is in scope in the file it is written in,
-// so without this the four names the comments below send a reader to are
-// plain text in an editor's hover: a link that promises navigation and does
-// not deliver it. Type-only, so it is erased and adds no runtime edge, and
-// `facade.ts` imports nothing from this module, so it adds no cycle either.
+// so without this the names the comments below send a reader to are plain
+// text in an editor's hover: a link that promises navigation and does not
+// deliver it. This said "the four names" over a block of six and a set of
+// docs linking eight, and then gained two more links without gaining the
+// imports; no count here now, and `scripts/assert-doc-links.sh` is what
+// keeps the block and the links in step. Type-only, so it is erased and
+// adds no runtime edge, and `facade.ts` imports nothing from this module,
+// so it adds no cycle either.
 // `tsconfig.json` sets `noUnusedLocals: false`, which is what lets an import
 // exist for a reader rather than for the compiler.
 import type {
@@ -238,7 +242,13 @@ function trustStateOf(trust: NativeTrustState): TrustState {
  *   `user` changed. **Two things produce it and they are indistinguishable
  *   from the value alone**, which is why the rule for this variant is to
  *   read rather than to count. A comparison finished and a device belonging
- *   to `user` moved: {@link getDeviceStatuses} for that user says which. Or,
+ *   to `user` moved: {@link getDeviceStatuses} for that user says which.
+ *   **A verification finished by a scanned code moves the same device and
+ *   produces no `trust_changed` at all**, so a product that waits on this
+ *   variant after {@link confirmScan} or {@link submitScannedCode} waits
+ *   forever. Such a flow announces `verification_completed` instead, which
+ *   is the next bullet and says why the two are not one; reading
+ *   {@link getDeviceStatuses} is what both of them tell you to do. Or,
  *   when `user` is **your own** user id, the account's private signing keys
  *   arrived on this device by gossip from another of your devices, after
  *   {@link requestSelfVerification}: {@link getIdentityStatus} says so, with

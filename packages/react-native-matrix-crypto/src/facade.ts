@@ -55,6 +55,11 @@ import type { SasMaterial as NativeSasMaterial } from './generated/matrix_crypto
 // `submitScannedCode` below is this file's only caller, and a scanner's
 // output is exactly the kind of value that arrives as a view.
 import { toArrayBuffer } from './probe'
+// Imported for the documentation in this file and used by nothing in it, on
+// the terms `types.ts` states in full: `{@link}` resolves against what the
+// file has in scope. Type-only, so it is erased and adds no runtime edge,
+// and `signals.ts` imports nothing from here, so it adds no cycle.
+import type { onCryptoSignal } from './signals'
 
 function notImplemented(name: string): Promise<never> {
   return Promise.reject(toCryptoError({ name: 'NotImplemented', reason: `${name} is not implemented yet` }))
@@ -756,9 +761,11 @@ export async function markRequestSent(id: string, responseJson: string): Promise
  * pending exactly as if you had reported it refused. Reporting a refusal and
  * reporting nothing are the same to this library, and both are the safe
  * direction: what advances its state is {@link markRequestSent}, and only
- * that. The cross-signing bootstrap this protects arrives in a later
- * release; when it does, it will refuse to run rather than mint an identity
- * on a question it was never told the answer to. The failure mode of silence
+ * that. The cross-signing bootstrap this protects has since shipped as
+ * {@link bootstrapCrossSigning}, and does exactly what this said it would:
+ * it refuses with `'account_keys_not_fetched'` rather than mint an identity
+ * on a question it was never told the answer to. This sentence said the
+ * bootstrap was still to come for the whole of the release that shipped it. The failure mode of silence
  * is work that will not proceed, which you will notice, and never an
  * identity destroyed.
  *
@@ -988,14 +995,27 @@ export async function bootstrapCrossSigning(): Promise<void> {
  * Every device this library has been told about for `userId`, and the trust
  * it currently reports for each, sorted by device id.
  *
- * **This is the only place a completed verification becomes visible.** A
- * device that has been through {@link requestVerification} to
- * {@link confirmVerification}, with both sides agreeing, reads `'verified'`
- * here where it read `'unverified'` before. Nothing else in this library
- * changes as a result of a verification -- in particular a decrypted
- * event's sender does not become authenticated, because that path consults
- * cross-signing and a short-string comparison sets local trust. See
- * {@link TrustState}.
+ * **This is the only place a completed verification becomes visible**, by
+ * either method. A device that has been through
+ * {@link requestVerification} to {@link confirmVerification}, with both
+ * sides agreeing, reads `'verified'` here where it read `'unverified'`
+ * before; so does one that went through {@link getVerificationCode} and
+ * {@link confirmScan}, or {@link submitScannedCode}, with nobody comparing
+ * a string at all. This paragraph named only the first pair, which is the
+ * "verification is a short string" claim on the call the README itself
+ * calls the only place a verification is visible.
+ *
+ * **It is also where a scanned verification becomes visible**, and it is
+ * the only place the change itself is: a flow finished by a scan emits no
+ * `trust_changed` down {@link onCryptoSignal}, only a
+ * `verification_completed` that names the flow and carries no trust, so
+ * this call is what a product reads when it gets one. See that function's
+ * own doc for why the two are not one signal.
+ *
+ * Nothing else in this library changes as a result of a verification -- in
+ * particular a decrypted event's sender does not become authenticated,
+ * because that path consults cross-signing and a verification of either
+ * kind sets local trust. See {@link TrustState}.
  *
  * # `'verified'` no longer means a person compared a string with this device
  *
@@ -1075,7 +1095,7 @@ export async function getDeviceStatuses(userId: string): Promise<DeviceStatus[]>
  * nothing until you have sent it and reported it with
  * {@link markRequestSent}. That is true of every call in this group.
  *
- * The full sequence, for the side that asks:
+ * The sequence by short string, for the side that asks:
  *
  * 1. `requestVerification` -> pump
  * 2. wait for {@link getVerificationStage} to read `'ready'` (the other
@@ -1088,6 +1108,15 @@ export async function getDeviceStatuses(userId: string): Promise<DeviceStatus[]>
  *    {@link cancelVerification} if the person says it does not match
  * 7. pump again -- the flow reaches `'done'`, and only then does
  *    {@link getDeviceStatuses} report the device verified
+ *
+ * **That was the whole of this list until a scannable code arrived, and it
+ * is now one of two ways to finish.** Steps 1 and 2 are the same for both;
+ * from `'ready'` a flow that negotiated codes takes
+ * {@link getVerificationCode} and {@link confirmScan} on the showing side,
+ * or {@link submitScannedCode} on the reading side, and reaches step 7 the
+ * same way. Nothing is negotiated unless the product asked, so a build that
+ * never calls {@link offerScannableCodes} gets exactly the seven steps
+ * above and nothing else. See {@link offerScannableCodes}.
  *
  * The side that was asked does the same from step 2, calling
  * {@link acceptVerification} first. Its `verificationId` is handed to it by
@@ -1156,13 +1185,24 @@ export async function requestVerification(userId: string, deviceId: string): Pro
  *
  * # Driving the flow
  *
- * Identical to {@link requestVerification} from the moment this resolves:
- * pump, wait for {@link getVerificationStage} to read `'ready'`,
+ * Identical to {@link requestVerification} from the moment this resolves,
+ * by either method. By short string: pump, wait for
+ * {@link getVerificationStage} to read `'ready'`,
  * {@link startVerificationComparison}, pump, read
  * {@link getVerificationMaterial}, show it, and
  * {@link confirmVerification} or {@link cancelVerification}. The person is
  * comparing two of their own screens instead of talking to somebody else,
  * which changes none of the calls.
+ *
+ * **By a scanned code, if the product asked for one**, the person points
+ * one of their own phones at the other instead of reading symbols off both,
+ * and this is where that is most natural, because both screens are already
+ * in front of them. Both self modes work: the established device may show
+ * the code and the new login read it, or the other way round, and which
+ * happens is decided by which phone is held up rather than by anything you
+ * pass. Showing a code needs none of the account's private signing keys,
+ * which is what makes it reachable on the device that is joining. See
+ * {@link offerScannableCodes} and {@link getVerificationCode}.
  *
  * # Refusals
  *
@@ -1216,7 +1256,12 @@ export async function requestSelfVerification(): Promise<string> {
  * ```
  *
  * From there the flow is the one {@link requestVerification} documents,
- * from its step 2 onward.
+ * from its step 2 onward, by whichever method the two sides negotiated.
+ * **This is the side most likely to be holding the camera**, so if your
+ * product scans, this is the flow {@link submitScannedCode} is called on.
+ * Whether a code is available at all was settled before the flow existed,
+ * by {@link offerScannableCodes}, and is not something answering an
+ * invitation can change.
  *
  * # You may need to call this twice, and it is not a retry
  *
@@ -1377,15 +1422,40 @@ export async function acceptVerification(verificationId: string): Promise<void> 
  *   used to say "wait for `'keys-exchanged'`", which was wrong: waiting
  *   alone never produced one. Then read
  *   {@link getVerificationMaterial} as usual.
+ *
+ *   **A flow that went to a scanned code arrives at this same kind, and
+ *   wants none of that done about it.** This kind is derived from
+ *   {@link getVerificationStage} reading `'started'`, and a code flow reads
+ *   `'started'` too, so the kind cannot tell the two apart. On a code flow
+ *   {@link acceptVerification} answers `'wrong_stage'` and so does
+ *   {@link getVerificationMaterial}, because there is no comparison and
+ *   there will be no string: carry on with {@link getVerificationCode} and
+ *   {@link confirmScan}, or with {@link submitScannedCode}. **What tells
+ *   the two apart is your own state, not anything this library reports**: a
+ *   build that never called {@link offerScannableCodes} can only be in the
+ *   first case, and one that asked this flow for a code knows it is in the
+ *   second.
  * - `'verification_ended'` -- the flow is over, whether it finished or was
  *   refused. There is nothing to carry on with; ask again with
  *   {@link requestVerification} if you still want to.
  * - `'wrong_stage'` -- anything else, which means either that the flow has
- *   not been accepted by both sides yet, or that it became a code rather
- *   than a comparison. Read {@link getVerificationStage}: `'requested'` or
- *   `'ready'` is the first, and it wants a wait or an
- *   {@link acceptVerification} if the invitation was yours to answer;
- *   `'code-scanned'` is the second, and it wants {@link confirmScan}.
+ *   not been agreed by both sides yet, or that it became a code rather
+ *   than a comparison. Read {@link getVerificationStage}: `'requested'` is
+ *   the first, and it wants a wait or an {@link acceptVerification} if the
+ *   invitation was yours to answer; `'code-scanned'` is the second, and it
+ *   wants {@link confirmScan}. `'ready'` is neither, and it is the one
+ *   answer here that says nothing is wrong with the flow: the stage moved
+ *   between this call and the stage read that followed it, so try again.
+ *
+ * **A code flow reaches two of these bullets, and which one is the code's
+ * own state.** Before anybody has scanned it the stage is `'started'` and
+ * this call answers `'comparison_already_started'`, whose advice is written
+ * for a comparison and is the loop described in that bullet; once somebody
+ * has scanned it the stage is `'code-scanned'` and the rejection stays
+ * `'wrong_stage'`. Two assertions in `facade.test.ts` hold the pair apart:
+ * `reports comparison_already_started for a flow that went to a scanned
+ * code` and `leaves the rejection as wrong_stage for a flow that became a
+ * code somebody scanned`.
  */
 export async function startVerificationComparison(verificationId: string): Promise<void> {
   try {
@@ -1400,6 +1470,17 @@ export async function startVerificationComparison(verificationId: string): Promi
  * this group that reads state without changing any, so it costs nothing to
  * poll and it is what tells apart conditions the calls below can only
  * report as one error.
+ *
+ * **On a flow proceeding by a scanned code it tells apart the one thing
+ * that matters, and no more.** `'code-scanned'` is the moment a person is
+ * being asked something, and reading it is what separates
+ * {@link confirmScan}'s two `'wrong_stage'` causes: nobody has scanned yet,
+ * versus the flow is over. This paragraph said the stage could not describe
+ * a code flow at all, and adding `'code-scanned'` is what changed that.
+ * What is still shared is `'started'` and `'confirmed'`, which both flow
+ * shapes reach, so those two answers do not say which shape you are in and
+ * {@link startVerificationComparison} still folds a code flow at `'started'`
+ * into `'comparison_already_started'`.
  *
  * Rejects with `'unknown_flow'` for an identifier this library is not
  * taking part in -- including a flow that finished and has since been
@@ -1448,7 +1529,18 @@ export async function getVerificationStage(verificationId: string): Promise<Veri
  * The other failure kind is worth keeping apart from both:
  *
  * - `'wrong_stage'` -- it never will: the flow is over, or no comparison was
- *   ever started on it.
+ *   ever started on it. **A flow proceeding by a scanned code arrives here**,
+ *   and it is neither over nor stuck: there is no string on such a flow and
+ *   there never will be. A product that chose codes knows which it has, so
+ *   this is not folded into a kind of its own; a product that offers both
+ *   knows which call it made.
+ *
+ * Note that a code flow reads `'started'` from {@link getVerificationStage}
+ * until somebody scans, so before that the stage does not tell that case
+ * apart from the two causes above; after it, `'code-scanned'` does. Neither
+ * matters here, because the kind already tells them apart: those two arrive
+ * as `'material_not_ready'` and a code flow arrives as `'wrong_stage'` at
+ * every stage it passes through.
  */
 export async function getVerificationMaterial(verificationId: string): Promise<SasMaterial> {
   try {
@@ -1460,6 +1552,12 @@ export async function getVerificationMaterial(verificationId: string): Promise<S
 
 /**
  * Says the strings matched, and queues the confirmation for the pump.
+ *
+ * **One of two confirmations on this surface.** {@link confirmScan} is the
+ * other, for a flow that finished by a scanned code rather than a compared
+ * string. They ask a person the same question and carry the same
+ * obligation; only this one has material to hand back, because only this
+ * one showed a person something a product could get wrong.
  *
  * **`data` is the material you showed the person**, exactly as
  * {@link getVerificationMaterial} returned it. It is checked against what
@@ -2406,8 +2504,10 @@ export function getSupportedAlgorithms(): CryptoAlgorithm[] {
 
 // M1b: the first genuine cryptographic value to cross the whole chain, not
 // the probe's echo. Everything above it was a NotImplemented stub when this
-// was written; M2 and M3 implemented all but the calls the roadmap still
-// lists as deferred.
+// was written. Three are still stubs, and this comment used to point at a
+// roadmap that listed them as deferred: `exportSecrets` and `importSecrets`
+// are refused on purpose rather than pending, and `restoreCryptoMachine` is
+// the only one of the three still waiting on anything.
 
 export interface IdentityKeys {
   curve25519: string
