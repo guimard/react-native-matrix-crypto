@@ -114,6 +114,11 @@ fn a_bootstrap_publishes_one_identity_and_republishes_the_same_one() {
             "asking a question mints nothing: {asked:?}"
         );
 
+        let refresh = the_query_the_creation_asked_for().await;
+        mark_request_sent(&refresh.id, NO_IDENTITY)
+            .await
+            .expect("the query that refusal queued must be answerable");
+
         create_identity().await.expect(
             "creating the account's first identity after the keys have been fetched \
                      must be served",
@@ -154,6 +159,11 @@ fn a_bootstrap_publishes_one_identity_and_republishes_the_same_one() {
             "the launch-time call may not publish an identity nothing has confirmed: \
              {minted:?}"
         );
+        let refresh = the_query_the_creation_asked_for().await;
+        mark_request_sent(&refresh.id, NO_IDENTITY)
+            .await
+            .expect("the query that refusal queued must be answerable");
+
         create_identity()
             .await
             .expect("and finishing it is the same decision that was just made");
@@ -306,6 +316,40 @@ fn a_bootstrap_publishes_one_identity_and_republishes_the_same_one() {
             "and nothing about what this library knows may have moved"
         );
     });
+}
+
+/// The account key query **the creation itself asked for**, drained and
+/// returned.
+///
+/// `create_identity` serves only on an answer that settled after it asked, so
+/// a first call refuses [`MachineError::AccountKeysStale`] with the query
+/// already queued, and this is that one round. It is the cost the eleventh
+/// round added, and it is a round rather than a wall: everything this file
+/// asserts still completes.
+///
+/// **Why it cannot be skipped**: the answer that lifted the gate above was
+/// asked for by something else, at a moment that can be arbitrarily earlier,
+/// and another device of this account can have published an identity since.
+/// This round is where that comes back. See `signing::PUBLICATION_ASKED_AFTER`.
+async fn the_query_the_creation_asked_for() -> OutgoingRequest {
+    assert_eq!(
+        create_identity().await,
+        Err(MachineError::AccountKeysStale),
+        "a creation may not decide on an answer it did not ask for"
+    );
+    let batch = take_outgoing_requests()
+        .await
+        .expect("draining the pump must not fail");
+    batch
+        .iter()
+        .find(|request| request.kind == "keys_query" && names_the_account(&request.body))
+        .unwrap_or_else(|| {
+            panic!(
+                "the refusal must queue the query that lifts it; got {:?}",
+                batch.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>()
+            )
+        })
+        .clone()
 }
 
 /// Whether a `/keys/query` body's `device_keys` map names this account.

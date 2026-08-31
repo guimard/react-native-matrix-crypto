@@ -156,6 +156,34 @@ fn the_refusal_queues_the_query_that_lifts_it_when_upstream_never_would() {
              case it exists for"
         );
 
+        // The eleventh round's one extra round: a creation serves only on an
+        // answer it asked for, and the answer above was asked for by a
+        // bootstrap's refusal. The query this refusal queues is the same
+        // out-of-band one this file exists to prove is reachable, which is
+        // why the assertion below is that it is *there* rather than that it
+        // is unnecessary.
+        assert_eq!(
+            create_identity().await,
+            Err(MachineError::AccountKeysStale),
+            "a creation may not decide on an answer it did not ask for"
+        );
+        let refreshed = take_outgoing_requests()
+            .await
+            .expect("draining the pump must not fail");
+        assert_eq!(
+            account_queries(&refreshed),
+            1,
+            "and the refusal must queue one, or the remedy is a dead end: {:?}",
+            kinds(&refreshed)
+        );
+        let refresh = refreshed
+            .iter()
+            .find(|r| r.kind == "keys_query" && names_the_account(&r.body))
+            .expect("the refusal queues the query that lifts it");
+        mark_request_sent(&refresh.id, NO_IDENTITY)
+            .await
+            .expect("the query that refusal queued must be answerable");
+
         create_identity()
             .await
             .expect("the answered recovery query must lift the gate");

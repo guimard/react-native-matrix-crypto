@@ -389,10 +389,25 @@ pub(crate) fn note_private_keys_held(held_now: bool) -> bool {
 ///
 /// **The window is not zero and is not claimed to be.** What remains is the
 /// gap between the answer this call demanded landing and the retry that
-/// spends it -- the product's own round trip, in the product's own hands,
-/// entered deliberately. What is gone is the unbounded part: the answer can
-/// no longer predate the decision, and a product cannot make its exposure
-/// worse by being thorough.
+/// spends it. What is gone is the unbounded part: the answer can no longer
+/// predate the decision, and a product cannot make its exposure worse by
+/// being thorough.
+///
+/// **And that remainder is the product's own, in both senses.** An
+/// outstanding question stays outstanding until a publication spends it, so a
+/// product that pumps the answer and then does other work before retrying is
+/// served on an answer as old as its own delay. Nothing here can see that
+/// delay: there is no clock in this library, and the only events it observes
+/// are calls into it and answers reported to it. What it can and does say is
+/// [`MachineError::AccountKeysStale`], at the moment the question has to be
+/// asked, so a product that retries promptly has a window the length of one
+/// round trip.
+///
+/// A wall-clock expiry would bound it in seconds and is deliberately not
+/// added. It needs a constant nobody can justify, and it refuses in the wrong
+/// direction: finishing an interrupted publication legitimately takes as long
+/// as a person needs to answer a homeserver's authentication challenge, so
+/// the timeout that shortened an attacker's window would brick that.
 ///
 /// # Single-use, which is the half that is easy to leave out
 ///
@@ -1396,6 +1411,23 @@ mod tests {
                     "the launch-time call may not publish an identity nothing has \
                      confirmed, however long this device has held it"
                 );
+                // **What finishing a legitimate interrupted publication now
+                // costs, measured here rather than asserted elsewhere.** The
+                // answer this process has was asked for by the launch call's
+                // refusal, not by this one, so the creation refuses once and
+                // queues its own. That is one extra drain-send-report round,
+                // and then the publication is handed back exactly as before.
+                assert_eq!(
+                    create_identity().await,
+                    Err(MachineError::AccountKeysStale),
+                    "a creation may not decide on an answer it did not ask for, however \
+                     honest that answer was"
+                );
+                let refresh = drain_account_query().await;
+                mark_request_sent(&refresh.id, NO_IDENTITY)
+                    .await
+                    .expect("the query the refusal queued must be answerable");
+
                 create_identity().await.expect(
                     "and the deliberate call must hand back the publication that \
                              was lost, or this is the seventh round's brick again",

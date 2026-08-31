@@ -244,10 +244,49 @@ fn a_body_that_says_nothing_about_this_account_cannot_open_the_bootstrap_gate() 
             "an answer that covers this account must lift the gate. If this fails the cure is \
              worse than the disease: no product on any measured homeserver could ever bootstrap"
         );
+        let refresh = the_query_the_creation_asked_for().await;
+        mark_request_sent(&refresh.id, &answer)
+            .await
+            .expect("the query that refusal queued must be answerable");
+
         create_identity()
             .await
             .expect("and the creation it authorises must be served");
     });
+}
+
+/// The account key query **the creation itself asked for**, drained and
+/// returned.
+///
+/// `create_identity` serves only on an answer that settled after it asked, so
+/// a first call refuses [`MachineError::AccountKeysStale`] with the query
+/// already queued, and this is that one round. It is the cost the eleventh
+/// round added, and it is a round rather than a wall: everything this file
+/// asserts still completes.
+///
+/// **Why it cannot be skipped**: the answer that lifted the gate above was
+/// asked for by something else, at a moment that can be arbitrarily earlier,
+/// and another device of this account can have published an identity since.
+/// This round is where that comes back. See `signing::PUBLICATION_ASKED_AFTER`.
+async fn the_query_the_creation_asked_for() -> OutgoingRequest {
+    assert_eq!(
+        create_identity().await,
+        Err(MachineError::AccountKeysStale),
+        "a creation may not decide on an answer it did not ask for"
+    );
+    let batch = take_outgoing_requests()
+        .await
+        .expect("draining the pump must not fail");
+    batch
+        .iter()
+        .find(|request| request.kind == "keys_query" && names_the_account(&request.body))
+        .unwrap_or_else(|| {
+            panic!(
+                "the refusal must queue the query that lifts it; got {:?}",
+                batch.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>()
+            )
+        })
+        .clone()
 }
 
 /// Refuses a bootstrap to have a fresh account key query queued, drains the
