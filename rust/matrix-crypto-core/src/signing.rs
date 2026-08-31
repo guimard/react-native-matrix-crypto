@@ -855,7 +855,21 @@ fn queue_republication(requests: matrix_sdk_crypto::CrossSigningBootstrapRequest
 /// A `/keys/query` answer is only ever true of the instant the server sent
 /// it. Between that instant and this call, another device of the same
 /// account can publish an identity, and no answer already in hand can say
-/// so. Measured on a live homeserver, with no misbehaviour anywhere: the
+/// so.
+///
+/// **That window is unbounded, and it does not shrink with care.** Reading
+/// the sentence above as a narrow race is the mistake, and the correction
+/// was measured rather than argued. The flag recording that this process has
+/// asked never changes again after the first answer; upstream volunteers no
+/// further query for an account it already tracks; and the refusal this
+/// call's precondition raises queues nothing. So a product that drains its
+/// pump to empty and reports every response has **nothing left to refresh
+/// with**, and the answer it acts on can be arbitrarily old. Two runs of one
+/// sequence differed only in tidiness: the one that left an unreported query
+/// sitting in the pump survived, and the diligent one destroyed the account.
+/// **Being careful made it worse**, which is the opposite of what a
+/// precondition should do, and it is why the decision below belongs to a
+/// product rather than to this library. Measured on a live homeserver, with no misbehaviour anywhere: the
 /// server answered "no identity" honestly, a second device published one,
 /// and a mint followed. So the caller has to supply the fact the library
 /// cannot: **that this account is meant to be getting its first identity
