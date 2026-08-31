@@ -1041,7 +1041,7 @@ pub async fn mark_request_failed(id: String, status: u16) -> Result<(), SessionF
 /// was.
 ///
 /// `Debug` is derived, unlike `Envelope` and `CryptoMachineConfig` above:
-/// four booleans about this account's own publication state carry no
+/// five booleans about this account's own publication state carry no
 /// identifier and no key material, so there is nothing here the global
 /// no-secret rule forbids from a `{:?}`.
 ///
@@ -1050,8 +1050,9 @@ pub async fn mark_request_failed(id: String, status: u16) -> Result<(), SessionF
 /// this mirror deliberately repeats none of it, so the two cannot drift
 /// into saying different things.
 ///
-/// `account_keys_answer_unsettled` is **appended**, after the three this
-/// record shipped with, and the reason is the same wire-ordinal reason the
+/// `account_keys_answer_unsettled` and `identity_publication_pending` are
+/// **appended**, after the fields this record shipped with, for the same
+/// wire-ordinal reason the
 /// error enums above state at length: UniFFI lays a record's fields out in
 /// declaration order, so inserting one shifts every field after it and a
 /// binding generated before the insert reads the wrong value out of each.
@@ -1063,9 +1064,10 @@ pub struct IdentityStatus {
     pub identity_known: bool,
     pub private_keys_held: bool,
     pub account_keys_answer_unsettled: bool,
+    pub identity_publication_pending: bool,
 }
 
-/// Four `bool` fields, so every wrong pairing compiles, passes
+/// Five `bool` fields, so every wrong pairing compiles, passes
 /// `clippy -D warnings` and passes every other test in this repository --
 /// `SasMaterial`'s hazard with a smaller alphabet, and a worse consequence
 /// than a mismatched short string: `account_keys_fetched` and
@@ -1087,12 +1089,14 @@ impl From<matrix_crypto_core::IdentityStatus> for IdentityStatus {
             identity_known,
             private_keys_held,
             account_keys_answer_unsettled,
+            identity_publication_pending,
         } = value;
         Self {
             account_keys_fetched,
             identity_known,
             private_keys_held,
             account_keys_answer_unsettled,
+            identity_publication_pending,
         }
     }
 }

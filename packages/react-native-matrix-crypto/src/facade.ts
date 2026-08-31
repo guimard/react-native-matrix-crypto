@@ -801,7 +801,7 @@ export async function markRequestFailed(id: string, status: number): Promise<voi
  * What this library will say about this account's signing identity, as
  * returned by {@link getIdentityStatus}.
  *
- * Four independent facts, none of which implies another. **The pair that
+ * Five independent facts, none of which implies another. **The pair that
  * looks redundant is the pair that matters:** `identityKnown === false`
  * means something completely different depending on `accountKeysFetched`.
  * With that false it means "nobody has asked". With it true it means "the
@@ -871,13 +871,33 @@ export interface IdentityStatus {
    * that the refusal is not also silent.
    */
   accountKeysAnswerUnsettled: boolean
+  /**
+   * Whether this device holds an identity it created and has **not yet seen
+   * the homeserver accept**.
+   *
+   * True between {@link createCrossSigningIdentity} and the moment the
+   * publication it queued is reported sent, and it survives a relaunch,
+   * because the identity is on disk and the publication was in memory. A
+   * process that is killed, offline, or whose upload times out in that
+   * window reopens its store in exactly this state.
+   *
+   * **The remedy is {@link bootstrapCrossSigning}, which you already call on
+   * every launch.** It hands back the same publication that was lost.
+   * Nothing has been damaged: your account has no identity, this device
+   * holds the one it is about to get, and the two agree.
+   *
+   * Read it because this is the one state where `identityKnown` is `true`
+   * and the account still has no identity. A product that shows "encryption
+   * is set up" on `identityKnown` alone is wrong here.
+   */
+  identityPublicationPending: boolean
 }
 
 /**
  * What this library will say about this account's signing identity right
  * now. Reads only: it asks the server nothing and creates nothing.
  *
- * See {@link IdentityStatus} for why two of the four fields have to be read
+ * See {@link IdentityStatus} for why two of the five fields have to be read
  * together, and why a third exists. Two calls change them:
  * {@link bootstrapCrossSigning} creates the identity, and
  * {@link requestSelfVerification} joins one the account already has.
@@ -892,9 +912,20 @@ export async function getIdentityStatus(): Promise<IdentityStatus> {
   try {
     const status = await nativeIdentityStatus()
     // Destructured, not returned directly. See encryptEvent above.
-    const { accountKeysFetched, identityKnown, privateKeysHeld, accountKeysAnswerUnsettled } =
-      status
-    return { accountKeysFetched, identityKnown, privateKeysHeld, accountKeysAnswerUnsettled }
+    const {
+      accountKeysFetched,
+      identityKnown,
+      privateKeysHeld,
+      accountKeysAnswerUnsettled,
+      identityPublicationPending,
+    } = status
+    return {
+      accountKeysFetched,
+      identityKnown,
+      privateKeysHeld,
+      accountKeysAnswerUnsettled,
+      identityPublicationPending,
+    }
   } catch (e) {
     throw toCryptoError(e)
   }
@@ -1006,7 +1037,14 @@ export async function getIdentityStatus(): Promise<IdentityStatus> {
  * an upgrading product meets first: the server was asked and named no
  * identity for this account, so there is nothing here to publish. Nothing is
  * wrong; this is the call declining to make a decision it used to make
- * silently. See {@link createCrossSigningIdentity}.
+ * silently.
+ *
+ * **Do not answer it by calling {@link createCrossSigningIdentity} from the
+ * handler that caught it.** That is the shape this split exists to prevent:
+ * it puts the destructive call back on the launch path, where an answer that
+ * was true when the server sent it can be stale by the time it is acted on.
+ * The decision belongs where your product knows something this library
+ * cannot, and {@link createCrossSigningIdentity} lists what that can be.
  *
  * # After a join, this call starts being served again
  *
@@ -1061,20 +1099,30 @@ export async function bootstrapCrossSigning(): Promise<void> {
  * back with it.** If you do only one thing differently from
  * `bootstrapCrossSigning`, make it that.
  *
- * # What this does about the window it cannot close
+ * # The window is not closed, and the confirming query does not close it
  *
- * The batch it queues carries a `'keys_query'` for your own account after
+ * The batch this queues carries a `'keys_query'` for your own account after
  * the publication, so your ordinary send-and-report loop asks the server
- * once more straight afterwards. That does not prevent the race: the
- * publication is handed to you first, and if you send it you have sent it.
- * What it prevents is the state the race otherwise leaves behind, which was
- * measured and is worse than it looks. A device that lost the race held an
- * identity the account did not have, reported `identityKnown` and
- * `privateKeysHeld` like a healthy one, and **asked the server nothing
- * further**, because a served publication queued no query. With the query in
- * the batch, the next answer carries the identity the account really has,
- * the keys that disagree with it are dropped, and
- * {@link getIdentityStatus} then reports the truth.
+ * once more straight afterwards.
+ *
+ * **Read what that is worth precisely, because it was overstated once and
+ * the overstatement was measured.** It covers the branch where the
+ * publication did *not* land: the answer then carries the identity the
+ * account really has, the keys that disagree with it are dropped, and
+ * {@link getIdentityStatus} reports the truth instead of a device that holds
+ * an identity the account does not have and asks the server nothing further.
+ *
+ * **It does not cover the branch where the publication did land, and that is
+ * the branch that does the damage.** If you sent the publication, answered
+ * the authentication challenge and reported the `200`, the overwrite is
+ * complete: the confirming answer then comes back carrying *your* identity,
+ * it matches your store, and this library reports a completely healthy
+ * device. Nothing in the status, in any error, or in any later answer says
+ * the identity that was there before was replaced. There is no path back and
+ * this library will not pretend to offer one.
+ *
+ * So the confirming query is worth having and is not a safety net. The thing
+ * that keeps you out of this branch is the decision above.
  *
  * # Everything else is {@link bootstrapCrossSigning}'s
  *
@@ -1292,8 +1340,15 @@ export async function requestVerification(userId: string, deviceId: string): Pro
  * relaunched store starts out having asked nothing.
  *
  * `'identity_not_known'` means the server was asked and said this account has
- * no identity. There is nothing to join, and the answer is
- * {@link bootstrapCrossSigning} rather than a retry.
+ * no identity. There is nothing to join, and no retry helps.
+ *
+ * This is the same refusal, with the same remedy, that
+ * {@link bootstrapCrossSigning} reports: the account needs a first identity,
+ * that is {@link createCrossSigningIdentity}, and it is a decision your
+ * product makes rather than something this handler calls. This paragraph
+ * used to name `bootstrapCrossSigning` as the answer, which stopped being
+ * true when creating became its own call and left the two surfaces saying
+ * different things about one error.
  */
 export async function requestSelfVerification(): Promise<string> {
   try {

@@ -20,8 +20,8 @@
 //!   from the far side's in a way that looks exactly like a genuine
 //!   mismatch -- so the observable symptom of this defect is a verification
 //!   that a careful person correctly refuses, every time, for no reason.
-//!   `IdentityStatus`'s four fields are all `bool`, which is the same hazard
-//!   with a smaller alphabet and a worse consequence: three of those four
+//!   `IdentityStatus`'s five fields are all `bool`, which is the same hazard
+//!   with a smaller alphabet and a worse consequence: four of those five
 //!   exist precisely to be told apart, and reporting them the wrong way
 //!   round tells a product it may publish an identity over one the account
 //!   already has.
@@ -546,9 +546,9 @@ fn an_inbound_announcement_keeps_its_three_strings_apart() {
     );
 }
 
-/// The signing identity's four booleans stay in their own fields.
+/// The signing identity's five booleans stay in their own fields.
 ///
-/// The file's opening hazard again, with the smallest alphabet it has: four
+/// The file's opening hazard again, with the smallest alphabet it has: five
 /// `bool` fields, so every permutation of the mapping compiles, passes
 /// `clippy -D warnings` and passes every other test in this repository.
 ///
@@ -571,16 +571,17 @@ fn an_inbound_announcement_keeps_its_three_strings_apart() {
 /// which is the minting sentence again; delivered nowhere it would leave the
 /// caller in the loop this field exists to end.
 ///
-/// One assertion per field, each with the other three false, so that no
-/// permutation can make any of the four look right: a swap moves a `true` to
+/// One assertion per field, each with the others false, so that no
+/// permutation can make any of the five look right: a swap moves a `true` to
 /// a field this test expects `false` in, and both halves of that fail.
 #[test]
-fn an_identity_status_keeps_its_four_facts_apart() {
+fn an_identity_status_keeps_its_five_facts_apart() {
     let asked_only = FfiIdentityStatus::from(IdentityStatus {
         account_keys_fetched: true,
         identity_known: false,
         private_keys_held: false,
         account_keys_answer_unsettled: false,
+        identity_publication_pending: false,
     });
     assert!(
         asked_only.account_keys_fetched,
@@ -596,6 +597,7 @@ fn an_identity_status_keeps_its_four_facts_apart() {
         identity_known: true,
         private_keys_held: false,
         account_keys_answer_unsettled: false,
+        identity_publication_pending: false,
     });
     assert!(!known_only.account_keys_fetched);
     assert!(
@@ -611,6 +613,7 @@ fn an_identity_status_keeps_its_four_facts_apart() {
         identity_known: false,
         private_keys_held: true,
         account_keys_answer_unsettled: false,
+        identity_publication_pending: false,
     });
     assert!(!holding_only.account_keys_fetched);
     assert!(!holding_only.identity_known);
@@ -627,6 +630,7 @@ fn an_identity_status_keeps_its_four_facts_apart() {
         identity_known: false,
         private_keys_held: false,
         account_keys_answer_unsettled: true,
+        identity_publication_pending: false,
     });
     assert!(
         !unsettled_only.account_keys_fetched,
@@ -639,6 +643,30 @@ fn an_identity_status_keeps_its_four_facts_apart() {
         unsettled_only.account_keys_answer_unsettled,
         "and it must arrive at all: dropped, the caller is back in a \
          drain-send-report loop that cannot terminate and is told nothing"
+    );
+    assert!(!unsettled_only.identity_publication_pending);
+
+    let pending_only = FfiIdentityStatus::from(IdentityStatus {
+        account_keys_fetched: false,
+        identity_known: false,
+        private_keys_held: false,
+        account_keys_answer_unsettled: false,
+        identity_publication_pending: true,
+    });
+    assert!(!pending_only.account_keys_fetched);
+    assert!(
+        !pending_only.identity_known,
+        "an identity this device minted and has not published must never \
+         arrive as one the account has: that is the pair whose confusion \
+         bricked an account for a whole round"
+    );
+    assert!(!pending_only.private_keys_held);
+    assert!(!pending_only.account_keys_answer_unsettled);
+    assert!(
+        pending_only.identity_publication_pending,
+        "and it must arrive at all: dropped, a product cannot tell the one \
+         state where `identity_known` is true and the account still has no \
+         identity"
     );
 }
 

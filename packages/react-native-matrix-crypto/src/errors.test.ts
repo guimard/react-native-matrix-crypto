@@ -468,3 +468,54 @@ describe('every generated error variant maps to a kind of its own', () => {
     },
   )
 })
+
+/**
+ * The gate refusals arrive carrying a remedy, not a bare tag.
+ *
+ * These four are fieldless on the Rust side, so nothing crosses the FFI
+ * boundary with them: before `MESSAGE_BY_KIND` existed, a developer saw
+ * `crypto error: identity_not_known` in a log line and nothing else, while
+ * every explanation of what to do sat in documentation for a function they
+ * had not opened yet. That is the surface half of how a product ends up
+ * wiring the destructive call to a launch-path error handler.
+ *
+ * The message is asserted for content rather than byte for byte: pinning the
+ * whole string would make every wording improvement a test edit, and what
+ * matters is that the remedy and, for the one that needs it, the warning are
+ * both in the text a developer will actually see.
+ */
+describe('a fieldless gate refusal carries its remedy in the message', () => {
+  it.each([
+    ['MachineFfiError.AccountKeysNotFetched', 'account_keys_not_fetched', 'markRequestSent'],
+    ['MachineFfiError.IdentityNotKnown', 'identity_not_known', 'createCrossSigningIdentity'],
+    ['MachineFfiError.IdentityAlreadyExists', 'identity_already_exists', 'requestSelfVerification'],
+    ['MachineFfiError.PrivateKeysNotHeld', 'private_keys_not_held', 'getIdentityStatus'],
+  ])('%s names its remedy', (variant, kind, remedy) => {
+    const err = toCryptoError(new Error(variant))
+    expect(err.kind).toBe(kind)
+    expect(err.message).not.toBe(`crypto error: ${kind}`)
+    expect(err.message).toContain(remedy)
+    expect(err.message.length).toBeGreaterThan(60)
+  })
+
+  it('warns, in the message itself, against wiring the mint to this handler', () => {
+    const err = toCryptoError(new Error('MachineFfiError.IdentityNotKnown'))
+    // The one refusal whose obvious-looking remedy is the destructive call.
+    // The warning has to be in the string, because the string is what a
+    // developer meets first and the documentation is what they read after
+    // deciding.
+    expect(err.message).toContain('do not call it from this handler')
+    expect(err.message).toContain('destructive')
+  })
+
+  it('leaves a reason from the Rust side alone', () => {
+    // The map is a fallback, not an override: a variant that carries its own
+    // detail keeps it, or a store error would start reporting a remedy for a
+    // condition it is not in.
+    const err = toCryptoError({
+      name: 'MachineFfiError.Store',
+      detail: 'the crypto store could not be opened',
+    })
+    expect(err.message).toBe('the crypto store could not be opened')
+  })
+})

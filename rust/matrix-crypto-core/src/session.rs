@@ -2365,49 +2365,50 @@ async fn answer_about_this_account(
         // the failures cache (`manager.rs:152,205-211`).
         //
         // **And nothing this machine already holds may contradict it.** A
-        // store that already holds a public identity for the account, or a
-        // complete private identity for it, is a store saying "this account
-        // has an identity" while the answer says "it has none". Those cannot
-        // both be current: the Matrix protocol has no way to unpublish an
-        // identity, so an account that had one still has one. The answer is
-        // therefore stale, or from a server that omitted the account, and it
-        // settles nothing.
+        // store that holds a public identity the account really has is a
+        // store saying "this account has an identity" while the answer says
+        // "it has none". Those cannot both be current: the Matrix protocol
+        // has no way to unpublish an identity, and that premise was tested
+        // rather than assumed -- an empty upload is a no-op, nulled keys are
+        // refused, and deleting every device leaves the identity standing.
+        // So such an answer is stale, or from a server that omitted the
+        // account, and it settles nothing. That is what
+        // `tests/identity_bootstrap_contradicted_answer.rs` holds.
         //
-        // **The check is on the public identity alone, and that is a
-        // measured decision rather than an oversight.** It was written as
-        // "a public identity *or* a complete private one", and sabotaging
-        // the private half away turned no test red. It is not merely
-        // untested, it is unreachable: upstream writes private cross-signing
-        // keys in exactly two places, and neither can produce them without a
-        // public identity beside them. `bootstrap_cross_signing` stores both
-        // together, and `Store::import_cross_signing_keys`
-        // (`matrix-sdk-crypto-0.18.0/src/store/mod.rs:961-1002`) begins
-        // `if let Some(public_identity) = self.get_identity(...)` and, with
-        // no public identity, imports nothing at all and logs "No public
-        // identity found while importing cross-signing keys". So a store
-        // holding private keys and no public identity is a store nothing
-        // writes, and a clause guarding it would be decoration.
+        // **The premise is true and one inference from it was false, and
+        // this is the correction.** The check used to read `stored.is_none()`
+        // -- *does this store hold an identity* -- and treated a held
+        // identity as proof the answer was stale. *This store holds one* and
+        // *this account has one* are different facts, and `create_identity`
+        // is precisely the call that makes them differ: it writes the minted
+        // identity to disk and then hands the publication to the caller. A
+        // killed process, an offline device or a timed-out request between
+        // those two moments leaves a durable store holding an identity the
+        // account genuinely does not have.
         //
-        // This is not a hypothetical shape. A store restored from a backup
-        // holds exactly that complete private identity, and upstream's own
-        // defence against republishing it -- `check_private_identity`
-        // calling `clear_if_differs` (`manager.rs:418-443`) -- is reached
-        // **only from inside the `master_keys` loop**, which an answer with
-        // no master key for this account never enters. So before this check
-        // existed, an omitting answer lifted the gate, left the stale
-        // private keys reading as held, and `bootstrap_identity` and
-        // `create_recovery` both proceeded: measured, a republication of a
-        // stale identity over the account's newer one and a recovery written
-        // for keys the account had already replaced. That is the exact
-        // destruction `tests/recovery_stale_identity.rs` exists to prevent,
-        // in the one case that file never exercised.
+        // Measured on continuwuity and on Synapse, before this correction:
+        // after that interruption the next process was refused permanently
+        // on `bootstrap_identity`, `create_identity`, `create_recovery` and
+        // `recover_identity`, five rounds of the documented remedy changed
+        // nothing, and the only escape was deleting the store, which is the
+        // user's message history. On Synapse the answer was not even an
+        // omission but three explicit empty key maps, which the old check
+        // read as a contradiction. That is a worse outcome than the defect
+        // the check was added to prevent, and it arrived through the
+        // ordinary sign-up flow rather than through a race.
         //
-        // The cost is a device whose store holds an identity meeting a
-        // server that genuinely reports none: it refuses rather than
-        // republishing, and says so through
-        // `IdentityStatus::account_keys_answer_unsettled`. That is the same
-        // trade this whole gate is argued in, taken in the same direction.
-        return if response.device_keys.contains_key(account) && stored.is_none() {
+        // So the question is not whether this store holds an identity but
+        // whether it holds one **the homeserver has ever accepted**, and
+        // only the store can answer it, because a server cannot be asked
+        // about a publication that never arrived.
+        // `signing::identity_is_unpublished` is that record and its own
+        // documentation is where it is kept. An identity this device minted
+        // and has not seen accepted does not contradict an answer saying the
+        // account has none: those two agree, and the remedy is to finish
+        // publishing, which `bootstrap_identity` then does.
+        let contradicted =
+            stored.is_some() && !crate::signing::identity_is_unpublished(machine).await;
+        return if response.device_keys.contains_key(account) && !contradicted {
             AnswerAboutAccount::Settled
         } else {
             AnswerAboutAccount::Unsettled
@@ -2431,6 +2432,12 @@ async fn answer_about_this_account(
     // the question is whether upstream now holds *this* identity, not
     // whether every device that ever signed it is still in the answer.
     if identity.master_key() == &asserted {
+        // The homeserver has just asserted the very identity this store
+        // holds, which is the other moment the server itself tells us a
+        // publication landed. Recorded here as well as at the upload, so a
+        // device whose upload succeeded but whose report never happened
+        // stops being treated as holding something unpublished.
+        crate::signing::note_identity_published(machine).await;
         AnswerAboutAccount::Settled
     } else {
         AnswerAboutAccount::Unsettled
@@ -3036,12 +3043,21 @@ async fn mark_sent(
         PendingKind::SigningKeysUpload => {
             let response = SigningKeysUploadResponse::try_from_http_response(http_response(body))
                 .map_err(|_| SessionError::MalformedPayload)?;
-            machine
+            let outcome = machine
                 .mark_request_as_sent(
                     &transaction_id,
                     AnyIncomingResponse::SigningKeysUpload(&response),
                 )
-                .await
+                .await;
+            if outcome.is_ok() {
+                // The homeserver accepted the publication, which is the
+                // fact `signing::identity_is_unpublished` exists to
+                // remember and the same instant upstream marks its own
+                // private identity shared. Recorded beside upstream's
+                // because upstream's is not reachable from any public API.
+                crate::signing::note_identity_published(machine).await;
+            }
+            outcome
         }
     };
 
