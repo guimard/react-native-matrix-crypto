@@ -900,6 +900,29 @@ export interface IdentityStatus {
    * Read it because this is the one state where `identityKnown` is `true`
    * and the account still has no identity. A product that shows "encryption
    * is set up" on `identityKnown` alone is wrong here.
+   *
+   * # `true` reads identically in two situations, and one is destructive
+   *
+   * It means *finish your own publication*, and it equally means *you are
+   * about to overwrite the identity your other phone made while this one was
+   * offline*. Nothing you can read from this device separates them, and nine
+   * rounds of looking for something that could is why nothing here does.
+   *
+   * **What separates them is a fresh answer, and
+   * {@link createCrossSigningIdentity} now makes you fetch one before it
+   * publishes.** The first call refuses `'account_keys_stale'` with the key
+   * query already queued. Send it, report it, and the two have stopped being
+   * identical:
+   *
+   * * *Finish your own publication*: the answer carries no other identity,
+   *   this stays `true`, and the next call hands back the publication.
+   * * *Your other device published one*: the answer carries it, this goes
+   *   **`false`** while `identityKnown` stays `true` and `privateKeysHeld`
+   *   goes `false`, and the next call refuses `'identity_already_exists'`.
+   *
+   * So this field on its own is still ambiguous at the moment you read it.
+   * What changed is that the ambiguity is now resolved **before** anything is
+   * published, instead of being resolved by the publication.
    */
   identityPublicationPending: boolean
 }
@@ -1096,14 +1119,39 @@ export async function bootstrapCrossSigning(): Promise<void> {
  * it is not sufficient**, and it is the whole reason this call is separate.
  *
  * A `/keys/query` answer is only ever true of the instant the server sent
- * it. Between that instant and this call, another device of the same account
- * can publish an identity, and no answer already in hand can say so. So you
+ * it, and another device of the same account can publish an identity after
+ * that instant without anything already in hand being able to say so. So you
  * have to supply the fact the library cannot: **that this account is meant
  * to be getting its first identity now.** Your product knows things this
  * library does not, and any of them is a better basis than the answer alone:
  * the user has just created the account; this is the sign-up flow rather
  * than a relaunch; `GET /_matrix/client/v3/devices` lists no other session;
  * a person was asked and said yes.
+ *
+ * # The precondition is as old as the last answer, and this call bounds it
+ *
+ * **This was described as a race "between that instant and this call" for
+ * two releases, and that wording was wrong in a way that mattered**: it reads
+ * as though acting quickly were enough. It was not. The gap was unbounded and
+ * it did not shrink with care. `accountKeysFetched` never goes false again
+ * once an answer has landed, the layer underneath volunteers no key query for
+ * an account it already tracks, and the `'identity_not_known'` refusal that
+ * sends you here queues nothing. So a product that had drained its pump to
+ * empty and reported every answer honestly -- the careful one -- had **no**
+ * way left to refresh the one fact this call reads. Measured on two
+ * homeservers, in exactly that state, it replaced another device's live
+ * identity; a less thorough product survived the same sequence only because
+ * an unsent key query happened to still be sitting in its pump.
+ *
+ * So this call **asks for itself before it publishes.** The first call
+ * refuses `'account_keys_stale'` with the query already queued; drain, send,
+ * report, call again. **That round is not a formality.** It is where an
+ * identity another of your devices published comes back, and where this call
+ * refuses `'identity_already_exists'` instead of overwriting it.
+ *
+ * What remains is your own round trip between reporting that answer and
+ * calling again. It is in your hands and it shrinks the promptlier you
+ * retry, which is the opposite of what stood here before.
  *
  * **Calling this on every launch, or as the automatic handler for
  * `'identity_not_known'`, puts the decision back where it was and the race

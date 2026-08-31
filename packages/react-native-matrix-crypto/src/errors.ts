@@ -129,6 +129,35 @@ export type CryptoErrorKind =
   // against the canonical `user_id` your login returned. Nothing is
   // destroyed while it is true.
   | 'account_keys_not_fetched'
+  // `createCrossSigningIdentity` has been answered about this account, and
+  // not *since it asked*. Different from the kind above, which means nobody
+  // has asked at all, and the difference is the point of both: this one can
+  // be true while `getIdentityStatus().accountKeysFetched` is `true`, because
+  // that flag never goes false again once an answer has landed.
+  //
+  // **Why the call refuses instead of using the answer it has.** That answer
+  // is true of the instant the server sent it and of nothing later, and
+  // nothing in this library refreshes it: the flag is sticky, the layer
+  // underneath volunteers no key query for an account it already tracks, and
+  // `'identity_not_known'` queues nothing. Measured on two homeservers: a
+  // product that had drained its pump to empty and reported everything -- the
+  // careful one -- had nothing left that could refresh it, and replaced the
+  // identity another device of the account had just published. A product that
+  // happened to have an unsent key query still in its pump survived the same
+  // sequence by accident.
+  //
+  // **The remedy is one round of the loop you already run**, and the call
+  // queues the query as it refuses: drain `takeOutgoingRequests`, send it,
+  // report it with `markRequestSent`, call again. Deliberately absent from
+  // RETRIABLE below, for the same reason as the kind above: calling again
+  // without pumping in between returns this forever.
+  //
+  // **Do not read the second call succeeding as this having been a
+  // formality.** The answer you just fetched is what decides it. If another
+  // of the account's devices published an identity in the meantime, that
+  // answer carries it, and the next call refuses `'identity_already_exists'`
+  // instead. That refusal is this kind having worked.
+  | 'account_keys_stale'
   // The account has a signing identity whose private keys this device does
   // not hold. There is no remedy through that call and there should not be:
   // this device joins that identity, it does not replace it, and replacing
@@ -353,6 +382,13 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   // 'unknown' on the one refusal whose whole purpose is to make it stop and
   // look.
   ['RecoveryAlreadyExists', 'recovery_already_exists'],
+  // The sixth, added when `createCrossSigningIdentity` stopped deciding on an
+  // answer older than the call. Without this entry the one refusal that stops
+  // a product from overwriting another device's identity arrives as kind
+  // 'unknown', indistinguishable from every unmapped failure, and the obvious
+  // thing to do with an unknown error on a call you just made deliberately is
+  // to try it again.
+  ['AccountKeysStale', 'account_keys_stale'],
 ])
 
 // 'session_refused' is deliberately not here: see its own doc comment on
@@ -468,6 +504,15 @@ const MESSAGE_BY_KIND: ReadonlyMap<CryptoErrorKind, string> = new Map([
       'product has decided this account should be getting its first identity, having ' +
       'checked something it knows and this library cannot, such as that no other session ' +
       'is listed on the account.',
+  ],
+  [
+    'account_keys_stale',
+    'this library has been told what identity this account has, but not since this call ' +
+      'asked, and that answer is only ever true of the instant the server sent it. The key ' +
+      'query that lifts this has already been queued: drain takeOutgoingRequests, send it, ' +
+      'report it with markRequestSent, and call again. If another device of this account ' +
+      'published an identity in the meantime, that answer carries it and the next call ' +
+      'refuses with identity_already_exists, which is this refusal having done its job.',
   ],
   [
     'identity_already_exists',

@@ -897,10 +897,13 @@ pub async fn identity_status() -> Result<IdentityStatus, MachineError> {
 /// exactly what the last one did. That field's own doc comment says what to
 /// do instead, and `tests/identity_bootstrap_unsettled_answer.rs` drives
 /// five rounds of the loop to show it. Splitting the two into separate
-/// variants would be the better surface; it is not done here because the
-/// wire ordinals after `MachineError`'s last variant are reserved by work in
-/// flight, and a variant appended into that range would be misdecoded by
-/// bindings generated before it.
+/// variants would be the better surface; it is not done here because
+/// splitting one variant into two means **inserting**, which shifts every
+/// wire ordinal after it and makes bindings generated before the change
+/// decode the wrong refusal in silence. Appending is a different act and is
+/// safe -- see [`MachineError::AccountKeysNotFetched`]'s own doc for the
+/// correction, and [`MachineError::AccountKeysStale`] for a variant this
+/// round appended.
 ///
 /// [`MachineError::IdentityAlreadyExists`] means the answer named an
 /// identity this device does not hold the private keys for. There is no

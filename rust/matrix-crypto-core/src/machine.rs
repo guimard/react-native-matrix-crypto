@@ -166,11 +166,25 @@ pub enum MachineError {
     /// what tells them apart, and its own doc comment says what to do about
     /// the second.
     ///
-    /// A variant of its own would say it better. It is not added because the
-    /// wire ordinals after this enum's last variant are reserved by work in
-    /// flight, and UniFFI numbers variants by declaration position, so one
-    /// appended here would be misdecoded by every binding generated before
-    /// it. When those land, splitting this is the change to make.
+    /// A variant of its own would say it better, and it is still not added,
+    /// but the reason stated here was wrong and is corrected rather than
+    /// repeated.
+    ///
+    /// It said an appended variant would be **misdecoded** by bindings
+    /// generated before it. It would not: UniFFI numbers variants by
+    /// declaration position, so an appended one takes an ordinal no earlier
+    /// binding has a case for, and the generated converter throws
+    /// `UnexpectedEnumCase` on it. That is unrecognised, which is loud and
+    /// fails closed, and `matrix-crypto-ffi/src/lib.rs` has said so all
+    /// along. What really cannot be done is **inserting**, which shifts every
+    /// ordinal after it so that stale bindings decode the wrong variant
+    /// silently.
+    ///
+    /// Splitting this variant means inserting, which is why it is still not
+    /// done. `AccountKeysStale` below was appended, took wire ordinal 18 in
+    /// the FFI mirror, and left ordinals 1 to 17 untouched -- verified by
+    /// regenerating the bindings and reading the diff rather than by
+    /// assertion.
     ///
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("the account's keys have not been fetched yet")]
