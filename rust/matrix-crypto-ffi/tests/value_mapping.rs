@@ -43,7 +43,7 @@ use matrix_crypto_ffi::{
     TrustState as FfiTrustState, VerificationStage,
 };
 
-/// All seven stages, each to its own. One assertion per variant rather than
+/// All eight stages, each to its own. One assertion per variant rather than
 /// a loop, for `error_mapping.rs`'s reason: a loop would need the two enums
 /// to be relatable by something other than this mapping, which is the very
 /// thing under test.
@@ -106,6 +106,16 @@ fn every_flow_stage_maps_to_the_matching_ffi_variant() {
          Cancelled are the two outcomes of a verification and they are \
          opposites, so this pair is the one a swap damages most: a refusal \
          would be presented as a success"
+    );
+    assert!(
+        matches!(
+            VerificationStage::from(FlowStage::CodeScanned),
+            VerificationStage::CodeScanned
+        ),
+        "FlowStage::CodeScanned must not arrive as another stage -- it is the \
+         only stage at which a flow verified by a code asks a person \
+         anything, and the only one at which confirming a scan is accepted, \
+         so a product told anything else here waits until the flow times out"
     );
 }
 
@@ -600,6 +610,35 @@ fn an_inbound_announcement_keeps_its_three_strings_apart() {
         verification_id, "the-flow-identifier",
         "the core calls this a flow id and this crate calls it a verification id; they \
          must be the same value, because it is the one a product hands back"
+    );
+}
+
+/// A completed scan crosses as itself and keeps its one string.
+///
+/// One field rather than three, so the permutation hazard above does not
+/// apply; what does apply is the variant itself. The `From` is exhaustive,
+/// so this cannot be forgotten, but nothing in the compiler stops it being
+/// pointed at a neighbour: crossing as `VerificationRequested` would give a
+/// product a completion it read as an invitation, and it would then try to
+/// accept a flow that had already finished.
+///
+/// The identifier is the whole payload here. A product correlates it with
+/// the one `requestVerification` returned, or the one an invitation carried,
+/// and a value that arrived from any other field would name nothing.
+#[test]
+fn a_completed_scan_keeps_the_identifier_it_names() {
+    let crossed = FfiCryptoSignal::from(CryptoSignal::VerificationCompleted {
+        flow_id: "the-flow-identifier".to_string(),
+    });
+
+    let FfiCryptoSignal::VerificationCompleted { verification_id } = crossed else {
+        panic!("a completed scan must cross as a completed scan and not as its neighbour");
+    };
+    assert_eq!(
+        verification_id, "the-flow-identifier",
+        "the core calls this a flow id and this crate calls it a verification id; they \
+         must be the same value, because it is the one a product correlates with the \
+         flow it started"
     );
 }
 

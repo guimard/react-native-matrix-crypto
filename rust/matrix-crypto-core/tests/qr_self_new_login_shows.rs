@@ -34,7 +34,7 @@
 use matrix_crypto_core::{
     cancel_flow, confirm_scan, create_machine, device_statuses, flow_stage, identity_status,
     in_runtime, mark_request_sent, offer_scanning, read_code, request_self_flow,
-    take_outgoing_requests, FlowStage, MachineConfig, TrustState,
+    take_outgoing_requests, CryptoSignal, FlowStage, MachineConfig, TrustState,
 };
 use matrix_sdk_common::ruma::{OwnedDeviceId, OwnedUserId, TransactionId};
 use matrix_sdk_crypto::matrix_sdk_qrcode::QrVerificationData;
@@ -43,9 +43,9 @@ use matrix_sdk_crypto::QrVerificationState;
 #[path = "scanned/harness.rs"]
 mod harness;
 use harness::{
-    cross_signed_machine, deliver_verification_request, every_method, keys_claim_response,
-    keys_query_response, mode_of, one_of, pump_bare_to_library, pump_to_bare, queried_users,
-    MODE_SELF_UNTRUSTED,
+    cross_signed_machine, deliver_verification_request, drain_signals, drain_to_quiet,
+    every_method, keys_claim_response, keys_query_response, mode_of, one_of, pump_bare_to_library,
+    pump_to_bare, queried_users, subscribe, MODE_SELF_UNTRUSTED,
 };
 
 const ACCOUNT: &str = "@alice:example.org";
@@ -60,6 +60,9 @@ fn a_new_login_shows_a_code_and_the_account_verifies_it() {
     let store_path = dir.path().join("store").to_string_lossy().into_owned();
 
     futures::executor::block_on(in_runtime(async move {
+        // Before anything syncs. See `qr_self_established_shows.rs` at the
+        // same place.
+        subscribe();
         let account: OwnedUserId = ACCOUNT.parse().expect("a literal user id parses");
         let new_device: OwnedDeviceId = NEW_DEVICE.into();
 
@@ -324,6 +327,15 @@ fn a_new_login_shows_a_code_and_the_account_verifies_it() {
             &top[side - 8..]
         );
 
+        // ---- The stages a scanned flow passes through -------------------------
+        //
+        // One sequence, compared once, for the reason
+        // `qr_self_established_shows.rs` gives at the same place: three
+        // assertions taken one at a time all pass against a stage that
+        // answers every question the same way, which is the defect being
+        // measured.
+        let mut stages = vec![flow_stage(&flow).await.expect("the flow exists")];
+
         // ---- The established device scans it ---------------------------------
         let scanned = QrVerificationData::from_bytes(&code.payload)
             .expect("what this library produced must decode as what the format defines");
@@ -341,20 +353,66 @@ fn a_new_login_shows_a_code_and_the_account_verifies_it() {
             .reciprocate()
             .expect("a scanner must tell the other side it scanned");
         deliver_verification_request(&reciprocation, ACCOUNT, ACCOUNT, NEW_DEVICE).await;
+        stages.push(flow_stage(&flow).await.expect("the flow exists"));
 
         // ---- The person says it really was their other phone ------------------
         confirm_scan(&flow)
             .await
             .expect("a code somebody has scanned can be confirmed");
+        stages.push(flow_stage(&flow).await.expect("the flow exists"));
+        assert_eq!(
+            stages,
+            vec![
+                FlowStage::Started,
+                FlowStage::CodeScanned,
+                FlowStage::Confirmed
+            ],
+            "the mode a person gets is decided by which phone they picked up, so the \
+             stage has to be as truthful for the new login holding up its screen as \
+             it is for the established device holding up its own"
+        );
         let crossed = pump_to_bare(&first.peer, ACCOUNT, ACCOUNT, OLD_DEVICE).await;
         assert!(
             crossed.contains(&"m.key.verification.done".to_string()),
             "confirming a scan must reach the other device through the pump: {crossed:?}"
         );
+        // A cut rather than a check, and in this one file it is a no-op:
+        // measured, by removing it and watching the test still pass. This
+        // device holds none of the account's private keys, so M4's identity
+        // latch never fires here, and it opened the flow itself, so no
+        // invitation is announced back to it. Kept anyway, and the reason is
+        // that the two sibling files both go red without theirs: what makes
+        // the assertion below mean "what this one sync produced" is the cut,
+        // not the fixture that happens to have nothing to clear.
+        drain_to_quiet();
         let crossed = pump_bare_to_library(&first.peer, ACCOUNT, ACCOUNT, NEW_DEVICE).await;
         assert!(
             crossed.contains(&"m.key.verification.done".to_string()),
             "the other device's acknowledgement must reach the library: {crossed:?}"
+        );
+
+        // ---- What a product is told, and the signal it is not ------------------
+        //
+        // **This is the mode that signals by accident**, and the accident is
+        // measured rather than guarded against in the abstract. A new login
+        // that verifies itself asks its other devices for the account's
+        // private signing seeds, they arrive a sync or two later, and their
+        // arrival announces `TrustChanged` for this very account. So an
+        // assertion of the form "a `TrustChanged` for this account arrived
+        // after the flow" passes here with **no completion producer at all**,
+        // which is exactly the shape M4 found vacuous once already.
+        //
+        // The whole vector, at the sync that finished the flow and before
+        // the seeds have been asked for, is what tells the two apart.
+        let signals = drain_signals("a code this new login showed was scanned and confirmed");
+        assert_eq!(
+            signals,
+            vec![CryptoSignal::VerificationCompleted {
+                flow_id: flow.0.clone(),
+            }],
+            "the completion of a scanned flow must be its own signal, arriving at the \
+             sync that finished it. Anything a product had to tell apart from the \
+             seeds' arrival would be a signal it could not act on"
         );
 
         assert!(
@@ -444,6 +502,23 @@ fn a_new_login_shows_a_code_and_the_account_verifies_it() {
             after.private_keys_held,
             "the seeds arrived by gossip inside an ordinary sync, so this device now \
              holds the account's private signing keys: {after:?}"
+        );
+
+        // And *that* is what announces a trust change, on a later sync than
+        // the one above and under this account's own name. Asserted here so
+        // the pair is on the record: two facts, two moments, two signals a
+        // product can act on separately. A single one would have left a
+        // product unable to tell "my verification finished" from "my new
+        // device can sign now", which are different sentences on a screen.
+        let arrival = drain_signals("the private signing keys arrived");
+        assert_eq!(
+            arrival,
+            vec![CryptoSignal::TrustChanged {
+                user: ACCOUNT.to_string(),
+                state: TrustState::Verified,
+            }],
+            "the seeds' arrival keeps the signal M4 gave it, unchanged and separate \
+             from the completion above"
         );
 
         // The account's own device id is used once here so the fixture's

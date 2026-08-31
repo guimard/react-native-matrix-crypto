@@ -33,8 +33,15 @@
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
+use std::sync::mpsc;
+use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
+use std::time::Duration;
 
-use matrix_crypto_core::{mark_request_sent, receive_sync_changes, take_outgoing_requests};
+use matrix_crypto_core::{
+    mark_request_sent, receive_sync_changes, set_crypto_observer, take_outgoing_requests,
+    CryptoObserver, CryptoSignal,
+};
 use matrix_sdk_common::ruma::api::client::keys::claim_keys::v3::Response as KeysClaimResponse;
 use matrix_sdk_common::ruma::api::client::keys::get_keys::v3::Response as KeysQueryResponse;
 use matrix_sdk_common::ruma::api::client::keys::upload_keys::v3::Response as KeysUploadResponse;
@@ -54,6 +61,108 @@ use matrix_sdk_crypto::{
     CrossSigningBootstrapRequests, DecryptionSettings, EncryptionSyncChanges, OlmMachine,
     TrustRequirement,
 };
+
+// --------------------------------------------------------- the signal channel
+//
+// The same shape `tests/self_verification.rs` uses, and here for the reason
+// that file discovered: a signal this library emits for one cause is not
+// distinguishable from the same signal emitted for another, so an assertion
+// that something arrived *at some point* can pass with the producer under
+// test deleted. Everything before the moment being measured is drained, and
+// what is asserted afterwards is the whole vector one sync produced.
+
+/// How long a signal gets to arrive before the assertion fails rather than
+/// hanging. The same bound, for the same reason, as `tests/sas_two_party.rs`.
+pub const DELIVERY_BOUND: Duration = Duration::from_secs(5);
+
+/// How long a signal that must *not* come gets to prove it.
+pub const QUIET_BOUND: Duration = Duration::from_millis(750);
+
+struct Recorder {
+    tx: mpsc::Sender<CryptoSignal>,
+}
+
+impl CryptoObserver for Recorder {
+    fn on_signal(&self, signal: CryptoSignal) {
+        let _ = self.tx.send(signal);
+    }
+}
+
+struct SignalChannel {
+    rx: mpsc::Receiver<CryptoSignal>,
+}
+
+static SIGNALS: StdMutex<Option<SignalChannel>> = StdMutex::new(None);
+
+/// Installs the recorder. One test per binary drives the machine, so there
+/// is nothing to drain and no second subscriber to serialise against.
+pub fn subscribe() {
+    let (tx, rx) = mpsc::channel();
+    *SIGNALS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(SignalChannel { rx });
+    set_crypto_observer(Arc::new(Recorder { tx }));
+}
+
+/// Every signal one announcement pass delivered, having waited for the pass
+/// to fall quiet.
+///
+/// Delivery is detached, so a `try_recv` sweep alone would race the producer
+/// and report an empty channel on a machine that had announced perfectly
+/// well. **The tail waits too, and that is not symmetry for its own sake.**
+/// What callers do with this value is compare it as a whole vector, so a
+/// second signal from the same pass arriving a moment after the first would
+/// be missed and the comparison would pass with one element where two were
+/// produced -- a check reporting success without having examined its target,
+/// which is the failure this repository keeps finding. The first arrival
+/// gets the long bound because nothing may have happened yet; everything
+/// after it gets the short one, because the pass that produced the first is
+/// already running.
+///
+/// **What this returns has no defined order** once it holds more than one
+/// element: `emit_crypto` detaches every signal into its own task. Every
+/// caller today asserts a single-element vector with `assert_eq!`, which is
+/// safe for exactly that reason. A caller that comes to expect two must sort
+/// or compare as a set. `CryptoSignal::VerificationCompleted` says where the
+/// second producer is likely to come from.
+pub fn drain_signals(expected: &str) -> Vec<CryptoSignal> {
+    let held = SIGNALS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let received = &held.as_ref().expect("subscribe must run first").rx;
+    let mut signals = vec![received
+        .recv_timeout(DELIVERY_BOUND)
+        .unwrap_or_else(|e| panic!("{expected}: nothing reached the signal channel ({e})"))];
+    while let Ok(signal) = received.recv_timeout(QUIET_BOUND) {
+        signals.push(signal);
+    }
+    signals
+}
+
+/// Empties the channel, waiting for it to fall quiet rather than merely to
+/// read empty.
+pub fn drain_to_quiet() {
+    let held = SIGNALS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let received = &held.as_ref().expect("subscribe must run first").rx;
+    while received.recv_timeout(QUIET_BOUND).is_ok() {}
+}
+
+/// Requires that nothing arrives, having waited for it.
+pub fn no_signal(why: &str) {
+    let held = SIGNALS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Ok(signal) = held
+        .as_ref()
+        .expect("subscribe must run first")
+        .rx
+        .recv_timeout(QUIET_BOUND)
+    {
+        panic!("{why}, and yet {signal:?} was delivered");
+    }
+}
 
 // ------------------------------------------------------------- wire shapes
 

@@ -1310,10 +1310,24 @@ describe('getVerificationStage', () => {
       [NativeVerificationStage.Ready, 'ready'],
       [NativeVerificationStage.Started, 'started'],
       [NativeVerificationStage.KeysExchanged, 'keys-exchanged'],
+      [NativeVerificationStage.CodeScanned, 'code-scanned'],
       [NativeVerificationStage.Confirmed, 'confirmed'],
       [NativeVerificationStage.Done, 'done'],
       [NativeVerificationStage.Cancelled, 'cancelled'],
     ]
+
+    // Every value the generated enum has, not merely the ones this table
+    // happens to name. `verificationStageOf` is exhaustive by compile
+    // error, so a stage added to the Rust source cannot go unmapped -- but
+    // nothing made it reach this table, and a table that silently covers
+    // less than the enum it stands for is the shape this repository keeps
+    // finding: a check that reports success without examining its target.
+    // The generated enum is numeric, so its reverse mapping puts the
+    // numbers in as keys too; only the names are members.
+    const everyNativeStage = Object.keys(NativeVerificationStage).filter((key) =>
+      Number.isNaN(Number(key)),
+    )
+    expect(expected).toHaveLength(everyNativeStage.length)
 
     // Every stage, in one test, and the results collected before they are
     // compared: seven separate assertions each covering one value would
@@ -1774,6 +1788,24 @@ describe('startVerificationComparison, and the conditions its one native error f
       )
     },
   )
+
+  /**
+   * A flow that became a code, which is the same kind and a different
+   * reason: a comparison cannot be started on one, and the caller is not
+   * waiting for anybody to agree. Kept apart from the case above because
+   * `comparison_already_started` would be the actively wrong answer here --
+   * it names a comparison that does not exist and asks for an
+   * `acceptVerification` that moves nothing, when what the flow is waiting
+   * for is `confirmScan`.
+   */
+  it('leaves the rejection as wrong_stage for a flow that became a code somebody scanned', async () => {
+    vi.mocked(nativeStartVerificationComparison).mockRejectedValue(new MachineFfiError.WrongStage())
+    vi.mocked(nativeVerificationStage).mockResolvedValue(NativeVerificationStage.CodeScanned)
+
+    await expect(startVerificationComparison(FLOW)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'wrong_stage',
+    )
+  })
 
   /**
    * Only `wrong_stage` is unfolded. An `unknown_flow` rejection already

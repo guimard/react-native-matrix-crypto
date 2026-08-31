@@ -159,8 +159,8 @@ use matrix_sdk_crypto::matrix_sdk_qrcode::qrcode::Color;
 use matrix_sdk_crypto::matrix_sdk_qrcode::{DecodingError, QrVerificationData};
 use matrix_sdk_crypto::types::requests::OutgoingRequest as UpstreamOutgoingRequest;
 use matrix_sdk_crypto::{
-    QrVerification, Sas, SasState, ScanError, Verification, VerificationRequest,
-    VerificationRequestState,
+    QrVerification, QrVerificationState, Sas, SasState, ScanError, Verification,
+    VerificationRequest, VerificationRequestState,
 };
 
 use crate::identity::TrustState;
@@ -438,19 +438,42 @@ pub enum FlowStage {
     /// Both sides have agreed to verify and one of them may now start the
     /// comparison.
     Ready,
-    /// The comparison has started; the keys are not exchanged yet, so there
-    /// is nothing to show.
+    /// The flow has begun and nothing is waiting on this side yet.
+    ///
+    /// For a comparison, the keys are not exchanged, so there is nothing to
+    /// show. For a flow that became a code, the code exists and nobody has
+    /// scanned it: keep it on the screen. Neither asks anything of a person.
     Started,
     /// The short authentication string is available and waiting to be
     /// compared.
     KeysExchanged,
-    /// This side has said the strings match; the other side has not yet.
+    /// This side has done what was asked of it; the other side has not
+    /// finished.
+    ///
+    /// Said the strings match, for a comparison. For a flow that became a
+    /// code, either scanned the other device's code and told it so, or
+    /// confirmed that the other device scanned this one's. All three are
+    /// the same situation for a person looking at a screen: wait.
     Confirmed,
     /// Both sides said the strings match. The other device is now verified.
     Done,
     /// Over without a verification, whether because a side refused, a side
     /// abandoned it, or it timed out.
     Cancelled,
+    /// The other device has scanned the code this one is showing, and a
+    /// person must say whether that was really them.
+    ///
+    /// The one moment a flow with no string to compare asks a person
+    /// anything, and the counterpart of [`FlowStage::KeysExchanged`] for a
+    /// flow that became a code: something is waiting on this side, and
+    /// [`confirm_scan`] is what answers it. Reached only on the side that
+    /// showed a code; the side that scanned one is never scanned in turn.
+    ///
+    /// **Last rather than in its logical place, and the position is not a
+    /// preference.** The FFI mirror assigns wire ordinals by declaration
+    /// order and may only be appended to, so this enum keeps the mirror's
+    /// order to make the `From` between them checkable by eye.
+    CodeScanned,
 }
 
 /// One flow this process is taking part in.
@@ -612,13 +635,24 @@ fn comparison_of(record: &mut FlowRecord) -> Option<&Sas> {
 /// handle: upstream's `Verification` is one enum over both, and a
 /// transitioned request carries whichever the flow became.
 ///
-/// **It is deliberately not consulted by [`stage_of`].** A flow that became
-/// a code therefore still reports [`FlowStage::Started`] for as long as the
-/// request says `Transitioned`, which is a defect and is named as one: the
-/// design's section 5 makes it reachable and the task that grows the stage
-/// vocabulary is what closes it. Teaching `stage_of` to read this handle
-/// without first having a stage for *scanned* and *reciprocated* to be
-/// reported as would replace one wrong answer with another.
+/// **It is what [`stage_of`] reads for a flow that became a code**, which it
+/// did not always: until [`FlowStage::CodeScanned`] existed there was no
+/// stage a scanned code could honestly be reported as, so such a flow said
+/// [`FlowStage::Started`] for as long as the request said `Transitioned` --
+/// from the moment a code was built until the moment the flow finished.
+/// Reading the handle before there was a vocabulary for what it says would
+/// have replaced one wrong answer with another; the design's section 5 is
+/// where the vocabulary was granted.
+///
+/// # Why the cache is enough on its own
+///
+/// Filled from a `Transitioned` request, and a finished flow's request is
+/// `Done` rather than `Transitioned`, so this cannot fill it at the moment
+/// a completion is collected. It does not have to: a code only exists on
+/// this side because [`read_code`] or [`submit_scanned_code`] built one,
+/// and both call [`remember_code`] before they return. There is no flow
+/// shape that reaches `Done` as a code without one of those two having run
+/// here first.
 fn code_of(record: &mut FlowRecord) -> Option<&QrVerification> {
     if record.code.is_none() {
         if let Some(VerificationRequestState::Transitioned { verification, .. }) =
@@ -633,6 +667,16 @@ fn code_of(record: &mut FlowRecord) -> Option<&QrVerification> {
 fn stage_of(record: &mut FlowRecord) -> FlowStage {
     if let Some(comparison) = comparison_of(record) {
         return stage_of_comparison(comparison);
+    }
+    // The comparison first and the code second, and never both: upstream's
+    // `Verification` is one enum over the two, so a transitioned request
+    // carries whichever the flow became and the second lookup returns
+    // `None` whenever the first returned `Some`. The order is therefore not
+    // a precedence rule to reason about; it is written this way round so
+    // the flow shape that predates codes is read by the same line it always
+    // was.
+    if let Some(code) = code_of(record) {
+        return stage_of_code(code);
     }
     let Some(request) = record.request.as_ref() else {
         // Neither handle. Not reachable through either of `FlowRecord`'s
@@ -654,9 +698,10 @@ fn stage_of(record: &mut FlowRecord) -> FlowStage {
             FlowStage::Requested
         }
         VerificationRequestState::Ready { .. } => FlowStage::Ready,
-        // Unreachable: `comparison_of` above returns `Some` for exactly
-        // this state, and returned before this match if it did. Mapped
-        // truthfully anyway rather than left to a wildcard.
+        // Unreachable: one of the two lookups above returns `Some` for
+        // exactly this state -- a transitioned request carries either a
+        // comparison or a code -- and returned before this match if it did.
+        // Mapped truthfully anyway rather than left to a wildcard.
         VerificationRequestState::Transitioned { .. } => FlowStage::Started,
         VerificationRequestState::Done => FlowStage::Done,
         VerificationRequestState::Cancelled(_) => FlowStage::Cancelled,
@@ -675,6 +720,35 @@ fn stage_of_comparison(comparison: &Sas) -> FlowStage {
         SasState::Confirmed => FlowStage::Confirmed,
         SasState::Done { .. } => FlowStage::Done,
         SasState::Cancelled(_) => FlowStage::Cancelled,
+    }
+}
+
+/// The stage a flow that became a code is at.
+///
+/// [`stage_of_comparison`]'s sibling, and the two answer the same question
+/// about the two shapes a flow can take. Where they agree they say the same
+/// thing on purpose: a person is being asked to wait, or to act, or told it
+/// is over, and which of upstream's nineteen states produced that is not a
+/// distinction a product should be invited to branch on.
+///
+/// **`Reciprocated` and `Confirmed` are one stage here, and that is not a
+/// fold made to save a variant.** They are the same side of the same
+/// situation: this device scanned and said so, or this device was scanned
+/// and said so. Either way it has done everything asked of it and the other
+/// side has not finished, which is precisely what [`FlowStage::Confirmed`]
+/// says for a comparison.
+///
+/// Exhaustive, no wildcard, like every other upstream match in this crate.
+fn stage_of_code(code: &QrVerification) -> FlowStage {
+    match code.state() {
+        // A code exists and nobody has read it off the screen yet. Nothing
+        // is waiting on this side, which is what `Started` means.
+        QrVerificationState::Started => FlowStage::Started,
+        // The one moment a code flow asks a person anything.
+        QrVerificationState::Scanned => FlowStage::CodeScanned,
+        QrVerificationState::Confirmed | QrVerificationState::Reciprocated => FlowStage::Confirmed,
+        QrVerificationState::Done { .. } => FlowStage::Done,
+        QrVerificationState::Cancelled(_) => FlowStage::Cancelled,
     }
 }
 
@@ -697,13 +771,18 @@ fn is_finished(stage: FlowStage) -> bool {
     matches!(stage, FlowStage::Done | FlowStage::Cancelled)
 }
 
-/// Drops every flow that has finished, except one whose completion nobody
-/// has collected yet.
+/// Drops every flow that is over, except one whose completion nobody has
+/// collected yet.
 ///
 /// Upstream's own rule, `retain(|_, v| !(v.is_done() || v.is_cancelled()))`
 /// from `VerificationMachine::garbage_collect`, run here at the one moment
 /// this registry can grow rather than on every sync. See the module's own
 /// header for what that costs a caller and why it is bounded.
+///
+/// **Over** is two questions, not one: the stage a product would be told, and
+/// whether the request behind the record has reached a state nothing moves it
+/// out of. [`request_is_over`] is the second, and it says why one question is
+/// not enough.
 ///
 /// # The one exception, and why it does not reopen the growth question
 ///
@@ -734,23 +813,72 @@ fn release_finished(flows: &mut BTreeMap<String, FlowRecord>) {
     let something_will_announce = crate::observer::crypto_observer().is_some();
     flows.retain(|_, record| {
         let stage = stage_of(record);
-        if !is_finished(stage) {
+        if !is_finished(stage) && !request_is_over(record) {
             return true;
         }
         stage == FlowStage::Done && !record.completion_announced && something_will_announce
     });
-    // The one thing a code could have broken here, checked rather than
-    // reasoned about. `stage_of` cannot see a code handle -- see
-    // [`code_of`] -- so if a finished code left its request short of
-    // `Done` or `Cancelled`, every scanned verification a process ever ran
-    // would stay in this map for the life of the process, and the
-    // boundedness this module rests on would be gone. It does not: both
-    // sides exchange `m.key.verification.done`, upstream's
-    // `receive_done` moves the request to `Done`
-    // (`verification/requests.rs:934-940`), and the sweep above sees it.
-    // `a_scanned_flow_is_not_retained_forever` in
-    // `tests/qr_cross_user.rs` is what measures that rather than
-    // asserting it here, because it needs a flow that really finished.
+}
+
+/// Whether the request behind a record has reached a state nothing moves it
+/// out of.
+///
+/// # Why the stage is not enough on its own
+///
+/// The stage is what a *product* is told, and it is read off whichever
+/// handle the flow became: [`stage_of`] consults the comparison, then the
+/// code, and only then the request. That is right for a caller and wrong for
+/// eviction, because **upstream does not advance the two together.** One
+/// `m.key.verification.done` reaches both
+/// (`verification/machine.rs:501-527`), but
+/// `VerificationRequest::receive_done` moves `Transitioned` to `Done`
+/// unconditionally (`verification/requests.rs:934-940`) while
+/// `QrVerification::receive_done` moves only a code that is `Confirmed` or
+/// `Reciprocated`, and leaves a `Created` or `Scanned` one exactly where it
+/// is (`verification/qrcode.rs:392-440`). `Sas` has the same shape.
+///
+/// So a peer that scans this device's code and then declares itself done,
+/// without waiting for the person here to answer, leaves the request
+/// finished and the code at `Scanned` for ever. Reading the stage alone,
+/// that record is `CodeScanned`, is never finished, and is never swept: one
+/// entry per such flow, for the life of the process, which is exactly the
+/// unbounded growth this whole sweep exists to prevent.
+///
+/// **This is not a hazard codes invented.** The same hole was open for a
+/// comparison whose peer sent `done` before the strings were confirmed, and
+/// it was open before this milestone; reading the code handle is what made
+/// it reachable by an ordinary flow shape and therefore what made it worth
+/// finding. Asking both questions closes it for both shapes.
+///
+/// # What that costs a caller, which is nothing
+///
+/// A record retired this way is not reported differently. It is dropped from
+/// the registry, and the next call naming it rebuilds from upstream, finds a
+/// request that is over, and answers [`MachineError::UnknownFlow`] -- which
+/// is what the caller was already told about any flow that had finished.
+/// Nothing here reports `Done` for a flow that did not finish: the stage a
+/// product reads is still the code's own, right up to the sweep.
+///
+/// # What measures it
+///
+/// Two assertions, both in
+/// `another_user_verifies_by_scanning_a_code_this_library_showed` in
+/// `tests/qr_cross_user.rs`, because both need a flow that really ran:
+/// *"registering another flow must sweep the one that finished by
+/// scanning"* for the ordinary shape, and *"a flow whose request is over
+/// must be swept even though its code never finished"* for this one. The
+/// second fails without the second question above, reporting `CodeScanned`
+/// where it expects no flow at all.
+///
+/// The comparison side is measured by
+/// `a_finished_flow_is_not_retained_forever` in `tests/sas_two_party.rs`,
+/// which counts what the library still answers for after one cycle against
+/// after three.
+fn request_is_over(record: &FlowRecord) -> bool {
+    matches!(
+        record.request.as_ref().map(VerificationRequest::state),
+        Some(VerificationRequestState::Done | VerificationRequestState::Cancelled(_))
+    )
 }
 
 fn cached(flow_id: &str) -> Option<Handles> {
@@ -1787,11 +1915,12 @@ pub async fn submit_scanned_code(flow: &FlowId, payload: &[u8]) -> Result<(), Ma
 /// Two conditions arrive as [`MachineError::WrongStage`]: *nobody has
 /// scanned this code yet*, and *this flow is over*. They want opposite
 /// things done about them -- wait, versus start again -- and this call
-/// cannot tell a caller which. [`flow_stage`] is the answer everywhere else
-/// in this module, and for a flow that became a code it is not the answer
-/// yet: it reports [`FlowStage::Started`] through every state a code has.
-/// The design's section 5 is where that is closed. Until it is, this fold
-/// is visible rather than hidden.
+/// still cannot tell a caller which. [`flow_stage`] is the answer everywhere
+/// else in this module, and it is the answer here too, which it was not when
+/// this fold was written: [`FlowStage::Started`] is nobody has scanned yet,
+/// [`FlowStage::CodeScanned`] is the one stage this call succeeds at, and
+/// [`FlowStage::Done`] or [`FlowStage::Cancelled`] is over. Reading it first
+/// leaves this fold reachable only by a race.
 pub async fn confirm_scan(flow: &FlowId) -> Result<(), MachineError> {
     let handles = handles(flow).await?;
     let code = handles.code.ok_or(MachineError::WrongStage)?;
@@ -1829,14 +1958,37 @@ pub async fn cancel_flow(flow: &FlowId) -> Result<(), MachineError> {
 
 // ------------------------------------------------- the crypto signal channel
 
-/// Every device a completed comparison verified, for flows whose completion
+/// What one announcement pass owes, read out of the registry in a single
+/// critical section.
+///
+/// Two fields rather than two functions, because the two are collected under
+/// one lock and by one walk: splitting them would mean two passes over the
+/// registry that could disagree about which records they had already marked.
+struct Pending {
+    /// Every device a completed comparison verified.
+    verified: Vec<(OwnedUserId, OwnedDeviceId)>,
+    /// The identifier of every flow that finished by scanning a code.
+    scanned: Vec<String>,
+}
+
+/// What a completed flow owes its subscribers, for flows whose completion
 /// has not been announced yet, marking them announced on the way out.
 ///
-/// Read from `SasState::Done`'s own `verified_devices` rather than from the
-/// flow merely having finished. Upstream sets local trust only for the
-/// devices that list names (`verification/mod.rs:710-719`), so a flow that
-/// reached `Done` is not by itself a claim that anything became verified,
-/// and a signal saying otherwise would be a false one.
+/// **A comparison's devices** are read from `SasState::Done`'s own
+/// `verified_devices` rather than from the flow merely having finished.
+/// Upstream sets local trust only for the devices that list names
+/// (`verification/mod.rs:710-719`), so a flow that reached `Done` is not by
+/// itself a claim that anything became verified, and a signal saying
+/// otherwise would be a false one.
+///
+/// **A scanned flow's own completion** is the other thing collected here,
+/// and it is a different kind of fact. What is announced for one is that it
+/// finished, not that anything became verified, and the two are not the
+/// same sentence: in two of the three modes a code can be shown in,
+/// upstream's completed code names no device at all, and for another user
+/// nothing this library will say about them changes until a later key query
+/// brings our own signature back. [`CryptoSignal::VerificationCompleted`]
+/// is where that is argued and where the measurements behind it are named.
 ///
 /// Marks inside the same critical section that collects, so two callers
 /// cannot both take the same completion. The cost is that a caller which
@@ -1849,9 +2001,12 @@ pub async fn cancel_flow(flow: &FlowId) -> Result<(), MachineError> {
 /// whose completion has not been taken, so a record this function looked at
 /// and found nothing in must still come away marked, or it would be exempt
 /// from eviction for the life of the process.
-fn take_pending_completions() -> Vec<(OwnedUserId, OwnedDeviceId)> {
+fn take_pending_completions() -> Pending {
     let mut flows = FLOWS.lock().expect("verification registry poisoned");
-    let mut completions = Vec::new();
+    let mut pending = Pending {
+        verified: Vec::new(),
+        scanned: Vec::new(),
+    };
 
     for record in flows.values_mut() {
         if record.completion_announced {
@@ -1873,18 +2028,44 @@ fn take_pending_completions() -> Vec<(OwnedUserId, OwnedDeviceId)> {
 
         // `state()` returns by value, which ends the borrow on `record`.
         let state = comparison_of(record).map(|comparison| comparison.state());
-        let Some(SasState::Done {
+        if let Some(SasState::Done {
             verified_devices, ..
         }) = state
-        else {
+        {
+            for device in verified_devices {
+                pending
+                    .verified
+                    .push((device.user_id().to_owned(), device.device_id().to_owned()));
+            }
             continue;
-        };
-        for device in verified_devices {
-            completions.push((device.user_id().to_owned(), device.device_id().to_owned()));
+        }
+
+        // A flow that finished by scanning, which is the other shape a
+        // record can have and is announced as itself rather than as a
+        // trust change. [`CryptoSignal::VerificationCompleted`] carries the
+        // measurements behind that; the short version is that in two of the
+        // three modes this state names no device, so a `verified_devices`
+        // walk here would announce nothing at all for them.
+        //
+        // Asked of the code's own `Done` rather than of the stage, which
+        // would say the same thing today: this is the precise question, the
+        // way `SasState::Done` above is for a comparison, and a flow whose
+        // request reached `Done` without its code doing so is not one that
+        // finished by scanning.
+        //
+        // The identifier is read off the handle upstream built, never off
+        // the registry's key, for the reason `announce_state_changes` gives
+        // about never handing a product a name no call of this module
+        // answers to.
+        let finished_by_scanning = code_of(record)
+            .filter(|code| matches!(code.state(), QrVerificationState::Done { .. }))
+            .map(|code| code.flow_id().as_str().to_string());
+        if let Some(flow_id) = finished_by_scanning {
+            pending.scanned.push(flow_id);
         }
     }
 
-    completions
+    pending
 }
 
 /// The `(sender, transaction id)` of every `m.key.verification.start` among
@@ -2028,7 +2209,10 @@ pub(crate) async fn announce_state_changes(processed: &[ProcessedToDeviceEvent])
         return;
     }
 
-    let completions = take_pending_completions();
+    let Pending {
+        verified: completions,
+        scanned,
+    } = take_pending_completions();
     let candidates = bare_start_candidates(processed);
 
     let collected = with_machine(move |machine| {
@@ -2057,6 +2241,17 @@ pub(crate) async fn announce_state_changes(processed: &[ProcessedToDeviceEvent])
                     user,
                     state: TrustState::Verified,
                 });
+            }
+
+            // Flows that finished by scanning a code. Nothing is read back
+            // off the machine for these, and there is nothing to read back:
+            // the fact announced is that the flow finished, which is read
+            // off the handle upstream advanced rather than off anything
+            // this side decided. What a product does about it is read the
+            // durable trust answer, exactly as for a `TrustChanged`, and
+            // the variant says so at its own declaration.
+            for flow_id in scanned {
+                signals.push(CryptoSignal::VerificationCompleted { flow_id });
             }
 
             // The account's own private signing keys arriving, which is a
@@ -2252,6 +2447,11 @@ pub(crate) async fn announce_state_changes(processed: &[ProcessedToDeviceEvent])
 /// missed invitation is not. `signals.ts` says the same thing to a product
 /// in the same words.
 ///
+/// A `VerificationCompleted` is consumed on exactly the same terms and for
+/// exactly the same reason. What a product is told to do about one is read
+/// the durable answer, so what a missed one costs is the same: a question
+/// it has to ask rather than a state it can never recover.
+///
 /// # What it still does not close
 ///
 /// [`crate::observer::emit_crypto`] reports whether an observer was
@@ -2268,11 +2468,19 @@ fn announce(signals: Vec<CryptoSignal>) {
         // did not go anywhere.
         let registered = match &signal {
             CryptoSignal::VerificationRequested { flow_id, .. } => Some(flow_id.clone()),
-            // The only other variant, and the one whose consumption is
-            // recoverable; see this function's header. Matched by name
-            // rather than by `_` so a variant added later has to be ruled
-            // on here instead of silently joining it.
-            CryptoSignal::TrustChanged { .. } => None,
+            // The two whose consumption is recoverable; see this function's
+            // header. Matched by name rather than by `_` so a variant added
+            // later has to be ruled on here instead of silently joining
+            // them.
+            //
+            // A completion is put back no more than a trust change is, and
+            // for the same reason: [`take_pending_completions`] has already
+            // marked the record, and un-marking it would re-exempt the
+            // record from eviction. The loss is also the same one. What a
+            // product does with either is read the durable answer, which
+            // `device_statuses` and `identity_status` give whether or not
+            // anything was delivered.
+            CryptoSignal::TrustChanged { .. } | CryptoSignal::VerificationCompleted { .. } => None,
         };
         if crate::observer::emit_crypto(signal) {
             continue;

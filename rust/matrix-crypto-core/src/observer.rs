@@ -247,6 +247,85 @@ pub enum CryptoSignal {
         device_id: String,
         flow_id: String,
     },
+    /// A flow this process took part in finished by scanning a code, and
+    /// `flow_id` is the name it was known by.
+    ///
+    /// # Why this is not a `TrustChanged`
+    ///
+    /// Because in two of the three modes the protocol defines there is no
+    /// trust change to report at the moment a scan completes, and in the
+    /// third the change is one a product could not tell from something
+    /// else. All three were measured rather than reasoned about, by
+    /// mirroring the comparison path onto a code and watching what each of
+    /// `tests/qr_cross_user.rs`, `tests/qr_self_established_shows.rs` and
+    /// `tests/qr_self_new_login_shows.rs` did with it:
+    ///
+    /// * **Verifying another user**, and **verifying our own account with
+    ///   the new login showing**: upstream's `QrVerificationState::Done`
+    ///   names *no device at all*. What those flows verify is an identity,
+    ///   and the naive mirror announced nothing in either.
+    /// * **Verifying our own account with the established device showing**
+    ///   is the one mode where a device is named, and there a `TrustChanged`
+    ///   would be truthful. Emitting it in one mode of three would mean a
+    ///   product that got it in testing and never saw it in the field, for
+    ///   a reason decided by which phone a person picked up.
+    /// * Announcing the *identity* instead does not save it. For another
+    ///   user, [`crate::device_statuses`] still reads unverified at that
+    ///   moment: verifying them signs their master key, and nothing in this
+    ///   library's store carries that signature until a later key query
+    ///   brings it back. A `TrustChanged` saying `Verified` there would be
+    ///   contradicted by the call a product is told to read when it arrives.
+    ///   `tests/qr_cross_user.rs` measures exactly that.
+    /// * For our own account, the identity does read verified immediately,
+    ///   and its `TrustChanged` would be the same signal, under the same
+    ///   user, that M4 already emits when the private signing seeds arrive
+    ///   by gossip a sync or two later. That collision is not theoretical:
+    ///   with no producer here at all, an assertion of the form "a
+    ///   `TrustChanged` for this account arrived after the flow" passes.
+    ///
+    /// So the honest fact at that moment is not about trust. It is that
+    /// **this flow finished**, which is true in all three modes and true on
+    /// both screens. A product reads [`crate::device_statuses`] or
+    /// [`crate::identity_status`] when it gets this, which is the same
+    /// contract `TrustChanged` carries and the reason neither variant
+    /// carries the answer itself.
+    ///
+    /// # What it does not say
+    ///
+    /// **Only a flow that finished by scanning announces here**, and a
+    /// comparison that finishes still announces a `TrustChanged` and
+    /// nothing else. **That is a named limit of this milestone rather than
+    /// a shape anybody defends.** The two variants carry disjoint halves of
+    /// one fact: a `TrustChanged` names a user and no flow, so a caller
+    /// holding two verifications with that user cannot tell which finished,
+    /// and this one names a flow and no trust. A product therefore writes
+    /// two paths, and the side that *received* an invitation cannot know in
+    /// advance which it will get, because the peer decides by scanning or
+    /// by comparing a string.
+    ///
+    /// The fix is additive: every completed flow announcing this, with
+    /// `TrustChanged` left exactly as it is, so nothing already true stops
+    /// being true. It is deferred because it reaches back into the
+    /// short-string flows M3 and M4 settled and tested, and re-settling
+    /// those belongs to a change that can carry them.
+    ///
+    /// **One thing whoever writes it will walk into.** Making a completed
+    /// comparison announce both variants is the first time an announcement
+    /// pass legitimately produces two signals for one flow, and there is no
+    /// order between them: `emit_crypto` detaches each into its own task.
+    /// Every signal assertion in the test suite today compares a vector with
+    /// `assert_eq!`, which every one of them can do because every one of
+    /// those vectors has a single element. The day a pass produces two, that
+    /// comparison is order-dependent and will go red intermittently. Both
+    /// orders have already been observed in one session. Sort, or compare as
+    /// a set, before adding the second producer rather than after the first
+    /// flake.
+    ///
+    /// **A flow that was refused or timed out announces nothing**, here or
+    /// anywhere else. That gap is older than codes and is the same for both
+    /// shapes; a product watching a flow it wants to give up on still has
+    /// to read [`crate::flow_stage`].
+    VerificationCompleted { flow_id: String },
 }
 
 /// Implemented by the FFI layer's adapter, and through it by JavaScript.

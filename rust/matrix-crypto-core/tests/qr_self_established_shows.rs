@@ -31,7 +31,7 @@
 use matrix_crypto_core::{
     bootstrap_identity, confirm_scan, create_machine, device_statuses, flow_stage, identity_status,
     in_runtime, mark_request_sent, offer_scanning, read_code, request_flow, take_outgoing_requests,
-    FlowStage, MachineConfig, TrustState,
+    CryptoSignal, FlowStage, MachineConfig, TrustState,
 };
 use matrix_sdk_common::ruma::{OwnedDeviceId, OwnedUserId, TransactionId};
 use matrix_sdk_crypto::matrix_sdk_qrcode::QrVerificationData;
@@ -40,8 +40,9 @@ use matrix_sdk_crypto::{OlmMachine, QrVerificationState};
 #[path = "scanned/harness.rs"]
 mod harness;
 use harness::{
-    deliver_verification_request, device_keys_of, every_method, keys_query_response, mode_of,
-    one_of, pump_bare_to_library, pump_to_bare, queried_users, settle_key_upload,
+    deliver_to_library, deliver_verification_request, device_keys_of, drain_signals,
+    drain_to_quiet, every_method, keys_query_response, mode_of, no_signal, one_of,
+    pump_bare_to_library, pump_to_bare, queried_users, settle_key_upload, subscribe,
     MODE_SELF_TRUSTED,
 };
 
@@ -57,6 +58,11 @@ fn the_device_that_holds_the_identity_shows_a_code_and_a_new_login_scans_it() {
     let store_path = dir.path().join("store").to_string_lossy().into_owned();
 
     futures::executor::block_on(in_runtime(async move {
+        // Before anything syncs, which is what the facade tells a product to
+        // do and what this file needs: the channel is silent while nobody is
+        // listening, so a subscriber that arrives later has no way to learn
+        // that a flow finished while it was away.
+        subscribe();
         let account: OwnedUserId = ACCOUNT.parse().expect("a literal user id parses");
         let new_device_id: OwnedDeviceId = NEW_DEVICE.into();
 
@@ -265,6 +271,19 @@ fn the_device_that_holds_the_identity_shows_a_code_and_a_new_login_scans_it() {
             &top[side - 8..]
         );
 
+        // ---- The stages a scanned flow passes through ---------------------------
+        //
+        // Collected as one sequence and compared once at the end rather than
+        // asserted one at a time. Three separate assertions would all pass
+        // against a mapping that answered every question with whatever it
+        // was handed, and answering every question the same way is exactly
+        // the defect this measures: before the code handle was read, a flow
+        // that had become a code reported `Started` from the moment it
+        // transitioned until the moment it finished, so a product could not
+        // tell "nobody has scanned this yet" from "somebody has, and a
+        // person must now say whether it was them".
+        let mut stages = vec![flow_stage(&flow).await.expect("the flow exists")];
+
         // ---- The new login scans it ---------------------------------------------
         let scanned = QrVerificationData::from_bytes(&code.payload)
             .expect("what this library produced must decode as what the format defines");
@@ -282,21 +301,71 @@ fn the_device_that_holds_the_identity_shows_a_code_and_a_new_login_scans_it() {
             .reciprocate()
             .expect("a scanner must tell the other side it scanned");
         deliver_verification_request(&reciprocation, ACCOUNT, ACCOUNT, MAIN_DEVICE).await;
+        stages.push(flow_stage(&flow).await.expect("the flow exists"));
 
         // ---- The person says it really was their new phone -----------------------
         confirm_scan(&flow)
             .await
             .expect("a code somebody has scanned can be confirmed");
+        stages.push(flow_stage(&flow).await.expect("the flow exists"));
+        assert_eq!(
+            stages,
+            vec![
+                FlowStage::Started,
+                FlowStage::CodeScanned,
+                FlowStage::Confirmed
+            ],
+            "showing a code, having it scanned and confirming the scan are three \
+             different situations for the person holding this phone: wait, answer, \
+             and wait again. The middle one is the only moment a code flow asks \
+             anything of a person, and it is the one `confirm_scan` may be called at"
+        );
         let crossed = pump_to_bare(&new_login, ACCOUNT, ACCOUNT, NEW_DEVICE).await;
         assert!(
             crossed.contains(&"m.key.verification.done".to_string()),
             "confirming a scan must reach the other device through the pump: {crossed:?}"
         );
+        // Everything this account's own bootstrap and this flow's earlier
+        // syncs announced is cleared here, so what is asserted below is what
+        // the one remaining sync produced. **This cut is what stops the
+        // assertion being vacuous**, and in the sibling mode it demonstrably
+        // is: a `TrustChanged` for this very account arrives on its own from
+        // the seeds, and a test that merely looked for one passed with the
+        // producer under test deleted outright.
+        drain_to_quiet();
         let crossed = pump_bare_to_library(&new_login, ACCOUNT, ACCOUNT, MAIN_DEVICE).await;
         assert!(
             crossed.contains(&"m.key.verification.done".to_string()),
             "the other device's acknowledgement must reach the library: {crossed:?}"
         );
+
+        // ---- What a product is told ---------------------------------------------
+        //
+        // The whole vector, not a `contains`. This is the one mode of the
+        // three where the completed code names a device, so it is the one
+        // where announcing a trust change instead would have been truthful
+        // and the one where a product would have seen it working. It does
+        // not, on purpose: the two self modes are chosen by which phone a
+        // person picks up, so a signal only this one emitted would reach
+        // half the users of a product that had tested it.
+        let signals = drain_signals("a code this device showed was scanned and confirmed");
+        assert_eq!(
+            signals,
+            vec![CryptoSignal::VerificationCompleted {
+                flow_id: flow.0.clone(),
+            }],
+            "a product that verified by code has nothing to poll: no call returns \
+             when the other side acknowledges, and without this it would learn that \
+             its own verification succeeded only by asking again and again"
+        );
+
+        // Announced once, not on every sync from here on. A standing report
+        // is indistinguishable from an arrival to anything acting on it, and
+        // this channel exists to be acted on rather than polled. The sync
+        // below carries nothing, so the only thing that could produce a
+        // signal is a producer with no mark behind it.
+        deliver_to_library(Vec::new()).await;
+        no_signal("a flow finishes once, so its completion is announced once");
 
         assert!(
             peer_code.is_done(),
