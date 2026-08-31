@@ -249,11 +249,52 @@ fn a_halted_code_flow_can_be_abandoned_and_the_same_person_verified_afterwards()
             .get("self_signing_key")
             .cloned()
             .expect("a published identity carries a self-signing key");
+        // The confirming query the mint queues behind the publication,
+        // answered the way a homeserver that accepted it answers: all three
+        // key maps for this account, and this device alongside them. Only
+        // that clears the publication record, because reporting the upload
+        // is the caller's own word and the two bodies this library cannot
+        // tell from a success are what a dropped connection produces.
+        let confirming = published
+            .iter()
+            .find(|request| {
+                request.kind == "keys_query"
+                    && queried_users(&request.body).iter().any(|u| u == ALICE)
+            })
+            .expect("the mint must queue the query that confirms its publication")
+            .clone();
         for request in &published {
+            if request.id == confirming.id {
+                continue;
+            }
             mark_request_sent(&request.id, "{}")
                 .await
                 .expect("a bootstrap publication response must be accepted");
         }
+        mark_request_sent(
+            &confirming.id,
+            &serde_json::json!({
+                "device_keys": { ALICE: { ALICE_DEVICE: alice_device_keys.clone() } },
+                "failures": {},
+                "master_keys": { ALICE: alice_identity["master_key"] },
+                "self_signing_keys": { ALICE: alice_identity["self_signing_key"] },
+                "user_signing_keys": { ALICE: alice_identity["user_signing_key"] },
+            })
+            .to_string(),
+        )
+        .await
+        .expect("the confirming answer must be accepted");
+        assert!(
+            !identity_status()
+                .await
+                .expect("reading the identity status must not fail")
+                .identity_publication_pending,
+            "and the identity must be published, which this file has said in words \
+             since it was written and nothing has ever checked. Reporting the upload \
+             is the caller's own word for it; what a homeserver says is the query the \
+             mint queues behind the publication, and until that is answered every \
+             door into a self-verification refuses this store"
+        );
 
         // ---- Each learns what the other published --------------------------
         bob.peer
