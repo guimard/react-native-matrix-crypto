@@ -1,10 +1,13 @@
 //! Which core value becomes which FFI value.
 //!
-//! `error_mapping.rs`'s hazard, one file over and with two more shapes of
-//! it. This crate mirrors five more core types by hand -- `FlowStage`,
-//! `TrustState`, `SasMaterial`, `DeviceStatus` and `IdentityStatus` -- and
-//! every one of them has the property that a wrong arm compiles, passes
-//! `clippy -D warnings`, and passes every other test in this repository:
+//! `error_mapping.rs`'s hazard, one file over and with three more shapes of
+//! it. This crate mirrors core types by hand -- `FlowStage`, `TrustState`,
+//! `SasMaterial`, `DeviceStatus`, `IdentityStatus`, `ScannableCode`,
+//! `Envelope`, `SenderVerification`, `RecoverySetup`, `AccountDataEntry`
+//! and `CryptoSignal` -- and every one of them has the property that a
+//! wrong arm compiles, passes `clippy -D warnings`, and passes every other
+//! test in this repository. This paragraph named five and the file has
+//! exercised more than five for two milestones:
 //!
 //! * **Two fieldless enums.** Every variant of `FlowStage` is
 //!   interchangeable with every other as far as the compiler is concerned,
@@ -26,6 +29,15 @@
 //!   round tells a product it may publish an identity over one the account
 //!   already has.
 //!
+//! * **A boolean grid whose polarity is invisible.** `ScannableCode`
+//!   crosses as a width and `width * width` booleans, `true` for a dark
+//!   square. Reversing every one of them compiles, and produces the
+//!   photographic negative of a valid code: a product draws it, a camera
+//!   reads nothing, and no error is returned to anybody. Reversing the row
+//!   order, or crossing the width off by one, is the same class. Nothing
+//!   in the core's own tests can see any of it, because none of them
+//!   crosses this boundary.
+//!
 //! No machine, no store and no runtime: every `From` impl under test is
 //! public, every core type is public and constructible from outside the
 //! crate, and none of the conversions touches state. That is why this file
@@ -33,16 +45,17 @@
 
 use matrix_crypto_core::{
     AccountDataEntry, CryptoSignal, DeviceStatus, Envelope, FlowStage, IdentityStatus,
-    RecoverySetup, SasEmoji, SasMaterial, SenderVerification, TrustState,
+    RecoverySetup, SasEmoji, SasMaterial, ScannableCode, SenderVerification, TrustState,
 };
 use matrix_crypto_ffi::{
     AccountDataEntry as FfiAccountDataEntry, CryptoSignal as FfiCryptoSignal,
     DeviceStatus as FfiDeviceStatus, Envelope as FfiEnvelope, IdentityStatus as FfiIdentityStatus,
     RecoverySetup as FfiRecoverySetup, SasMaterial as FfiSasMaterial,
-    SenderVerification as FfiSenderVerification, TrustState as FfiTrustState, VerificationStage,
+    ScannableCode as FfiScannableCode, SenderVerification as FfiSenderVerification,
+    TrustState as FfiTrustState, VerificationStage,
 };
 
-/// All seven stages, each to its own. One assertion per variant rather than
+/// All eight stages, each to its own. One assertion per variant rather than
 /// a loop, for `error_mapping.rs`'s reason: a loop would need the two enums
 /// to be relatable by something other than this mapping, which is the very
 /// thing under test.
@@ -105,6 +118,16 @@ fn every_flow_stage_maps_to_the_matching_ffi_variant() {
          Cancelled are the two outcomes of a verification and they are \
          opposites, so this pair is the one a swap damages most: a refusal \
          would be presented as a success"
+    );
+    assert!(
+        matches!(
+            VerificationStage::from(FlowStage::CodeScanned),
+            VerificationStage::CodeScanned
+        ),
+        "FlowStage::CodeScanned must not arrive as another stage -- it is the \
+         only stage at which a flow verified by a code asks a person \
+         anything, and the only one at which confirming a scan is accepted, \
+         so a product told anything else here waits until the flow times out"
     );
 }
 
@@ -220,6 +243,62 @@ fn a_material_with_no_symbols_crosses_with_none_rather_than_an_empty_list() {
         ),
         (4444, 5555, 6666),
     );
+}
+
+/// A code crosses as both of its forms, with the grid in the order it was
+/// drawn.
+///
+/// Three fields and three separate hazards, which is why this is asserted
+/// rather than assumed of a three-line `From`:
+///
+/// * **The payload must cross byte for byte.** It carries the shared secret
+///   the whole method rests on, and a payload that lost a byte draws a code
+///   the other phone refuses with nothing to say about why.
+/// * **The grid must keep its order.** It is row-major and square; a
+///   reversed or rotated sequence is still `width * width` booleans, still
+///   type-checks, still draws a plausible-looking square, and decodes to
+///   nothing.
+/// * **`width` must be the symbol's own.** A product draws `width * width`
+///   squares out of `modules`, so a width that crossed as anything else
+///   either draws a fraction of the code or runs off the end of the vector.
+///
+/// The fixture is deliberately asymmetric in every direction -- a payload
+/// whose bytes are all different, a grid that is not a palindrome and does
+/// not read the same by rows as by columns, and a width that is not the
+/// length of anything else here.
+#[test]
+fn a_scannable_code_crosses_as_both_of_its_forms() {
+    // Three by three, dark on one diagonal only: reversing the sequence,
+    // transposing it, or inverting it all give a different vector.
+    let modules = vec![true, false, false, false, true, false, false, false, false];
+    let crossed = FfiScannableCode::from(ScannableCode {
+        payload: vec![1, 2, 3, 4, 250, 251, 252, 253],
+        width: 3,
+        modules: modules.clone(),
+    });
+
+    assert_eq!(
+        crossed.payload,
+        vec![1, 2, 3, 4, 250, 251, 252, 253],
+        "the payload must cross byte for byte -- it is the code, and the bytes \
+         above are all distinct so a reordering fails here rather than passing \
+         on a length check"
+    );
+    assert_eq!(
+        crossed.width, 3,
+        "the width must be the symbol's own; a product draws `width * width` \
+         squares out of the grid below"
+    );
+    assert_eq!(
+        crossed.modules, modules,
+        "the grid must cross in the order it was drawn -- it is row-major, and \
+         a reversed or transposed one is the same length and draws a square \
+         that decodes to nothing"
+    );
+    // The payload and the grid are different lengths on purpose: a mapping
+    // that built one out of the other would satisfy both assertions above
+    // for a symbol whose sizes happened to agree.
+    assert_ne!(crossed.payload.len(), crossed.modules.len());
 }
 
 /// A device status keeps its identifier and its trust together.
@@ -543,6 +622,35 @@ fn an_inbound_announcement_keeps_its_three_strings_apart() {
         verification_id, "the-flow-identifier",
         "the core calls this a flow id and this crate calls it a verification id; they \
          must be the same value, because it is the one a product hands back"
+    );
+}
+
+/// A completed scan crosses as itself and keeps its one string.
+///
+/// One field rather than three, so the permutation hazard above does not
+/// apply; what does apply is the variant itself. The `From` is exhaustive,
+/// so this cannot be forgotten, but nothing in the compiler stops it being
+/// pointed at a neighbour: crossing as `VerificationRequested` would give a
+/// product a completion it read as an invitation, and it would then try to
+/// accept a flow that had already finished.
+///
+/// The identifier is the whole payload here. A product correlates it with
+/// the one `requestVerification` returned, or the one an invitation carried,
+/// and a value that arrived from any other field would name nothing.
+#[test]
+fn a_completed_scan_keeps_the_identifier_it_names() {
+    let crossed = FfiCryptoSignal::from(CryptoSignal::VerificationCompleted {
+        flow_id: "the-flow-identifier".to_string(),
+    });
+
+    let FfiCryptoSignal::VerificationCompleted { verification_id } = crossed else {
+        panic!("a completed scan must cross as a completed scan and not as its neighbour");
+    };
+    assert_eq!(
+        verification_id, "the-flow-identifier",
+        "the core calls this a flow id and this crate calls it a verification id; they \
+         must be the same value, because it is the one a product correlates with the \
+         flow it started"
     );
 }
 

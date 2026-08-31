@@ -30,6 +30,13 @@ jobs:
       - run: yarn gate:stubs
       - run: yarn gate:logger
       - run: yarn gate:agility
+      # Wired in the same change that added it, because this repository has
+      # already shipped a gate that existed and ran nowhere (see gate:readme
+      # below, added on 2026-08-28 and invoked by no workflow at all). It
+      # asserts that every name a public module exports reaches src/index.ts,
+      # which nothing checked: the entire M3 verification surface could be
+      # deleted from the entry point with every other check here green.
+      - run: yarn gate:surface
       # scripts/measure-signal-latency.sh decides whether a B2 A/B measurement
       # is an A/B at all, and two of its guards shipped unable to fire -- one
       # of them through two review cycles. Both were found by running the case,
@@ -75,6 +82,14 @@ jobs:
       # most of what a product has to go on, and an example that drifts from
       # the proof is worse than none.
       - run: yarn gate:uia-example
+      # A doc link is a claim that a name exists. Nothing checked it, and
+      # three were false at once; the one that mattered pointed at a
+      # constant the code-scanning opt-in had deleted, inside a sentence
+      # that was false for the same reason. It runs after the clippy step
+      # below has warmed nothing, and pays a doc build of two crates and no
+      # dependencies: about two seconds on a machine that has already built
+      # the workspace, which every earlier step in this job has.
+      - run: yarn gate:doc-links
       - run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
       - run: cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
       # gate:boundary already runs matrix-crypto-core's own tests as part of
@@ -607,4 +622,14 @@ jobs:
       # wheel missing rather than silently resolving something else.
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
+      # The second counterparty, for the scanned-code proof. matrix-nio
+      # cannot serve that one: its wheel contains no QR vocabulary and no
+      # cross-signing vocabulary at all, and a code carries cross-signing
+      # keys. The version is read from the module's own `go` directive rather
+      # than pinned here, so what this job builds with is what the module
+      # declares and there is one place to change it.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: rust/matrix-crypto-core/tests/interop/mautrix_party/go.mod
+          cache-dependency-path: rust/matrix-crypto-core/tests/interop/mautrix_party/go.sum
       - run: ./scripts/run-level-two-interop.sh

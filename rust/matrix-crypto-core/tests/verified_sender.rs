@@ -1262,7 +1262,7 @@ fn bare_comparison(peer: &OlmMachine, flow: &FlowId) -> matrix_sdk_crypto::Sas {
         .get_verification(&alice, &flow.0)
         .expect("the counterparty must have been told a comparison started")
         .sas_v1()
-        .expect("this library only ever starts short-string comparisons")
+        .expect("a flow this test started through begin_comparison is a comparison, not a code. It said this library only ever starts short-string comparisons, which was a claim about the library and stopped being true when it learned to scan")
 }
 
 // ------------------------------------------------------------------ tests

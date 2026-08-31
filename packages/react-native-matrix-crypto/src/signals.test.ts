@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   CryptoSignal as NativeCryptoSignal,
+  CryptoSignal_Tags as NativeCryptoSignalTag,
   TrustState as NativeTrustState,
 } from './generated/matrix_crypto'
 import type { CryptoSignal } from './signals'
@@ -211,6 +212,40 @@ describe('the native producer', () => {
         device: 'BOBDEVICE',
         verificationId: 'the-transaction-id',
       },
+    ])
+  })
+
+  it('delivers a completed code verification, naming the flow and nothing else', async () => {
+    const { onCryptoSignal } = await freshSignals()
+    const received: CryptoSignal[] = []
+    onCryptoSignal((s) => received.push(s))
+
+    installed[0].onSignal(
+      new NativeCryptoSignal.VerificationCompleted({
+        verificationId: 'the-transaction-id',
+      }),
+    )
+
+    // The whole value, not its `kind`. This variant deliberately carries no
+    // user and no trust state: what changed at that moment is not the same
+    // in all three of the protocol's modes, and a field carrying one of them
+    // would be right in one mode and misleading in the others. A reader that
+    // helpfully filled one in would satisfy a `kind` check and fail here.
+    expect(received).toEqual([
+      { kind: 'verification_completed', verificationId: 'the-transaction-id' },
+    ])
+  })
+
+  // Every variant the generated enum can deliver, not merely the ones this
+  // file happens to feed the observer. `cryptoSignalOf` is exhaustive by
+  // compile error, so an unhandled variant cannot ship -- but nothing made
+  // one reach these tests, and a producer suite that silently covers less
+  // than the enum it stands for is the shape this repository keeps finding.
+  it('has a test above for every variant the native producer can deliver', () => {
+    expect(Object.keys(NativeCryptoSignalTag).filter((key) => Number.isNaN(Number(key)))).toEqual([
+      'TrustChanged',
+      'VerificationRequested',
+      'VerificationCompleted',
     ])
   })
 

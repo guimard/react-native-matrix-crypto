@@ -2,18 +2,27 @@
 // `{@link}` resolves against what is in scope in the file it is written in,
 // so without this every name below that sends a reader to a facade call is
 // plain text in an editor's hover -- a link promising navigation it does not
-// deliver. Type-only, so it is erased: no runtime import, and the cycle it
+// deliver. **This list has to grow when the docs below do**, and it did not:
+// four links to the scannable-code calls were written into the comments here
+// without being added, which is the defect this paragraph exists to prevent,
+// committed under the paragraph itself. `scripts/assert-doc-links.sh` checks
+// it now, in both languages. Type-only, so it is erased: no runtime import, and the cycle it
 // makes with `facade.ts`, which imports the types below, exists only for the
 // typechecker, which resolves it. `tsconfig.json` sets
 // `noUnusedLocals: false`, which is what lets an import exist for a reader
 // rather than for the compiler.
 import type {
   acceptVerification,
+  confirmScan,
   getDeviceStatuses,
+  getVerificationCode,
   getVerificationMaterial,
+  getVerificationStage,
   markRequestSent,
+  offerScannableCodes,
   receiveSyncChanges,
   startVerificationComparison,
+  submitScannedCode,
 } from './facade'
 
 /**
@@ -62,20 +71,25 @@ export type CryptoAlgorithm = 'megolm' | 'olm' | (string & {})
  *   consumer that switched on it exhaustively, and would do so precisely
  *   when a product had stopped expecting the shape to move. Write the
  *   branch; it will not run yet.
- * - `'verified'` — this library has reason to trust the device, **by either
- *   of two routes that this value does not tell apart**. A person compared
+ * - `'verified'` — this library has reason to trust the device, **by any of
+ *   three routes that this value does not tell apart**. A person compared
  *   a short authentication string on this device and on the far one, both
- *   said it matched, and the flow completed. *Or* the device is signed by
- *   its owner's cross-signing identity and this library has verified that
- *   identity, in which case nobody compared anything on this device at all.
- *   The second route is new in this release and is the ordinary one from
- *   now on. See {@link getDeviceStatuses}, including why your own device
- *   reads this from the moment it exists and therefore proves nothing.
+ *   said it matched, and the flow completed. *Or* a person pointed one
+ *   device's camera at the other's screen and the side showing the code
+ *   confirmed the scan, which is the same act with a camera in place of a
+ *   comparison. *Or* the device is signed by its owner's cross-signing
+ *   identity and this library has verified that identity, in which case
+ *   nobody compared or scanned anything on this device at all. The last two
+ *   are new in this release and the third is the ordinary one from now on.
+ *   This said "either of two routes" while the second was being added, which
+ *   is the second time the count here has gone stale. See
+ *   {@link getDeviceStatuses}, including why your own device reads this from
+ *   the moment it exists and therefore proves nothing.
  *
- * **This is about a device, not about an event.** A completed comparison
- * does not change what a decrypted event says about its sender, because the
- * event path consults cross-signing and a comparison sets local trust. M3
- * design, section 7, question 6.
+ * **This is about a device, not about an event.** A completed verification
+ * does not change what a decrypted event says about its sender, by either
+ * method, because the event path consults cross-signing and a verification
+ * sets local trust. M3 design, section 7, question 6.
  *
  * ## Why `'recognized'` stays folded into `'verified'`
  *
@@ -94,8 +108,8 @@ export type CryptoAlgorithm = 'megolm' | 'olm' | (string & {})
  * this value per release is the most a consumer can reasonably follow.
  *
  * So the fold stays, and the cost is stated instead of hidden: **you cannot
- * ask this call whether a person compared a string with one particular
- * device.** If your product needs that distinction, it has to record its own
+ * ask this call whether a person compared a string with, or scanned a code
+ * off, one particular device.** If your product needs that distinction, it has to record its own
  * verifications as it performs them, or ask
  * {@link EventEnvelope.senderVerification} the event-level question instead.
  * If a later release does split them, `'recognized'` is already in this
@@ -111,19 +125,50 @@ export type TrustState = 'unverified' | 'recognized' | 'verified'
  * branches on this to decide what to show, and a stage it has never seen
  * must be a compile error rather than a silent default.
  *
- * Deliberately coarser than the nineteen states the underlying protocol
- * distinguishes. What a caller has to decide is which of a small set of
- * things to do next, and every distinction that does not change that answer
- * is one this surface would be inviting a product to branch on for no
- * reason.
+ * **`'code-scanned'` was added after `0.1.1`, and the compile error an
+ * exhaustive `switch` gets from it is the feature rather than the cost.**
+ * Adding a member to a closed union is a minor version bump: nothing
+ * already decoded changes meaning, because the value behind each of these
+ * strings is a wire ordinal and the new one was appended rather than
+ * inserted. What a consumer gets is the compiler pointing at every place
+ * that has to decide what to show for it, which is precisely what closing
+ * this union bought and why the alternative -- a silent default -- was
+ * rejected when it was closed.
+ *
+ * The members are listed in the order a flow meets them, which is not the
+ * order the wire numbers them in: the layer underneath may only be appended
+ * to, and says so at its own declaration.
+ *
+ * Deliberately coarser than the nineteen states the layer underneath
+ * distinguishes, across three enums of its own: six for the request, seven
+ * for a short-string comparison and six for a scanned code. What a caller
+ * has to decide is which of a small set of things to do next, and every
+ * distinction that does not change that answer is one this surface would be
+ * inviting a product to branch on for no reason.
+ *
+ * **These were the short string's vocabulary alone, and a flow that went to
+ * a scannable code was described in it for want of one of its own. That
+ * limit is lifted.** `'code-scanned'` names the one state such a flow
+ * reaches that a comparison never does, so it is no longer reported as the
+ * nearest string stage, and {@link confirmScan} can be told apart from a
+ * wait by reading {@link getVerificationStage} first. What stays folded is
+ * the two ways a code flow can have done its part -- scanned the other
+ * device's code, or confirmed that the other device scanned this one's --
+ * which are one `'confirmed'` on purpose, because a person is being asked
+ * to wait either way.
  *
  * - `'requested'` — asked for, by one side or the other, and not yet
  *   answered. The other side must call {@link acceptVerification}.
  * - `'ready'` — both sides have agreed, and either may now call
- *   {@link startVerificationComparison}.
- * - `'started'` — the comparison has begun and the keys are not exchanged
- *   yet, so there is nothing to show. **A flow that stays here has one of
- *   two causes, and they need opposite things done about them.** If the
+ *   {@link startVerificationComparison}. On a flow that negotiated codes,
+ *   either may instead call {@link getVerificationCode} or
+ *   {@link submitScannedCode}; nothing has to choose between the two, and
+ *   the first move settles it.
+ * - `'started'` — the flow has begun and nothing is waiting on this side.
+ *   For a comparison the keys are not exchanged yet, so there is nothing to
+ *   show; for a flow that became a code the code exists and nobody has read
+ *   it off the screen, so keep it up. **A comparison that stays here has one
+ *   of two causes, and they need opposite things done about them.** If the
  *   *other* side opened the comparison, their start is a question this side
  *   has not answered: call {@link acceptVerification} again, and only then
  *   wait. Otherwise the flow's requests were drained and never reported
@@ -131,21 +176,41 @@ export type TrustState = 'unverified' | 'recognized' | 'verified'
  *   in follows from who started: a side that never called
  *   {@link startVerificationComparison} and finds itself here is in the
  *   first. See {@link getVerificationMaterial}, which reports both as
- *   `'material_not_ready'`.
+ *   `'material_not_ready'`. **A flow that became a code also reports this**,
+ *   and neither cause applies to it: on such a flow this stage is
+ *   describing a code nobody has read off the screen yet, which is the
+ *   first sentence of this bullet rather than a comparison that stalled.
+ *   That flow is not stuck, and {@link getVerificationMaterial} tells it
+ *   apart from the two by kind rather than by stage: it answers a code flow
+ *   with `'wrong_stage'`.
  * - `'keys-exchanged'` — the short authentication string is available.
- *   Show it, and ask.
- * - `'confirmed'` — this side has said the strings match; the other side
- *   has not yet.
- * - `'done'` — both sides said so. The other device now reads `'verified'`
- *   from {@link getDeviceStatuses}.
+ *   Show it, and ask. Not reached by a flow proceeding by a code, because
+ *   there is no string on one.
+ * - `'code-scanned'` — the other device has read the code this one is
+ *   showing. Ask the person whether that was really their other device, and
+ *   call {@link confirmScan} when they say yes. **The one moment a flow with
+ *   no string to compare asks a person anything**, and the counterpart of
+ *   `'keys-exchanged'` for a code. Only the side that showed a code ever
+ *   reads it: the side that scanned one is never scanned in turn.
+ * - `'confirmed'` — this side has done what was asked of it and the other
+ *   side has not finished. Said the strings match, or scanned the other
+ *   device's code and told it so, or confirmed that the other device
+ *   scanned this one's. All three mean the same thing to a person looking
+ *   at a screen: wait.
+ * - `'done'` — the flow finished and the other device now reads
+ *   `'verified'` from {@link getDeviceStatuses}, whether both sides said
+ *   the strings matched or one scanned the other's code and the side
+ *   showing it confirmed. This said "both sides said so", which a scanned
+ *   flow reaches this value without anybody doing.
  * - `'cancelled'` — over without a verification, whether a side refused, a
- *   side abandoned it, or it timed out.
+ *   side abandoned it, a scanned code was refused, or it timed out.
  */
 export type VerificationStage =
   | 'requested'
   | 'ready'
   | 'started'
   | 'keys-exchanged'
+  | 'code-scanned'
   | 'confirmed'
   | 'done'
   | 'cancelled'
@@ -187,6 +252,94 @@ export interface SasEmoji {
 export interface SasMaterial {
   emoji?: SasEmoji[]
   decimals: [number, number, number]
+}
+
+/**
+ * A code for a person to hold up to another camera, in both of the forms a
+ * product needs to draw one.
+ *
+ * **Two forms and not one, and the second is not a convenience.** `payload`
+ * is binary and is not text: it carries two raw signing keys and a random
+ * shared secret, and there is no string it can honestly be turned into. A
+ * product handed only bytes reaches for a JavaScript component that draws a
+ * code from a string, and draws a square that decodes to something else.
+ * `modules` is the symbol these bytes were encoded into on the way out, at
+ * the version and error-correction level the protocol's own encoder fixes
+ * because mobile clients have trouble decoding otherwise, so a product that
+ * draws the grid draws what the protocol meant rather than a re-encoding of
+ * it.
+ *
+ * **Drawing it.** `modules` is row-major and has exactly `width * width`
+ * entries; `true` is a dark square. A product draws `width` rows of `width`
+ * squares, leaves the usual quiet margin around them, and shows it. There is
+ * no image here and there never will be: this library draws nothing, and has
+ * no business choosing a size, a colour or a margin for somebody else's
+ * screen.
+ *
+ * **Treat this value as secret while the flow is open**, exactly as
+ * {@link SasMaterial} is treated. The payload carries the shared secret the
+ * whole method rests on, and the grid is that same secret drawn as squares.
+ * Anything that learns either learns what an interposed party would need to
+ * answer the flow as though it had read the screen. Do not log it, do not
+ * persist it, do not put it in a crash report. The Rust core redacts its own
+ * copy and cannot reach across this boundary to do the same here.
+ */
+export interface ScannableCode {
+  /** The bytes the protocol defines. About 126 of them, binary. */
+  payload: Uint8Array
+  /** The side length, in squares, of the symbol below. */
+  width: number
+  /** The symbol, row-major, `width * width` entries. `true` is dark. */
+  modules: boolean[]
+}
+
+/**
+ * What your product can do with a scannable code, as the two separate facts
+ * it really is.
+ *
+ * Handed to {@link offerScannableCodes}. Both fields are required and
+ * neither has a default, which is deliberate and is the whole shape of this
+ * type.
+ *
+ * ## Why this is not a boolean
+ *
+ * It was one, and the single boolean announced showing and scanning
+ * together. So a product could say "codes, both directions" or "no codes at
+ * all", and a product with a screen and no scanner had to claim a camera in
+ * order to get a code at all. A real client on the other end takes that
+ * claim at its word: it may answer by showing *its* code and waiting for
+ * yours to be pointed at it, and a product with no scanner then leaves a
+ * person holding a phone in front of a square nothing will ever read. No
+ * error reaches either side, because nothing was asked of either library.
+ *
+ * So the question is put to you, in two parts, and neither part has an
+ * answer this library is willing to guess:
+ *
+ * - `canShow` is true if your product can draw {@link ScannableCode.modules}
+ *   on a screen for another device's camera;
+ * - `canScan` is true if your product has a scanner, has the camera
+ *   permission, and can hand the raw bytes it reads to
+ *   {@link submitScannedCode}.
+ *
+ * **`canScan: true` when you cannot really scan is the expensive mistake**,
+ * and it is expensive because nobody is told. `canShow: false` when you
+ * meant true is the cheap one: {@link getVerificationCode} refuses with
+ * `'code_not_offered'` on the first flow you try, in front of the developer
+ * who can fix it in one line.
+ *
+ * ## A product with a screen and no scanner
+ *
+ * `{ canShow: true, canScan: false }`. The other side is then told it has no
+ * camera to aim at this one, so **it cannot choose to show**: it scans, or
+ * the two of you compare the short string. That is a choice removed from the
+ * far side by a claim withheld here, and it is what makes this the truthful
+ * answer rather than a cautious one.
+ */
+export interface CodeCapabilities {
+  /** This product can draw a code on a screen for another device's camera. */
+  canShow: boolean
+  /** This product can read a code off another device's screen. */
+  canScan: boolean
 }
 
 /**
@@ -407,7 +560,10 @@ export interface EventEnvelope {
    * homeserver delivered on the outer, not-yet-decrypted event, not a
    * value this library independently confirmed, and it is
    * **unauthenticated transport metadata**. Verifying the sending device
-   * does not change that; cross-signing is what would, and it is M4. A
+   * does not change that, by string or by scanned code; cross-signing is
+   * what would, and it has landed without moving this field, which is the
+   * point `senderVerification` forty lines below makes at length. This said
+   * "and it is M4", naming a milestone as a thing still to come. A
    * product that reads it as the cryptographic sender of a successfully
    * decrypted event has assumed something this library does not provide,
    * and that

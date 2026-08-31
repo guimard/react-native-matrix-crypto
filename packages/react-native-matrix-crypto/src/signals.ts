@@ -8,19 +8,26 @@ import {
 import type { CryptoScopeId, TrustState } from './types'
 // Imported for the documentation below and used by nothing here.
 // `{@link}` resolves against what is in scope in the file it is written in,
-// so without this the four names the comments below send a reader to are
-// plain text in an editor's hover: a link that promises navigation and does
-// not deliver it. Type-only, so it is erased and adds no runtime edge, and
-// `facade.ts` imports nothing from this module, so it adds no cycle either.
+// so without this the names the comments below send a reader to are plain
+// text in an editor's hover: a link that promises navigation and does not
+// deliver it. This said "the four names" over a block of six and a set of
+// docs linking eight, and then gained two more links without gaining the
+// imports; no count here now, and `scripts/assert-doc-links.sh` is what
+// keeps the block and the links in step. Type-only, so it is erased and
+// adds no runtime edge, and `facade.ts` imports nothing from this module,
+// so it adds no cycle either.
 // `tsconfig.json` sets `noUnusedLocals: false`, which is what lets an import
 // exist for a reader rather than for the compiler.
 import type {
   acceptVerification,
+  confirmScan,
   decryptEvent,
   getDeviceStatuses,
   getIdentityStatus,
+  getVerificationStage,
   receiveSyncChanges,
   requestSelfVerification,
+  submitScannedCode,
 } from './facade'
 
 /**
@@ -39,6 +46,7 @@ import type {
 export type CryptoSignal =
   | { kind: 'trust_changed'; user: string; state: TrustState }
   | { kind: 'verification_requested'; user: string; device: string; verificationId: string }
+  | { kind: 'verification_completed'; verificationId: string }
   | { kind: 'unexpected_device'; scope: CryptoScopeId; user: string }
   | { kind: 'key_missing'; scope: CryptoScopeId }
 
@@ -192,6 +200,11 @@ function cryptoSignalOf(signal: NativeCryptoSignal): CryptoSignal {
         device: signal.inner.deviceId,
         verificationId: signal.inner.verificationId,
       }
+    case NativeCryptoSignalTag.VerificationCompleted:
+      return {
+        kind: 'verification_completed',
+        verificationId: signal.inner.verificationId,
+      }
   }
 }
 
@@ -210,10 +223,10 @@ function trustStateOf(trust: NativeTrustState): TrustState {
 /**
  * Subscribes to the crypto signal channel. Returns an unsubscribe function.
  *
- * **Two of the four variants have a producer, and both belong to device
- * verification.** Subscribing installs the native observer, so a listener
- * registered here starts receiving as soon as this call returns; the
- * channel was silent for the whole of M1 and M2, and this is where that
+ * **Three of the five variants have a producer, and all three belong to
+ * device verification.** Subscribing installs the native observer, so a
+ * listener registered here starts receiving as soon as this call returns;
+ * the channel was silent for the whole of M1 and M2, and this is where that
  * stops being true.
  *
  * - `verification_requested` -- **another device has asked to verify
@@ -229,13 +242,59 @@ function trustStateOf(trust: NativeTrustState): TrustState {
  *   `user` changed. **Two things produce it and they are indistinguishable
  *   from the value alone**, which is why the rule for this variant is to
  *   read rather than to count. A comparison finished and a device belonging
- *   to `user` moved: {@link getDeviceStatuses} for that user says which. Or,
+ *   to `user` moved: {@link getDeviceStatuses} for that user says which.
+ *   **A verification finished by a scanned code moves the same device and
+ *   produces no `trust_changed` at all**, so a product that waits on this
+ *   variant after {@link confirmScan} or {@link submitScannedCode} waits
+ *   forever. Such a flow announces `verification_completed` instead, which
+ *   is the next bullet and says why the two are not one; reading
+ *   {@link getDeviceStatuses} is what both of them tell you to do. Or,
  *   when `user` is **your own** user id, the account's private signing keys
  *   arrived on this device by gossip from another of your devices, after
  *   {@link requestSelfVerification}: {@link getIdentityStatus} says so, with
  *   `privateKeysHeld === true`, and that is the moment a new login becomes
  *   able to sign. A self-verification produces both, on consecutive syncs,
  *   so a product that reads both answers when told is correct under either.
+ * - `verification_completed` -- **a flow that was verified by scanning a
+ *   code has finished, and `verificationId` names it.** It arrives on both
+ *   screens: the one that showed a code and called {@link confirmScan}, and
+ *   the one that read a code and called {@link submitScannedCode}. Without
+ *   it a product had no way at all to learn that a code verification
+ *   succeeded, because no call returns when the other side acknowledges,
+ *   and {@link getVerificationStage} would have to be polled.
+ *
+ *   **It is not a `trust_changed`, and the difference is not cosmetic.** In
+ *   two of the three modes the protocol defines, nothing about a *device*
+ *   changes at this moment: what those flows verify is an identity. And for
+ *   another user, {@link getDeviceStatuses} still reads unverified when this
+ *   arrives, because verifying them signs their master key and your store
+ *   does not carry that signature until a later key query brings it back.
+ *   So read the durable answers when you get this, exactly as for
+ *   `trust_changed`, and expect another user's devices to turn verified a
+ *   sync or two later rather than instantly.
+ *
+ *   **Only a flow verified by a code produces it.** A short-string
+ *   comparison announces its completion as `trust_changed` and nothing
+ *   else, and a flow that was refused or timed out announces nothing at
+ *   all: {@link getVerificationStage} is what says `'cancelled'`.
+ *
+ *   **That asymmetry is a known limit of this release, and it is the one
+ *   that will cost you code.** The two variants carry disjoint halves of the
+ *   same fact: `trust_changed` names a user and no flow, so you cannot tell
+ *   which of two verifications with that user finished;
+ *   `verification_completed` names a flow and no trust. So "show a success
+ *   screen for *this* verification" is two paths, and the side that
+ *   *received* an invitation cannot know in advance which it will get,
+ *   because the peer decides that by scanning a code or by starting a string
+ *   comparison. Hold your own map from `verificationId` to what you are
+ *   showing, and treat either signal as "read the durable answer now".
+ *
+ *   The fix is additive and is deferred rather than forgotten: every
+ *   completed flow announcing `verification_completed`, with `trust_changed`
+ *   left exactly as it is. Nothing already true would stop being true. It is
+ *   not in this release because it reaches back into the short-string flows
+ *   settled two milestones ago, and re-settling those belongs to a change
+ *   that can carry them rather than to the corner of one that added codes.
  * - `unexpected_device` and `key_missing` still have no producer. The
  *   conditions they name do occur, and reach you elsewhere: a missing key
  *   arrives as a rejected {@link decryptEvent} with kind `missing_key`, not

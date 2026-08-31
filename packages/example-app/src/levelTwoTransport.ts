@@ -67,6 +67,18 @@ const PLAN_TIMEOUT_MS = 2500
  * ends it.
  */
 export interface LevelTwoPlan {
+  /**
+   * Which run this launch is.
+   *
+   * Absent means `'level-two'`, which is what the conductor that predates
+   * this field serves, so an older plan keeps working unchanged.
+   *
+   * `'scanned-code'` is a run for a **person** rather than for CI: it draws
+   * a real code and waits for a human to hold another client's camera up to
+   * it. Nothing automated can make that claim, which is why it is a separate
+   * mode rather than one more step in the suite.
+   */
+  mode?: 'level-two' | 'scanned-code'
   /** Base URL of the throwaway homeserver, as the emulator can reach it. */
   homeserver: string
   /** Base URL of the conductor, for {@link counterpartyOp}. */

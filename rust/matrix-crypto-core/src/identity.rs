@@ -55,7 +55,10 @@ pub async fn device_identity_keys(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustState {
     /// This machine holds the device's keys and has no reason to trust it
-    /// beyond that. Every device is here until a comparison finishes.
+    /// beyond that. Every device is here until something moves it out, and
+    /// the ways out are the three named under `Verified` below. This said
+    /// "until a comparison finishes", which was the only way out when it
+    /// was written and has not been for two milestones.
     ///
     /// A blacklisted or ignored device also reads `Unverified`. Upstream
     /// keeps those apart in its own `LocalTrust`, and this library exposes
@@ -97,13 +100,23 @@ pub enum TrustState {
     /// unreachable at the type itself, in both languages, so its presence
     /// is never read as a claim that it happens.
     Recognized,
-    /// This machine has reason to trust the device, by either of two
-    /// routes that this value does not tell apart.
+    /// This machine has reason to trust the device, by any of three routes
+    /// that this value does not tell apart.
     ///
     /// **A person compared a short authentication string** on this device
     /// and on the far one, both said it matched, and the flow completed:
     /// see [`crate::verification`]. That was the only route until M4, and
     /// this comment described only it.
+    ///
+    /// **Or a person pointed one device's camera at the other's screen**,
+    /// and the device showing the code confirmed that the scan was really
+    /// the other's: the same act, with a camera in place of a comparison.
+    /// It reaches this value by the same path, and
+    /// `tests/qr_cross_user.rs` asserts it. This comment said "either of
+    /// two routes" for the whole of the milestone that added the third,
+    /// which is the second time it has counted wrong and the reason the
+    /// count is now spelled out at each route rather than only in the
+    /// opening line.
     ///
     /// **Or the device is signed by its owner's cross-signing identity and
     /// this machine has verified that identity.** Nobody compares anything
@@ -153,11 +166,12 @@ fn store_failed() -> MachineError {
 /// Every device this machine has been told about for `user_id`, and the
 /// trust it currently reports for each.
 ///
-/// **This is where a completed comparison becomes visible.** It is the one
-/// call in this library whose answer a short-string comparison changes, and
-/// it changes it for a *device*. Whether a decrypted event proves who sent
-/// it is a different question with a different answer, and a comparison
-/// does not move that one: see the M3 design, section 7, question 6.
+/// **This is where a completed verification becomes visible.** It is the
+/// one call in this library whose answer a verification changes, whether
+/// the two people compared a short string or one of them scanned a code,
+/// and it changes it for a *device*. Whether a decrypted event proves who
+/// sent it is a different question with a different answer, and neither
+/// method moves that one: see the M3 design, section 7, question 6.
 ///
 /// # An empty answer is not "this user has no devices"
 ///
@@ -201,15 +215,23 @@ pub async fn device_statuses(user_id: &str) -> Result<Vec<DeviceStatus>, Machine
                 .map(|device| DeviceStatus {
                     device_id: device.device_id().to_string(),
                     // `is_verified`, which is local trust OR a cross
-                    // signature this machine can follow. Only the first can
-                    // be true today, and the reason is our own missing
-                    // identity rather than the sender's: upstream's
-                    // `is_cross_signing_trusted` needs our user-signing key
-                    // over the owner's master key, so it is `false` even for
-                    // a device its owner has genuinely signed. Asking the
-                    // broader question means this answer does not have to
-                    // change when the second can. See `TrustState::Recognized`
-                    // for what this two-valued mapping costs.
+                    // signature this machine can follow. **Both can be true
+                    // today.** This said only the first could, because
+                    // upstream's `is_cross_signing_trusted` needs our
+                    // user-signing key over the owner's master key and this
+                    // machine could not mint one; `signing::bootstrap_identity`
+                    // is what made it able to, and asking the broader question
+                    // is what let this line survive that change unedited.
+                    // Which is exactly why the sentence was wrong for two
+                    // milestones without anything failing.
+                    //
+                    // `tests/verified_sender.rs` reaches the second route by
+                    // a short-string comparison and `tests/qr_cross_user.rs`
+                    // reaches it by a scan, both ending in a signature upload
+                    // and a re-query rather than in local trust. See
+                    // `TrustState::Verified` in this file, which now names
+                    // all three routes, and `TrustState::Recognized` for what
+                    // this two-valued mapping costs.
                     trust: if device.is_verified() {
                         TrustState::Verified
                     } else {

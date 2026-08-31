@@ -10,6 +10,7 @@ import {
   bootstrapCrossSigning,
   createCrossSigningIdentity,
   cancelVerification,
+  confirmScan,
   confirmVerification,
   createCryptoMachine,
   createRecovery,
@@ -20,18 +21,22 @@ import {
   getDeviceIdentityKeys,
   getDeviceStatuses,
   getIdentityStatus,
+  getVerificationCode,
   getVerificationMaterial,
   getVerificationStage,
   importSecrets,
   markRequestFailed,
   markRequestSent,
+  offerScannableCodes,
   openCryptoStore,
   receiveSyncChanges,
   recoverIdentity,
+  restoreCryptoMachine,
   requestSelfVerification,
   requestVerification,
   shareScopeKey,
   startVerificationComparison,
+  submitScannedCode,
   takeOutgoingRequests,
 } from './facade'
 import {
@@ -39,6 +44,7 @@ import {
   bootstrapIdentity as nativeBootstrapIdentity,
   cancelVerification as nativeCancelVerification,
   CryptoSignal as NativeCryptoSignal,
+  confirmScan as nativeConfirmScan,
   confirmVerification as nativeConfirmVerification,
   createCryptoMachine as nativeCreateCryptoMachine,
   createRecovery as nativeCreateRecovery,
@@ -51,6 +57,7 @@ import {
   MachineFfiError,
   markRequestFailed as nativeMarkRequestFailed,
   markRequestSent as nativeMarkRequestSent,
+  offerCodes as nativeOfferCodes,
   openCryptoStore as nativeOpenCryptoStore,
   receiveSyncChanges as nativeReceiveSyncChanges,
   recoverIdentity as nativeRecoverIdentity,
@@ -60,8 +67,10 @@ import {
   SessionFfiError,
   shareScopeKey as nativeShareScopeKey,
   startVerificationComparison as nativeStartVerificationComparison,
+  submitScannedCode as nativeSubmitScannedCode,
   takeOutgoingRequests as nativeTakeOutgoingRequests,
   TrustState as NativeTrustState,
+  verificationCode as nativeVerificationCode,
   verificationMaterial as nativeVerificationMaterial,
   verificationStage as nativeVerificationStage,
   VerificationStage as NativeVerificationStage,
@@ -188,6 +197,25 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
     })),
     confirmVerification: vi.fn(async () => undefined),
     cancelVerification: vi.fn(async () => undefined),
+    // The scannable code's three calls. The grid is deliberately not a
+    // palindrome and does not read the same by rows as by columns, so a
+    // facade that reversed or transposed it fails rather than passing on a
+    // length check; the payload is deliberately not text, because the real
+    // one is not either.
+    verificationCode: vi.fn(async () => ({
+      payload: new Uint8Array([0x4d, 0x41, 0x54, 0x52, 0x49, 0x58, 0x02, 0x00, 0xfe, 0xff])
+        .buffer as ArrayBuffer,
+      width: 3,
+      modules: [true, false, false, false, true, false, false, false, false],
+    })),
+    submitScannedCode: vi.fn(async () => undefined),
+    confirmScan: vi.fn(async () => undefined),
+    // Not `async`, unlike every other mock here, because the real one is
+    // not: the switch sets a process-wide flag and cannot fail. A mock that
+    // returned a promise would let a facade that forgot to make its own call
+    // synchronous pass, and the whole point of the synchronous shape is that
+    // an unawaited call cannot land after the flow it was meant to affect.
+    offerCodes: vi.fn((_capabilities: { canShow: boolean; canScan: boolean }) => undefined),
     // The signing identity. Stateless defaults, and deliberately the
     // "nobody has asked" row rather than a served one: a test that forgot
     // to install the chain fake below gets the refusal the real core would
@@ -217,11 +245,56 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
   }
 })
 
-describe('facade before implementation', () => {
+/**
+ * The calls that reject in JavaScript rather than reaching native code.
+ *
+ * This describe was called "facade before implementation", which said the
+ * implementation was coming. It is not: `exportSecrets` and `importSecrets`
+ * are refused on purpose, because the byte array they would return has no
+ * interoperable form, and their own doc comments say so. `restoreCryptoMachine`
+ * is the only one of the three still waiting on anything.
+ *
+ * **All three are driven here, and that is the point of the plural.** The
+ * rename that gave this describe its name left one `it` under it, driving
+ * `exportSecrets` alone, while the paragraph above named three; and
+ * `restoreCryptoMachine` was named in this file and driven nowhere in it.
+ * A name that quantifies over a list the body does not walk is the defect
+ * this whole sweep was about, and it was reintroduced by the sweep.
+ *
+ * `not_implemented` is synthesised in TypeScript by `notImplemented`, so
+ * none of these three touches the mocked bindings at all. Asserted rather
+ * than assumed, because a call that reached native code and happened to
+ * reject would satisfy the kind check while proving something else.
+ */
+describe('the calls that reject in JavaScript rather than reaching native code', () => {
   it('rejects exportSecrets with a typed not_implemented error rather than undefined', async () => {
     await expect(exportSecrets('passphrase')).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'not_implemented',
     )
+  })
+
+  it('rejects importSecrets with the same kind, on purpose rather than pending', async () => {
+    await expect(importSecrets(new Uint8Array([1, 2, 3]), 'passphrase')).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'not_implemented',
+    )
+  })
+
+  it('rejects restoreCryptoMachine, the one of the three still waiting on something', async () => {
+    await expect(restoreCryptoMachine(new Uint8Array([1, 2, 3]))).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'not_implemented',
+    )
+  })
+
+  it('rejects all three without reaching a native call', async () => {
+    vi.clearAllMocks()
+    await Promise.allSettled([
+      exportSecrets('passphrase'),
+      importSecrets(new Uint8Array([1]), 'passphrase'),
+      restoreCryptoMachine(new Uint8Array([1])),
+    ])
+
+    expect(nativeCreateCryptoMachine).not.toHaveBeenCalled()
+    expect(nativeOpenCryptoStore).not.toHaveBeenCalled()
   })
 })
 
@@ -1102,6 +1175,19 @@ beforeEach(() => {
   vi.mocked(nativeConfirmVerification).mockResolvedValue(undefined)
   vi.mocked(nativeCancelVerification).mockReset()
   vi.mocked(nativeCancelVerification).mockResolvedValue(undefined)
+  vi.mocked(nativeVerificationCode).mockReset()
+  vi.mocked(nativeVerificationCode).mockResolvedValue({
+    payload: new Uint8Array([0x4d, 0x41, 0x54, 0x52, 0x49, 0x58, 0x02, 0x00, 0xfe, 0xff])
+      .buffer as ArrayBuffer,
+    width: 3,
+    modules: [true, false, false, false, true, false, false, false, false],
+  })
+  vi.mocked(nativeSubmitScannedCode).mockReset()
+  vi.mocked(nativeSubmitScannedCode).mockResolvedValue(undefined)
+  vi.mocked(nativeConfirmScan).mockReset()
+  vi.mocked(nativeConfirmScan).mockResolvedValue(undefined)
+  vi.mocked(nativeOfferCodes).mockReset()
+  vi.mocked(nativeOfferCodes).mockImplementation(() => undefined)
   // The seven the signing-identity chain reimplements. Same defaults as the
   // module-level factory declares, restated here rather than shared with it
   // because that factory runs once and this runs before every test.
@@ -1283,10 +1369,24 @@ describe('getVerificationStage', () => {
       [NativeVerificationStage.Ready, 'ready'],
       [NativeVerificationStage.Started, 'started'],
       [NativeVerificationStage.KeysExchanged, 'keys-exchanged'],
+      [NativeVerificationStage.CodeScanned, 'code-scanned'],
       [NativeVerificationStage.Confirmed, 'confirmed'],
       [NativeVerificationStage.Done, 'done'],
       [NativeVerificationStage.Cancelled, 'cancelled'],
     ]
+
+    // Every value the generated enum has, not merely the ones this table
+    // happens to name. `verificationStageOf` is exhaustive by compile
+    // error, so a stage added to the Rust source cannot go unmapped -- but
+    // nothing made it reach this table, and a table that silently covers
+    // less than the enum it stands for is the shape this repository keeps
+    // finding: a check that reports success without examining its target.
+    // The generated enum is numeric, so its reverse mapping puts the
+    // numbers in as keys too; only the names are members.
+    const everyNativeStage = Object.keys(NativeVerificationStage).filter((key) =>
+      Number.isNaN(Number(key)),
+    )
+    expect(expected).toHaveLength(everyNativeStage.length)
 
     // Every stage, in one test, and the results collected before they are
     // compared: seven separate assertions each covering one value would
@@ -1374,6 +1474,258 @@ describe('getVerificationMaterial', () => {
   })
 })
 
+/**
+ * The switch that decides whether this build takes part in code
+ * verification at all.
+ *
+ * **What this file can and cannot see.** The claim the design's exit
+ * criteria rest on is about the wire: with the switch untouched, the method
+ * list this library announces equals the pre-M5 list entire. That is proven
+ * where the wire is, in the core's own `qr_announcement.rs`, which reads all
+ * three call sites off the pump. Native is mocked away here, so no
+ * announcement is visible at all.
+ *
+ * What *is* only visible here is the crossing, and it has three ways of
+ * going wrong that no Rust test can see:
+ *
+ * 1. **The values.** A bridge that raised a field rather than storing what
+ *    it was handed, or that coerced it, is invisible to a core that only
+ *    ever sees the value it was given.
+ * 2. **A dropped or transposed field.** The two fields have the same type,
+ *    so nothing but a test distinguishes `{ canShow: true, canScan: false }`
+ *    from its opposite, and its opposite is precisely the claim that killed
+ *    a flow on hardware.
+ * 3. **Somebody else calling it.** The default only survives if nothing in
+ *    this surface answers for the product's own convenience, and a product
+ *    that never calls it has no way to notice that something did.
+ */
+describe('offering scannable codes at all', () => {
+  it('carries a screen with no camera through exactly as it was written', () => {
+    offerScannableCodes({ canShow: true, canScan: false })
+
+    const calls = vi.mocked(nativeOfferCodes).mock.calls
+    expect(calls.length).toBe(1)
+    // `toEqual` on the whole record and `toBe` on each field: a bridge
+    // handing the native side `1` or `'true'` satisfies every loose check,
+    // and one that dropped `canScan` would satisfy a check that only looked
+    // at `canShow`.
+    expect(calls.at(-1)?.[0]).toEqual({ canShow: true, canScan: false })
+    expect(calls.at(-1)?.[0].canShow).toBe(true)
+    expect(calls.at(-1)?.[0].canScan).toBe(false)
+  })
+
+  it('carries the other three answers too, each field on its own', () => {
+    for (const canShow of [false, true]) {
+      for (const canScan of [false, true]) {
+        offerScannableCodes({ canShow, canScan })
+        const carried = vi.mocked(nativeOfferCodes).mock.calls.at(-1)?.[0]
+        // Read back field by field rather than as one object, so a bridge
+        // that copied one field into both fails here rather than on the
+        // two rounds where the two happen to agree.
+        expect(carried?.canShow).toBe(canShow)
+        expect(carried?.canScan).toBe(canScan)
+      }
+    }
+  })
+
+  /**
+   * **The default survives the crossing.**
+   *
+   * Every other call a product makes on this surface is driven here, twice,
+   * and the switch must never be touched by any of them. Twice on purpose:
+   * a bridge that turned codes on once some flow had been opened would pass
+   * a test that only ever made one round of calls, and there is a real
+   * upstream behaviour in this area that only shows up on a second
+   * verification.
+   *
+   * `createCryptoMachine` and `openCryptoStore` are in the list because
+   * start-up is the likeliest place for a well-meaning "turn everything on"
+   * to be added later, and it would silently undo the choice the whole
+   * switch exists to give a product.
+   */
+  it('is never called by anything else on this surface, over two rounds', async () => {
+    for (let round = 0; round < 2; round += 1) {
+      const config = {
+        userId: '@a:example.org',
+        deviceId: 'ADEVICE',
+        storePath: '/store',
+        storePassphrase: null,
+      }
+      await createCryptoMachine(config)
+      await openCryptoStore(config)
+      await requestVerification('@b:example.org', 'BDEVICE')
+      await requestSelfVerification()
+      await acceptVerification(FLOW)
+      await startVerificationComparison(FLOW)
+      await getVerificationStage(FLOW)
+      await getVerificationMaterial(FLOW)
+      await confirmVerification(FLOW, NATIVE_MATERIAL)
+      await getVerificationCode(FLOW)
+      await submitScannedCode(FLOW, new Uint8Array([1, 2, 3]))
+      await confirmScan(FLOW)
+      await cancelVerification(FLOW)
+    }
+
+    expect(vi.mocked(nativeOfferCodes)).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * The scannable code, on the TypeScript side of the boundary.
+ *
+ * Four things can go wrong here that no Rust test can see, because the Rust
+ * side never crosses this boundary and these tests mock it away:
+ *
+ * 1. **The payload's shape.** The generated binding speaks `ArrayBuffer` and
+ *    this surface speaks `Uint8Array`, in both directions. A conversion
+ *    missing on the way out hands a product an object its drawing code
+ *    misreads as empty; missing on the way in, the native call receives
+ *    something that is not the bytes at all.
+ * 2. **The caller's window on a buffer.** A `Uint8Array` a scanner hands
+ *    back is often a view onto a longer buffer, and `.buffer` on such a view
+ *    is the whole backing store. `probe.ts` learned that once already, which
+ *    is why its shim is shared here rather than restated.
+ * 3. **The grid's order.** It is row-major and square, so a reversed or
+ *    transposed one is the same length, type-checks, and draws a square that
+ *    decodes to nothing.
+ * 4. **The four refusals.** Whether a *product* can tell "that is not one of
+ *    our codes" from "that code is for a different verification" from "those
+ *    bytes did not survive" is decided by `errors.ts`'s map, which is
+ *    TypeScript. The Rust side proves the right variant is produced and
+ *    cannot see whether it arrives as anything a product can act on: the
+ *    last two milestones both found variants reaching this layer as
+ *    `'unknown'`.
+ */
+describe('the scannable code, out and back', () => {
+  /** What the mocked native call hands back, as the facade must rebuild it. */
+  const NATIVE_PAYLOAD = new Uint8Array([0x4d, 0x41, 0x54, 0x52, 0x49, 0x58, 0x02, 0x00, 0xfe, 0xff])
+  const NATIVE_GRID = [true, false, false, false, true, false, false, false, false]
+
+  it('hands back both forms of the code, with the payload as bytes and the grid in order', async () => {
+    const code = await getVerificationCode(FLOW)
+
+    expect(vi.mocked(nativeVerificationCode).mock.calls.at(-1)?.[0]).toBe(FLOW)
+    // Asserted as a `Uint8Array` rather than by contents alone: an
+    // `ArrayBuffer` passed straight through has no `length` and no indices,
+    // so a product drawing from it reads `undefined` everywhere and a
+    // product comparing it finds nothing.
+    expect(code.payload).toBeInstanceOf(Uint8Array)
+    expect(Array.from(code.payload)).toEqual(Array.from(NATIVE_PAYLOAD))
+    expect(code.width).toBe(3)
+    expect(code.modules).toEqual(NATIVE_GRID)
+  })
+
+  /**
+   * **The payload is binary and is not text.** That is the whole reason the
+   * grid crosses beside it, so it is asserted rather than assumed: a payload
+   * that went through a string is a different value, and a product handed
+   * one draws a code the other phone refuses.
+   */
+  it('carries bytes that are not valid text, unchanged', async () => {
+    const code = await getVerificationCode(FLOW)
+    const throughAString = new TextEncoder().encode(new TextDecoder().decode(code.payload))
+    expect(Array.from(throughAString)).not.toEqual(Array.from(code.payload))
+  })
+
+  it('reports a peer that never offered to scan as code_not_offered, not as a stage', async () => {
+    vi.mocked(nativeVerificationCode).mockRejectedValue(new MachineFfiError.CodeNotOffered())
+    await expect(getVerificationCode(FLOW)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'code_not_offered',
+    )
+  })
+
+  it('reports a device holding no private signing keys by name rather than as an empty code', async () => {
+    vi.mocked(nativeVerificationCode).mockRejectedValue(new MachineFfiError.PrivateKeysNotHeld())
+    await expect(getVerificationCode(FLOW)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'private_keys_not_held',
+    )
+  })
+
+  it('hands the scanned bytes to native as the bytes they came in', async () => {
+    const scanned = new Uint8Array([1, 2, 3, 250, 251])
+    await expect(submitScannedCode(FLOW, scanned)).resolves.toBeUndefined()
+
+    const call = vi.mocked(nativeSubmitScannedCode).mock.calls.at(-1)
+    expect(call?.[0]).toBe(FLOW)
+    expect(Array.from(new Uint8Array(call?.[1] as ArrayBuffer))).toEqual([1, 2, 3, 250, 251])
+  })
+
+  /**
+   * What would reach the native side otherwise is the bytes around the
+   * payload as well as the payload, which decodes to nothing -- and the
+   * failure would look exactly like a mangled code rather than like a bridge
+   * that sent too much.
+   */
+  it('sends only the window when the bytes are a view onto a longer buffer', async () => {
+    const backing = new Uint8Array([9, 9, 1, 2, 3, 9, 9])
+    const scanned = backing.subarray(2, 5)
+    await submitScannedCode(FLOW, scanned)
+
+    const sent = vi.mocked(nativeSubmitScannedCode).mock.calls.at(-1)?.[1] as ArrayBuffer
+    expect(Array.from(new Uint8Array(sent))).toEqual([1, 2, 3])
+  })
+
+  /**
+   * **The requirement the design's section 4 states, asserted call by
+   * call.** Three of these say different things to a person and the fourth
+   * can mean an interposed party; a product that saw one kind for all four
+   * could say nothing useful about any of them.
+   */
+  it.each([
+    ['ScannedCodeUnrecognised', 'scanned_code_unrecognised'],
+    ['ScannedCodeMalformed', 'scanned_code_malformed'],
+    ['ScannedCodeForAnotherFlow', 'scanned_code_for_another_flow'],
+    ['ScannedCodeRefused', 'scanned_code_refused'],
+  ] as const)('reports %s as kind %s', async (variant, kind) => {
+    vi.mocked(nativeSubmitScannedCode).mockRejectedValue(new MachineFfiError[variant]())
+    const rejection = await submitScannedCode(FLOW, new Uint8Array([1])).then(
+      () => ({ resolved: true }),
+      (e: unknown) => ({ rejected: e }),
+    )
+
+    expect(rejection).not.toHaveProperty('resolved')
+    const error = (rejection as { rejected: unknown }).rejected
+    expect(isCryptoError(error) && error.kind).toBe(kind)
+    // Not retriable, and calling again with the bytes just refused is what
+    // "retriable" would invite: none of the four is answered by a repeat.
+    expect(isCryptoError(error) && error.retriable).toBe(false)
+  })
+
+  it('keeps the four refusals on four different kinds', async () => {
+    const variants = [
+      'ScannedCodeUnrecognised',
+      'ScannedCodeMalformed',
+      'ScannedCodeForAnotherFlow',
+      'ScannedCodeRefused',
+    ] as const
+    const kinds: string[] = []
+    for (const variant of variants) {
+      vi.mocked(nativeSubmitScannedCode).mockRejectedValue(new MachineFfiError[variant]())
+      kinds.push(
+        await submitScannedCode(FLOW, new Uint8Array([1])).then(
+          () => 'resolved',
+          (e: unknown) => (isCryptoError(e) ? e.kind : 'not-a-crypto-error'),
+        ),
+      )
+    }
+
+    expect(kinds).not.toContain('unknown')
+    expect(new Set(kinds).size).toBe(4)
+  })
+
+  it('confirms a scan of the code this device showed, and says which flow', async () => {
+    await expect(confirmScan(FLOW)).resolves.toBeUndefined()
+    expect(vi.mocked(nativeConfirmScan).mock.calls.at(-1)?.[0]).toBe(FLOW)
+  })
+
+  it('reports confirming a flow nobody has scanned as wrong_stage', async () => {
+    vi.mocked(nativeConfirmScan).mockRejectedValue(new MachineFfiError.WrongStage())
+    await expect(confirmScan(FLOW)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'wrong_stage',
+    )
+  })
+})
+
 describe('confirmVerification', () => {
   it('confirms when the material offered is the material the flow is showing', async () => {
     await expect(confirmVerification(FLOW, NATIVE_MATERIAL)).resolves.toBeUndefined()
@@ -1448,7 +1800,14 @@ describe('confirmVerification', () => {
 })
 
 /**
- * The two conditions the core folds into one `WrongStage`, told apart again.
+ * The two conditions the core folds into one `WrongStage` **on this call**,
+ * told apart again.
+ *
+ * `WrongStage` is folded elsewhere too, and this describe covers only the
+ * fold here: `confirmScan` folds "nobody has scanned yet" against "this
+ * flow is over" into the same kind, and nothing unfolds that one, because
+ * the stage cannot yet tell them apart. Named so this block is not read as
+ * the account of every fold on the surface.
  *
  * The core's own `begin_comparison` documents the fold and says why it is
  * deliberate -- both mean *this call* has nothing to do -- and points at
@@ -1457,7 +1816,7 @@ describe('confirmVerification', () => {
  * started it, wait for the string" and "this is over, ask again" call for
  * opposite behaviour.
  */
-describe('startVerificationComparison, and the conditions its one native error folds', () => {
+describe('startVerificationComparison, and the two conditions its own native error folds', () => {
   it('starts the comparison and forwards the flow id when nothing is wrong', async () => {
     await expect(startVerificationComparison(FLOW)).resolves.toBeUndefined()
     expect(vi.mocked(nativeStartVerificationComparison).mock.calls.at(-1)?.[0]).toBe(FLOW)
@@ -1473,6 +1832,30 @@ describe('startVerificationComparison, and the conditions its one native error f
   ])('reports comparison_already_started when the peer got there first (stage %i)', async (stage) => {
     vi.mocked(nativeStartVerificationComparison).mockRejectedValue(new MachineFfiError.WrongStage())
     vi.mocked(nativeVerificationStage).mockResolvedValue(stage)
+
+    await expect(startVerificationComparison(FLOW)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'comparison_already_started',
+    )
+  })
+
+  /**
+   * The same kind, from a flow that has no comparison behind it at all.
+   *
+   * A code flow nobody has scanned yet reports `'started'`, so at that one
+   * stage it is indistinguishable here from a comparison the peer opened,
+   * and the two want opposite things done about them: on a code flow
+   * neither `acceptVerification` nor `getVerificationMaterial` is the next
+   * call. Asserted separately from the `it.each` above even though the
+   * stage is the same value, because the name is the claim. The case where
+   * the two *are* told apart, once somebody has scanned, is the
+   * `code-scanned` assertion below.
+   */
+  it('reports comparison_already_started for a flow that went to a scanned code', async () => {
+    vi.mocked(nativeStartVerificationComparison).mockRejectedValue(new MachineFfiError.WrongStage())
+    // What a code flow reports before anybody scans: the core maps
+    // `QrVerificationState::Started` to this stage, and says so at
+    // `stage_of_code`.
+    vi.mocked(nativeVerificationStage).mockResolvedValue(NativeVerificationStage.Started)
 
     await expect(startVerificationComparison(FLOW)).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'comparison_already_started',
@@ -1513,6 +1896,24 @@ describe('startVerificationComparison, and the conditions its one native error f
   )
 
   /**
+   * A flow that became a code, which is the same kind and a different
+   * reason: a comparison cannot be started on one, and the caller is not
+   * waiting for anybody to agree. Kept apart from the case above because
+   * `comparison_already_started` would be the actively wrong answer here --
+   * it names a comparison that does not exist and asks for an
+   * `acceptVerification` that moves nothing, when what the flow is waiting
+   * for is `confirmScan`.
+   */
+  it('leaves the rejection as wrong_stage for a flow that became a code somebody scanned', async () => {
+    vi.mocked(nativeStartVerificationComparison).mockRejectedValue(new MachineFfiError.WrongStage())
+    vi.mocked(nativeVerificationStage).mockResolvedValue(NativeVerificationStage.CodeScanned)
+
+    await expect(startVerificationComparison(FLOW)).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'wrong_stage',
+    )
+  })
+
+  /**
    * Only `wrong_stage` is unfolded. An `unknown_flow` rejection already
    * says exactly what it means, and reading the stage of a flow that does
    * not exist would only produce a second error to swallow.
@@ -1542,9 +1943,10 @@ describe('startVerificationComparison, and the conditions its one native error f
 })
 
 /**
- * The whole arc, driven through the public surface in the order the
- * documentation publishes, against a fake that models the one ordering rule
- * this bridge cannot enforce for the caller.
+ * The whole arc of a verification **by short string**, driven through the
+ * public surface in the order the documentation publishes, against a fake
+ * that models the one ordering rule this bridge cannot enforce for the
+ * caller.
  *
  * **What this proves and what it does not.** The fake performs no
  * cryptography: the comparison it "reaches" is a constant. What it does
@@ -1555,8 +1957,16 @@ describe('startVerificationComparison, and the conditions its one native error f
  * one needs, and that skipping the pump is reported rather than hung on.
  * Whether the string two devices reach is the *same* string is the Rust
  * two-party test's claim, not this one's.
+ *
+ * **This was called "a verification driven end to end" and there are two
+ * kinds now.** A flow can also finish by one device scanning the other's
+ * code, and nothing in this package drives that arc end to end: the calls
+ * are covered one at a time above, and the composed arc is driven in the
+ * core, in `rust/matrix-crypto-core/tests/qr_cross_user.rs` and its two
+ * self-mode siblings. The gap is named rather than papered over by a name
+ * that claims both.
  */
-describe('a verification driven end to end through the public surface', () => {
+describe('a verification by short string, driven end to end through the public surface', () => {
   interface FakeFlow {
     stage: NativeVerificationStage
     keyReported: boolean

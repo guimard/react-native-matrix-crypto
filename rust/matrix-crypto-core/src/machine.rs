@@ -9,8 +9,10 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
 // `matrix-sdk-crypto` does NOT re-export `ruma` at its own crate root (verified by
-// reading its vendored source: only `vodozemac` and, behind the `qrcode` feature,
-// `matrix_sdk_qrcode` get a `pub use` there). `matrix-sdk-common` does
+// reading its vendored source: only `vodozemac` and `matrix_sdk_qrcode` get a
+// `pub use` there, the second behind the `qrcode` feature). That feature read as
+// a counterfactual when this was written and is on now, and `verification.rs`
+// imports through exactly that re-export. `matrix-sdk-common` does
 // (`pub use ruma;`, unconditional), and `matrix-sdk-crypto` 0.18.0 itself depends on
 // `matrix-sdk-common = "0.18.0"`, so pinning the same version here guarantees Cargo
 // unifies on a single `ruma` in the tree rather than resolving two independently
@@ -94,8 +96,8 @@ pub enum MachineError {
     /// it named has finished and the registry has since released it -- see
     /// `verification.rs`'s own eviction rule for exactly when that happens.
     ///
-    /// **Appended, not inserted.** The three variants from here down were
-    /// added after this enum already had a mirror carrying UniFFI's error
+    /// **Appended, not inserted.** Every variant from here down was added
+    /// after this enum already had a mirror carrying UniFFI's error
     /// derive, and UniFFI assigns each variant's wire ordinal by
     /// declaration position: inserting one renumbers every variant after it
     /// and makes bindings generated before the insert decode the wrong
@@ -106,7 +108,9 @@ pub enum MachineError {
     /// The call is one this flow supports, but not at the stage the flow is
     /// currently at -- accepting a flow nobody has requested, starting a
     /// comparison before both sides are ready, confirming or cancelling a
-    /// flow that has already finished. This is what upstream reports by
+    /// flow that has already finished, asking a bare-start flow for a
+    /// scannable code, handing a scanned code to a flow nobody has agreed
+    /// to, or confirming a scan nobody has made. This is what upstream reports by
     /// returning `None` from an otherwise infallible call; returned as a
     /// named error rather than passed on as an absence, because "did
     /// nothing, successfully" is the one answer a verification call must
@@ -116,7 +120,11 @@ pub enum MachineError {
     /// The flow has not exchanged keys yet, so there is no short
     /// authentication string to show.
     ///
-    /// This is the loud form of the one silent failure this flow has.
+    /// This is the loud form of one of the two silent failures a flow has.
+    /// The other belongs to the scannable code and cannot be made loud from
+    /// here: a displayed code that loses the race with a short-string
+    /// comparison is cancelled with no error returned to anybody, because
+    /// nothing was asked. `verification.rs`'s own header carries it.
     /// Upstream advances from "accepted" to "keys exchanged" only when the
     /// caller reports the key message as sent, through the same outbound
     /// pump every other request goes through. A caller that drains the pump
@@ -189,25 +197,34 @@ pub enum MachineError {
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("this account already has a signing identity this device does not hold")]
     IdentityAlreadyExists,
-    /// This machine holds no public signing identity for the account, so
-    /// there is nothing for this device to verify itself against, and
-    /// nothing for it to publish.
+    /// This machine holds no public signing identity for the account.
     ///
-    /// **Two calls report it and they are asking for the same decision.**
-    /// `crate::request_self_flow` reports it because there is no identity to
-    /// join. `crate::bootstrap_identity` reports it because there is none to
-    /// publish; it used to create one at this point, and creating one at
-    /// this point is what an honest homeserver plus ordinary two-device
-    /// timing turned into a creation over an identity another device had
-    /// published a moment earlier. The remedy for both is
-    /// `crate::create_identity`, and its own documentation says why it is a
+    /// **Five calls report it, and between them they are asking for one
+    /// decision.** `crate::request_self_flow` reports it because there is no
+    /// identity to join. `crate::bootstrap_identity` reports it because
+    /// there is none to publish; it used to create one at this point, and
+    /// creating one at this point is what an honest homeserver plus
+    /// ordinary two-device timing turned into a creation over an identity
+    /// another device had published a moment earlier.
+    /// `crate::recover_identity` reports it because upstream's import checks
+    /// nothing and stores nothing without the account's public identity
+    /// already in the store. And `crate::read_code` and
+    /// `crate::submit_scanned_code` report it when the identity a code has
+    /// to carry is *ours* and is missing. The remedy for all five is
+    /// `crate::create_identity`, whose own documentation says why it is a
     /// decision a product makes rather than a refusal a handler retries.
     ///
-    /// The mirror image of `IdentityAlreadyExists`, and the pair says the
-    /// whole rule between them: a device that does not hold the private keys
-    /// **joins** the identity the account has, and a device facing an account
-    /// with no identity at all has nothing to join. Only one of the two calls
-    /// is ever the right one, and each names the other's precondition.
+    /// Not folded onto `PeerIdentityNotKnown`, which says the same about the
+    /// other user: the two remedies point at different people, and a
+    /// product showing one sentence for both would send half its users to
+    /// fix something that is not broken.
+    ///
+    /// Still the mirror image of `IdentityAlreadyExists`, and that pair
+    /// says the whole rule between them: a device that does not
+    /// hold the private keys **joins** the identity the account has, and a
+    /// device facing an account with no identity at all has nothing to
+    /// join. Only one of the two calls is ever the right one, and each
+    /// names the other's precondition.
     ///
     /// Distinguished from `AccountKeysNotFetched` by the same question
     /// `signing.rs`'s gate asks and for the same reason: this one means the
@@ -220,15 +237,28 @@ pub enum MachineError {
     #[error("this account has no signing identity to verify against")]
     IdentityNotKnown,
     /// This device does not hold the account's complete private signing
-    /// keys, so there is nothing for it to write into server-side storage.
+    /// keys.
+    ///
+    /// **Two calls produce it and they mean it differently.**
+    /// `crate::create_recovery` means there is nothing for this device to
+    /// write into server-side storage. `crate::read_code` means a
+    /// cross-user code must carry this account's own master key and this
+    /// device cannot prove it holds one; showing a code to verify this
+    /// account's *own* new login needs none of them, so that direction is
+    /// unaffected. The sentence here described the first alone until the
+    /// second existed.
     ///
     /// Distinguished from `IdentityNotKnown`, which is about the *account*
     /// having no identity at all, and from `IdentityAlreadyExists`, which is
     /// a bootstrap refusing. This one says the account's identity is not the
-    /// question: whatever the account has, this device cannot write a copy
-    /// of what it does not hold. The remedy is whichever of
-    /// `crate::bootstrap_identity` or `crate::request_self_flow` applies,
-    /// and `IdentityStatus` is what says which.
+    /// question: whatever the account has, this device cannot use what it
+    /// does not hold. The remedy is whichever of
+    /// `crate::create_identity`, `crate::recover_identity` or
+    /// `crate::request_self_flow` applies, and `IdentityStatus` is what says
+    /// which. Not `crate::bootstrap_identity`, which this comment named
+    /// until minting moved out of it: that call refuses a device holding no
+    /// private keys with `IdentityAlreadyExists` and is therefore the one
+    /// remedy this refusal never has.
     ///
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("this device does not hold the account's private signing keys")]
@@ -317,6 +347,175 @@ pub enum MachineError {
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("this account already has a server-side recovery")]
     RecoveryAlreadyExists,
+    /// The other user has no signing identity, so there is nothing for a
+    /// scannable code to name them by.
+    ///
+    /// **The mirror image of `IdentityNotKnown`, across the other side of
+    /// the flow, and the pair is why this is a variant rather than a reuse.**
+    /// `IdentityNotKnown` says *this account* has no identity, and its
+    /// remedy is `crate::bootstrap_identity` on this device. This one says
+    /// the account on the other end of the flow has none, and there is
+    /// nothing this device can do about it: the remedy belongs to the other
+    /// person, and a product that told its user to set their own identity up
+    /// would be sending them to fix something that is not broken.
+    ///
+    /// Upstream distinguishes the two on the scanning side and not on the
+    /// showing side. `QrVerification::from_scan` names the user it could not
+    /// find an identity for (`ScanError::MissingCrossSigningIdentity`), so
+    /// `crate::submit_scanned_code` reads which side it is from that;
+    /// `VerificationRequest::generate_qr_code` says nothing at all, and
+    /// `crate::read_code` asks the same question again to answer it.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("the other user has no signing identity")]
+    PeerIdentityNotKnown,
+    /// Codes were not negotiated on this flow, so showing one would put a
+    /// square on a screen that nothing on the other end can read.
+    ///
+    /// Not a stage and not a refusal by anybody: the two sides settled which
+    /// methods they can both carry out when the flow became ready, and
+    /// scanning was not among them. Kept apart from `WrongStage`, which it
+    /// was folded into first, because the two call for opposite things. A
+    /// flow at the wrong stage is one to wait on or to restart; a flow that
+    /// did not negotiate codes never will, however long a product waits.
+    ///
+    /// **One cause now, and it is the caller's own.** This process did not
+    /// answer `crate::offer_codes` with `can_show`, so this library
+    /// announced no showing half on this flow and there is nothing for it to
+    /// produce. The remedy is that one call before the next flow.
+    ///
+    /// It used to carry a second cause, the far side not offering to scan,
+    /// and told a caller to work out which from the switch it had set. That
+    /// was sound while the switch was a single boolean and stopped being
+    /// sound the moment it became two independent facts: a product that
+    /// offered showing alone, correctly and deliberately, is exactly the
+    /// product this would have sent to go and re-check whether it had asked
+    /// for codes at all. The far side's half is `PeerCannotScan` below.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("this build did not offer to show a code on this flow")]
+    CodeNotOffered,
+    /// The other device did not announce that it can scan, so no code this
+    /// side draws can be read by it.
+    ///
+    /// **Nothing on this device can change it and no amount of waiting
+    /// will.** The two sides settled which methods they can both carry out
+    /// when the flow became ready, and the far side did not claim a camera.
+    /// A product's answer is to compare the short authentication string
+    /// instead, which both sides always announce.
+    ///
+    /// # Why this is its own variant and not a stage
+    ///
+    /// Two devices that can each show a code and neither scan one have no
+    /// code mode between them, which is an ordinary thing for two
+    /// code-showing products on one account to be. Before this variant
+    /// existed such a flow was told `CodeNotOffered` while its request was
+    /// ready and `WrongStage` once it had transitioned, because upstream
+    /// carries the two method lists on `Ready` and on no other state. The
+    /// second of those is a stage complaint answering a question about
+    /// methods: it says wait or start again, and waiting and starting again
+    /// are the two things that cannot help. That is what a person met on
+    /// hardware on 2026-08-31, and it is why
+    /// `crate::verification`'s flow registry keeps the negotiation while
+    /// upstream is still willing to state it.
+    ///
+    /// Reachable against any client that does not implement scanning, which
+    /// includes every client that speaks only the short-string method, and
+    /// against any product that answered `crate::offer_codes` with
+    /// `can_show` alone, which is the truthful answer for a product with a
+    /// screen and no scanner.
+    ///
+    /// Appended, not inserted; see `UnknownFlow` above.
+    #[error("the other device did not offer to scan a code")]
+    PeerCannotScan,
+    /// A scanned payload decoded, named this flow, and carries keys this flow
+    /// does not expect.
+    ///
+    /// **The narrowest of the four scanning refusals, and the only one that
+    /// can mean something is wrong rather than somebody aimed a camera
+    /// badly.** The bytes are a well-formed code for this very verification,
+    /// and the keys inside them are not the ones this side holds for the
+    /// device on the other end. That is what a person in the middle showing
+    /// their own code would look like; it is also what a device whose keys
+    /// this side fetched before they were rotated looks like, and nothing
+    /// here can tell those two apart. A product's answer is the same either
+    /// way: refuse, and verify again from a fresh request.
+    ///
+    /// This variant used to fold three further conditions, each of which now
+    /// has a name of its own: `ScannedCodeUnrecognised`,
+    /// `ScannedCodeMalformed` and `ScannedCodeForAnotherFlow` below. The
+    /// design's section 4 required the split; it landed with the surface that
+    /// made it visible, which is the one that crosses a payload to a product.
+    ///
+    /// **A fourth left later, and it left because this variant's advice was
+    /// wrong for it.** Upstream also reports a peer device this side holds
+    /// no record of, which is not a mismatch and not suspicious: the remedy
+    /// is a key query and the same code again, and it arrived here under a
+    /// sentence telling a product to refuse and start over. It reports
+    /// `UnknownDevice` now, which is this library's existing name for that
+    /// remedy. `crate::submit_scanned_code`'s own mapping records that
+    /// nothing on this surface can currently reach it, and why.
+    ///
+    /// What is *not* folded in here is the one condition that already had a
+    /// name: a payload refused because a cross-signing identity is missing
+    /// reports `IdentityNotKnown` or `PeerIdentityNotKnown` by whose it is.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("the scanned code was refused")]
+    ScannedCodeRefused,
+    /// The scanned bytes are not one of these codes at all.
+    ///
+    /// No header, or a version or a mode this library does not speak. What
+    /// this usually is: a camera pointed at some other square -- a link, a
+    /// network's password, a boarding pass -- and the answer is to aim it at
+    /// the code the other device is showing. What it can also be, and the
+    /// reason the version and the mode are here rather than beside
+    /// `ScannedCodeMalformed`: a client speaking a revision of this format
+    /// that this library does not implement, where nothing a person does
+    /// with the camera will help.
+    ///
+    /// Kept apart from `ScannedCodeMalformed` because the sentence a product
+    /// shows is different, and so is who has to act: this one is answered by
+    /// pointing the camera somewhere else, that one by scanning the same code
+    /// again or by fixing the scanner.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("the scanned bytes are not one of these codes")]
+    ScannedCodeUnrecognised,
+    /// The scanned bytes did not survive whatever brought them here.
+    ///
+    /// They ran out early, or the identifier inside them is not text, or the
+    /// keys inside them are not keys. **The signal a product's scanner is
+    /// handing this library a decoded string rather than raw bytes**, which
+    /// is the single most likely way this call is misused: the payload is
+    /// binary, most scanner libraries offer a `String`, and a string round
+    /// trip replaces every byte that is not valid text. Observed rather than
+    /// assumed -- a payload put through one arrives here, refused for keys
+    /// that no longer decompress to a point on the curve.
+    ///
+    /// So this is two sentences at once: to a person, *that code did not come
+    /// through, try again*; to whoever wrote the product, *your scanner is
+    /// giving us text*. `crate::submit_scanned_code`'s own documentation
+    /// carries the obligation this variant reports the breach of.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("the scanned code did not arrive intact")]
+    ScannedCodeMalformed,
+    /// A well-formed code, for a different verification than this one.
+    ///
+    /// Two devices with two verifications open, and the camera read the wrong
+    /// screen; or a code from a flow that has since been replaced. Nothing is
+    /// damaged and nothing is suspicious: the answer is to scan the code the
+    /// flow being confirmed is showing, or to confirm the flow the code
+    /// belongs to.
+    ///
+    /// Kept apart from `ScannedCodeRefused` above, which is the same shape of
+    /// refusal about a code that *is* for this flow, because one of them is a
+    /// mis-aimed camera and the other can be an attack.
+    ///
+    /// Appended, not inserted -- see `UnknownFlow` above.
+    #[error("the scanned code is for a different verification")]
+    ScannedCodeForAnotherFlow,
 }
 
 struct Held {
@@ -548,6 +747,11 @@ pub(crate) fn reset_for_test() {
     // why only this one is reset from here for the ordering above. One field
     // of it is not a request body, and it is cleared further down.
     crate::verification::reset_flows_for_test();
+    // The product-level choice about announcing scannable codes goes back
+    // to what a fresh process has, so one test's choice is not another's
+    // starting state. Unlike the registry above this has nothing to do
+    // with the store's lifetime and no ordering constraint of its own.
+    crate::verification::reset_code_capabilities_for_test();
 
     // Same reason, one layer up: a recorder installed by one test would
     // otherwise keep receiving another test's signals, and a test that

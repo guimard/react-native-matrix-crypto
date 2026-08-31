@@ -4,6 +4,7 @@ import type {
   CryptoScopeId,
   EventEnvelope,
   SasMaterial,
+  ScannableCode,
   SenderVerification,
   TrustState,
   VerificationStage,
@@ -50,6 +51,16 @@ const fabricatedStage: VerificationStage = 'x-fabricated-stage'
 
 const trust: TrustState = 'verified'
 const stage: VerificationStage = 'keys-exchanged'
+// The member the code-scanning milestone appended. **Closed does not mean
+// final**, and this is what the two words together are worth: the union
+// grew, so an exhaustive `switch` in a consuming product stopped compiling
+// and the compiler named every place that has to decide what to show for a
+// code somebody has scanned. That is the outcome closing this union was
+// for. Appending is wire-safe -- the layer underneath numbers its variants
+// by declaration order and this one was added last, so nothing already
+// decoded changed meaning -- and it is a minor version bump rather than a
+// break of the wire.
+const scannedStage: VerificationStage = 'code-scanned'
 
 // `SenderVerification` is CLOSED too, and closed in two places at once: the
 // `state` tag and the `reason` behind it. A product switching on both
@@ -111,7 +122,33 @@ const withSymbols: SasMaterial = {
   emoji: [{ symbol: 'x', description: 'a word' }],
 }
 
+// The code crosses as bytes, and the type is what makes a product that
+// treats it as an `ArrayBuffer` fail here rather than draw nothing. The
+// generated record really does carry an `ArrayBuffer`, so this is the one
+// place the conversion the facade performs is pinned by the compiler.
+// @ts-expect-error the payload is bytes, not the buffer behind them
+const rawBuffer: ScannableCode = { payload: new ArrayBuffer(4), width: 2, modules: [] }
+// And the grid is a flat, row-major list rather than rows of rows: a
+// product that nested it draws nothing, and the nesting is exactly what
+// somebody writing the drawing code reaches for first.
+const nestedGrid: ScannableCode = {
+  payload: new Uint8Array([1]),
+  width: 2,
+  modules: [
+    // @ts-expect-error the grid is flat and row-major, not an array of rows
+    [true, false],
+    // @ts-expect-error the grid is flat and row-major, not an array of rows
+    [false, true],
+  ],
+}
+const code: ScannableCode = {
+  payload: new Uint8Array([1, 2, 3]),
+  width: 2,
+  modules: [true, false, false, true],
+}
+
 void bad; void known; void future; void envelope; void decrypted
+void rawBuffer; void nestedGrid; void code
 void fabricatedTrust; void fabricatedStage; void trust; void stage
 void shortMaterial; void digitsOnly; void withSymbols
 void fabricatedState; void fabricatedReason; void problemless; void reasoned

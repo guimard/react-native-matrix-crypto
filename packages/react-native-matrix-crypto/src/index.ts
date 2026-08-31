@@ -20,11 +20,13 @@
 import './index.tsx'
 
 export type {
+  CodeCapabilities,
   CryptoAlgorithm,
   CryptoScopeId,
   EventEnvelope,
   SasEmoji,
   SasMaterial,
+  ScannableCode,
   SenderVerification,
   SyncDelta,
   TrustState,
@@ -54,6 +56,7 @@ export {
   acceptVerification,
   bootstrapCrossSigning,
   cancelVerification,
+  confirmScan,
   confirmVerification,
   createCrossSigningIdentity,
   createCryptoMachine,
@@ -66,11 +69,13 @@ export {
   getDeviceStatuses,
   getIdentityStatus,
   getSupportedAlgorithms,
+  getVerificationCode,
   getVerificationMaterial,
   getVerificationStage,
   importSecrets,
   markRequestFailed,
   markRequestSent,
+  offerScannableCodes,
   openCryptoStore,
   receiveSyncChanges,
   recoverIdentity,
@@ -79,5 +84,6 @@ export {
   restoreCryptoMachine,
   shareScopeKey,
   startVerificationComparison,
+  submitScannedCode,
   takeOutgoingRequests,
 } from './facade'

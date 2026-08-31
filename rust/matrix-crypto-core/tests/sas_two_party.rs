@@ -635,7 +635,7 @@ fn bare_comparison(bob: &OlmMachine, flow: &FlowId) -> Sas {
     *bob.get_verification(&alice, &flow.0)
         .expect("the counterparty must have been told a comparison started")
         .sas_v1()
-        .expect("this library only ever starts short-string comparisons")
+        .expect("a flow this test started through begin_comparison is a comparison, not a code. It said this library only ever starts short-string comparisons, which was a claim about the library and stopped being true when it learned to scan")
 }
 
 // ------------------------------------------------------------------ tests
@@ -1672,6 +1672,150 @@ fn a_finished_flow_is_not_retained_forever() {
                 .await
                 .expect_err("the first flow has been released"),
             MachineError::UnknownFlow
+        );
+    }));
+}
+
+/// The message a peer sends when it considers a flow over.
+///
+/// Hand-built rather than pumped out of the bare machine, because the test
+/// below needs a peer doing what upstream's own client would not: declaring
+/// itself finished while this side is still showing a person a string.
+/// Nothing about the shape is invented; it is the to-device event the
+/// specification defines and the one
+/// `VerificationMachine::receive_any_event` dispatches on
+/// (`verification/machine.rs:501-527`).
+fn a_done_from(sender: &str, flow_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "sender": sender,
+        "type": "m.key.verification.done",
+        "content": { "transaction_id": flow_id },
+    })
+}
+
+/// The registry does not grow without bound **when a peer abandons a
+/// comparison by declaring it over**, which is the shape the sweep's second
+/// question exists for.
+///
+/// # Why the test above does not cover this
+///
+/// `a_finished_flow_is_not_retained_forever` cancels its flows, and a
+/// cancellation moves the request and the comparison together
+/// (`verification/machine.rs:528-543`), so the stage alone is enough to
+/// retire those. A `done` does not: `VerificationRequest::receive_done`
+/// moves `Transitioned` to `Done` unconditionally
+/// (`verification/requests.rs:934-940`), while `InnerSas`'s own `Done` arm
+/// moves only `WaitingForDone` (`verification/sas/inner_sas.rs:355-364`) and
+/// leaves a comparison whose string is on a screen exactly where it is.
+///
+/// So the record's stage stays `KeysExchanged` for ever, and a sweep that
+/// read only the stage never retired it: one entry per abandoned comparison
+/// for the life of the process. **This is older than verification by code.**
+/// The milestone that taught the stage to read a code handle is what made an
+/// ordinary flow shape walk into it, and `release_finished`'s second
+/// question is what closes it for both shapes.
+///
+/// Measured here rather than argued from the shape of the code, because a
+/// property that lives only in a sentence cannot notice when it stops being
+/// true.
+///
+/// # The sweep is triggered from a different counterparty, on purpose
+///
+/// Upstream cancels an older request for a user when a new one arrives for
+/// that same user (`verification/machine.rs:165-192`), and that cancellation
+/// would retire this flow through the stage alone. Triggering the sweep
+/// against a second counterparty removes the confound, so the only thing
+/// that can retire the flow below is the rule under test.
+///
+/// # And there is deliberately no assertion that a live flow survives
+///
+/// One was written here and taken out again, because it could not fail.
+/// Sweeping a flow whose request has *not* latched is invisible from
+/// outside: the record is dropped and the very next call naming it rebuilds
+/// an identical one from upstream, so `flow_stage` answers the same either
+/// way. Measured rather than reasoned about, by widening `request_is_over`
+/// to fire on `Transitioned` as well and running the whole workspace against
+/// it: **146 passed, 0 failed.** Nothing in this repository catches an
+/// over-eager sweep, and the assertion that claimed to was reporting success
+/// without examining its target.
+///
+/// What the property rests on instead is structural, and it is stronger than
+/// a test: `request_is_over` fires only on `Done` and `Cancelled`, and both
+/// are absorbing upstream (`InnerRequest::receive_done` and
+/// `InnerRequest::cancel` both return `None` for them), so it is a one-way
+/// latch on a record that can never become live again.
+#[test]
+fn a_comparison_the_peer_declared_over_is_not_retained_forever() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    futures::executor::block_on(in_runtime(async move {
+        let bob_user = "@abandoning:example.org";
+        let bob_device = "COUNTERPARTYNINE";
+        let bob = counterparty(bob_user, bob_device).await;
+
+        // Whose only job is to be somebody else. See the header.
+        let other_user = "@unrelated:example.org";
+        let other_device = "COUNTERPARTYTEN";
+        let _other = counterparty(other_user, other_device).await;
+
+        // ---- A comparison with a string on the screen -------------------
+        let flow = request_flow(bob_user, bob_device)
+            .await
+            .expect("a known device can be asked to verify itself");
+        pump_to_bare(&bob, bob_user, bob_device).await;
+        let alice: OwnedUserId = ALICE_USER.parse().expect("a literal user id parses");
+        let bob_request = bob
+            .get_verification_request(&alice, &flow.0)
+            .expect("the counterparty must have received the request");
+        let ready = bob_request
+            .accept_with_methods(vec![VerificationMethod::SasV1])
+            .expect("a fresh request can be accepted");
+        deliver_verification_request(&ready, bob_user).await;
+        begin_comparison(&flow)
+            .await
+            .expect("a ready flow can start a comparison");
+        pump_to_bare(&bob, bob_user, bob_device).await;
+        let bob_sas = bare_comparison(&bob, &flow);
+        let accept = bob_sas
+            .accept()
+            .expect("a comparison the other side started can be accepted");
+        deliver_verification_request(&accept, bob_user).await;
+        pump_to_bare(&bob, bob_user, bob_device).await;
+        pump_bare_to_library(&bob, bob_user).await;
+        assert_eq!(
+            flow_stage(&flow).await.expect("the flow exists"),
+            FlowStage::KeysExchanged,
+            "a person is looking at a string, which is the state this abandonment \
+             has to be sprung on for the test to be about anything"
+        );
+
+        // ---- And a peer that walks away from it -------------------------
+        deliver_to_library(vec![a_done_from(bob_user, &flow.0)]).await;
+        assert_eq!(
+            flow_stage(&flow).await.expect("the flow exists"),
+            FlowStage::KeysExchanged,
+            "nothing the peer said moved this side's comparison, so the stage a \
+             product reads must not move either: the person here is still being \
+             asked to compare a string nobody will answer"
+        );
+
+        // ---- The registry lets it go anyway -----------------------------
+        request_flow(other_user, other_device)
+            .await
+            .expect("a second known device can be asked to verify itself");
+        take_outgoing_requests()
+            .await
+            .expect("the pump must be drainable");
+        assert_eq!(
+            flow_stage(&flow)
+                .await
+                .expect_err("the abandoned comparison must have been released"),
+            MachineError::UnknownFlow,
+            "a flow whose request is over must be swept even though its comparison \
+             never finished, or every peer that walked away from a string would \
+             leave an entry behind for the life of the process"
         );
     }));
 }

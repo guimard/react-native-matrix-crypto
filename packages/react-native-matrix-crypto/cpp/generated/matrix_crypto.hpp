@@ -34,6 +34,7 @@ class NativeMatrixCrypto : public jsi::HostObject {
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_bootstrap_identity(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_cancel_verification(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_clear_crypto_observer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_confirm_scan(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_confirm_verification(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_create_crypto_machine(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_create_identity(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
@@ -45,6 +46,7 @@ class NativeMatrixCrypto : public jsi::HostObject {
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_identity_status(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_mark_request_failed(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_mark_request_sent(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_offer_codes(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_open_crypto_store(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_probe(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_probe_with_observer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
@@ -55,7 +57,9 @@ class NativeMatrixCrypto : public jsi::HostObject {
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_set_crypto_observer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_share_scope_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_start_verification_comparison(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_submit_scanned_code(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_take_outgoing_requests(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_verification_code(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_verification_material(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_fn_func_verification_stage(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_ffi_matrix_crypto_ffi_rust_future_poll_u8(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
@@ -110,6 +114,7 @@ class NativeMatrixCrypto : public jsi::HostObject {
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_bootstrap_identity(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_cancel_verification(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_clear_crypto_observer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_confirm_scan(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_confirm_verification(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_create_crypto_machine(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_create_identity(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
@@ -121,6 +126,7 @@ class NativeMatrixCrypto : public jsi::HostObject {
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_identity_status(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_mark_request_failed(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_mark_request_sent(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_offer_codes(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_open_crypto_store(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_probe(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_probe_with_observer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
@@ -131,7 +137,9 @@ class NativeMatrixCrypto : public jsi::HostObject {
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_set_crypto_observer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_share_scope_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_start_verification_comparison(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_submit_scanned_code(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_take_outgoing_requests(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_verification_code(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_verification_material(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_func_verification_stage(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_matrix_crypto_ffi_checksum_method_cryptoobserver_on_signal(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);

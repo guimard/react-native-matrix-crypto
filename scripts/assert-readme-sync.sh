@@ -105,5 +105,47 @@ fi
 
 GATE_COUNT=$(printf '%s\n' "$GATES" | grep -c .)
 
+# --- The count in the prose, not only the rows in the table -----------------
+#
+# This gate held the rows, the scripts and the workflow to each other and
+# counted nothing, so the sentence in "Why adopt it" that says how many gates
+# there are drifted to one fewer than the table under it listed. Nothing
+# failed. A reader who counts the rows finds the number in the prose is wrong,
+# which is a small thing that costs a reader their trust in the larger claims
+# beside it.
+#
+# Spelled rather than numeric, because that is how the sentence is written,
+# and matched against the whole spelled range this repository could plausibly
+# reach rather than against the current number alone: a match on the current
+# number would pass on a README that names no count at all, which is the
+# refusal-to-pass-having-scanned-nothing rule every gate here follows.
+NUMBER_WORDS=(zero one two three four five six seven eight nine ten eleven
+              twelve thirteen fourteen fifteen sixteen seventeen eighteen
+              nineteen twenty)
+GATE_WORD="${NUMBER_WORDS[$GATE_COUNT]:-}"
+if [ -z "$GATE_WORD" ]; then
+  echo "FAIL: $GATE_COUNT gates is past the range this check spells out."
+  echo "      Extend NUMBER_WORDS in $0 rather than dropping the check."
+  exit 1
+fi
+
+COUNT_SENTENCE=$(grep -oE 'There are [a-z]+, they all run in CI' "$ROOT_README" || true)
+if [ -z "$COUNT_SENTENCE" ]; then
+  echo "FAIL: refusing to pass having compared nothing."
+  echo "      $ROOT_README no longer carries a \"There are <n>, they all run"
+  echo "      in CI\" sentence, so this check cannot tell whether the count it"
+  echo "      states is right. Restore the sentence or remove this check and"
+  echo "      say why."
+  exit 1
+fi
+
+if [ "$COUNT_SENTENCE" != "There are $GATE_WORD, they all run in CI" ]; then
+  echo "FAIL: the README says \"$COUNT_SENTENCE\" and package.json declares"
+  echo "      $GATE_COUNT gate:* scripts, which is \"$GATE_WORD\"."
+  echo "      The prose and the table disagree, and a reader counts the table."
+  exit 1
+fi
+
 echo "PASS: READMEs identical ($(wc -l < "$ROOT_README" | tr -d ' ') lines);"
-echo "      all $GATE_COUNT gates run in CI and appear in the README's table"
+echo "      all $GATE_COUNT gates run in CI, appear in the README's table, and"
+echo "      match the count the README states in words"

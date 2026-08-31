@@ -43,8 +43,11 @@ set -euo pipefail
 #
 #   * the whole shipped module graph resolves and parses (a missing
 #     src/generated/, a truncated file, a dangling import all fail here);
-#   * the public entry point's exports include the functions the README
-#     documents, read out of the real graph rather than out of a source file;
+#   * the public entry point's exports include a fixed floor of the functions
+#     the README documents, read out of the real graph rather than out of a
+#     source file. A floor and not the list: MUST_EXPORT below names ten and
+#     says why it names ten, and the surface has grown past it more than once
+#     without this line saying so;
 #   * executing it calls installRustCrate() on the turbo module named
 #     MatrixCrypto -- so the bootstrap in the shipped tree really runs;
 #   * and the first thing it then reaches for is a symbol on the JSI host

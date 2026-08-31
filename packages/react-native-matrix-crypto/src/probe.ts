@@ -27,8 +27,13 @@ export interface ProbeSignal {
  * Slicing when the view is not the whole buffer is load-bearing: a bare
  * `.buffer` would hand the native side the entire backing store rather than
  * the caller's window onto it.
+ *
+ * Exported for `facade.ts`'s `submitScannedCode`, which has the same trap to
+ * avoid on a value that is even likelier to arrive as a view: the bytes a
+ * scanner library hands a product. Not part of the package's public surface
+ * -- `index.ts` decides that, and does not export it.
  */
-function toArrayBuffer(view: Uint8Array): ArrayBuffer {
+export function toArrayBuffer(view: Uint8Array): ArrayBuffer {
   const isWholeBuffer =
     view.byteOffset === 0 && view.byteLength === view.buffer.byteLength
   return isWholeBuffer ? (view.buffer as ArrayBuffer) : view.slice().buffer
@@ -43,9 +48,15 @@ function toArrayBuffer(view: Uint8Array): ArrayBuffer {
  * `onProbeSignal`, if given, receives that one call's own diagnostic and
  * nothing else. It is deliberately NOT routed through
  * `emitCryptoSignal`/`onCryptoSignal`: that channel is spec section 7.3's
- * broadcast for genuine crypto state changes (`trust_changed`,
- * `unexpected_device`, `key_missing`), which every subscriber should learn
- * about. A probe's signal is a per-call diagnostic of this function, not a
+ * broadcast for genuine crypto state changes (`verification_requested`,
+ * `trust_changed`, `verification_completed`, `unexpected_device`,
+ * `key_missing`), which every subscriber should learn about. This list has
+ * twice been shorter than the union it quotes: it named three of four and
+ * left out the one that hands a caller something no other call will, and
+ * then it named four of five and left out the one a scanned flow produces.
+ * `CryptoSignal` is the list; this is a quotation of it.
+ *
+ * A probe's signal is a per-call diagnostic of this function, not a
  * crypto state change, so it must reach only the caller that asked for it --
  * broadcasting it made two independent callers of `runProbe` (e.g. the
  * example app's guided walkthrough and its diagnostics panel, mounted as
