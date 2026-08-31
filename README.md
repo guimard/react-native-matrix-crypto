@@ -594,6 +594,39 @@ A release is a git tag. Pushing `v0.1.0` runs `.github/workflows/release.yml`, w
 
 `./scripts/rehearse-publish.sh` runs the same tree check, packs exactly as the release workflow packs, runs the same assertion on the packed bytes, and finishes with `npm publish --dry-run --tag <tag>`, uploading nothing. It needs the binaries on disk and names precisely which are missing. `./scripts/assert-release-ready.sh v0.1.0 latest` rehearses the other half. Neither is a `gate:*` script, because `gate:readme` requires every `gate:*` to run as a step in `ci.yml` and these need an artifact with binaries in it, which a pull request never has.
 
+### Assembling a milestone from parallel branches
+
+M5 was built as five task branches merged into one consolidation branch, and
+**the documentation sweep merged third of five**. Three merges landed after it.
+Nothing re-read the prose against them, and the request-lifecycle paragraphs
+near the top of this file went false in exactly that window: they described
+every `keys_query` as retired by a later drain, which stopped being true when
+the branch that queues a key query behind a scanned code's signature landed
+after the sweep had already run. The sentence was still fluent, still identical
+in both copies of this file, and still linked to real names.
+
+**No gate here catches that, and none can.** `gate:drift` compares generated
+code against the source it was generated from, `gate:readme` compares two copies
+of one file against each other, and `gate:doc-links` checks that a name a link
+points at exists. Every one of them checks a relationship between two artifacts
+of the same age. What goes stale when branches land in parallel is the
+relationship between prose and code, and a paragraph can be perfectly consistent
+with everything a gate compares it to while describing behaviour the tree no
+longer has.
+
+So, when a milestone is assembled from parallel branches:
+
+* **Merge the documentation sweep last, or run it twice.** A sweep that cannot
+  see three of the branches it is sweeping for has swept a different tree.
+* **Re-read the prose the last merge's code touches, specifically.** A branch
+  that changes a lifecycle, an enumeration, a count or a refusal has probably
+  falsified a sentence somewhere, and that sentence will not appear in its diff.
+* **Re-measure at the tip anything stated as a number.** A correct measurement
+  of an earlier tree reads exactly like a correct measurement of this one, which
+  is the argument `gate:artifact-provenance` already makes about build stamps;
+  it applies to the tree being published as well as to the artifact being
+  measured.
+
 ### Conventions
 
 * Conventional Commits, imperative mood, one subject per commit.
