@@ -652,8 +652,17 @@ export async function shareScopeKey(scope: CryptoScopeId, userIds: string[]): Pr
  * supersedes it is either already in hand or waiting in the next drain.
  *
  * **`to_device`, `signature_upload` and `room_message` ids are never
- * evicted this way.** Each names one independently deliverable message, so
- * it stays outstanding until `markRequestSent` resolves it. For every kind,
+ * evicted this way**, and two `keys_query` ids escape it as well. The
+ * first three each name one independently deliverable message, so each
+ * stays outstanding until `markRequestSent` resolves it. The other two are
+ * standing needs that have to outlive an ordinary drain: the out-of-band
+ * query about this account, which only another query of its own kind
+ * evicts, and the query a verification finishing by a scanned code queues,
+ * which nothing evicts at all, because its answer is the entire product of
+ * that verification. Both arrive as `keys_query` and nothing on this
+ * surface tells them apart from an ordinary one, so **a product can hold
+ * two live `keys_query` ids at once**: a newer one is not evidence that an
+ * older one is dead. For every kind,
  * marking is not optional bookkeeping; it is what advances the underlying
  * state machine. A product that calls this but never calls
  * `markRequestSent` keeps being handed the same requests, including -- for

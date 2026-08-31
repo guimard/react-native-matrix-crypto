@@ -1701,6 +1701,33 @@ impl PendingKind {
             | PendingKind::SigningKeysUpload => Some(self.tag()),
             // Deliberately not `self.tag()`, which is `keys_query`.
             PendingKind::AccountKeysQueryOutOfBand => Some("account_keys_query_out_of_band"),
+            // The first three each name one independently deliverable
+            // message, so nothing supersedes them and only `mark_request_sent`
+            // resolves them.
+            //
+            // `PeerKeysQueryOutOfBand` is here for an unrelated reason, and it
+            // is worth saying rather than deriving from the variant's own
+            // declaration above. **It is the one member of this arm that is a
+            // `/keys/query` on the wire**, and `tag()` returns `keys_query` for
+            // it exactly as it does for the three grouped queries. Give it a
+            // group and it gets `keys_query`, and then an ordinary
+            // `/keys/query` handed out for some unrelated user evicts it while
+            // it is still in flight; the signature the verification that queued
+            // it has just posted is then never read back, and the verification
+            // silently produces nothing. Its own group, as
+            // `AccountKeysQueryOutOfBand` has, would be wrong too: several of
+            // these can be in flight at once, one per peer, and a second peer's
+            // query must not evict the first's.
+            //
+            // The consequence reaches the public API, so it is documented
+            // there too: a product can hold two live `keys_query` ids at once,
+            // and a new one is not evidence that an older one is dead. See the
+            // request-lifecycle paragraphs in `README.md` and in
+            // `take_outgoing_requests`' TypeScript doc comment. Those two said
+            // the opposite for one merge after this variant landed, because
+            // they were written when every `keys_query` was evictable and
+            // nothing re-read them; if this arm changes again, they are the
+            // two places that go stale with it.
             PendingKind::ToDevice
             | PendingKind::SignatureUpload
             | PendingKind::RoomMessage
