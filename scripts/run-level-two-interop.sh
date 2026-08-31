@@ -276,6 +276,30 @@ else
   docker info >/dev/null 2>&1 \
     || fail "the Docker daemon is not reachable. Start it and try again."
   command -v openssl >/dev/null 2>&1 || fail "openssl is not on PATH."
+fi
+
+# Asked here rather than where it is used, which is where it used to be.
+# The scanned-code proof builds a Go counterparty about two hundred and sixty
+# lines below this point, and a machine without a toolchain used to discover
+# that only after pulling an image, starting a homeserver and running four
+# other proofs. A prerequisite that announces itself late costs a run; this
+# repository has paid that twice. Every other prerequisite is demanded above,
+# so this one is too, and the escape hatch is named in the same breath.
+if [ -n "${MATRIX_INTEROP_MAUTRIX_PARTY:-}" ]; then
+  [ -x "$MATRIX_INTEROP_MAUTRIX_PARTY" ] \
+    || fail "MATRIX_INTEROP_MAUTRIX_PARTY does not name an executable file."
+else
+  command -v go >/dev/null 2>&1 \
+    || fail "go is not on PATH, and no MATRIX_INTEROP_MAUTRIX_PARTY was set.
+      The scanned-code proof needs a second counterparty, and matrix-nio
+      cannot be it: the installed wheel contains no QR vocabulary and no
+      cross-signing vocabulary at all. Install a Go toolchain, or point
+      MATRIX_INTEROP_MAUTRIX_PARTY at a binary built from
+      rust/matrix-crypto-core/tests/interop/mautrix_party with -tags goolm.
+      Nothing has been started yet, so there is nothing to clean up."
+fi
+if true; then
+  :
 
   # The one hole the traps cannot close: a `kill -9` of this script, or a
   # machine losing power, leaves the container running with nothing left to
