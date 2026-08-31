@@ -36,6 +36,20 @@ use matrix_crypto_core::{
 
 const ACCOUNT: &str = "@alice:example.org";
 
+/// Turns the publication into the `/keys/query` answer a homeserver that
+/// accepted it would send back.
+fn answer_carrying(publication: &str) -> String {
+    let up: serde_json::Value = serde_json::from_str(publication).expect("JSON");
+    serde_json::json!({
+        "device_keys": { ACCOUNT: {} },
+        "failures": {},
+        "master_keys": { ACCOUNT: up["master_key"] },
+        "self_signing_keys": { ACCOUNT: up["self_signing_key"] },
+        "user_signing_keys": { ACCOUNT: up["user_signing_key"] },
+    })
+    .to_string()
+}
+
 /// A `/keys/query` answer naming no identity for this account: the server
 /// has been asked, it has answered **about this account**, and what it holds
 /// for it is nothing.
@@ -119,18 +133,30 @@ fn a_bootstrap_publishes_one_identity_and_republishes_the_same_one() {
 
         // The two calls are different acts, and this is the state that says
         // so at integration level rather than only in `signing.rs`'s unit
-        // tests. The account now has an identity **and** this device holds
-        // its private keys, which is the one state where the old single rule
-        // served both: it could not tell a republication from a creation, so
-        // it served whichever was asked for. Publishing is right here.
-        // Creating is not, and creating a second identity over the one this
-        // device just made is exactly the shape that resets everybody's
-        // trust when the first one came from somewhere else.
-        assert_eq!(
-            create_identity().await,
-            Err(MachineError::IdentityAlreadyExists),
-            "there is nothing left to create: {minted:?}"
+        // tests. What changed in the ninth round is *which* of them is
+        // served here, and it is worth saying rather than quietly editing.
+        //
+        // The identity has been minted and no homeserver has confirmed it
+        // yet, so it is a candidate rather than the account's identity.
+        // Publishing a candidate is not the launch-time call's to do:
+        // measured on two live homeservers, doing that destroyed an
+        // account's real identity when a second device signed up in the gap
+        // before this device's answer was reported. So `bootstrap_identity`
+        // refuses here, and finishing the publication is the deliberate
+        // call, which is exactly what the caller asked for a moment ago.
+        assert!(
+            minted.identity_publication_pending,
+            "the mint is not confirmed by anybody yet: {minted:?}"
         );
+        assert_eq!(
+            bootstrap_identity().await,
+            Err(MachineError::IdentityNotKnown),
+            "the launch-time call may not publish an identity nothing has confirmed: \
+             {minted:?}"
+        );
+        create_identity()
+            .await
+            .expect("and finishing it is the same decision that was just made");
 
         // Claim 2.
         let published = take_outgoing_requests()
@@ -192,6 +218,40 @@ fn a_bootstrap_publishes_one_identity_and_republishes_the_same_one() {
             .await
             .expect("resolving the signing-keys upload must not fail");
         let published_master = body["master_key"].clone();
+
+        // **And the report alone does not confirm it.** Reporting the upload
+        // is the caller's word, not the server's, and the two bodies this
+        // library cannot tell from a success are exactly what a dropped
+        // connection produces. So the record survives it, and the
+        // launch-time call stays refused until a homeserver's own answer
+        // carries the identity back.
+        assert!(
+            identity_status()
+                .await
+                .expect("reading the identity status must not fail")
+                .identity_publication_pending,
+            "a caller's report is not a homeserver's answer"
+        );
+        assert_eq!(
+            bootstrap_identity().await,
+            Err(MachineError::IdentityNotKnown),
+            "so the launch-time call is still refused"
+        );
+
+        let confirming = published
+            .iter()
+            .find(|request| request.kind == "keys_query" && names_the_account(&request.body))
+            .expect("the creation queues a confirming query alongside the publication");
+        mark_request_sent(&confirming.id, &answer_carrying(&signing_keys[0].body))
+            .await
+            .expect("the homeserver's own answer must be accepted");
+        assert!(
+            !identity_status()
+                .await
+                .expect("reading the identity status must not fail")
+                .identity_publication_pending,
+            "and the server's answer is what confirms it"
+        );
 
         // Claim 3.
         bootstrap_identity()

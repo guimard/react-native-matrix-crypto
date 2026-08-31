@@ -455,17 +455,19 @@ const MESSAGE_BY_KIND: ReadonlyMap<CryptoErrorKind, string> = new Map([
       'create one. The key query that lifts this has already been queued: drain ' +
       'takeOutgoingRequests, send it, report it with markRequestSent, and call again. If ' +
       'getIdentityStatus().accountKeysAnswerUnsettled is true, calling again will do exactly ' +
-      'this again: stop looping and check the userId you passed to initCrypto against the ' +
-      'canonical user_id your login returned.',
+      'this again: stop looping and check the userId you passed to createCryptoMachine against ' +
+      'the canonical user_id your login returned.',
   ],
   [
     'identity_not_known',
-    'the homeserver was asked and this account has no cross-signing identity, so there is ' +
-      'nothing to publish and nothing to join. Creating one is createCrossSigningIdentity, ' +
-      'and it is destructive if the account turns out to have an identity after all: do not ' +
-      'call it from this handler. It belongs where your product has decided this account ' +
-      'should be getting its first identity, having checked something it knows and this ' +
-      'library cannot, such as that no other session is listed on the account.',
+    'this library cannot show the homeserver an identity for this account: either it has ' +
+      'none, or this device holds one no homeserver has ever accepted, which ' +
+      'getIdentityStatus().identityPublicationPending tells apart. Either way the call is ' +
+      'createCrossSigningIdentity, and it is destructive if the account turns out to have ' +
+      'an identity after all: do not call it from this handler. It belongs where your ' +
+      'product has decided this account should be getting its first identity, having ' +
+      'checked something it knows and this library cannot, such as that no other session ' +
+      'is listed on the account.',
   ],
   [
     'identity_already_exists',

@@ -875,16 +875,27 @@ export interface IdentityStatus {
    * Whether this device holds an identity it created and has **not yet seen
    * the homeserver accept**.
    *
-   * True between {@link createCrossSigningIdentity} and the moment the
-   * publication it queued is reported sent, and it survives a relaunch,
-   * because the identity is on disk and the publication was in memory. A
-   * process that is killed, offline, or whose upload times out in that
-   * window reopens its store in exactly this state.
+   * True from {@link createCrossSigningIdentity} until a homeserver's own
+   * `'keys_query'` answer carries that identity back, and it survives a
+   * relaunch, because the identity is on disk and the publication was in
+   * memory. A process that is killed, offline, or whose upload times out in
+   * that window reopens its store in exactly this state.
    *
-   * **The remedy is {@link bootstrapCrossSigning}, which you already call on
-   * every launch.** It hands back the same publication that was lost.
-   * Nothing has been damaged: your account has no identity, this device
-   * holds the one it is about to get, and the two agree.
+   * **The remedy is {@link createCrossSigningIdentity} again, deliberately.**
+   * It hands back the same publication that was lost, and
+   * {@link bootstrapCrossSigning} refuses with `'identity_not_known'` while
+   * this is true.
+   *
+   * That was the other way round for one release and it was wrong. Measured
+   * on two homeservers: a device in this state, answered honestly that the
+   * account has no identity, published over an identity a second device of
+   * the account had legitimately created in the gap before that answer was
+   * reported. The launch-time call did it. From inside a device, an identity
+   * it holds and has never seen a homeserver accept is indistinguishable
+   * from one the account has since replaced, and no answer settles that,
+   * because an answer describes the instant the server computed it and
+   * nothing later. What you know and this library does not is whether this
+   * account is still in sign-up, which is why finishing is a decision.
    *
    * Read it because this is the one state where `identityKnown` is `true`
    * and the account still has no identity. A product that shows "encryption
@@ -1508,6 +1519,22 @@ export async function requestSelfVerification(): Promise<string> {
  * one already answered, cancelled or finished. It is never a successful
  * no-op. Rejects with `'unknown_flow'` for a transaction id that names no
  * flow -- see the two sections above for the two ways that happens.
+ *
+ * # One refusal that depends on whose flow it is
+ *
+ * Rejects with `'account_keys_not_fetched'` when the invitation came from
+ * **another device of your own account** and this process has not yet asked
+ * the homeserver about that account. Completing a self-verification signs
+ * one of your devices with this device's self-signing key and asks your
+ * other devices for your cross-signing seeds, both under whatever identity
+ * this store holds, so it reads the same gate {@link bootstrapCrossSigning}
+ * does. The refusal queues the key query that lifts it, the invitation is
+ * left answerable, and nothing has been sent.
+ *
+ * **Accepting a verification from anybody else reads nothing**, because
+ * verifying another user needs nothing of your own identity. This paragraph
+ * exists because the sending side carried this warning and the receiving
+ * side did not, and the receiving side reached the identical write.
  */
 export async function acceptVerification(verificationId: string): Promise<void> {
   try {

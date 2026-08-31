@@ -147,15 +147,24 @@ fn a_minted_identity_that_was_never_published_can_still_be_published() {
             "and the publication is still owed: {after:?}"
         );
 
-        // ---- Act three: the remedy is the every-launch call ------------
-        bootstrap_identity()
-            .await
-            .expect("finishing an interrupted publication is publishing, not minting");
+        // ---- Act three: the remedy is the deliberate call --------------
+        //
+        // **It was the every-launch call for one round, and that was the
+        // defect.** Measured on continuwuity and on Synapse: a device in
+        // exactly this state, answered honestly that the account has no
+        // identity, republished over an identity a second device of the same
+        // account had legitimately published in the gap before that answer
+        // was reported. `create_identity` refused correctly throughout. The
+        // careful call did the damage, which is why finishing is now a
+        // decision too.
         assert_eq!(
-            create_identity().await,
-            Err(MachineError::IdentityAlreadyExists),
-            "and it must not be reachable by minting a second identity"
+            bootstrap_identity().await,
+            Err(MachineError::IdentityNotKnown),
+            "the launch-time call may not publish an identity no homeserver has confirmed"
         );
+        create_identity()
+            .await
+            .expect("and finishing it deliberately must be served, or this is a brick");
 
         let batch = take_outgoing_requests()
             .await
@@ -171,19 +180,52 @@ fn a_minted_identity_that_was_never_published_can_still_be_published() {
              that was interrupted, not starting a different one"
         );
 
-        // ---- Act four: reporting it clears the record ------------------
+        // ---- Act four: reporting the upload does NOT clear the record --
+        //
+        // **The second change of the ninth round.** This used to be a
+        // clearing site, and it is not the moment a homeserver accepted the
+        // publication: it is the moment the *caller* said so.
+        // `refuse_a_non_response` names the two bodies it cannot tell from a
+        // success, the empty body and the empty object, and those are what a
+        // connection reset and a bodiless gateway error hand a product.
+        // Measured: reporting either of them for an upload nothing ever sent
+        // cleared the record and bricked the account permanently.
         mark_request_sent(&again.id, "{}")
             .await
-            .expect("the homeserver accepted the publication");
+            .expect("the report is still accepted, and upstream still sees it");
+        let reported = identity_status()
+            .await
+            .expect("reading the identity status must not fail");
+        assert!(
+            reported.identity_publication_pending,
+            "a caller's word that the upload succeeded is not the server's, and treating it \
+             as the server's is what made one mistaken report unrecoverable: {reported:?}"
+        );
+
+        // ---- Act five: the server's own answer clears it ---------------
+        //
+        // The confirming query the creation queued, answered with the
+        // identity a homeserver that accepted the publication would send
+        // back. This is the only clearing site now.
+        let confirming = batch
+            .iter()
+            .find(|r| r.kind == "keys_query" && names_the_account(&r.body))
+            .expect("the creation queues its confirming query")
+            .clone();
+        mark_request_sent(&confirming.id, &answer_carrying(&again.body))
+            .await
+            .expect("the answer must be accepted");
         let published = identity_status()
             .await
             .expect("reading the identity status must not fail");
         assert!(
             !published.identity_publication_pending,
-            "the server has it now, and the record must not outlive that, or this identity \
-             would stay exempt from the contradiction check for the life of the store: \
-             {published:?}"
+            "the server has told us it has this identity, so the record must go: left \
+             standing, the launch-time call could never publish again: {published:?}"
         );
+        bootstrap_identity()
+            .await
+            .expect("and the every-launch call is served again once it is confirmed");
     });
 }
 
@@ -208,6 +250,20 @@ async fn fresh_account_key_query() -> OutgoingRequest {
             )
         })
         .clone()
+}
+
+/// Turns the publication into the `/keys/query` answer a homeserver that
+/// accepted it would send back.
+fn answer_carrying(publication: &str) -> String {
+    let up: Value = serde_json::from_str(publication).expect("JSON");
+    serde_json::json!({
+        "device_keys": { ACCOUNT: {} },
+        "failures": {},
+        "master_keys": { ACCOUNT: up["master_key"] },
+        "self_signing_keys": { ACCOUNT: up["self_signing_key"] },
+        "user_signing_keys": { ACCOUNT: up["user_signing_key"] },
+    })
+    .to_string()
 }
 
 /// Whether a `/keys/query` body's `device_keys` map names this account.

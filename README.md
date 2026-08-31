@@ -147,7 +147,7 @@ try {
   await pump()
   const { accountKeysAnswerUnsettled } = await getIdentityStatus()
   // The server answered and the answer settled nothing, so calling again
-  // does exactly this again. Check the user id you passed to initCrypto
+  // does exactly this again. Check the user id you passed to createCryptoMachine
   // against the canonical user_id your login returned. See below.
   if (accountKeysAnswerUnsettled) throw new Error('the homeserver said nothing about this account')
   await bootstrapCrossSigning()
@@ -183,9 +183,15 @@ Whatever you use, do not call this on every launch and do not make it the automa
 
 **What the library does about the window it cannot close.** The batch `createCrossSigningIdentity` queues carries a `'keys_query'` for your own account after the publication, so your ordinary send-and-report loop asks the server once more straight after. That does not prevent the race: the publication is handed to you first, and if you send it you have sent it. It prevents the state the race otherwise leaves behind, which was also measured. A device that lost the race held an identity the account did not have, reported `identityKnown` and `privateKeysHeld` like a healthy device, and asked the server nothing ever again. With that query in the batch, the next answer carries the identity the account really has, the keys that disagree with it are dropped, and `getIdentityStatus` reports the truth.
 
-**If the publication does not land, nothing is lost and nothing special is needed.** `createCrossSigningIdentity` writes the identity to the store and then hands you the upload. Between those two moments the store holds an identity your account does not have, and a killed process, an offline device or a timed-out request leaves exactly that on disk. `getIdentityStatus().identityPublicationPending` is `true` while that is the case, and the remedy is `bootstrapCrossSigning`, which is the call you already make on every launch: it hands you back the same upload. Do not call `createCrossSigningIdentity` again, and note that it will refuse if you try.
+**If the publication does not land, nothing is lost, but finishing it is a decision and not a retry.** `createCrossSigningIdentity` writes the identity to the store and then hands you the upload. Between those two moments the store holds an identity your account does not have, and a killed process, an offline device or a timed-out request leaves exactly that on disk. `getIdentityStatus().identityPublicationPending` is `true` while that is the case, and **finishing it is `createCrossSigningIdentity` again**, deliberately, on the same grounds you decided the first time.
+
+**This paragraph told you to use `bootstrapCrossSigning` for one release and that was wrong.** Measured on two homeservers: a device in this state, answered honestly that the account has no identity, published over an identity a second device of the same account had legitimately created in the gap before that answer was reported. The launch-time call did it, while `createCrossSigningIdentity` refused correctly throughout. So `bootstrapCrossSigning` now refuses here with `identity_not_known`, and that refusal is the same one a brand-new account gets, with the same remedy, so one branch in your product handles both.
+
+Why it has to be a decision: from inside a device, **an identity it holds and has never seen a homeserver accept is indistinguishable from one the account has since replaced.** No answer settles it, because an answer describes the instant the server computed it and nothing later. What you know and this library does not is whether this account is still in sign-up.
 
 This matters more than it sounds, because it is the one state where `identityKnown` is `true` and your account still has no identity. A product that shows "encryption is set up" on `identityKnown` alone is wrong here, and `identityPublicationPending` is how it can tell.
+
+**And report the upload honestly.** `markRequestSent` on a `signing_keys_upload` that the server did not accept used to mark the identity published, and the two bodies this library cannot tell from a success are `""` and `{}`, which is what a dropped connection produces. It no longer marks anything: only a `keys_query` answer that carries the identity back does. So a wrong report now costs you one more round trip instead of the account.
 
 **Do not count on the server's authentication challenge to stop you.** It was measured and it does not. The homeserver refused the replacement upload with a `401` and a password challenge; answering it with the password the product already had, which is exactly what the paragraph above tells you to do for an ordinary first publication, returned `200` and completed the overwrite.
 
@@ -264,7 +270,7 @@ for (const request of await takeOutgoingRequests()) {
 
 **`accountKeysAnswerUnsettled` is the field to read when a refusal will not go away.** `account_keys_not_fetched` covers two situations, and the pump loop above only fixes one of them. With this field false, nobody has asked and pumping is the whole remedy. With it true, the query was sent, the server answered, the answer was accepted, and this library still cannot say whether the account has an identity, so the next round of the loop does what the last one did.
 
-The reachable cause is the account id. A homeserver compares the server name half of a user id against its own case-sensitively, so `@you:Example.org` where the server calls itself `example.org` is treated as a remote account: the server federates to itself, fails, and answers about nobody. A sign-in form where the user types their own address produces exactly that. Compare the `userId` you passed to `initCrypto` against the canonical `user_id` your `/login` returned. The Matrix specification also prescribes omitting a user a reachable server does not know, so a conformant server can answer this way about an account that genuinely does not exist.
+The reachable cause is the account id. A homeserver compares the server name half of a user id against its own case-sensitively, so `@you:Example.org` where the server calls itself `example.org` is treated as a remote account: the server federates to itself, fails, and answers about nobody. A sign-in form where the user types their own address produces exactly that. Compare the `userId` you passed to `createCryptoMachine` against the canonical `user_id` your `/login` returned. The Matrix specification also prescribes omitting a user a reachable server does not know, so a conformant server can answer this way about an account that genuinely does not exist.
 
 Nothing is destroyed while this field is true and nothing will be. Refusing to create a second identity is the safe direction; this field is what stops the refusal from also being silent.
 
