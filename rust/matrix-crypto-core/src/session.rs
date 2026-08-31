@@ -3043,21 +3043,38 @@ async fn mark_sent(
         PendingKind::SigningKeysUpload => {
             let response = SigningKeysUploadResponse::try_from_http_response(http_response(body))
                 .map_err(|_| SessionError::MalformedPayload)?;
-            let outcome = machine
+            // **Deliberately not a clearing site, and that is the ninth
+            // round's second change.**
+            //
+            // This looks like the moment the homeserver accepted the
+            // publication, and it is not. It is the moment the *caller* said
+            // so, and `refuse_a_non_response`'s own doc comment states which
+            // bodies it cannot tell from a success: the empty body and the
+            // empty object. Measured, ten bodies a refused
+            // `/keys/device_signing/upload` can carry: eight are refused
+            // here, and the two that get through are exactly that pair,
+            // which is what a connection reset, a socket timeout and a
+            // bodiless gateway error hand a product.
+            //
+            // Clearing on those bricked the account permanently. The store
+            // then held an identity no homeserver had, with nothing saying
+            // so, so every later "this account has no identity" answer read
+            // as a contradiction and every write on the surface refused for
+            // ever, with no escape but deleting the user's message history.
+            //
+            // `signing::note_identity_published` is now reached only from
+            // `answer_about_this_account`, where the *server* asserts the
+            // identity in an answer it sent. That costs one round trip on
+            // the happy path -- the confirming query `create_identity`
+            // queues alongside the publication -- and it makes a misreported
+            // upload cost nothing at all, because the record survives it and
+            // the publication stays finishable.
+            machine
                 .mark_request_as_sent(
                     &transaction_id,
                     AnyIncomingResponse::SigningKeysUpload(&response),
                 )
-                .await;
-            if outcome.is_ok() {
-                // The homeserver accepted the publication, which is the
-                // fact `signing::identity_is_unpublished` exists to
-                // remember and the same instant upstream marks its own
-                // private identity shared. Recorded beside upstream's
-                // because upstream's is not reachable from any public API.
-                crate::signing::note_identity_published(machine).await;
-            }
-            outcome
+                .await
         }
     };
 

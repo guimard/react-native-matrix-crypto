@@ -869,6 +869,52 @@ pub async fn request_self_flow() -> Result<FlowId, MachineError> {
 /// "the other side is ahead" from "this is over" for free.
 pub async fn accept_flow(flow: &FlowId) -> Result<(), MachineError> {
     let handles = handles(flow).await?;
+
+    // **The gate, scoped to the flows it belongs to.**
+    //
+    // `request_self_flow` was gated in the eighth round because completing a
+    // self-verification signs another of our devices with *this* device's
+    // self-signing key and asks the account's other devices for its
+    // cross-signing seeds, both under whatever identity this store happens
+    // to hold. That is a property of **the flow**, not of the call that
+    // starts it, and either side may start one. Measured on the store
+    // `tests/self_verification_stale_identity.rs` builds: five calls refused
+    // and this one was served, ran the comparison to `Done`, and queued a
+    // signature upload signing another device with a stale identity's
+    // self-signing key, with the gate never consulted.
+    //
+    // **Unconditionally it would be wrong**, and that was measured too:
+    // adding a bare `account_keys_answered()` check here turns nine tests
+    // red, all of them in `tests/sas_two_party.rs`, which verifies another
+    // user. Verifying somebody else needs nothing of our own identity, and
+    // that whole file runs with the gate shut on purpose.
+    //
+    // So the scope is the distinction `request_self_flow` and `request_flow`
+    // already draw between themselves and nobody had written down here: this
+    // gate applies when the counterparty is our own account, and to nothing
+    // else. Read before any handle is answered, so a refusal sends nothing.
+    let other_user = match (&handles.request, &handles.comparison) {
+        (Some(request), _) => request.other_user().to_owned(),
+        (None, Some(comparison)) => comparison.other_user_id().to_owned(),
+        (None, None) => return Err(MachineError::WrongStage),
+    };
+    let ours =
+        with_machine(|machine| Box::pin(async move { machine.user_id().to_owned() })).await?;
+    if other_user == ours && !crate::session::account_keys_answered() {
+        // Queued *by* the refusal, so it is recoverable rather than a dead
+        // end, exactly as `request_self_flow` does it and for the reason
+        // `signing::bootstrap_identity` states in full.
+        with_machine(|machine| {
+            Box::pin(async move {
+                let (id, request) =
+                    machine.query_keys_for_users(std::iter::once(machine.user_id()));
+                crate::session::queue_account_key_query(id, request);
+            })
+        })
+        .await?;
+        return Err(MachineError::AccountKeysNotFetched);
+    }
+
     let outgoing = match (&handles.request, &handles.comparison) {
         // The request while there is a request to answer, and the
         // comparison once there is not. Not a precedence between two ways
