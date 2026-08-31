@@ -38,13 +38,21 @@
 //!
 //! The gate here is two different facts, and both are needed:
 //!
-//! 1. **Have we asked?** Has a `/keys/query` naming this account been sent
-//!    and answered in this process. Tracked by `session.rs`, which is the
-//!    only place that can know it, and recorded when the *response* is
-//!    accepted rather than when the request is handed out.
+//! 1. **Have we asked, and does upstream now know?** Has a `/keys/query`
+//!    naming this account been sent and answered in this process, and did
+//!    the answer leave upstream's store able to say whether the account has
+//!    an identity. Tracked by `session.rs`, which is the only place that can
+//!    know it, and recorded when the *response* is accepted rather than when
+//!    the request is handed out.
 //! 2. **What did the answer say?** Does this machine now hold a public
 //!    identity for the account. Read from the store, where the answer to (1)
 //!    put it.
+//!
+//! Fact (1) used to stop at "and was answered", then at "and the answer
+//! named this account", and both were defeated by answers upstream had
+//! dropped. It is the same store read in both facts now, asked at two
+//! different moments and for two different reasons, which is why they are
+//! still two facts and not one.
 //!
 //! Nothing is served before (1), **including a republication by a device
 //! that holds the private keys**, because that is exactly the restored-backup
@@ -71,14 +79,33 @@
 //! arrived with.
 //!
 //! **Accepted is no longer the same as lifting this gate**, and that is the
-//! narrower thing to know. `session::answer_speaks_about` additionally
-//! requires the accepted body to **name this account** in one of the maps a
-//! key query answer keys by user id. So an answer about other users, a body
-//! whose only substance is a `failures` map, and the empty object all pass
-//! `mark_request_sent` and leave this gate shut. Three homeservers were
-//! measured to settle that the empty object belongs on that list: none of
-//! them answers a key query about a local account with `{}`, however little
-//! it has to report about that account.
+//! narrower thing to know. `session::answer_about_this_account` additionally
+//! requires that, once upstream has consumed the accepted body, upstream's
+//! own store **says whether this account has an identity**. Either the
+//! answer asserted a cross-signing key for the account and upstream now
+//! holds the identity it asserted, or the answer asserted none and named the
+//! account under `device_keys`. So an answer about other users, a body whose
+//! only substance is a `failures` map, the empty object, and an answer
+//! carrying this account's own published master key that upstream could not
+//! assemble into an identity all pass `mark_request_sent` and leave this
+//! gate shut.
+//!
+//! That last one is why the rule reads upstream rather than the body.
+//! Upstream needs a master key **and** a self-signing key to store an
+//! identity, and a user-signing key too when the user is our own; anything
+//! short of that it drops with a `warn!` and no error. Measured against a
+//! live Synapse 1.159.0: an account that had published a master key alone
+//! answered its own key query with a body carrying that key, a rule that
+//! read the body's map keys lifted this gate, and the bootstrap minted a
+//! second identity over the published one. Flipping one character of one
+//! base64 signature in an otherwise correct answer did the same.
+//!
+//! Fact (1) can also be **unsettled**: the answer arrived, was accepted, and
+//! left upstream still not knowing. `IdentityStatus`'s
+//! `account_keys_answer_unsettled` is what says so, and its own doc comment
+//! says what a product does about it. Without it the refusal below is
+//! indistinguishable from "nobody has asked", whose remedy is to ask again,
+//! which against a server that omits the account is a loop with no end.
 //!
 //! Reporting nothing at all is equally safe here: the gate needs a positive
 //! mark to open, so silence leaves it shut. A caller that got a non-2xx
@@ -108,9 +135,133 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use matrix_sdk_crypto::OlmMachine;
+use matrix_sdk_crypto::{OlmMachine, UserIdentity};
 
 use crate::machine::{with_machine, MachineError};
+
+/// The store key this crate records an identity it minted and has **not yet
+/// seen the homeserver accept** under.
+///
+/// # The fact nothing else in this process can remember
+///
+/// `create_identity` writes a minted identity into the crypto store and then
+/// hands the publication to the caller. Between those two moments the store
+/// holds an identity the account does not have, and it holds it **durably**,
+/// because the store is a file and the publication is in a process-local
+/// pump. If that request is never sent -- the process is killed, the device
+/// is offline, the socket times out, the user backgrounds the app -- the
+/// store keeps an identity that no homeserver has ever seen.
+///
+/// *This store holds an identity* and *this account has an identity* are
+/// therefore different facts, and only the store can remember which of them
+/// is true, because the server cannot be asked about a publication that
+/// never arrived. Upstream keeps exactly this fact for itself, on
+/// `PrivateCrossSigningIdentity::shared`, pickled into the store and set by
+/// `receive_cross_signing_upload_response` (`machine/mod.rs:640-648`); it is
+/// not reachable through any public API, so this crate records the same fact
+/// beside it rather than duplicating the reasoning.
+///
+/// # Prefixed, and holding a key rather than a flag
+///
+/// The value is the ed25519 master key of the unpublished identity, not a
+/// boolean, so a record cannot outlive the identity it describes: if the
+/// store's identity later changes -- because the device joined the one the
+/// account really has -- the recorded key no longer matches it and the
+/// record reads as absent without anything having to remember to clear it.
+///
+/// The key is namespaced because it shares one custom-value table with
+/// upstream's own entries (`Store::set_value`, `store/mod.rs:1160-1174`).
+const UNPUBLISHED_IDENTITY_KEY: &str = "org.linagora.rnmc.unpublished_identity";
+
+/// The ed25519 master key of the identity this machine holds, if it holds
+/// one, in the same base64 form the record above stores.
+async fn own_master_key(machine: &OlmMachine) -> Option<String> {
+    machine
+        .get_identity(machine.user_id(), None)
+        .await
+        .ok()
+        .flatten()
+        .and_then(UserIdentity::own)
+        .and_then(|identity| identity.master_key().get_first_key())
+        .map(|key| key.to_base64())
+}
+
+/// Records that this device has minted the identity it now holds and has not
+/// yet seen a homeserver accept it.
+///
+/// Called by [`create_identity`] straight after the mint, and by nothing
+/// else: minting is the only act that can put an identity into this store
+/// that the account does not have.
+///
+/// A store write that fails is not an error the caller can do anything
+/// about, and failing the mint over it would leave the identity minted and
+/// the caller told it was not. The consequence of losing this record is the
+/// state that existed before it: a refusal rather than a wrong publication,
+/// which is the direction this module takes everywhere.
+pub(crate) async fn note_identity_minted(machine: &OlmMachine) {
+    let Some(master_key) = own_master_key(machine).await else {
+        return;
+    };
+    let _ = machine
+        .store()
+        .set_value(UNPUBLISHED_IDENTITY_KEY, &master_key)
+        .await;
+}
+
+/// Records that the identity this machine holds is one a homeserver has.
+///
+/// Called from two places, and both are moments at which the server itself
+/// has told us: `session::mark_sent` when a signing-keys upload is reported
+/// as having succeeded, which is the same instant upstream marks its own
+/// private identity shared; and `session::answer_about_this_account` when a
+/// key query answer asserts the very identity this store holds.
+pub(crate) async fn note_identity_published(machine: &OlmMachine) {
+    let _ = machine
+        .store()
+        .remove_custom_value(UNPUBLISHED_IDENTITY_KEY)
+        .await;
+}
+
+/// Whether the identity this machine holds is one it minted and has never
+/// seen accepted.
+///
+/// `false` for a store holding no identity, for one whose identity arrived
+/// from a homeserver's own answer, for one whose publication was reported,
+/// and for a store written by a version of this crate that kept no record.
+/// That last default is the safe one and it is deliberate: an unrecorded
+/// identity is treated as one the account really has, so a "this account has
+/// no identity" answer contradicts it, which is the refusal
+/// `tests/identity_bootstrap_contradicted_answer.rs` exists for.
+///
+/// # What this exempts, stated rather than left to be found
+///
+/// A `true` here exempts one identity from that contradiction check, so it
+/// is worth naming what that costs. The exemption is wrong only if the
+/// identity really was published and this record was never cleared, and
+/// clearing it takes either a reported upload or any answer that carries the
+/// identity. So the state where it misleads needs all three of: a
+/// publication that reached the server but was never reported; an identity
+/// reset elsewhere afterwards; and then a stale or omitting answer, since an
+/// honest one would carry the new identity and clear the record on its way
+/// past. A device in that state republishes the identity it holds over the
+/// newer one.
+///
+/// That is strictly narrower than what the sixth round exposed, which was
+/// every store holding any identity, and enormously narrower than what the
+/// seventh round cost, which was every interrupted sign-up. It is not zero
+/// and it is not claimed to be.
+pub(crate) async fn identity_is_unpublished(machine: &OlmMachine) -> bool {
+    let Some(held) = own_master_key(machine).await else {
+        return false;
+    };
+    machine
+        .store()
+        .get_value::<String>(UNPUBLISHED_IDENTITY_KEY)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|recorded| recorded == held)
+}
 
 /// Whether the account's private signing keys were held the last time
 /// anything looked, so that an arrival can be told from a standing fact.
@@ -195,6 +346,57 @@ pub struct IdentityStatus {
     /// contradicts them (`identities/manager.rs:418-443`), so this field is
     /// only trustworthy alongside that one.
     pub private_keys_held: bool,
+    /// Whether a key query about this account was answered, and the answer
+    /// left the library still unable to say whether the account has an
+    /// identity.
+    ///
+    /// **Read this when `account_keys_fetched` is false, and only then.**
+    /// The two together say which of two situations a refusal is in, and
+    /// they have different remedies:
+    ///
+    /// * Both false: nobody has asked yet. The remedy is the documented one
+    ///   -- drain `crate::take_outgoing_requests`, send what it hands back,
+    ///   report each with `crate::mark_request_sent`, call again.
+    /// * This true: a key query naming this account was sent, the server
+    ///   answered, the answer was accepted, and upstream still does not know
+    ///   whether the account has an identity. **Asking again will do the
+    ///   same thing.** Either the answer did not cover this account -- which
+    ///   the Matrix specification prescribes for a user a reachable server
+    ///   does not know, and which a mixed-case server name in this machine's
+    ///   own account id also produces, because a homeserver then treats the
+    ///   account as remote -- or it asserted cross-signing keys for the
+    ///   account that upstream could not read.
+    ///
+    /// So the action on this field is to stop looping and look at the
+    /// account id: compare the `user_id` this machine was created with
+    /// against the canonical one `/login` returned. Nothing is destroyed
+    /// while this is true, and nothing will be: a refusal to mint is the
+    /// safe direction, and this field is what stops the refusal from being
+    /// silent.
+    ///
+    /// Never true alongside `account_keys_fetched`. Once upstream knows, a
+    /// later answer that settles nothing does not un-know it.
+    pub account_keys_answer_unsettled: bool,
+    /// Whether this device holds an identity it minted and has **not yet
+    /// seen the homeserver accept**.
+    ///
+    /// True between [`create_identity`] and the moment the publication it
+    /// queued is reported sent, and it survives a relaunch, because the
+    /// identity it describes is on disk and the publication was in memory.
+    /// A process that is killed, offline, or whose upload times out in that
+    /// window reopens its store in exactly this state.
+    ///
+    /// **The remedy is [`bootstrap_identity`], which is the call a product
+    /// already makes on every launch.** It hands back the same publication
+    /// that was lost. Nothing else is required and nothing has been
+    /// damaged: the account has no identity, this device holds the one it
+    /// is about to get, and the two agree.
+    ///
+    /// It is reported because it is the one state in which
+    /// `identity_known` is true and the account still has no identity, so a
+    /// product that shows "encryption is set up" on `identity_known` alone
+    /// is wrong here and this is how it can tell. It authorises nothing.
+    pub identity_publication_pending: bool,
 }
 
 /// Errors must not carry an identifier or key material, so an upstream store
@@ -222,6 +424,8 @@ pub(crate) async fn read_status(machine: &OlmMachine) -> Result<IdentityStatus, 
         account_keys_fetched: crate::session::account_keys_answered(),
         identity_known,
         private_keys_held: machine.cross_signing_status().await.is_complete(),
+        account_keys_answer_unsettled: crate::session::account_keys_answer_unsettled(),
+        identity_publication_pending: identity_is_unpublished(machine).await,
     })
 }
 
@@ -259,17 +463,63 @@ pub(crate) async fn read_status(machine: &OlmMachine) -> Result<IdentityStatus, 
 /// drain-send-report round it already pays on a fresh login, and pays it
 /// uniformly rather than only in the cases that looked dangerous.
 ///
-/// # The rule
+/// # The rule, and why it is now two rules
 ///
-/// Served when this process has asked *and* either the account has no
-/// identity or this device holds the one it has. Refused otherwise, with
-/// the two refusals kept apart because their remedies are different: ask
-/// again, versus join the identity that already exists.
-fn may_mint(status: &IdentityStatus) -> Result<(), MachineError> {
+/// This used to be one predicate for two acts. Given the gate, it served a
+/// call that would **republish** the identity this device holds, and it
+/// served a call that would **create** the account's first identity, and a
+/// caller could not say which of the two it meant. `bootstrap_identity` was
+/// documented as safe to call on every launch, so the create was reached by
+/// the ordinary launch path of every device.
+///
+/// That is what made the timing race destructive. Measured against a live
+/// continuwuity: a device queried its own fresh account, the server honestly
+/// answered "no identity" because at that instant there was none, another
+/// device of the same account published one in the window, and the first
+/// device's launch-time `bootstrap_identity` then minted a second identity
+/// over it. **No misbehaving server is involved.** The answer was true when
+/// it was sent, and no rule reading one answer can tell it from an answer
+/// that is still true when it is reported.
+///
+/// So the second condition is not a better gate. It is that **creating an
+/// identity is a different act from publishing one, and the caller has to
+/// say which it means.** The library cannot know whether this account is
+/// meant to be getting its first identity right now; the product can, and
+/// it is the only party that can. [`may_publish`] governs the call a product
+/// makes on every launch and it can never create anything; [`may_create`]
+/// governs the one destructive act and nothing reaches it by default.
+///
+/// # `may_publish`
+///
+/// Served when this process has asked, the account has an identity, and this
+/// device holds its private keys. The three refusals are kept apart because
+/// their remedies differ: ask again; create one; join the one that exists.
+fn may_publish(status: &IdentityStatus) -> Result<(), MachineError> {
     if !status.account_keys_fetched {
         return Err(MachineError::AccountKeysNotFetched);
     }
-    if status.identity_known && !status.private_keys_held {
+    if !status.identity_known {
+        return Err(MachineError::IdentityNotKnown);
+    }
+    if !status.private_keys_held {
+        return Err(MachineError::IdentityAlreadyExists);
+    }
+    Ok(())
+}
+
+/// Whether [`create_identity`] may mint the account's first identity.
+///
+/// Served when this process has asked and the answer said the account has
+/// none. `identity_known` refuses whether or not this device holds the
+/// private keys, and that is wider than the old rule on purpose: with an
+/// identity known, there is nothing here to create, and the two things a
+/// caller might have wanted are `bootstrap_identity` (publish the one this
+/// device holds) and `crate::request_self_flow` (join the one it does not).
+fn may_create(status: &IdentityStatus) -> Result<(), MachineError> {
+    if !status.account_keys_fetched {
+        return Err(MachineError::AccountKeysNotFetched);
+    }
+    if status.identity_known {
         return Err(MachineError::IdentityAlreadyExists);
     }
     Ok(())
@@ -281,16 +531,34 @@ pub async fn identity_status() -> Result<IdentityStatus, MachineError> {
     with_machine(|machine| Box::pin(read_status(machine))).await?
 }
 
-/// Publishes this account's signing identity, minting one first if the
-/// account provably has none.
+/// Publishes the signing identity **this device already holds**.
 ///
-/// Safe to call on every launch. The first call in a process is normally
-/// refused once, with the key query that lifts the refusal already queued;
-/// the call after that answer is served, and further calls in the same
-/// process republish the identity this device holds rather than minting a
-/// second one. What it will not do is mint over an identity the account
-/// already has -- see this module's own documentation for why that is the
-/// point rather than a precaution.
+/// Safe to call on every launch, and that is now true without qualification:
+/// **this call cannot create an identity.** It republishes the one this
+/// device holds the private keys for, and refuses every other state.
+///
+/// # What changed, and why the every-launch call gave up its other job
+///
+/// This used to mint the account's first identity when it judged the account
+/// had none. That judgement rests on one `/keys/query` answer, and an answer
+/// is only ever true of the instant the server sent it. Measured against a
+/// live continuwuity: a device asked about its own fresh account, the server
+/// honestly answered "no identity" because at that instant there was none,
+/// another device of the same account published one in the window, and this
+/// call then minted a second identity over it. The product had done nothing
+/// wrong; it had called the function this library tells it to call on every
+/// launch.
+///
+/// No rule reading one answer can tell a true "no identity" from one that
+/// was true a moment ago, so the fix is not a better gate. It is that the
+/// destructive act now has its own name and nothing arrives at it by
+/// default: [`create_identity`] is the only call that mints, and a product
+/// reaches it only by deciding to. See [`may_publish`] for the rule and
+/// [`may_create`] for the other one.
+///
+/// The first call in a process is still normally refused once, with the key
+/// query that lifts the refusal already queued, and the call after that
+/// answer is served.
 ///
 /// # What a caller must do next
 ///
@@ -364,23 +632,44 @@ pub async fn identity_status() -> Result<IdentityStatus, MachineError> {
 ///
 /// # Refusals
 ///
-/// [`MachineError::AccountKeysNotFetched`] means this process has not yet
-/// asked the server about this account, so it cannot know whether minting
-/// or republishing would destroy an existing identity. **This call queues
-/// that key query before returning it**, so the remedy is the ordinary
-/// loop: drain the pump, send, report sent, call this again. Holding the
-/// private keys is not an exemption; `may_mint` says why.
+/// [`MachineError::AccountKeysNotFetched`] means this process cannot yet say
+/// what identity this account has, so it cannot know whether minting or
+/// republishing would destroy an existing one. **This call queues that key
+/// query before returning it**, so the usual remedy is the ordinary loop:
+/// drain the pump, send, report sent, call this again. Holding the private
+/// keys is not an exemption; [`may_publish`] says why.
+///
+/// **That loop has a case where it never terminates, and this variant alone
+/// does not say which case you are in.** Read
+/// [`IdentityStatus::account_keys_answer_unsettled`]: false means nobody has
+/// asked and the loop works; true means a query was sent, the server
+/// answered, and the answer settled nothing, so the next round will do
+/// exactly what the last one did. That field's own doc comment says what to
+/// do instead, and `tests/identity_bootstrap_unsettled_answer.rs` drives
+/// five rounds of the loop to show it. Splitting the two into separate
+/// variants would be the better surface; it is not done here because the
+/// wire ordinals after `MachineError`'s last variant are reserved by work in
+/// flight, and a variant appended into that range would be misdecoded by
+/// bindings generated before it.
 ///
 /// [`MachineError::IdentityAlreadyExists`] means the answer named an
 /// identity this device does not hold the private keys for. There is no
 /// remedy through this call and there should not be: this device joins that
-/// identity, it does not replace it.
+/// identity, it does not replace it, and [`crate::request_self_flow`] is how.
+///
+/// [`MachineError::IdentityNotKnown`] is the refusal this call gained, and
+/// it is the one an existing product will meet first: the server was asked
+/// and named no identity for this account, so there is nothing here to
+/// publish. It is not a failure and nothing is wrong; it is this call
+/// declining to make the decision that used to be made silently. The remedy
+/// is [`create_identity`], and a product should reach it having decided that
+/// this account is meant to be getting its first identity now.
 pub async fn bootstrap_identity() -> Result<(), MachineError> {
     with_machine(|machine| {
         Box::pin(async move {
             let status = read_status(machine).await?;
 
-            if let Err(refusal) = may_mint(&status) {
+            if let Err(refusal) = may_publish(&status) {
                 if refusal == MachineError::AccountKeysNotFetched {
                     // Queued *by* the refusal, so the refusal is recoverable
                     // rather than a dead end. Upstream volunteers an
@@ -409,18 +698,155 @@ pub async fn bootstrap_identity() -> Result<(), MachineError> {
                 .await
                 .map_err(|_upstream| store_failed())?;
 
-            // Queued in upstream's stated order, which is also the order
-            // their sequence stamps put them in when the pump hands them
-            // out. Two of the three are ordinary action requests; the
-            // middle one is the request class the pump could not carry
-            // until this milestone -- `AnyOutgoingRequest` has no variant
-            // for that endpoint, so it can neither come out of
-            // `outgoing_requests()` nor go into `queue_action_request`.
-            if let Some(device_keys) = requests.upload_keys_req {
-                crate::session::queue_action_request(device_keys);
+            queue_publication(requests);
+
+            Ok(())
+        })
+    })
+    .await?
+}
+
+/// Queues what a publication of this account's identity has to send, in
+/// upstream's stated order, which is also the order their sequence stamps
+/// put them in when the pump hands them out.
+///
+/// Two of the three are ordinary action requests; the middle one is the
+/// request class the pump could not carry until M4 -- `AnyOutgoingRequest`
+/// has no variant for that endpoint, so it can neither come out of
+/// `outgoing_requests()` nor go into `queue_action_request`.
+///
+/// Shared by [`bootstrap_identity`] and [`create_identity`] rather than
+/// written twice: the two calls differ in what they are allowed to do, not
+/// in what they send, and a copy would let the orders drift apart.
+fn queue_publication(requests: matrix_sdk_crypto::CrossSigningBootstrapRequests) {
+    if let Some(device_keys) = requests.upload_keys_req {
+        crate::session::queue_action_request(device_keys);
+    }
+    crate::session::queue_signing_keys_request(requests.upload_signing_keys_req);
+    crate::session::queue_action_request(requests.upload_signatures_req.into());
+}
+
+/// Creates this account's **first** signing identity.
+///
+/// **This is the one destructive call on this surface, and it is destructive
+/// exactly when it is wrong.** An identity minted over one the account
+/// already has replaces it, and replacing it resets the trust of every
+/// device and every person who ever verified the old one. There is no undo,
+/// and nothing afterwards can detect it.
+///
+/// It exists as its own call because that damage was previously reachable
+/// from [`bootstrap_identity`], which this library tells a product to call
+/// on every launch. See that function for the measured race that made an
+/// honest homeserver enough to do it.
+///
+/// # What a caller must hold before calling this
+///
+/// The library's own precondition is [`may_create`]: this process has asked
+/// the server, and the answer said the account has no identity.
+/// **That precondition is necessary and it is not sufficient**, and this
+/// paragraph is the whole reason the call is separate.
+///
+/// A `/keys/query` answer is only ever true of the instant the server sent
+/// it. Between that instant and this call, another device of the same
+/// account can publish an identity, and no answer already in hand can say
+/// so. Measured on a live homeserver, with no misbehaviour anywhere: the
+/// server answered "no identity" honestly, a second device published one,
+/// and a mint followed. So the caller has to supply the fact the library
+/// cannot: **that this account is meant to be getting its first identity
+/// now.** A product knows things the library does not -- that the user has
+/// just created the account, that this is the sign-up flow rather than a
+/// relaunch, that no other session is listed on the account, that a person
+/// has been asked and said yes. Calling this on every launch, or as the
+/// automatic remedy for [`MachineError::IdentityNotKnown`], puts that
+/// decision back where it was and the race back with it.
+///
+/// # The window is not closed, and the confirming query does not close it
+///
+/// It queues a fresh account `/keys/query` alongside the publication, so the
+/// product's ordinary pump loop asks the server once more straight after.
+/// What that is worth was overstated here once, and the overstatement was
+/// measured, so it is stated precisely now.
+///
+/// **It covers the branch where the publication did not land**: a device
+/// that minted and never published used to hold an identity the account does
+/// not have, report `identity_known` and `private_keys_held` like a healthy
+/// one, and never ask again, because a served publication queues no query
+/// and upstream volunteers none for an account it already tracks. With the
+/// query queued, the next answer settles that state, and
+/// [`IdentityStatus::identity_publication_pending`] describes it while it
+/// lasts.
+///
+/// **It does not cover the branch where the publication did land**, which is
+/// the branch that does the damage. A product that sent the publication,
+/// answered the authentication challenge and reported the success has
+/// completed the overwrite; the confirming answer then carries *this
+/// device's* identity, it matches the store, the positive branch settles,
+/// and the status reads as a completely healthy device. Nothing in the
+/// status, in any error, or in any later answer says the account's previous
+/// identity was replaced. There is no path back and this module does not
+/// pretend to offer one. What keeps a caller out of that branch is the
+/// decision this call exists to require, not this query.
+///
+/// # What a caller must do next
+///
+/// The same as [`bootstrap_identity`]: drain [`crate::take_outgoing_requests`]
+/// and send what it hands back in the order it hands it back, reporting each
+/// with [`crate::mark_request_sent`]. Everything that call documents about
+/// the user-interactive authentication loop, about reporting only what a 2xx
+/// returned, and about the batch being longer than the requests this call
+/// owns, applies here unchanged and is not repeated.
+///
+/// # Refusals
+///
+/// [`MachineError::AccountKeysNotFetched`] means this process cannot yet say
+/// what identity this account has. As with `bootstrap_identity`, this call
+/// queues that key query before returning, and
+/// [`IdentityStatus::account_keys_answer_unsettled`] says whether the remedy
+/// is to pump and call again or to stop and check the account id.
+///
+/// [`MachineError::IdentityAlreadyExists`] means the account already has an
+/// identity, so there is nothing here to create. It is returned whether or
+/// not this device holds the private keys, because neither case wants this
+/// call: holding them, the call is [`bootstrap_identity`]; not holding them,
+/// it is [`crate::request_self_flow`].
+pub async fn create_identity() -> Result<(), MachineError> {
+    with_machine(|machine| {
+        Box::pin(async move {
+            let status = read_status(machine).await?;
+
+            if let Err(refusal) = may_create(&status) {
+                if refusal == MachineError::AccountKeysNotFetched {
+                    // Queued by the refusal, for `bootstrap_identity`'s
+                    // reason, which its own comment states in full.
+                    let (id, request) =
+                        machine.query_keys_for_users(std::iter::once(machine.user_id()));
+                    crate::session::queue_account_key_query(id, request);
+                }
+                return Err(refusal);
             }
-            crate::session::queue_signing_keys_request(requests.upload_signing_keys_req);
-            crate::session::queue_action_request(requests.upload_signatures_req.into());
+
+            let requests = machine
+                .bootstrap_cross_signing(false)
+                .await
+                .map_err(|_upstream| store_failed())?;
+
+            // Recorded before the publication is queued, and that order is
+            // the point rather than tidiness: between the mint and the
+            // upload landing, this store holds an identity the account does
+            // not have, and if this process dies in that window the record
+            // is the only thing that will say so. Written after the mint
+            // because it names the key the mint produced.
+            note_identity_minted(machine).await;
+
+            queue_publication(requests);
+
+            // The confirming query. Queued *after* the publication, so the
+            // pump hands the publication out first and the ordinary
+            // send-and-report loop asks the server again immediately after.
+            // See this function's own section on the window: this is
+            // detection, not prevention, and it is stated as such.
+            let (id, request) = machine.query_keys_for_users(std::iter::once(machine.user_id()));
+            crate::session::queue_account_key_query(id, request);
 
             Ok(())
         })
@@ -432,62 +858,392 @@ pub async fn bootstrap_identity() -> Result<(), MachineError> {
 mod tests {
     use super::*;
 
-    /// The gate's rule, stated once and checked against every combination it
+    use crate::machine::{create_machine, lock_for_test, reset_for_test, MachineConfig};
+    use crate::runtime::in_runtime;
+    use crate::session::{mark_request_sent, take_outgoing_requests, OutgoingRequest};
+
+    const ACCOUNT: &str = "@alice:example.org";
+    const DEVICE: &str = "DEVICEONE";
+    const STORE_PASSPHRASE: &str = "test-passphrase";
+
+    /// A real homeserver's real answer for an account it holds no identity
+    /// for. Synapse and Dendrite byte for byte, account substituted. Note
+    /// what it is: not an omission, but three explicit empty key maps.
+    const NO_IDENTITY: &str = r#"{"device_keys":{"@alice:example.org":{}},"failures":{},"master_keys":{},"self_signing_keys":{},"user_signing_keys":{}}"#;
+
+    fn config(store_path: &str) -> MachineConfig {
+        MachineConfig {
+            user_id: ACCOUNT.to_string(),
+            device_id: DEVICE.to_string(),
+            store_path: store_path.to_string(),
+            store_passphrase: Some(STORE_PASSPHRASE.to_string()),
+        }
+    }
+
+    fn names_the_account(body: &str) -> bool {
+        let parsed: serde_json::Value = serde_json::from_str(body).expect("JSON");
+        parsed
+            .get("device_keys")
+            .and_then(|users| users.get(ACCOUNT))
+            .is_some()
+    }
+
+    async fn drain_account_query() -> OutgoingRequest {
+        let batch = take_outgoing_requests().await.expect("drain");
+        batch
+            .iter()
+            .find(|r| r.kind == "keys_query" && names_the_account(&r.body))
+            .unwrap_or_else(|| {
+                panic!(
+                    "no account key query; got {:?}",
+                    batch.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>()
+                )
+            })
+            .clone()
+    }
+
+    /// Turns the publication the mint queued into the `/keys/query` answer a
+    /// homeserver that accepted it would send back.
+    fn answer_carrying(publication: &str) -> String {
+        let up: serde_json::Value = serde_json::from_str(publication).expect("JSON");
+        serde_json::json!({
+            "device_keys": { ACCOUNT: {} },
+            "failures": {},
+            "master_keys": { ACCOUNT: up["master_key"] },
+            "self_signing_keys": { ACCOUNT: up["self_signing_key"] },
+            "user_signing_keys": { ACCOUNT: up["user_signing_key"] },
+        })
+        .to_string()
+    }
+
+    /// A relaunch after an interrupted publication can still publish.
+    ///
+    /// **This is the shape of the defect the eighth round exists for, and it
+    /// needs two processes.** The integration test
+    /// `tests/identity_publication_interrupted.rs` drives the record's write
+    /// and both of its clearing moments, but it cannot drive this: by the
+    /// time it mints, the gate is already open, and the gate is monotonic,
+    /// so a rule that refuses the next answer changes nothing it can see.
+    /// Sabotaging the fix away left that file green. Only a *second* process,
+    /// whose gate starts shut, meets the refusal that bricked the account.
+    ///
+    /// `machine::reset_for_test` is what makes that reachable from inside
+    /// `src/`: it drops the held machine and clears `account_keys_answered`,
+    /// so reopening the same store path is a relaunch in every way that
+    /// matters here.
+    #[test]
+    fn a_relaunch_after_an_interrupted_publication_can_still_publish() {
+        let _guard = futures::executor::block_on(lock_for_test());
+        reset_for_test();
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store_path = dir.path().join("store").to_string_lossy().into_owned();
+
+        // ---- The first process: mint, then lose the publication --------
+        {
+            let store_path = store_path.clone();
+            futures::executor::block_on(in_runtime(async move {
+                create_machine(config(&store_path)).await.expect("machine");
+                assert_eq!(
+                    create_identity().await,
+                    Err(MachineError::AccountKeysNotFetched)
+                );
+                let query = drain_account_query().await;
+                mark_request_sent(&query.id, NO_IDENTITY)
+                    .await
+                    .expect("an honest answer about a fresh account");
+                create_identity().await.expect("the deliberate mint");
+
+                let minted = read_status_now().await;
+                assert!(
+                    minted.identity_publication_pending,
+                    "the mint must be recorded as unpublished: {minted:?}"
+                );
+                // Drained and never sent: the process dies here.
+                let _ = take_outgoing_requests().await.expect("drain");
+            }));
+        }
+
+        // ---- The relaunch ----------------------------------------------
+        reset_for_test();
+        {
+            let store_path = store_path.clone();
+            futures::executor::block_on(in_runtime(async move {
+                create_machine(config(&store_path))
+                    .await
+                    .expect("the store the first process wrote must reopen");
+
+                let reopened = read_status_now().await;
+                assert!(
+                    !reopened.account_keys_fetched,
+                    "a new process has asked nothing yet: {reopened:?}"
+                );
+                assert!(
+                    reopened.identity_known && reopened.private_keys_held,
+                    "and the store holds the identity the first process minted: {reopened:?}"
+                );
+                assert!(
+                    reopened.identity_publication_pending,
+                    "and the record that it was never published survived the relaunch,                      which is the whole of the fix: {reopened:?}"
+                );
+
+                // The documented remedy, once.
+                assert_eq!(
+                    bootstrap_identity().await,
+                    Err(MachineError::AccountKeysNotFetched)
+                );
+                let query = drain_account_query().await;
+                mark_request_sent(&query.id, NO_IDENTITY)
+                    .await
+                    .expect("the same honest answer as before");
+
+                let answered = read_status_now().await;
+                assert!(
+                    answered.account_keys_fetched,
+                    "THIS is the assertion the file exists for. Refused here, every write on                      this surface refuses forever, the account can never have cross-signing,                      and the only escape is deleting the store, which is the user's message                      history. Measured on continuwuity and on Synapse: {answered:?}"
+                );
+                assert!(
+                    !answered.account_keys_answer_unsettled,
+                    "and the caller must not be told the answer settled nothing: {answered:?}"
+                );
+
+                bootstrap_identity()
+                    .await
+                    .expect("and the publication that was lost must be handed back");
+                let batch = take_outgoing_requests().await.expect("drain");
+                assert!(
+                    batch.iter().any(|r| r.kind == "signing_keys_upload"),
+                    "which means the upload itself, not merely a success: {:?}",
+                    batch.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>()
+                );
+            }));
+        }
+        reset_for_test();
+    }
+
+    /// An answer that carries the identity clears the record too.
+    ///
+    /// The second of the two moments a homeserver tells us a publication
+    /// landed, and it covers the device whose upload succeeded and whose
+    /// report never happened. Without it that device would keep an identity
+    /// exempt from the contradiction check for the life of the store.
+    ///
+    /// Its own test because the exemption is only observable while it lasts,
+    /// and the file above needs it to last.
+    #[test]
+    fn an_answer_that_carries_the_identity_clears_the_record() {
+        let _guard = futures::executor::block_on(lock_for_test());
+        reset_for_test();
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store_path = dir.path().join("store").to_string_lossy().into_owned();
+
+        futures::executor::block_on(in_runtime(async move {
+            create_machine(config(&store_path)).await.expect("machine");
+            assert_eq!(
+                create_identity().await,
+                Err(MachineError::AccountKeysNotFetched)
+            );
+            let query = drain_account_query().await;
+            mark_request_sent(&query.id, NO_IDENTITY)
+                .await
+                .expect("an honest answer");
+            create_identity().await.expect("the deliberate mint");
+            assert!(read_status_now().await.identity_publication_pending);
+
+            let batch = take_outgoing_requests().await.expect("drain");
+            let publication = batch
+                .iter()
+                .find(|r| r.kind == "signing_keys_upload")
+                .expect("the mint queues its publication")
+                .clone();
+            let confirming = batch
+                .iter()
+                .find(|r| r.kind == "keys_query" && names_the_account(&r.body))
+                .expect("the mint queues its confirming query")
+                .clone();
+
+            // The upload landed; the report never happened. The confirming
+            // query then comes back carrying the identity the server now has.
+            mark_request_sent(&confirming.id, &answer_carrying(&publication.body))
+                .await
+                .expect("the answer must be accepted");
+
+            let settled = read_status_now().await;
+            assert!(
+                !settled.identity_publication_pending,
+                "the server has told us it has this identity, so the record must go: left                  standing, this identity is exempt from the contradiction check forever and                  a later stale answer could republish it over a newer one: {settled:?}"
+            );
+            assert!(settled.account_keys_fetched && settled.identity_known);
+        }));
+        reset_for_test();
+    }
+
+    /// Reads the status through the machine, without the public wrapper,
+    /// because these tests are already inside a `with_machine` closure's
+    /// runtime and the wrapper would take the lock a second time.
+    async fn read_status_now() -> IdentityStatus {
+        crate::machine::with_machine(|machine| Box::pin(read_status(machine)))
+            .await
+            .expect("the machine is live")
+            .expect("reading the status must not fail")
+    }
+
+    /// The two rules, stated once and checked against every combination they
     /// can face, without a store or a machine in sight.
     ///
-    /// The integration tests under `tests/` drive the two refusals through
-    /// the real surface, which is what proves they are reachable. This
-    /// covers what those cannot reach cheaply: that **holding the private
-    /// keys overrides neither refusal**, so a device whose store predates an
-    /// identity reset elsewhere is still made to ask before it republishes;
-    /// and that no combination of the three flags produces a fourth outcome.
+    /// The integration tests under `tests/` drive the refusals through the
+    /// real surface, which is what proves they are reachable. This covers
+    /// what those cannot reach cheaply: that no combination of the flags
+    /// produces an outcome neither rule names, and that
+    /// `account_keys_answer_unsettled` **decides nothing** in either. That
+    /// last one is the point of running the fourth flag through the loop: it
+    /// is a diagnosis for a caller, not a second gate, and a rule that let it
+    /// serve anything would be the whole defect back under a new name.
+    ///
+    /// **The pair is asserted together, and the property that matters is a
+    /// property of the pair**: for every one of the sixteen states, at most
+    /// one of the two calls is served. Publishing and creating are different
+    /// acts on the same account, and a state that served both would mean the
+    /// split bought nothing.
     #[test]
-    fn minting_is_served_only_when_the_account_provably_has_no_identity() {
+    fn publishing_and_creating_are_served_in_states_that_never_overlap() {
+        let mut both_served = Vec::new();
         for account_keys_fetched in [false, true] {
             for identity_known in [false, true] {
                 for private_keys_held in [false, true] {
-                    let status = IdentityStatus {
-                        account_keys_fetched,
-                        identity_known,
-                        private_keys_held,
-                    };
-                    let expected = if !account_keys_fetched {
-                        Err(MachineError::AccountKeysNotFetched)
-                    } else if identity_known && !private_keys_held {
-                        Err(MachineError::IdentityAlreadyExists)
-                    } else {
-                        Ok(())
-                    };
-                    assert_eq!(may_mint(&status), expected, "for {status:?}");
+                    for account_keys_answer_unsettled in [false, true] {
+                        for identity_publication_pending in [false, true] {
+                            let status = IdentityStatus {
+                                account_keys_fetched,
+                                identity_known,
+                                private_keys_held,
+                                account_keys_answer_unsettled,
+                                identity_publication_pending,
+                            };
+
+                            let publish = if !account_keys_fetched {
+                                Err(MachineError::AccountKeysNotFetched)
+                            } else if !identity_known {
+                                Err(MachineError::IdentityNotKnown)
+                            } else if !private_keys_held {
+                                Err(MachineError::IdentityAlreadyExists)
+                            } else {
+                                Ok(())
+                            };
+                            assert_eq!(may_publish(&status), publish, "publish, for {status:?}");
+
+                            let create = if !account_keys_fetched {
+                                Err(MachineError::AccountKeysNotFetched)
+                            } else if identity_known {
+                                Err(MachineError::IdentityAlreadyExists)
+                            } else {
+                                Ok(())
+                            };
+                            assert_eq!(may_create(&status), create, "create, for {status:?}");
+
+                            if publish.is_ok() && create.is_ok() {
+                                both_served.push(status);
+                            }
+                        }
+                    }
                 }
             }
         }
+        assert!(
+            both_served.is_empty(),
+            "no state may serve both publishing and creating; these did: {both_served:?}"
+        );
+    }
 
-        // Named separately rather than left to be read out of the loop
-        // above, because they are the two rows the milestone exists for.
-        //
+    /// The rows the milestone exists for, named rather than left to be read
+    /// out of the loop above.
+    #[test]
+    fn neither_call_is_served_before_the_server_has_been_asked() {
         // Asked nothing, hold nothing, know nothing: a gate written as "is
         // the local identity empty" serves this row.
+        let unasked = IdentityStatus {
+            account_keys_fetched: false,
+            identity_known: false,
+            private_keys_held: false,
+            account_keys_answer_unsettled: false,
+            identity_publication_pending: false,
+        };
         assert_eq!(
-            may_mint(&IdentityStatus {
-                account_keys_fetched: false,
-                identity_known: false,
-                private_keys_held: false,
-            }),
+            may_publish(&unasked),
+            Err(MachineError::AccountKeysNotFetched)
+        );
+        assert_eq!(
+            may_create(&unasked),
             Err(MachineError::AccountKeysNotFetched)
         );
 
-        // Asked nothing, but holding a complete private identity: the row a
-        // restored backup lands on. Serving it republishes keys the server
-        // may already have replaced. This is the row the short-circuit this
-        // gate used to have served without asking anything.
+        // Asked, answered, and the answer settled nothing: the row a server
+        // that omits a user it does not know produces, the one a mixed-case
+        // server name produces against a real Synapse, and now also the one a
+        // restored store meets when an omitting answer contradicts what it
+        // already holds. The refusal is the same and must be.
+        let unsettled = IdentityStatus {
+            account_keys_answer_unsettled: true,
+            ..unasked
+        };
         assert_eq!(
-            may_mint(&IdentityStatus {
-                account_keys_fetched: false,
-                identity_known: false,
-                private_keys_held: true,
-            }),
+            may_publish(&unsettled),
             Err(MachineError::AccountKeysNotFetched)
         );
+        assert_eq!(
+            may_create(&unsettled),
+            Err(MachineError::AccountKeysNotFetched)
+        );
+    }
+
+    /// Asked, but the answer named an identity: **neither** call may mint.
+    ///
+    /// The row `create_identity` widened. The old single rule served this
+    /// state whenever the private keys happened to be held, because it could
+    /// not tell a republication from a creation. Now `bootstrap_identity`
+    /// serves it, as the republication it is, and `create_identity` refuses
+    /// it, because there is nothing here to create.
+    #[test]
+    fn an_account_that_already_has_an_identity_is_never_created_over() {
+        for private_keys_held in [false, true] {
+            let known = IdentityStatus {
+                account_keys_fetched: true,
+                identity_known: true,
+                private_keys_held,
+                account_keys_answer_unsettled: false,
+                identity_publication_pending: false,
+            };
+            assert_eq!(
+                may_create(&known),
+                Err(MachineError::IdentityAlreadyExists),
+                "creating over a known identity is the destruction this \
+                 module exists to prevent, and holding the private keys is \
+                 not an exemption from it: {known:?}"
+            );
+        }
+    }
+
+    /// Asked, and the answer said the account has none: **only** creating.
+    ///
+    /// The mirror of the row above, and the one that says the every-launch
+    /// call gave up its other job. `bootstrap_identity` used to mint here.
+    #[test]
+    fn an_account_with_no_identity_is_published_by_nothing() {
+        let none = IdentityStatus {
+            account_keys_fetched: true,
+            identity_known: false,
+            private_keys_held: false,
+            account_keys_answer_unsettled: false,
+            identity_publication_pending: false,
+        };
+        assert_eq!(
+            may_publish(&none),
+            Err(MachineError::IdentityNotKnown),
+            "there is nothing to publish, and the call that used to mint here \
+             is the one an honest server plus timing turned into a mint over \
+             a published identity: {none:?}"
+        );
+        assert_eq!(may_create(&none), Ok(()));
     }
 }

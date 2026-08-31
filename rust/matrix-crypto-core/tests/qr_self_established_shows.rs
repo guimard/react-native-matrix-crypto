@@ -29,7 +29,7 @@
 //! makes the library, with the sides swapped.
 
 use matrix_crypto_core::{
-    bootstrap_identity, confirm_scan, create_machine, device_statuses, flow_stage, identity_status,
+    confirm_scan, create_identity, create_machine, device_statuses, flow_stage, identity_status,
     in_runtime, mark_request_sent, offer_scanning, read_code, request_flow, take_outgoing_requests,
     CryptoSignal, FlowStage, MachineConfig, TrustState,
 };
@@ -110,7 +110,7 @@ fn the_device_that_holds_the_identity_shows_a_code_and_a_new_login_scans_it() {
             .expect("a keys-upload response must be accepted");
 
         // One answer doing two jobs, both of them a homeserver's: it names
-        // no signing identity, which is what lifts `bootstrap_identity`'s
+        // no signing identity, which is what lifts `create_identity`'s
         // ordering gate, and it names the other login's device, which is how
         // this device comes to know a device of its own account exists at
         // all.
@@ -132,7 +132,7 @@ fn the_device_that_holds_the_identity_shows_a_code_and_a_new_login_scans_it() {
         .expect("answering the account key query must not fail");
 
         // ---- This device mints the account's identity ------------------------
-        bootstrap_identity()
+        create_identity()
             .await
             .expect("an account with no identity may mint one");
         assert!(

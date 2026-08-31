@@ -30,7 +30,7 @@ pub use session::{
     share_scope_key, take_outgoing_requests, Envelope, OutgoingRequest, SenderVerification,
     SessionError, SyncOutcome,
 };
-pub use signing::{bootstrap_identity, identity_status, IdentityStatus};
+pub use signing::{bootstrap_identity, create_identity, identity_status, IdentityStatus};
 pub use verification::{
     accept_flow, begin_comparison, cancel_flow, confirm_flow, confirm_scan, flow_stage,
     offer_scanning, read_code, read_material, request_flow, request_self_flow, scanning_offered,

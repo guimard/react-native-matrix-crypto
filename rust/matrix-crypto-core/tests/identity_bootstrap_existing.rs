@@ -25,6 +25,36 @@
 //! Only Alice's DEVICE1 is the library. The second machine is a bare
 //! `matrix_sdk_crypto::OlmMachine` standing in for the other device of the
 //! same account, exactly the asymmetry `tests/two_parties.rs` documents.
+//!
+//! # This file changed door without saying so, and this section is that
+//!
+//! `keys_query_answer` below builds a body with an **empty** `device_keys`
+//! map, naming the account only in the three cross-signing maps. Under the
+//! rule this file was written against, "the answer names this account in any
+//! of the four maps a key query answer keys by user id", it lifted the gate
+//! because those three maps name it. Under
+//! `session::answer_about_this_account` it lifts the gate through the
+//! **positive branch**: the answer asserts a master key for the account and
+//! upstream, having consumed the answer, now holds the identity it asserted.
+//! Same outcome, different door, and nothing here said so.
+//!
+//! It is recorded now for the reason `tests/recovery_stale_identity.rs`
+//! records the same thing about itself: the co-witness relationship was
+//! written down in that file's header and not in this one, so a reader of
+//! this file had no way to know. **Measured**: appending
+//! `&& response.device_keys.contains_key(account)` to the positive branch
+//! turns both files red, this one at "the account key query was answered"
+//! with `IdentityStatus { account_keys_fetched: false, identity_known: true,
+//! private_keys_held: false, account_keys_answer_unsettled: true }`.
+//!
+//! The change is benign, and that is stated rather than assumed: both files
+//! land on the safe half of the rule, where `identity_known` is true, and
+//! nothing on that half can authorise a mint. What was wrong was the
+//! silence, not the door.
+//!
+//! No measured homeserver sends a body shaped like this one. It is kept
+//! because the two files are what watch that branch, and a branch with no
+//! witness is the thing this project's rules forbid.
 
 use matrix_crypto_core::{
     bootstrap_identity, create_machine, identity_status, in_runtime, mark_request_sent,

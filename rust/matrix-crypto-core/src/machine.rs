@@ -160,11 +160,25 @@ pub enum MachineError {
     /// different, stricter question: *have we asked, and did the answer say
     /// there is none.* An empty local identity implies neither.
     ///
-    /// Recoverable, and recoverable through the ordinary loop: the call that
-    /// returns this also queues the key query that lifts it, so a caller
-    /// drains the outbound pump, sends what it finds, reports it sent, and
-    /// calls again. Nothing else is required of the caller and no
-    /// credential is involved.
+    /// Usually recoverable through the ordinary loop: the call that returns
+    /// this also queues the key query that lifts it, so a caller drains the
+    /// outbound pump, sends what it finds, reports it sent, and calls again.
+    /// Nothing else is required of the caller and no credential is involved.
+    ///
+    /// **"Usually" is load-bearing, and this variant cannot say which case
+    /// you are in.** It covers two: nobody has asked, and a query was asked
+    /// and answered by a server whose answer settled nothing, which is what
+    /// the Matrix specification prescribes for a user a reachable server does
+    /// not know. In the second the loop above repeats forever, and it was
+    /// measured doing so. `IdentityStatus::account_keys_answer_unsettled` is
+    /// what tells them apart, and its own doc comment says what to do about
+    /// the second.
+    ///
+    /// A variant of its own would say it better. It is not added because the
+    /// wire ordinals after this enum's last variant are reserved by work in
+    /// flight, and UniFFI numbers variants by declaration position, so one
+    /// appended here would be misdecoded by every binding generated before
+    /// it. When those land, splitting this is the change to make.
     ///
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("the account's keys have not been fetched yet")]
@@ -185,12 +199,22 @@ pub enum MachineError {
     IdentityAlreadyExists,
     /// This machine holds no public signing identity for the account.
     ///
-    /// **Two things say that, and this variant is both of them.** Written
-    /// for self-verification, where it means there is nothing for this
-    /// device to verify itself against, it is now also what
-    /// `crate::read_code` and `crate::submit_scanned_code` answer with when
-    /// the identity a code has to carry is *ours* and is missing. Not
-    /// folded onto `PeerIdentityNotKnown`, which says the same about the
+    /// **Five calls report it, and between them they are asking for one
+    /// decision.** `crate::request_self_flow` reports it because there is no
+    /// identity to join. `crate::bootstrap_identity` reports it because
+    /// there is none to publish; it used to create one at this point, and
+    /// creating one at this point is what an honest homeserver plus
+    /// ordinary two-device timing turned into a creation over an identity
+    /// another device had published a moment earlier.
+    /// `crate::recover_identity` reports it because upstream's import checks
+    /// nothing and stores nothing without the account's public identity
+    /// already in the store. And `crate::read_code` and
+    /// `crate::submit_scanned_code` report it when the identity a code has
+    /// to carry is *ours* and is missing. The remedy for all five is
+    /// `crate::create_identity`, whose own documentation says why it is a
+    /// decision a product makes rather than a refusal a handler retries.
+    ///
+    /// Not folded onto `PeerIdentityNotKnown`, which says the same about the
     /// other user: the two remedies point at different people, and a
     /// product showing one sentence for both would send half its users to
     /// fix something that is not broken.
@@ -205,7 +229,7 @@ pub enum MachineError {
     /// Distinguished from `AccountKeysNotFetched` by the same question
     /// `signing.rs`'s gate asks and for the same reason: this one means the
     /// server was asked and named no identity, so the remedy is to create one
-    /// with `crate::bootstrap_identity`. `AccountKeysNotFetched` means nobody
+    /// with `crate::create_identity`. `AccountKeysNotFetched` means nobody
     /// has asked, and asking is the remedy. Collapsing them would send a
     /// caller to create an identity on the strength of a question never put.
     ///
@@ -229,9 +253,12 @@ pub enum MachineError {
     /// a bootstrap refusing. This one says the account's identity is not the
     /// question: whatever the account has, this device cannot use what it
     /// does not hold. The remedy is whichever of
-    /// `crate::bootstrap_identity`, `crate::recover_identity` or
+    /// `crate::create_identity`, `crate::recover_identity` or
     /// `crate::request_self_flow` applies, and `IdentityStatus` is what says
-    /// which.
+    /// which. Not `crate::bootstrap_identity`, which this comment named
+    /// until minting moved out of it: that call refuses a device holding no
+    /// private keys with `IdentityAlreadyExists` and is therefore the one
+    /// remedy this refusal never has.
     ///
     /// Appended, not inserted -- see `UnknownFlow` above.
     #[error("this device does not hold the account's private signing keys")]

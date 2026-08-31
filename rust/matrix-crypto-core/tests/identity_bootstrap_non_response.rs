@@ -48,7 +48,8 @@
 //! an account the server knows no identity for, and it is not.** Measured
 //! against three homeservers, all of them name the account even when they
 //! have nothing to report about it, so the bootstrap gate now requires an
-//! answer that does (`session::answer_speaks_about`, and
+//! answer upstream could make something of
+//! (`session::answer_about_this_account`, and
 //! `tests/identity_bootstrap_silent_body.rs`). That narrows this file's
 //! residue for the key query rather than widening it, and act 2 says which
 //! of its rows still discriminates because of it.
@@ -60,8 +61,9 @@
 //! one accepted body finally lifts the gate.
 
 use matrix_crypto_core::{
-    bootstrap_identity, create_machine, identity_status, mark_request_failed, mark_request_sent,
-    take_outgoing_requests, MachineConfig, MachineError, OutgoingRequest, SessionError,
+    bootstrap_identity, create_identity, create_machine, identity_status, mark_request_failed,
+    mark_request_sent, take_outgoing_requests, MachineConfig, MachineError, OutgoingRequest,
+    SessionError,
 };
 
 const ACCOUNT: &str = "@alice:example.org";
@@ -146,7 +148,7 @@ const HYBRID_FLOWS: &str =
 /// this constant was written, which named nobody: the answer below would be
 /// accepted, as it must be, and would then lift the gate on a body whose
 /// only substance is that some *other* server did not answer. See
-/// `session::answer_speaks_about`.
+/// `session::answer_about_this_account`.
 const FAILURE_WITH_NESTED_ERROR: &str = r#"{"device_keys":{"@alice:example.org":{}},"failures":{"example.org":{"errcode":"M_UNKNOWN","error":"boom"}}}"#;
 
 #[test]
@@ -279,8 +281,9 @@ fn a_body_that_is_not_a_response_cannot_open_the_bootstrap_gate() {
         // The first three are an object with no keys by the time anything
         // looks. **They no longer lift this gate through `mark_request_sent`
         // either**, because no measured homeserver answers a key query that
-        // way and the gate now requires an answer that names this account
-        // (`session::answer_speaks_about`). They are still driven, because
+        // way and the gate now requires an answer that leaves upstream
+        // knowing whether this account has an identity
+        // (`session::answer_about_this_account`). They are still driven, because
         // `mark_request_failed`'s contract is the same for every body and a
         // 503 that carried nothing is still the shape a product meets most
         // often -- but on their own they would now pass this act even if
@@ -443,9 +446,9 @@ fn a_body_that_is_not_a_response_cannot_open_the_bootstrap_gate() {
              disease: no product could ever bootstrap"
         );
 
-        bootstrap_identity()
+        create_identity()
             .await
-            .expect("bootstrapping after a real answer must be served");
+            .expect("creating an identity after a real answer must be served");
 
         // --- Act 4: the fieldless kind, where this check is the only one ---
         //

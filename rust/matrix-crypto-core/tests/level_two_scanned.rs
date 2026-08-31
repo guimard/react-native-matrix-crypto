@@ -185,7 +185,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use matrix_crypto_core::{
-    accept_flow, bootstrap_identity, cancel_flow, confirm_scan, create_machine, device_statuses,
+    accept_flow, cancel_flow, confirm_scan, create_identity, create_machine, device_statuses,
     flow_stage, identity_status, offer_scanning, read_code, receive_sync_changes, request_flow,
     request_self_flow, set_crypto_observer, share_scope_key, submit_scanned_code, CryptoObserver,
     CryptoSignal, FlowId, FlowStage, MachineConfig, TrustState,
@@ -561,7 +561,7 @@ fn a_third_party_client_and_this_library_verify_each_other_by_scanning_a_code() 
         "this proof needs an account whose identity IT mints, so that this device holds \
          the private half. An account that already has one cannot be used: {status:?}"
     );
-    run(bootstrap_identity()).expect("an account the server says has no identity may mint one");
+    run(create_identity()).expect("an account the server says has no identity may mint one");
     for _ in 0..8 {
         if pump_and_send(&homeserver, &library.token).is_empty() {
             break;

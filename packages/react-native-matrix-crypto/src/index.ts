@@ -57,6 +57,7 @@ export {
   cancelVerification,
   confirmScan,
   confirmVerification,
+  createCrossSigningIdentity,
   createCryptoMachine,
   createRecovery,
   decryptEvent,

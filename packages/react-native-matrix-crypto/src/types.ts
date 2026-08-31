@@ -354,8 +354,9 @@ export interface SyncDelta {
  * construction while this library had no way to create an identity of its
  * own, which is what this paragraph used to say. Then the Rust core could
  * create one and the TypeScript surface could not reach the call, which is
- * what it said next. Both are now over: `bootstrapCrossSigning` is that
- * call. The cryptography is proved where it can be, end to end against a
+ * what it said next. Both are now over: `createCrossSigningIdentity` makes
+ * the account's first identity and `bootstrapCrossSigning` publishes the one
+ * this device holds. The cryptography is proved where it can be, end to end against a
  * counterparty the test process does not control, by the core's own
  * `tests/verified_sender.rs`; that every step of it can be reached, in
  * order, through the functions this package publishes is what
@@ -430,7 +431,8 @@ export type SenderVerification =
   // cross-signing identity of OUR OWN, signed over the sender's and then
   // fetched back into our own store; completing a comparison is one step of
   // that and does not produce it on its own. Every step is now a published
-  // call, starting at `bootstrapCrossSigning`. This said NOT YET REACHABLE
+  // call, starting at `createCrossSigningIdentity` and then
+  // `bootstrapCrossSigning`. This said NOT YET REACHABLE
   // through two milestones and for two different reasons, the second of
   // which was a missing bridge rather than missing cryptography; both are
   // over. See the type's doc comment above.

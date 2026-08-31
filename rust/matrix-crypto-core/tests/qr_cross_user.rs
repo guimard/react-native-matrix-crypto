@@ -47,7 +47,7 @@
 //! to one person.
 
 use matrix_crypto_core::{
-    accept_flow, bootstrap_identity, confirm_scan, create_machine, device_statuses, flow_stage,
+    accept_flow, confirm_scan, create_identity, create_machine, device_statuses, flow_stage,
     identity_status, in_runtime, mark_request_sent, offer_scanning, read_code,
     receive_sync_changes, request_flow, share_scope_key, submit_scanned_code,
     take_outgoing_requests, CryptoSignal, FlowStage, MachineConfig, MachineError, TrustState,
@@ -94,7 +94,7 @@ const BOB_DEVICE: &str = "BOBDEVICE";
 const SCOPE: &str = "!cross-user:example.org";
 
 /// A `/keys/query` answer naming an account that has published no signing
-/// identity, which is what lifts `bootstrap_identity`'s ordering gate.
+/// identity, which is what lifts `create_identity`'s ordering gate.
 const NO_IDENTITY: &str = r#"{"device_keys":{"@alice:example.org":{}}}"#;
 
 #[test]
@@ -167,7 +167,7 @@ fn another_user_verifies_by_scanning_a_code_this_library_showed() {
         // Mode 0x00 puts *this account's own master key* into the code, so
         // this step is the precondition the whole file rests on and M4 is
         // what made it reachable at all.
-        bootstrap_identity()
+        create_identity()
             .await
             .expect("an account with no identity may mint one");
         assert!(

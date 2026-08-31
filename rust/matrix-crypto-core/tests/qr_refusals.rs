@@ -35,7 +35,7 @@
 //! what it is for.
 
 use matrix_crypto_core::{
-    accept_flow, bootstrap_identity, cancel_flow, create_machine, flow_stage, identity_status,
+    accept_flow, cancel_flow, create_identity, create_machine, flow_stage, identity_status,
     in_runtime, mark_request_sent, offer_scanning, read_code, share_scope_key, submit_scanned_code,
     take_outgoing_requests, CryptoSignal, FlowId, FlowStage, MachineConfig, MachineError,
 };
@@ -310,7 +310,7 @@ fn every_refusal_a_scannable_code_can_give_is_named() {
             .expect("a keys-upload response must be accepted");
 
         // Alice's own account query, answered with an account that has no
-        // identity. Kept for later: it is what lifts `bootstrap_identity`'s
+        // identity. Kept for later: it is what lifts `create_identity`'s
         // first gate, in the second phase below.
         let own_query = batch
             .iter()
@@ -320,7 +320,7 @@ fn every_refusal_a_scannable_code_can_give_is_named() {
             })
             .expect("a fresh machine must owe a key query for its own account");
         // Naming the account's other device and no signing identity: the
-        // second half is what lifts `bootstrap_identity`'s ordering gate in
+        // second half is what lifts `create_identity`'s ordering gate in
         // phase two, and the first is what makes a flow with our own other
         // device possible at all.
         mark_request_sent(
@@ -742,7 +742,7 @@ fn every_refusal_a_scannable_code_can_give_is_named() {
                 .expect_err("a code for our own account needs our own identity"),
             MachineError::IdentityNotKnown,
             "our account having no identity is not the other user having none: the \
-             first is fixed here by `bootstrap_identity` and the second cannot be \
+             first is fixed here by `create_identity` and the second cannot be \
              fixed here at all, and a product told the wrong one either sets up an \
              identity it already has or waits for one that will never arrive"
         );
@@ -784,7 +784,7 @@ fn every_refusal_a_scannable_code_can_give_is_named() {
         // Phase two: a device that has bootstrapped, and a peer that has not
         // ================================================================
 
-        bootstrap_identity()
+        create_identity()
             .await
             .expect("an account with no identity may mint one");
         take_outgoing_requests()

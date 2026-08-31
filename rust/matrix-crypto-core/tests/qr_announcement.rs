@@ -40,7 +40,7 @@
 //! announcement.
 
 use matrix_crypto_core::{
-    accept_flow, bootstrap_identity, cancel_flow, create_machine, flow_stage, identity_status,
+    accept_flow, cancel_flow, create_identity, create_machine, flow_stage, identity_status,
     in_runtime, mark_request_sent, offer_scanning, read_code, request_flow, share_scope_key,
     take_outgoing_requests, FlowId, FlowStage, MachineConfig, MachineError,
 };
@@ -131,7 +131,7 @@ fn a_build_that_never_asks_for_codes_announces_what_it_always_did() {
             .await
             .expect("answering the account key query must not fail");
 
-        bootstrap_identity()
+        create_identity()
             .await
             .expect("an account with no identity may mint one");
         assert!(

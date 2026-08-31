@@ -105,7 +105,7 @@
 //! is named above.
 
 use matrix_crypto_core::{
-    bootstrap_identity, cancel_flow, confirm_scan, create_machine, flow_stage, identity_status,
+    cancel_flow, confirm_scan, create_identity, create_machine, flow_stage, identity_status,
     in_runtime, mark_request_sent, offer_scanning, read_code, request_flow, share_scope_key,
     take_outgoing_requests, CryptoSignal, FlowId, FlowStage, MachineConfig, MachineError,
 };
@@ -132,7 +132,7 @@ const BOB_DEVICE: &str = "BOBDEVICE";
 const SCOPE: &str = "!halt-recovery:example.org";
 
 /// A `/keys/query` answer naming an account that has published no signing
-/// identity, which is what lifts `bootstrap_identity`'s ordering gate.
+/// identity, which is what lifts `create_identity`'s ordering gate.
 const NO_IDENTITY: &str = r#"{"device_keys":{"@alice:example.org":{}}}"#;
 
 /// The message a peer sends when it considers a flow over.
@@ -216,7 +216,7 @@ fn a_halted_code_flow_can_be_abandoned_and_the_same_person_verified_afterwards()
         // Mode 0x00 puts this account's own master key into the code, so a
         // device holding none of its private signing keys could not build one
         // and every phase below would be unreachable.
-        bootstrap_identity()
+        create_identity()
             .await
             .expect("an account with no identity may mint one");
         assert!(

@@ -1231,7 +1231,7 @@ pub async fn mark_request_failed(id: String, status: u16) -> Result<(), SessionF
 /// was.
 ///
 /// `Debug` is derived, unlike `Envelope` and `CryptoMachineConfig` above:
-/// three booleans about this account's own publication state carry no
+/// five booleans about this account's own publication state carry no
 /// identifier and no key material, so there is nothing here the global
 /// no-secret rule forbids from a `{:?}`.
 ///
@@ -1239,35 +1239,54 @@ pub async fn mark_request_failed(id: String, status: u16) -> Result<(), SessionF
 /// particular why the pair that looks redundant is the pair that matters;
 /// this mirror deliberately repeats none of it, so the two cannot drift
 /// into saying different things.
+///
+/// `account_keys_answer_unsettled` and `identity_publication_pending` are
+/// **appended**, after the fields this record shipped with, for the same
+/// wire-ordinal reason the
+/// error enums above state at length: UniFFI lays a record's fields out in
+/// declaration order, so inserting one shifts every field after it and a
+/// binding generated before the insert reads the wrong value out of each.
+/// Appending costs a stale binding one field it does not know about, which
+/// is the failure mode that fails cleanly.
 #[derive(Debug, Clone, Copy, uniffi::Record)]
 pub struct IdentityStatus {
     pub account_keys_fetched: bool,
     pub identity_known: bool,
     pub private_keys_held: bool,
+    pub account_keys_answer_unsettled: bool,
+    pub identity_publication_pending: bool,
 }
 
-/// Three `bool` fields, so every wrong pairing compiles, passes
+/// Five `bool` fields, so every wrong pairing compiles, passes
 /// `clippy -D warnings` and passes every other test in this repository --
 /// `SasMaterial`'s hazard with a smaller alphabet, and a worse consequence
 /// than a mismatched short string: `account_keys_fetched` and
 /// `identity_known` swapped is the exact pair whose meaning the core's own
 /// doc comment exists to keep apart, and reporting them the wrong way round
 /// tells a product it may mint an identity when the truth is that nobody
-/// has asked. Public and stateless, so `tests/value_mapping.rs` can pin it.
+/// has asked. The fourth widens the alphabet again rather than being
+/// harmless: swapped with `account_keys_fetched` it says the gate is open
+/// when what happened is that an answer settled nothing. Public and
+/// stateless, so `tests/value_mapping.rs` can pin it.
 impl From<matrix_crypto_core::IdentityStatus> for IdentityStatus {
     fn from(value: matrix_crypto_core::IdentityStatus) -> Self {
         // Destructured, not field-accessed: a field added to the core
         // record later must fail this build rather than being silently
-        // dropped. See Global Constraints.
+        // dropped. See Global Constraints. It did: this field was added to
+        // the core first and this build is where it was caught.
         let matrix_crypto_core::IdentityStatus {
             account_keys_fetched,
             identity_known,
             private_keys_held,
+            account_keys_answer_unsettled,
+            identity_publication_pending,
         } = value;
         Self {
             account_keys_fetched,
             identity_known,
             private_keys_held,
+            account_keys_answer_unsettled,
+            identity_publication_pending,
         }
     }
 }
@@ -1288,8 +1307,7 @@ pub async fn identity_status() -> Result<IdentityStatus, MachineFfiError> {
         .map_err(Into::into)
 }
 
-/// Publishes this account's signing identity, minting one first if the
-/// account provably has none.
+/// Publishes the signing identity this device already holds.
 ///
 /// Mirrors `bootstrap_identity`; see its own doc comment in
 /// `matrix-crypto-core::signing` for the gate, for the two refusals it
@@ -1435,6 +1453,35 @@ pub async fn recover_identity(
     let account_data: Vec<matrix_crypto_core::AccountDataEntry> =
         account_data.into_iter().map(Into::into).collect();
     matrix_crypto_core::recover_identity(&secret, &account_data)
+        .await
+        .map_err(Into::into)
+}
+
+/// Creates this account's first signing identity.
+///
+/// **Appended after `recover_identity`, which was after everything else in
+/// this file, for the ordinal reason `CryptoSignal`'s own comment gives.
+/// This addition moves no ordinal: it declares one function and no enum
+/// variant and no record field anywhere, so every existing wire number is
+/// where it was.**
+///
+/// Mirrors `create_identity`; see its own doc comment in
+/// `matrix-crypto-core::signing` for what a caller must hold before calling
+/// it, for the measured race no rule can close, and for what the confirming
+/// key query it queues does and does not buy.
+///
+/// **This is the one destructive call on this surface.** It exists
+/// separately from `bootstrap_identity` because that call is the one this
+/// library tells a product to make on every launch, and creating an identity
+/// over one the account already has resets the trust of every device and
+/// every person who ever verified it. The split is the whole point: nothing
+/// reaches this by default.
+///
+/// No parameter and no credential, for `bootstrap_identity`'s reason, which
+/// it states in full.
+#[uniffi::export]
+pub async fn create_identity() -> Result<(), MachineFfiError> {
+    matrix_crypto_core::create_identity()
         .await
         .map_err(Into::into)
 }

@@ -23,11 +23,11 @@
 //!   from the far side's in a way that looks exactly like a genuine
 //!   mismatch -- so the observable symptom of this defect is a verification
 //!   that a careful person correctly refuses, every time, for no reason.
-//!   `IdentityStatus`'s three fields are `bool`, `bool`, `bool`, which is
-//!   the same hazard with a smaller alphabet and a worse consequence: two of
-//!   those three exist precisely to be told apart, and reporting them the
-//!   wrong way round tells a product it may publish an identity over one the
-//!   account already has.
+//!   `IdentityStatus`'s five fields are all `bool`, which is the same hazard
+//!   with a smaller alphabet and a worse consequence: four of those five
+//!   exist precisely to be told apart, and reporting them the wrong way
+//!   round tells a product it may publish an identity over one the account
+//!   already has.
 //!
 //! * **A boolean grid whose polarity is invisible.** `ScannableCode`
 //!   crosses as a width and `width * width` booleans, `true` for a dark
@@ -654,11 +654,11 @@ fn a_completed_scan_keeps_the_identifier_it_names() {
     );
 }
 
-/// The signing identity's three booleans stay in their own fields.
+/// The signing identity's five booleans stay in their own fields.
 ///
-/// The file's opening hazard again, with the smallest alphabet it has: three
-/// `bool` fields, so all thirty-six permutations of the mapping compile,
-/// pass `clippy -D warnings` and pass every other test in this repository.
+/// The file's opening hazard again, with the smallest alphabet it has: five
+/// `bool` fields, so every permutation of the mapping compiles, passes
+/// `clippy -D warnings` and passes every other test in this repository.
 ///
 /// It is not the cosmetic member of the set. The core's own doc comment
 /// exists to keep `account_keys_fetched` and `identity_known` apart, because
@@ -671,15 +671,25 @@ fn a_completed_scan_keeps_the_identifier_it_names() {
 /// `signing.rs`'s gate exists to prevent, arrived at by crossing a boundary
 /// rather than by asking the wrong question.
 ///
-/// One assertion per field, each with the other two false, so that no
-/// permutation can make any of the three look right: a swap moves a `true`
-/// to a field this test expects `false` in, and both halves of that fail.
+/// The fourth field widens that hazard rather than diluting it.
+/// `account_keys_answer_unsettled` is the negative of the first: it says a
+/// key query about this account **was** answered and settled nothing, which
+/// is the one situation where asking again cannot help. Delivered in
+/// `account_keys_fetched`'s place it would tell a product the gate is open,
+/// which is the minting sentence again; delivered nowhere it would leave the
+/// caller in the loop this field exists to end.
+///
+/// One assertion per field, each with the others false, so that no
+/// permutation can make any of the five look right: a swap moves a `true` to
+/// a field this test expects `false` in, and both halves of that fail.
 #[test]
-fn an_identity_status_keeps_its_three_facts_apart() {
+fn an_identity_status_keeps_its_five_facts_apart() {
     let asked_only = FfiIdentityStatus::from(IdentityStatus {
         account_keys_fetched: true,
         identity_known: false,
         private_keys_held: false,
+        account_keys_answer_unsettled: false,
+        identity_publication_pending: false,
     });
     assert!(
         asked_only.account_keys_fetched,
@@ -688,11 +698,14 @@ fn an_identity_status_keeps_its_three_facts_apart() {
     );
     assert!(!asked_only.identity_known);
     assert!(!asked_only.private_keys_held);
+    assert!(!asked_only.account_keys_answer_unsettled);
 
     let known_only = FfiIdentityStatus::from(IdentityStatus {
         account_keys_fetched: false,
         identity_known: true,
         private_keys_held: false,
+        account_keys_answer_unsettled: false,
+        identity_publication_pending: false,
     });
     assert!(!known_only.account_keys_fetched);
     assert!(
@@ -701,11 +714,14 @@ fn an_identity_status_keeps_its_three_facts_apart() {
          about one"
     );
     assert!(!known_only.private_keys_held);
+    assert!(!known_only.account_keys_answer_unsettled);
 
     let holding_only = FfiIdentityStatus::from(IdentityStatus {
         account_keys_fetched: false,
         identity_known: false,
         private_keys_held: true,
+        account_keys_answer_unsettled: false,
+        identity_publication_pending: false,
     });
     assert!(!holding_only.account_keys_fetched);
     assert!(!holding_only.identity_known);
@@ -714,6 +730,51 @@ fn an_identity_status_keeps_its_three_facts_apart() {
         "holding the private keys must not arrive as either of the other two: \
          it is the field that says this device can sign rather than only \
          recognise"
+    );
+    assert!(!holding_only.account_keys_answer_unsettled);
+
+    let unsettled_only = FfiIdentityStatus::from(IdentityStatus {
+        account_keys_fetched: false,
+        identity_known: false,
+        private_keys_held: false,
+        account_keys_answer_unsettled: true,
+        identity_publication_pending: false,
+    });
+    assert!(
+        !unsettled_only.account_keys_fetched,
+        "an answer that settled nothing must never arrive as an answer that \
+         did: that is the same sentence as telling a product it may mint"
+    );
+    assert!(!unsettled_only.identity_known);
+    assert!(!unsettled_only.private_keys_held);
+    assert!(
+        unsettled_only.account_keys_answer_unsettled,
+        "and it must arrive at all: dropped, the caller is back in a \
+         drain-send-report loop that cannot terminate and is told nothing"
+    );
+    assert!(!unsettled_only.identity_publication_pending);
+
+    let pending_only = FfiIdentityStatus::from(IdentityStatus {
+        account_keys_fetched: false,
+        identity_known: false,
+        private_keys_held: false,
+        account_keys_answer_unsettled: false,
+        identity_publication_pending: true,
+    });
+    assert!(!pending_only.account_keys_fetched);
+    assert!(
+        !pending_only.identity_known,
+        "an identity this device minted and has not published must never \
+         arrive as one the account has: that is the pair whose confusion \
+         bricked an account for a whole round"
+    );
+    assert!(!pending_only.private_keys_held);
+    assert!(!pending_only.account_keys_answer_unsettled);
+    assert!(
+        pending_only.identity_publication_pending,
+        "and it must arrive at all: dropped, a product cannot tell the one \
+         state where `identity_known` is true and the account still has no \
+         identity"
     );
 }
 

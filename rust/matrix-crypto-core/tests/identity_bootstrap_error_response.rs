@@ -47,8 +47,8 @@
 //! machine registry and the pump's bookkeeping are process-wide.
 
 use matrix_crypto_core::{
-    bootstrap_identity, create_machine, identity_status, mark_request_sent, take_outgoing_requests,
-    MachineConfig, MachineError, OutgoingRequest, SessionError,
+    bootstrap_identity, create_identity, create_machine, identity_status, mark_request_sent,
+    take_outgoing_requests, MachineConfig, MachineError, OutgoingRequest, SessionError,
 };
 
 const ACCOUNT: &str = "@alice:example.org";
@@ -80,7 +80,7 @@ const FLOWS_NOT_AN_ARRAY: &str = r#"{"flows":{"0":{"stages":["m.login.password"]
 /// identity, and Synapse 1.159.0 and Dendrite 0.15.2 add the empty
 /// `failures` and cross-signing maps beside it. It held `{"device_keys":{}}`
 /// before, which names nobody; that is still accepted, but it no longer
-/// lifts the gate, and `session::answer_speaks_about` has why.
+/// lifts the gate, and `session::answer_about_this_account` has why.
 const FAILURE_WITH_NESTED_ERRCODE: &str = r#"{"device_keys":{"@alice:example.org":{}},"failures":{"example.org":{"errcode":"M_UNKNOWN","error":"boom"}}}"#;
 
 #[test]
@@ -174,9 +174,9 @@ fn a_failed_request_reported_as_sent_neither_lifts_the_gate_nor_publishes() {
             "a real answer, on the same id, must lift the gate"
         );
 
-        bootstrap_identity()
+        create_identity()
             .await
-            .expect("bootstrapping after a real answer must be served");
+            .expect("creating an identity after a real answer must be served");
 
         // --- Act 2: a challenge must not publish the identity ---
 

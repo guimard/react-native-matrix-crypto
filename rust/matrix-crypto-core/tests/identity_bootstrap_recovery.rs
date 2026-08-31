@@ -35,8 +35,8 @@
 //! situation it exists for.
 
 use matrix_crypto_core::{
-    bootstrap_identity, create_machine, mark_request_sent, share_scope_key, take_outgoing_requests,
-    MachineConfig, MachineError, OutgoingRequest, SessionError,
+    bootstrap_identity, create_identity, create_machine, mark_request_sent, share_scope_key,
+    take_outgoing_requests, MachineConfig, MachineError, OutgoingRequest, SessionError,
 };
 
 const ACCOUNT: &str = "@alice:example.org";
@@ -51,7 +51,7 @@ const SOMEBODY_ELSE: &str = "@bob:example.org";
 /// `"failures":{}` and the three empty cross-signing maps beside it. The
 /// account is **named**, which the `{"device_keys":{}}` written here before
 /// was not, and which no measured homeserver omits. A body that names nobody
-/// is silent about this account, and `session::answer_speaks_about` has why
+/// is silent about this account, and `session::answer_about_this_account` has why
 /// silence does not lift the gate.
 const NO_IDENTITY: &str = r#"{"device_keys":{"@alice:example.org":{}}}"#;
 
@@ -156,7 +156,7 @@ fn the_refusal_queues_the_query_that_lifts_it_when_upstream_never_would() {
              case it exists for"
         );
 
-        bootstrap_identity()
+        create_identity()
             .await
             .expect("the answered recovery query must lift the gate");
     });

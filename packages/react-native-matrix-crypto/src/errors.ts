@@ -138,12 +138,23 @@ export type CryptoErrorKind =
   // are opposite: one is a round of the ordinary pump loop, the other is a
   // thing this release cannot do at all.
   //
-  // This process has not yet asked the server what identity this account
-  // has, so it cannot know whether publishing would destroy one. The call
-  // queues that key query as it refuses, so the remedy is drain, send,
-  // report sent, call again. Deliberately absent from RETRIABLE below, for
+  // This library cannot yet say what identity this account has, so it cannot
+  // know whether publishing would destroy one. The call queues a key query
+  // as it refuses, so the usual remedy is drain, send, report sent, call
+  // again. Deliberately absent from RETRIABLE below, for
   // 'material_not_ready''s reason: calling again without pumping in between
   // returns this forever.
+  //
+  // **That remedy has a case where it never terminates, and
+  // `getIdentityStatus` is what says so.** This kind covers two situations:
+  // nobody has asked, and the query was asked and answered by a server whose
+  // answer settled nothing. The second is what a homeserver sends for a user
+  // it does not know, which the Matrix specification prescribes, and what a
+  // real Synapse sends when the server-name half of the account id differs
+  // in case from its own. Read `accountKeysAnswerUnsettled`: false means
+  // pump and call again, true means stop pumping and check the account id
+  // against the canonical `user_id` your login returned. Nothing is
+  // destroyed while it is true.
   | 'account_keys_not_fetched'
   // The account has a signing identity whose private keys this device does
   // not hold. There is no remedy through that call and there should not be:
@@ -151,11 +162,25 @@ export type CryptoErrorKind =
   // it would reset the trust of everyone who had verified the old one.
   | 'identity_already_exists'
   // The mirror image of the kind above, and the third refusal on this
-  // surface that turns on the same question. `requestSelfVerification` reports
-  // it when the server has been asked and named no identity for this account:
-  // there is nothing to join, so the answer is
-  // {@link bootstrapCrossSigning}, not a retry. Deliberately absent from
-  // RETRIABLE below: calling again changes nothing until an identity exists.
+  // surface that turns on the same question: the server has been asked and
+  // named no identity for this account. Deliberately absent from RETRIABLE
+  // below: calling again changes nothing until an identity exists.
+  //
+  // **Five calls report it and they want the same thing done, which is a
+  // decision rather than a retry.** `requestSelfVerification` reports it
+  // because there is no identity to join. `bootstrapCrossSigning` reports it
+  // because there is none to publish; it used to create one at this point,
+  // and that is what an honest server plus ordinary two-device timing turned
+  // into a creation over an identity another device had just published.
+  // `recoverIdentity` reports it because an import is checked against the
+  // account's published identity and there is none. And
+  // `getVerificationCode` and `submitScannedCode` report it because a
+  // scannable code carries this account's signing keys and there are none to
+  // carry. This said two, which was the whole list on the branch that wrote
+  // it and not on the one it landed in. The answer to all five is
+  // `createCrossSigningIdentity`, and it belongs where your product has
+  // decided this account should be getting its first identity, not in the
+  // handler that caught this.
   | 'identity_not_known'
   // ---- server-side recovery ----------------------------------------------
   // All five cross the FFI boundary. `recovery_key_incorrect` and
@@ -529,6 +554,63 @@ function stringField(source: Record<string, unknown>, field: string): string | u
  * caller-supplied payload or ciphertext content, so this stays safe to
  * surface without reaching a crash report.
  */
+/**
+ * What a fieldless refusal says when it reaches a developer.
+ *
+ * **The message is the only prose most of these ever get.** The Rust
+ * `#[error(...)]` string does not cross the FFI boundary, and a fieldless
+ * variant arrives carrying no `reason` and no `detail`, so without this map
+ * `toCryptoError` produces `crypto error: identity_not_known` and nothing
+ * else. A developer debugging at speed sees that string, in a stack trace or
+ * a log line, and nowhere near it any of the six places this repository
+ * explains what to do.
+ *
+ * That mattered enough to fix rather than document. The gate refusals below
+ * are decisions rather than failures, and the decision is what the message
+ * has to carry: `'identity_not_known'` in particular is the one whose
+ * obvious-looking remedy is the destructive call, and wiring
+ * `createCrossSigningIdentity` to it is how a product mints an identity on a
+ * launch-path error handler, on devices that are frequently killed and
+ * frequently offline.
+ *
+ * Only the refusals whose remedy is a choice are listed. A kind that already
+ * carries a `reason` from the Rust side keeps it: the map is consulted only
+ * when there is nothing better.
+ */
+const MESSAGE_BY_KIND: ReadonlyMap<CryptoErrorKind, string> = new Map([
+  [
+    'account_keys_not_fetched',
+    'this library cannot yet say what identity this account has, so it will not publish or ' +
+      'create one. The key query that lifts this has already been queued: drain ' +
+      'takeOutgoingRequests, send it, report it with markRequestSent, and call again. If ' +
+      'getIdentityStatus().accountKeysAnswerUnsettled is true, calling again will do exactly ' +
+      'this again: stop looping and check the userId you passed to ' +
+      'createCryptoMachine against the canonical user_id your login returned.',
+  ],
+  [
+    'identity_not_known',
+    'the homeserver was asked and this account has no cross-signing identity, so there is ' +
+      'nothing to publish and nothing to join. Creating one is createCrossSigningIdentity, ' +
+      'and it is destructive if the account turns out to have an identity after all: do not ' +
+      'call it from this handler. It belongs where your product has decided this account ' +
+      'should be getting its first identity, having checked something it knows and this ' +
+      'library cannot, such as that no other session is listed on the account.',
+  ],
+  [
+    'identity_already_exists',
+    'this account already has a cross-signing identity and this device does not hold its ' +
+      'private keys. Join it with requestSelfVerification, or restore it with ' +
+      'recoverIdentity. Replacing it would reset the trust of everyone who has verified this ' +
+      'account, and no call on this surface will do it.',
+  ],
+  [
+    'private_keys_not_held',
+    'this device does not hold this account\u2019s private signing keys, so there is nothing ' +
+      'for it to write into server-side storage. getIdentityStatus says whether the remedy is ' +
+      'to join the account\u2019s identity or to create one.',
+  ],
+])
+
 export function toCryptoError(raw: unknown): CryptoError {
   const source = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
   const name = typeof source.name === 'string' ? source.name : ''
@@ -536,7 +618,7 @@ export function toCryptoError(raw: unknown): CryptoError {
     KIND_BY_NAME.get(name) ?? KIND_BY_NAME.get(variantNameFromMessage(source.message) ?? '') ?? 'unknown'
   const reason = stringField(source, 'reason') ?? stringField(source, 'detail')
 
-  const err = new Error(reason ?? `crypto error: ${kind}`) as CryptoError
+  const err = new Error(reason ?? MESSAGE_BY_KIND.get(kind) ?? `crypto error: ${kind}`) as CryptoError
   err.name = 'CryptoError'
   err.kind = kind
   err.retriable = RETRIABLE.has(kind)
