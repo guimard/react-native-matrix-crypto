@@ -380,17 +380,29 @@ pub struct IdentityStatus {
     /// Whether this device holds an identity it minted and has **not yet
     /// seen the homeserver accept**.
     ///
-    /// True between [`create_identity`] and the moment the publication it
-    /// queued is reported sent, and it survives a relaunch, because the
-    /// identity it describes is on disk and the publication was in memory.
-    /// A process that is killed, offline, or whose upload times out in that
-    /// window reopens its store in exactly this state.
+    /// True from [`create_identity`] until a homeserver's own `/keys/query`
+    /// answer carries that identity back, and it survives a relaunch,
+    /// because the identity it describes is on disk and the publication was
+    /// in memory. A process that is killed, offline, or whose upload times
+    /// out in that window reopens its store in exactly this state.
     ///
-    /// **The remedy is [`bootstrap_identity`], which is the call a product
-    /// already makes on every launch.** It hands back the same publication
-    /// that was lost. Nothing else is required and nothing has been
-    /// damaged: the account has no identity, this device holds the one it
-    /// is about to get, and the two agree.
+    /// **The remedy is [`create_identity`] again, deliberately.** It hands
+    /// back the same publication that was lost.
+    ///
+    /// This paragraph named [`bootstrap_identity`] for one release and that
+    /// was wrong, and it stayed wrong here for one more after the facade was
+    /// corrected and the core was not, which is why it now says so. From
+    /// inside a process, an identity we hold and have never seen accepted is
+    /// indistinguishable from one the account has since replaced, and no
+    /// answer settles that, so finishing is a decision rather than a retry.
+    ///
+    /// **Seven calls read this field**, and the list is here because wiring
+    /// it into two of them and assuming the rest was the ninth round's
+    /// mistake: `bootstrap_identity` and `create_identity` above,
+    /// [`crate::create_recovery`] and [`crate::recover_identity`], and the
+    /// three doors into a self-verification, [`crate::request_self_flow`],
+    /// [`crate::accept_flow`] and [`crate::request_flow`] when it is handed
+    /// this account's own identifiers.
     ///
     /// It is reported because it is the one state in which
     /// `identity_known` is true and the account still has no identity, so a
@@ -501,6 +513,39 @@ fn may_publish(status: &IdentityStatus) -> Result<(), MachineError> {
     if !status.identity_known {
         return Err(MachineError::IdentityNotKnown);
     }
+    // **An identity no homeserver has confirmed is not this call's to
+    // publish, and this arm is the whole of the ninth round.**
+    //
+    // The eighth round let it through, on the reasoning that finishing an
+    // interrupted publication is publishing rather than creating. Measured
+    // on continuwuity and on Synapse, that reasoning destroyed an account's
+    // identity with an honest server, an honest answer, no stale data and no
+    // product mistake: a device mints, loses the publication, relaunches, is
+    // answered truthfully that the account has no identity, and in the
+    // ordinary gap before that answer is reported a second device of the
+    // same account finishes signing up. The launch-time call then
+    // republished over the account's real identity, while `create_identity`
+    // refused correctly throughout. The careful call did the damage.
+    //
+    // The root is that **from inside this process, an identity we hold and
+    // have not seen accepted is indistinguishable from one the account has
+    // since replaced.** The seventh round refused whenever the store held an
+    // identity and bricked honest accounts; the eighth exempted the
+    // unpublished one and handed the race back. Those are the same fact from
+    // opposite sides, and no predicate over one `/keys/query` answer
+    // separates them, because an answer describes the instant the server
+    // computed it and nothing later.
+    //
+    // So the question is not which local rule but what a device may do when
+    // it cannot tell, and the answer is: not this, not from here. Putting
+    // something the server has never confirmed onto an account is a decision
+    // about that account's identity, and this module already has a place
+    // where decisions are made. [`create_identity`] finishes it, and the
+    // refusal below is the same one a device with no identity at all
+    // receives, for the same reason and with the same remedy.
+    if status.identity_publication_pending {
+        return Err(MachineError::IdentityNotKnown);
+    }
     if !status.private_keys_held {
         return Err(MachineError::IdentityAlreadyExists);
     }
@@ -519,7 +564,19 @@ fn may_create(status: &IdentityStatus) -> Result<(), MachineError> {
     if !status.account_keys_fetched {
         return Err(MachineError::AccountKeysNotFetched);
     }
-    if status.identity_known {
+    // An identity this device minted and has never seen accepted is a
+    // *candidate*, not the account's identity, so establishing the account's
+    // first identity is still what this call is being asked to do and
+    // finishing the publication is how it is done. Upstream re-derives the
+    // same three keys rather than minting a second set
+    // (`bootstrap_cross_signing` branches on `identity.is_empty()`), so what
+    // the account gets is the identity this device already holds.
+    //
+    // This arm is what keeps the refusal in [`may_publish`] from being the
+    // seventh round's brick: there is a way to finish, it is deliberate, and
+    // `IdentityStatus::identity_publication_pending` is how a product knows
+    // that finishing is what it is deciding on.
+    if status.identity_known && !status.identity_publication_pending {
         return Err(MachineError::IdentityAlreadyExists);
     }
     Ok(())
@@ -698,7 +755,7 @@ pub async fn bootstrap_identity() -> Result<(), MachineError> {
                 .await
                 .map_err(|_upstream| store_failed())?;
 
-            queue_publication(requests);
+            queue_republication(requests);
 
             Ok(())
         })
@@ -726,6 +783,55 @@ fn queue_publication(requests: matrix_sdk_crypto::CrossSigningBootstrapRequests)
     crate::session::queue_action_request(requests.upload_signatures_req.into());
 }
 
+/// Queues everything a publication sends **except the cross-signing keys
+/// themselves**.
+///
+/// # The one request that can destroy an identity, and the only call allowed
+/// to hand it over
+///
+/// `/keys/device_signing/upload` is the request that replaces an account's
+/// cross-signing identity. Nothing else in a publication can: the device-key
+/// upload republishes this device's own keys, and the signature upload
+/// re-signs this device into the identity the account already has. Both are
+/// idempotent and neither can overwrite anything.
+///
+/// So this exists to make one sentence true without qualification: **the
+/// call a product makes on every launch never hands over the request that
+/// can replace an identity.** The ninth round tried to make that true with a
+/// predicate and closed one arm of a two-armed race. This closes the other by
+/// removing the capability rather than guarding it.
+///
+/// **Measured, on continuwuity three times and on Synapse:** a device that
+/// signed up entirely correctly, with `identity_publication_pending` false
+/// and nothing stale, restarted, was refused and queued the key query as
+/// documented, and had the homeserver answer that query honestly. Another
+/// client of the same account reset the identity in the gap before the
+/// product reported that answer, which is a first-class user-facing action in
+/// every mainstream client. The gate lifted on a truthful answer, and
+/// `bootstrap_identity` republished the old identity over the new one, after
+/// which the status read byte-identical to before and no signal fired.
+///
+/// # Why the omitted request is never needed
+///
+/// `bootstrap_identity` reaches this only with the account's identity
+/// **confirmed**: `may_publish` refuses while
+/// [`IdentityStatus::identity_publication_pending`] is true, and confirmed
+/// means a homeserver's own answer carried that identity back to us. So the
+/// server demonstrably has it, and re-uploading it can only either change
+/// nothing or replace something. There is no third outcome, and the first is
+/// not worth the second.
+///
+/// The other two requests are still queued, and that is not tidiness. A
+/// publication whose signature upload was the part that failed is repaired by
+/// exactly this call, and the signature is what ties this device to the
+/// account's identity.
+fn queue_republication(requests: matrix_sdk_crypto::CrossSigningBootstrapRequests) {
+    if let Some(device_keys) = requests.upload_keys_req {
+        crate::session::queue_action_request(device_keys);
+    }
+    crate::session::queue_action_request(requests.upload_signatures_req.into());
+}
+
 /// Creates this account's **first** signing identity.
 ///
 /// **This is the one destructive call on this surface, and it is destructive
@@ -749,7 +855,21 @@ fn queue_publication(requests: matrix_sdk_crypto::CrossSigningBootstrapRequests)
 /// A `/keys/query` answer is only ever true of the instant the server sent
 /// it. Between that instant and this call, another device of the same
 /// account can publish an identity, and no answer already in hand can say
-/// so. Measured on a live homeserver, with no misbehaviour anywhere: the
+/// so.
+///
+/// **That window is unbounded, and it does not shrink with care.** Reading
+/// the sentence above as a narrow race is the mistake, and the correction
+/// was measured rather than argued. The flag recording that this process has
+/// asked never changes again after the first answer; upstream volunteers no
+/// further query for an account it already tracks; and the refusal this
+/// call's precondition raises queues nothing. So a product that drains its
+/// pump to empty and reports every response has **nothing left to refresh
+/// with**, and the answer it acts on can be arbitrarily old. Two runs of one
+/// sequence differed only in tidiness: the one that left an unreported query
+/// sitting in the pump survived, and the diligent one destroyed the account.
+/// **Being careful made it worse**, which is the opposite of what a
+/// precondition should do, and it is why the decision below belongs to a
+/// product rather than to this library. Measured on a live homeserver, with no misbehaviour anywhere: the
 /// server answered "no identity" honestly, a second device published one,
 /// and a mint followed. So the caller has to supply the fact the library
 /// cannot: **that this account is meant to be getting its first identity
@@ -996,6 +1116,10 @@ mod tests {
                 mark_request_sent(&query.id, NO_IDENTITY)
                     .await
                     .expect("the same honest answer as before");
+                // Whether it is honest or raced is not knowable here, and
+                // that is the ninth round's point: the assertions below are
+                // about the gate lifting, and about which call may act on
+                // it.
 
                 let answered = read_status_now().await;
                 assert!(
@@ -1007,9 +1131,31 @@ mod tests {
                     "and the caller must not be told the answer settled nothing: {answered:?}"
                 );
 
-                bootstrap_identity()
-                    .await
-                    .expect("and the publication that was lost must be handed back");
+                // **The remedy moved in the ninth round, and this is where
+                // it moved to.** The eighth round made it
+                // `bootstrap_identity`, the call a product already makes on
+                // every launch, on the reasoning that finishing a
+                // publication is publishing. Measured on continuwuity and on
+                // Synapse, that is how an honest raced answer destroyed an
+                // account's real identity: this device holds the private
+                // keys, so the launch-time call was served, and it
+                // republished over an identity a second device had just
+                // legitimately published.
+                //
+                // Finishing is now a decision, like starting. The refusal is
+                // the same one a device with no identity gets, so a product
+                // that already handles a first sign-up handles this with the
+                // same branch.
+                assert_eq!(
+                    bootstrap_identity().await,
+                    Err(MachineError::IdentityNotKnown),
+                    "the launch-time call may not publish an identity nothing has \
+                     confirmed, however long this device has held it"
+                );
+                create_identity().await.expect(
+                    "and the deliberate call must hand back the publication that \
+                             was lost, or this is the seventh round's brick again",
+                );
                 let batch = take_outgoing_requests().await.expect("drain");
                 assert!(
                     batch.iter().any(|r| r.kind == "signing_keys_upload"),
@@ -1102,10 +1248,17 @@ mod tests {
     /// serve anything would be the whole defect back under a new name.
     ///
     /// **The pair is asserted together, and the property that matters is a
-    /// property of the pair**: for every one of the sixteen states, at most
-    /// one of the two calls is served. Publishing and creating are different
-    /// acts on the same account, and a state that served both would mean the
-    /// split bought nothing.
+    /// property of the pair**: for every one of the thirty-two states, at
+    /// most one of the two calls is served. Publishing and creating are
+    /// different acts on the same account, and a state that served both
+    /// would mean the split bought nothing.
+    ///
+    /// `identity_publication_pending` decides between them rather than
+    /// deciding nothing, and that is the ninth round. An identity this
+    /// device minted and has never seen a homeserver accept is a candidate
+    /// rather than the account's identity, so publishing it is not the
+    /// launch-time call's to do; finishing it is a decision, and
+    /// `may_create` is where decisions are made.
     #[test]
     fn publishing_and_creating_are_served_in_states_that_never_overlap() {
         let mut both_served = Vec::new();
@@ -1124,7 +1277,7 @@ mod tests {
 
                             let publish = if !account_keys_fetched {
                                 Err(MachineError::AccountKeysNotFetched)
-                            } else if !identity_known {
+                            } else if !identity_known || identity_publication_pending {
                                 Err(MachineError::IdentityNotKnown)
                             } else if !private_keys_held {
                                 Err(MachineError::IdentityAlreadyExists)
@@ -1135,7 +1288,7 @@ mod tests {
 
                             let create = if !account_keys_fetched {
                                 Err(MachineError::AccountKeysNotFetched)
-                            } else if identity_known {
+                            } else if identity_known && !identity_publication_pending {
                                 Err(MachineError::IdentityAlreadyExists)
                             } else {
                                 Ok(())
@@ -1207,6 +1360,10 @@ mod tests {
     #[test]
     fn an_account_that_already_has_an_identity_is_never_created_over() {
         for private_keys_held in [false, true] {
+            // `identity_publication_pending: false` throughout: this row is
+            // about an identity a homeserver has confirmed. The pending one
+            // is the other row, below, and it is deliberately not the same
+            // answer.
             let known = IdentityStatus {
                 account_keys_fetched: true,
                 identity_known: true,
@@ -1220,6 +1377,38 @@ mod tests {
                 "creating over a known identity is the destruction this \
                  module exists to prevent, and holding the private keys is \
                  not an exemption from it: {known:?}"
+            );
+        }
+    }
+
+    /// Asked, and this device holds an identity nothing has confirmed:
+    /// **only** creating, which is the ninth round's whole rule.
+    ///
+    /// The state a lost publication leaves behind. `bootstrap_identity` used
+    /// to be served here, and measured on two live homeservers that is how
+    /// an honest raced answer destroyed an account's real identity through
+    /// the call every product makes on every launch.
+    #[test]
+    fn an_unconfirmed_identity_is_published_by_nothing() {
+        for private_keys_held in [false, true] {
+            let pending = IdentityStatus {
+                account_keys_fetched: true,
+                identity_known: true,
+                private_keys_held,
+                account_keys_answer_unsettled: false,
+                identity_publication_pending: true,
+            };
+            assert_eq!(
+                may_publish(&pending),
+                Err(MachineError::IdentityNotKnown),
+                "the launch-time call may not put an identity no homeserver has confirmed \
+                 onto an account: {pending:?}"
+            );
+            assert_eq!(
+                may_create(&pending),
+                Ok(()),
+                "and finishing it must stay reachable, or this is the seventh round's \
+                 brick again: {pending:?}"
             );
         }
     }

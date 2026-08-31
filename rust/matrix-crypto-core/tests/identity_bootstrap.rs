@@ -31,10 +31,24 @@
 
 use matrix_crypto_core::{
     bootstrap_identity, create_identity, create_machine, identity_status, mark_request_sent,
-    take_outgoing_requests, MachineConfig, MachineError, OutgoingRequest, SessionError,
+    take_outgoing_requests, MachineConfig, MachineError, OutgoingRequest,
 };
 
 const ACCOUNT: &str = "@alice:example.org";
+
+/// Turns the publication into the `/keys/query` answer a homeserver that
+/// accepted it would send back.
+fn answer_carrying(publication: &str) -> String {
+    let up: serde_json::Value = serde_json::from_str(publication).expect("JSON");
+    serde_json::json!({
+        "device_keys": { ACCOUNT: {} },
+        "failures": {},
+        "master_keys": { ACCOUNT: up["master_key"] },
+        "self_signing_keys": { ACCOUNT: up["self_signing_key"] },
+        "user_signing_keys": { ACCOUNT: up["user_signing_key"] },
+    })
+    .to_string()
+}
 
 /// A `/keys/query` answer naming no identity for this account: the server
 /// has been asked, it has answered **about this account**, and what it holds
@@ -119,18 +133,30 @@ fn a_bootstrap_publishes_one_identity_and_republishes_the_same_one() {
 
         // The two calls are different acts, and this is the state that says
         // so at integration level rather than only in `signing.rs`'s unit
-        // tests. The account now has an identity **and** this device holds
-        // its private keys, which is the one state where the old single rule
-        // served both: it could not tell a republication from a creation, so
-        // it served whichever was asked for. Publishing is right here.
-        // Creating is not, and creating a second identity over the one this
-        // device just made is exactly the shape that resets everybody's
-        // trust when the first one came from somewhere else.
-        assert_eq!(
-            create_identity().await,
-            Err(MachineError::IdentityAlreadyExists),
-            "there is nothing left to create: {minted:?}"
+        // tests. What changed in the ninth round is *which* of them is
+        // served here, and it is worth saying rather than quietly editing.
+        //
+        // The identity has been minted and no homeserver has confirmed it
+        // yet, so it is a candidate rather than the account's identity.
+        // Publishing a candidate is not the launch-time call's to do:
+        // measured on two live homeservers, doing that destroyed an
+        // account's real identity when a second device signed up in the gap
+        // before this device's answer was reported. So `bootstrap_identity`
+        // refuses here, and finishing the publication is the deliberate
+        // call, which is exactly what the caller asked for a moment ago.
+        assert!(
+            minted.identity_publication_pending,
+            "the mint is not confirmed by anybody yet: {minted:?}"
         );
+        assert_eq!(
+            bootstrap_identity().await,
+            Err(MachineError::IdentityNotKnown),
+            "the launch-time call may not publish an identity nothing has confirmed: \
+             {minted:?}"
+        );
+        create_identity()
+            .await
+            .expect("and finishing it is the same decision that was just made");
 
         // Claim 2.
         let published = take_outgoing_requests()
@@ -191,64 +217,94 @@ fn a_bootstrap_publishes_one_identity_and_republishes_the_same_one() {
         mark_request_sent(&signing_keys[0].id, "{}")
             .await
             .expect("resolving the signing-keys upload must not fail");
-        let published_master = body["master_key"].clone();
 
-        // Claim 3.
+        // **And the report alone does not confirm it.** Reporting the upload
+        // is the caller's word, not the server's, and the two bodies this
+        // library cannot tell from a success are exactly what a dropped
+        // connection produces. So the record survives it, and the
+        // launch-time call stays refused until a homeserver's own answer
+        // carries the identity back.
+        assert!(
+            identity_status()
+                .await
+                .expect("reading the identity status must not fail")
+                .identity_publication_pending,
+            "a caller's report is not a homeserver's answer"
+        );
+        assert_eq!(
+            bootstrap_identity().await,
+            Err(MachineError::IdentityNotKnown),
+            "so the launch-time call is still refused"
+        );
+
+        let confirming = published
+            .iter()
+            .find(|request| request.kind == "keys_query" && names_the_account(&request.body))
+            .expect("the creation queues a confirming query alongside the publication");
+        mark_request_sent(&confirming.id, &answer_carrying(&signing_keys[0].body))
+            .await
+            .expect("the homeserver's own answer must be accepted");
+        let confirmed = identity_status()
+            .await
+            .expect("reading the identity status must not fail");
+        assert!(
+            !confirmed.identity_publication_pending,
+            "and the server's answer is what confirms it"
+        );
+
+        // Claim 3, **and it is the opposite of what it used to be.**
+        //
+        // This asserted that a second bootstrap republishes the same master
+        // key, on the reasoning that publishing the same one is harmless and
+        // publishing a different one is the failure mode. The first half is
+        // false whenever the account's identity has moved since this device
+        // last looked, and that is not exotic: resetting cross-signing is a
+        // first-class action in every mainstream client.
+        //
+        // Measured on continuwuity three times and on Synapse: a device that
+        // signed up entirely correctly, restarted, refused, queued the key
+        // query as documented and had the homeserver answer it honestly, had
+        // another client of the account reset the identity in the gap before
+        // that answer was reported, and then republished the old identity
+        // over the new one through this very call. Nothing in that sequence
+        // is stale, interrupted or misbehaving.
+        //
+        // So the launch-time call no longer hands over the one request that
+        // can replace an identity. It still republishes this device's keys
+        // and its signature into the account's identity, because those are
+        // idempotent and repair a publication whose signature upload was the
+        // part that failed.
         bootstrap_identity()
             .await
-            .expect("a second bootstrap must be served, not refused");
+            .expect("a second bootstrap must still be served, and do the harmless half");
         let again = take_outgoing_requests()
             .await
             .expect("draining the pump must not fail");
-        let republished = again
-            .iter()
-            .find(|request| request.kind == "signing_keys_upload")
-            .unwrap_or_else(|| {
-                panic!(
-                    "a second bootstrap must republish the identity; got {:?}",
-                    kinds(&again)
-                )
-            });
-        let republished_body: serde_json::Value =
-            serde_json::from_str(&republished.body).expect("a pump body must be JSON");
+        assert!(
+            !again
+                .iter()
+                .any(|request| request.kind == "signing_keys_upload"),
+            "THIS is the assertion the claim became: the every-launch call must never hand \
+             over the request that replaces an account's cross-signing identity. It cannot \
+             be needed here, because the identity is confirmed, which means a homeserver's \
+             own answer carried it back and the server demonstrably has it. Got {:?}",
+            kinds(&again)
+        );
+        assert!(
+            again
+                .iter()
+                .any(|request| request.kind == "signature_upload"),
+            "and the harmless half must still happen, or a device whose signature upload \
+             was the part that failed has no way to repair it. Got {:?}",
+            kinds(&again)
+        );
         assert_eq!(
-            republished_body["master_key"], published_master,
-            "a second bootstrap must republish the same master key. A different one here \
-             is the milestone's whole failure mode: every device and every user who \
-             verified the first identity is silently invalidated"
+            identity_status()
+                .await
+                .expect("reading the identity status must not fail"),
+            confirmed,
+            "and nothing about what this library knows may have moved"
         );
-
-        // Claim 4. That last publication was drained and deliberately left
-        // unresolved. One more cycle must supersede it rather than leave
-        // both outstanding.
-        let stale_id = republished.id.clone();
-        bootstrap_identity()
-            .await
-            .expect("a third bootstrap must be served");
-        let third = take_outgoing_requests()
-            .await
-            .expect("draining the pump must not fail");
-        let fresh = third
-            .iter()
-            .find(|request| request.kind == "signing_keys_upload")
-            .unwrap_or_else(|| panic!("a third bootstrap must publish; got {:?}", kinds(&third)));
-        assert_ne!(
-            fresh.id, stale_id,
-            "each publication carries its own transaction id, which is what makes the \
-             eviction below necessary rather than automatic"
-        );
-
-        assert_eq!(
-            mark_request_sent(&stale_id, "{}").await,
-            Err(SessionError::UnknownRequest),
-            "a fresh publication must supersede the stale one. Both kept, `pending` grows by \
-             one entry per bootstrap-and-drain cycle for the life of the process, and a caller \
-             is handed two ids for one identity and two rounds of user-interactive \
-             authentication to publish it"
-        );
-        mark_request_sent(&fresh.id, "{}")
-            .await
-            .expect("the surviving publication must still be resolvable");
     });
 }
 
