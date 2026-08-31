@@ -57,7 +57,7 @@ import {
   MachineFfiError,
   markRequestFailed as nativeMarkRequestFailed,
   markRequestSent as nativeMarkRequestSent,
-  offerScanning as nativeOfferScanning,
+  offerCodes as nativeOfferCodes,
   openCryptoStore as nativeOpenCryptoStore,
   receiveSyncChanges as nativeReceiveSyncChanges,
   recoverIdentity as nativeRecoverIdentity,
@@ -215,7 +215,7 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
     // returned a promise would let a facade that forgot to make its own call
     // synchronous pass, and the whole point of the synchronous shape is that
     // an unawaited call cannot land after the flow it was meant to affect.
-    offerScanning: vi.fn((_enabled: boolean) => undefined),
+    offerCodes: vi.fn((_capabilities: { canShow: boolean; canScan: boolean }) => undefined),
     // The signing identity. Stateless defaults, and deliberately the
     // "nobody has asked" row rather than a served one: a test that forgot
     // to install the chain fake below gets the refusal the real core would
@@ -1186,8 +1186,8 @@ beforeEach(() => {
   vi.mocked(nativeSubmitScannedCode).mockResolvedValue(undefined)
   vi.mocked(nativeConfirmScan).mockReset()
   vi.mocked(nativeConfirmScan).mockResolvedValue(undefined)
-  vi.mocked(nativeOfferScanning).mockReset()
-  vi.mocked(nativeOfferScanning).mockImplementation(() => undefined)
+  vi.mocked(nativeOfferCodes).mockReset()
+  vi.mocked(nativeOfferCodes).mockImplementation(() => undefined)
   // The seven the signing-identity chain reimplements. Same defaults as the
   // module-level factory declares, restated here rather than shared with it
   // because that factory runs once and this runs before every test.
@@ -1485,31 +1485,47 @@ describe('getVerificationMaterial', () => {
  * three call sites off the pump. Native is mocked away here, so no
  * announcement is visible at all.
  *
- * What *is* only visible here is the crossing, and it has two ways of going
- * wrong that no Rust test can see:
+ * What *is* only visible here is the crossing, and it has three ways of
+ * going wrong that no Rust test can see:
  *
- * 1. **The boolean.** A bridge that raised the switch rather than storing
- *    what it was handed, or that coerced the argument, is invisible to a
- *    core that only ever sees the value it was given.
- * 2. **Somebody else calling it.** The default only survives if nothing in
- *    this surface turns the switch on for its own convenience, and a
- *    product that never calls it has no way to notice that something did.
+ * 1. **The values.** A bridge that raised a field rather than storing what
+ *    it was handed, or that coerced it, is invisible to a core that only
+ *    ever sees the value it was given.
+ * 2. **A dropped or transposed field.** The two fields have the same type,
+ *    so nothing but a test distinguishes `{ canShow: true, canScan: false }`
+ *    from its opposite, and its opposite is precisely the claim that killed
+ *    a flow on hardware.
+ * 3. **Somebody else calling it.** The default only survives if nothing in
+ *    this surface answers for the product's own convenience, and a product
+ *    that never calls it has no way to notice that something did.
  */
 describe('offering scannable codes at all', () => {
-  it('carries true through to the native switch, and exactly true', () => {
-    offerScannableCodes(true)
+  it('carries a screen with no camera through exactly as it was written', () => {
+    offerScannableCodes({ canShow: true, canScan: false })
 
-    const calls = vi.mocked(nativeOfferScanning).mock.calls
+    const calls = vi.mocked(nativeOfferCodes).mock.calls
     expect(calls.length).toBe(1)
-    // `toBe`, not truthiness: a bridge handing the native side `1` or
-    // `'true'` satisfies every loose check and this is where it fails.
-    expect(calls.at(-1)?.[0]).toBe(true)
+    // `toEqual` on the whole record and `toBe` on each field: a bridge
+    // handing the native side `1` or `'true'` satisfies every loose check,
+    // and one that dropped `canScan` would satisfy a check that only looked
+    // at `canShow`.
+    expect(calls.at(-1)?.[0]).toEqual({ canShow: true, canScan: false })
+    expect(calls.at(-1)?.[0].canShow).toBe(true)
+    expect(calls.at(-1)?.[0].canScan).toBe(false)
   })
 
-  it('carries false as well, rather than only ever raising the switch', () => {
-    offerScannableCodes(false)
-
-    expect(vi.mocked(nativeOfferScanning).mock.calls.at(-1)?.[0]).toBe(false)
+  it('carries the other three answers too, each field on its own', () => {
+    for (const canShow of [false, true]) {
+      for (const canScan of [false, true]) {
+        offerScannableCodes({ canShow, canScan })
+        const carried = vi.mocked(nativeOfferCodes).mock.calls.at(-1)?.[0]
+        // Read back field by field rather than as one object, so a bridge
+        // that copied one field into both fails here rather than on the
+        // two rounds where the two happen to agree.
+        expect(carried?.canShow).toBe(canShow)
+        expect(carried?.canScan).toBe(canScan)
+      }
+    }
   })
 
   /**
@@ -1550,7 +1566,7 @@ describe('offering scannable codes at all', () => {
       await cancelVerification(FLOW)
     }
 
-    expect(vi.mocked(nativeOfferScanning)).not.toHaveBeenCalled()
+    expect(vi.mocked(nativeOfferCodes)).not.toHaveBeenCalled()
   })
 })
 

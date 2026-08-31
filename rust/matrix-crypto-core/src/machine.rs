@@ -379,23 +379,55 @@ pub enum MachineError {
     /// flow at the wrong stage is one to wait on or to restart; a flow that
     /// did not negotiate codes never will, however long a product waits.
     ///
-    /// **Two causes, and a caller can always tell which.** Either this
-    /// process never called `crate::offer_scanning`, in which case this
-    /// library announced no scanning half and the remedy is that one call
-    /// before the next flow; or the other device did not offer to scan,
-    /// which nothing here can change and whose answer is to compare a short
-    /// string instead. The switch is the caller's own state, so the
-    /// distinction needs no second variant to carry it: a product that never
-    /// turned scanning on knows this is the first, and one that did knows it
-    /// is the second.
+    /// **One cause now, and it is the caller's own.** This process did not
+    /// answer `crate::offer_codes` with `can_show`, so this library
+    /// announced no showing half on this flow and there is nothing for it to
+    /// produce. The remedy is that one call before the next flow.
     ///
-    /// The second cause is reachable against any client that does not
-    /// implement scanning, which includes this library's own releases before
-    /// this one and every client that speaks only the short-string method.
+    /// It used to carry a second cause, the far side not offering to scan,
+    /// and told a caller to work out which from the switch it had set. That
+    /// was sound while the switch was a single boolean and stopped being
+    /// sound the moment it became two independent facts: a product that
+    /// offered showing alone, correctly and deliberately, is exactly the
+    /// product this would have sent to go and re-check whether it had asked
+    /// for codes at all. The far side's half is `PeerCannotScan` below.
     ///
     /// Appended, not inserted -- see `UnknownFlow` above.
-    #[error("codes were not negotiated on this flow")]
+    #[error("this build did not offer to show a code on this flow")]
     CodeNotOffered,
+    /// The other device did not announce that it can scan, so no code this
+    /// side draws can be read by it.
+    ///
+    /// **Nothing on this device can change it and no amount of waiting
+    /// will.** The two sides settled which methods they can both carry out
+    /// when the flow became ready, and the far side did not claim a camera.
+    /// A product's answer is to compare the short authentication string
+    /// instead, which both sides always announce.
+    ///
+    /// # Why this is its own variant and not a stage
+    ///
+    /// Two devices that can each show a code and neither scan one have no
+    /// code mode between them, which is an ordinary thing for two
+    /// code-showing products on one account to be. Before this variant
+    /// existed such a flow was told `CodeNotOffered` while its request was
+    /// ready and `WrongStage` once it had transitioned, because upstream
+    /// carries the two method lists on `Ready` and on no other state. The
+    /// second of those is a stage complaint answering a question about
+    /// methods: it says wait or start again, and waiting and starting again
+    /// are the two things that cannot help. That is what a person met on
+    /// hardware on 2026-08-31, and it is why
+    /// `crate::verification`'s flow registry keeps the negotiation while
+    /// upstream is still willing to state it.
+    ///
+    /// Reachable against any client that does not implement scanning, which
+    /// includes every client that speaks only the short-string method, and
+    /// against any product that answered `crate::offer_codes` with
+    /// `can_show` alone, which is the truthful answer for a product with a
+    /// screen and no scanner.
+    ///
+    /// Appended, not inserted; see `UnknownFlow` above.
+    #[error("the other device did not offer to scan a code")]
+    PeerCannotScan,
     /// A scanned payload decoded, named this flow, and carries keys this flow
     /// does not expect.
     ///
@@ -719,7 +751,7 @@ pub(crate) fn reset_for_test() {
     // to what a fresh process has, so one test's choice is not another's
     // starting state. Unlike the registry above this has nothing to do
     // with the store's lifetime and no ordering constraint of its own.
-    crate::verification::reset_scanning_for_test();
+    crate::verification::reset_code_capabilities_for_test();
 
     // Same reason, one layer up: a recorder installed by one test would
     // otherwise keep receiving another test's signals, and a test that

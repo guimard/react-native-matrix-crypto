@@ -1,4 +1,5 @@
 import type {
+  CodeCapabilities,
   CryptoAlgorithm,
   CryptoScopeId,
   EventEnvelope,
@@ -28,7 +29,7 @@ import {
   identityStatus as nativeIdentityStatus,
   markRequestFailed as nativeMarkRequestFailed,
   markRequestSent as nativeMarkRequestSent,
-  offerScanning as nativeOfferScanning,
+  offerCodes as nativeOfferCodes,
   openCryptoStore as nativeOpenCryptoStore,
   receiveSyncChanges as nativeReceiveSyncChanges,
   recoverIdentity as nativeRecoverIdentity,
@@ -1909,40 +1910,41 @@ export async function cancelVerification(verificationId: string): Promise<void> 
 }
 
 /**
- * Says whether this product can show a scannable code and read one.
+ * Says what this product can do with a scannable code.
  *
- * **Off until you call this, and a build that never does says on the wire
- * exactly what it said before codes existed here.** Nothing about a
- * consumer's verifications changes because this library grew a feature they
- * do not use. Turning it on is one line and it is yours to write, because
- * the two claims a code makes are claims about the *product*: it owns the
- * camera, the screen and the scanner, and this library cannot know whether
- * you built any of them.
+ * **Nothing is claimed until you call this, and a build that never does says
+ * on the wire exactly what it said before codes existed here.** Nothing
+ * about a consumer's verifications changes because this library grew a
+ * feature they do not use. Answering is a few lines and they are yours to
+ * write, because the two claims a code makes are claims about the *product*:
+ * it owns the camera, the screen and the scanner, and this library cannot
+ * know whether you built any of them.
  *
- * # Both settings cost something, so both are written down
+ * See {@link CodeCapabilities} for what each field means, why there are two
+ * of them, and which of the two mistakes is the expensive one.
  *
- * **On when you cannot really scan:** the other side's client is told this
- * one can, so it shows its user a code and asks them to point a camera at
- * it. Nothing here can read it. **No error reaches either product**, because
- * nothing was asked of this library, and the flow simply stalls until the
- * protocol's own ten-minute timeout. The person who pays is a user who did
- * nothing wrong, and neither product can see it happen.
+ * # A product with a screen and no scanner
  *
- * **Off when you meant to be on:** {@link getVerificationCode} refuses with
- * `'code_not_offered'` on the first flow you try it on. A named error, at
- * integration time, in front of the person who can fix it in one line.
+ * ```ts
+ * offerScannableCodes({ canShow: true, canScan: false })
+ * ```
  *
- * That asymmetry is the whole argument for the default. A developer holding
- * an error message is cheap; a user staring at a code nobody can scan, with
- * the product blind to it, is not.
+ * That is the truthful answer for most products, and it used to be
+ * unsayable. Saying it removes a choice from the far side: told this one has
+ * no camera, a peer cannot decide to show its own code and wait, so it scans
+ * or the two of you compare the short string. Claiming a camera you do not
+ * have leaves a person holding a phone in front of a square nothing will
+ * ever read, with **no error reaching either product**, until the protocol's
+ * own ten-minute timeout retires the flow.
  *
- * # Off does more than stay quiet
+ * # Withholding a half does more than stay quiet
  *
- * It makes a code unavailable rather than merely unadvertised, in both
- * directions, and that is not this library's choice: a code exists only if
- * *both* sides announced their half. So with this off, the peer's own client
- * produces no code either and falls through to the short string, exactly as
- * it did against every earlier release.
+ * `canShow: false` makes a code unavailable rather than merely
+ * unadvertised, in both directions, and that is not this library's choice: a
+ * code exists only if the side drawing it announced showing **and** the side
+ * reading it announced scanning. So with both halves off, the peer's own
+ * client produces no code either and falls through to the short string,
+ * exactly as it did against every earlier release.
  *
  * # When to call it
  *
@@ -1955,14 +1957,20 @@ export async function cancelVerification(verificationId: string): Promise<void> 
  * describes the product, and a product does not have a camera on some of its
  * verifications and not others.
  *
- * **Not asynchronous, unlike almost everything else here.** It sets one flag
- * and cannot fail, and the shape is deliberate: an awaitable call that a
- * caller forgot to await could land after the flow it was meant to affect
- * had already said what it can do.
+ * **Not asynchronous, unlike almost everything else here.** It sets one
+ * process-wide value and cannot fail, and the shape is deliberate: an
+ * awaitable call that a caller forgot to await could land after the flow it
+ * was meant to affect had already said what it can do.
  */
-export function offerScannableCodes(enabled: boolean): void {
+export function offerScannableCodes(capabilities: CodeCapabilities): void {
   try {
-    nativeOfferScanning(enabled)
+    // Destructured and rebuilt rather than passed straight through: the two
+    // records have the same field names today and nothing guarantees they
+    // keep them, and a field this surface stopped forwarding would be a
+    // claim a product never made travelling on its behalf, which is the
+    // defect this whole call was reshaped to end.
+    const { canShow, canScan } = capabilities
+    nativeOfferCodes({ canShow, canScan })
   } catch (e) {
     // Cannot fail on the Rust side: it stores a boolean and returns nothing.
     // Wrapped anyway, because the layer between here and there can fail on

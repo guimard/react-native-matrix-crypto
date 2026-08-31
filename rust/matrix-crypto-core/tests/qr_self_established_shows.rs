@@ -30,8 +30,8 @@
 
 use matrix_crypto_core::{
     confirm_scan, create_identity, create_machine, device_statuses, flow_stage, identity_status,
-    in_runtime, mark_request_sent, offer_scanning, read_code, request_flow, take_outgoing_requests,
-    CryptoSignal, FlowStage, MachineConfig, TrustState,
+    in_runtime, mark_request_sent, offer_codes, read_code, request_flow, take_outgoing_requests,
+    CodeCapabilities, CryptoSignal, FlowStage, MachineConfig, TrustState,
 };
 use matrix_sdk_common::ruma::{OwnedDeviceId, OwnedUserId, TransactionId};
 use matrix_sdk_crypto::matrix_sdk_qrcode::QrVerificationData;
@@ -72,7 +72,10 @@ fn the_device_that_holds_the_identity_shows_a_code_and_a_new_login_scans_it() {
         // below negotiates the short string alone and nothing here can
         // happen. `tests/qr_announcement.rs` is where that default is the
         // subject rather than the setting.
-        offer_scanning(true);
+        offer_codes(CodeCapabilities {
+            can_show: true,
+            can_scan: true,
+        });
 
         // ---- The login that has just happened ------------------------------
         let new_login = OlmMachine::new(&account, &new_device_id).await;

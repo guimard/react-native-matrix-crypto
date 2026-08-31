@@ -58,7 +58,11 @@
 //! `verification_stage`, `verification_material`, `confirm_verification`,
 //! `cancel_verification`, `verification_code` and `confirm_scan` each take a
 //! single `String` and so have nothing to transpose either;
-//! `offer_scanning` takes a single `bool` and `submit_scanned_code` takes a
+//! `offer_codes` takes a single record, whose two `bool` fields are named
+//! at every call site and so cannot be transposed by a caller (a bridge that
+//! transposed them *inside* the record is a different hazard, and
+//! `exports.rs` drives all four combinations against the core's own reader);
+//! `submit_scanned_code` takes a
 //! `String` and a `Vec<u8>`, which no compiler could let anyone transpose
 //! -- the hazard on that one is the bridge dropping or reshaping the bytes,
 //! which `exports.rs` and `value_mapping.rs` cover between them; and

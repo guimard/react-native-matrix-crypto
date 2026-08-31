@@ -377,6 +377,17 @@ fn every_machine_error_maps_to_the_matching_ffi_variant() {
     );
     assert!(
         matches!(
+            MachineFfiError::from(MachineError::PeerCannotScan),
+            MachineFfiError::PeerCannotScan
+        ),
+        "MachineError::PeerCannotScan must not arrive as another kind, and least \
+         of all as `CodeNotOffered`, which is the one it was split out of: the \
+         two have opposite remedies, one is the product's own switch and the \
+         other is a fact about the far side, and folded together they sent a \
+         product that had answered correctly to go and re-check its answer"
+    );
+    assert!(
+        matches!(
             MachineFfiError::from(MachineError::ScannedCodeRefused),
             MachineFfiError::ScannedCodeRefused
         ),

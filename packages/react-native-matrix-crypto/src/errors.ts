@@ -232,20 +232,35 @@ export type CryptoErrorKind =
   // that showed one sentence for both would send half its users to set up
   // something that is not broken.
   | 'peer_identity_not_known'
-  // Codes were not negotiated on this flow, so there is nothing to show.
-  // Not a stage: no amount of waiting changes it.
+  // This build did not offer to show a code on this flow, so there is
+  // nothing for it to produce. Not a stage: no amount of waiting changes it.
+  // `offerScannableCodes({ canShow: true, ... })`, before the next flow, is
+  // the whole of the remedy.
   //
-  // **Two causes, and a product can always tell which**, because one of them
-  // is its own state. Either this build never called `offerScannableCodes`,
-  // which is one line before the next flow; or the other device did not
-  // offer to scan, which nobody here can fix and whose answer is to compare
-  // a short string instead. A product that never turned codes on knows it is
-  // the first; one that did knows it is the second, which is why this is one
-  // kind rather than two.
-  //
-  // The second cause is reachable against every client that speaks only the
-  // short string, including this library's own earlier releases.
+  // **It used to carry a second cause** as well, the far side having no
+  // camera, and told a product to work out which from the switch it had set.
+  // That was sound while the switch was one boolean and stopped being sound
+  // the moment it became two facts: a product that answered `canShow: true,
+  // canScan: false`, correctly and deliberately, is exactly the product that
+  // advice sent to go and re-check whether it had asked for codes at all.
+  // The far side's half is `'peer_cannot_scan'` below.
   | 'code_not_offered'
+  // The other device did not say it can scan, so no code this side draws can
+  // be read by it. **Nothing your product can do changes that, and waiting
+  // will not**: show the short authentication string instead, which both
+  // sides always announce.
+  //
+  // The ordinary way to meet this is two code-showing products with no
+  // scanner between them, which is what two of the same product on one
+  // account are. It is also what every client that speaks only the short
+  // string looks like.
+  //
+  // Before this kind existed, such a flow reported `'code_not_offered'`
+  // while its request was ready and `'wrong_stage'` once it had moved on to
+  // anything else. The second is a complaint about a stage in answer to a
+  // question about methods: it says wait or start again, and waiting and
+  // starting again are the two things that cannot help.
+  | 'peer_cannot_scan'
   // A scanned payload decoded, named this flow, and carries keys that are
   // not the ones this side holds for the device on the other end. **The
   // narrowest of the four, and the only one that can mean something is wrong
@@ -469,6 +484,16 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
   // thing that can, and it is what caught these.
   ['PeerIdentityNotKnown', 'peer_identity_not_known'],
   ['CodeNotOffered', 'code_not_offered'],
+  // The half that left `CodeNotOffered` when the code switch became two
+  // facts rather than one boolean. Without this entry it arrives as kind
+  // 'unknown' with the message "crypto error: unknown", which is exactly the
+  // failure this map exists to prevent and which no test on the Rust side
+  // can see: the core proves the right error is produced, and this map is
+  // the only thing that decides whether a product can act on it. It matters
+  // here as much as anywhere in this file, because the whole reason the
+  // variant was split out is that a product has to be able to stop offering
+  // a code and offer a string instead.
+  ['PeerCannotScan', 'peer_cannot_scan'],
   ['ScannedCodeRefused', 'scanned_code_refused'],
   // The three that split `ScannedCodeRefused` apart, and the reason this
   // block is where the split is worth anything: the design's section 4

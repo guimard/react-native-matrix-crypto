@@ -874,23 +874,27 @@ export async function markRequestSent(
 }
 
 /**
- * Says whether this product can show a code and read one. Mirrors
- * `offer_scanning`; see its own doc comment in
+ * Says what this product can do with a scannable code. Mirrors
+ * `offer_codes`; see its own doc comment in
  * `matrix-crypto-core::verification` for what each setting costs, who pays
- * it, and why off does more than stay quiet.
+ * it, why nothing is claimed until a product says so, and what each of the
+ * four answers puts on the wire.
  *
  * **Not `async` and not fallible, unlike every other exported call here.**
- * It sets one process-wide flag, touches no store and cannot fail, and the
+ * It sets one process-wide word, touches no store and cannot fail, and the
  * synchronous shape is deliberate rather than incidental: a caller must set
  * this *before* opening or answering a flow, and an asynchronous one that a
  * caller forgot to await could land after the flow it was meant to affect
  * had already announced what it can do.
  */
-export function offerScanning(enabled: boolean): void {
+export function offerCodes(capabilities: CodeCapabilities): void {
   uniffiCaller.rustCall(
     /*caller:*/ (callStatus) => {
-      nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_offer_scanning(
-        FfiConverterBool.lower(enabled, nativeModule().rustbuffer_alloc),
+      nativeModule().ubrn_uniffi_matrix_crypto_ffi_fn_func_offer_codes(
+        FfiConverterTypeCodeCapabilities.lower(
+          capabilities,
+          nativeModule().rustbuffer_alloc
+        ),
         callStatus
       );
     },
@@ -1811,6 +1815,62 @@ const FfiConverterTypeAccountDataEntry = (() => {
       return (
         FfiConverterString.allocationSize(value.eventType) +
         FfiConverterString.allocationSize(value.content)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Mirror of the core's code capabilities, carrying the UniFFI record
+ * derive.
+ *
+ * **A record with two required fields, not a boolean**, and the shape is
+ * the whole point of it: see the core's own `CodeCapabilities` for what the
+ * boolean cost and who paid it. UniFFI gives a field with no default no
+ * default across the boundary either, so a caller in another language that
+ * leaves one out fails to typecheck rather than being handed a yes it never
+ * said.
+ */
+export type CodeCapabilities = {
+  canShow: boolean;
+  canScan: boolean;
+};
+
+/**
+ * Generated factory for {@link CodeCapabilities} record objects.
+ */
+export const CodeCapabilities = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<CodeCapabilities, ReturnType<typeof defaults>>(
+      defaults
+    );
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<CodeCapabilities>,
+  });
+})();
+
+const FfiConverterTypeCodeCapabilities = (() => {
+  type TypeName = CodeCapabilities;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    readFromCursor(c: Cursor): TypeName {
+      return {
+        canShow: FfiConverterBool.readFromCursor(c),
+        canScan: FfiConverterBool.readFromCursor(c),
+      };
+    }
+    writeIntoCursor(value: TypeName, c: Cursor): void {
+      FfiConverterBool.writeIntoCursor(value.canShow, c);
+      FfiConverterBool.writeIntoCursor(value.canScan, c);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterBool.allocationSize(value.canShow) +
+        FfiConverterBool.allocationSize(value.canScan)
       );
     }
   }
@@ -3026,6 +3086,7 @@ export enum MachineFfiError_Tags {
   ScannedCodeUnrecognised = "ScannedCodeUnrecognised",
   ScannedCodeMalformed = "ScannedCodeMalformed",
   ScannedCodeForAnotherFlow = "ScannedCodeForAnotherFlow",
+  PeerCannotScan = "PeerCannotScan",
 }
 /**
  * Mirror of the core's machine error, carrying the UniFFI error derive.
@@ -3704,6 +3765,35 @@ export const MachineFfiError = (() => {
     }
   }
 
+  type PeerCannotScan__interface = {
+    tag: MachineFfiError_Tags.PeerCannotScan;
+  };
+  class PeerCannotScan_
+    extends UniffiError
+    implements PeerCannotScan__interface
+  {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
+    readonly tag = MachineFfiError_Tags.PeerCannotScan;
+    constructor() {
+      super("MachineFfiError", "PeerCannotScan");
+    }
+
+    static new(): PeerCannotScan_ {
+      return new PeerCannotScan_();
+    }
+
+    static instanceOf(obj: any): obj is PeerCannotScan_ {
+      return obj.tag === MachineFfiError_Tags.PeerCannotScan;
+    }
+    static hasInner(obj: any): obj is PeerCannotScan_ {
+      return false;
+    }
+  }
+
   function instanceOf(obj: any): obj is MachineFfiError {
     return obj[uniffiTypeNameSymbol] === "MachineFfiError";
   }
@@ -3733,6 +3823,7 @@ export const MachineFfiError = (() => {
     ScannedCodeUnrecognised: ScannedCodeUnrecognised_,
     ScannedCodeMalformed: ScannedCodeMalformed_,
     ScannedCodeForAnotherFlow: ScannedCodeForAnotherFlow_,
+    PeerCannotScan: PeerCannotScan_,
   });
 })();
 /**
@@ -3766,7 +3857,8 @@ export type MachineFfiError = InstanceType<
     | "ScannedCodeRefused"
     | "ScannedCodeUnrecognised"
     | "ScannedCodeMalformed"
-    | "ScannedCodeForAnotherFlow"]
+    | "ScannedCodeForAnotherFlow"
+    | "PeerCannotScan"]
 >;
 
 // FfiConverter for enum MachineFfiError
@@ -3825,6 +3917,8 @@ const FfiConverterTypeMachineFfiError = (() => {
           return new MachineFfiError.ScannedCodeMalformed();
         case 23:
           return new MachineFfiError.ScannedCodeForAnotherFlow();
+        case 24:
+          return new MachineFfiError.PeerCannotScan();
         default:
           throw new UniffiInternalError.UnexpectedEnumCase();
       }
@@ -3927,6 +4021,10 @@ const FfiConverterTypeMachineFfiError = (() => {
           c.writeI32(23);
           return;
         }
+        case MachineFfiError_Tags.PeerCannotScan: {
+          c.writeI32(24);
+          return;
+        }
         default:
           // Throwing from here means that MachineFfiError_Tags hasn't matched an ordinal.
           throw new UniffiInternalError.UnexpectedEnumCase();
@@ -4007,6 +4105,9 @@ const FfiConverterTypeMachineFfiError = (() => {
           return 4;
         }
         case MachineFfiError_Tags.ScannedCodeForAnotherFlow: {
+          return 4;
+        }
+        case MachineFfiError_Tags.PeerCannotScan: {
           return 4;
         }
         default:
@@ -5289,11 +5390,11 @@ function uniffiEnsureInitialized() {
     );
   }
   if (
-    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_offer_scanning() !==
-    21506
+    nativeModule().ubrn_uniffi_matrix_crypto_ffi_checksum_func_offer_codes() !==
+    51895
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
-      "uniffi_matrix_crypto_ffi_checksum_func_offer_scanning"
+      "uniffi_matrix_crypto_ffi_checksum_func_offer_codes"
     );
   }
   if (
@@ -5440,6 +5541,7 @@ export default Object.freeze({
   initialize: uniffiEnsureInitialized,
   converters: {
     FfiConverterTypeAccountDataEntry,
+    FfiConverterTypeCodeCapabilities,
     FfiConverterTypeCryptoMachineConfig,
     FfiConverterTypeCryptoObserver,
     FfiConverterTypeCryptoSignal,

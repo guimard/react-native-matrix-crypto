@@ -20,6 +20,7 @@
 import './index.tsx'
 
 export type {
+  CodeCapabilities,
   CryptoAlgorithm,
   CryptoScopeId,
   EventEnvelope,

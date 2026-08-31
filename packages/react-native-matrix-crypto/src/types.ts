@@ -19,6 +19,7 @@ import type {
   getVerificationMaterial,
   getVerificationStage,
   markRequestSent,
+  offerScannableCodes,
   receiveSyncChanges,
   startVerificationComparison,
   submitScannedCode,
@@ -290,6 +291,55 @@ export interface ScannableCode {
   width: number
   /** The symbol, row-major, `width * width` entries. `true` is dark. */
   modules: boolean[]
+}
+
+/**
+ * What your product can do with a scannable code, as the two separate facts
+ * it really is.
+ *
+ * Handed to {@link offerScannableCodes}. Both fields are required and
+ * neither has a default, which is deliberate and is the whole shape of this
+ * type.
+ *
+ * ## Why this is not a boolean
+ *
+ * It was one, and the single boolean announced showing and scanning
+ * together. So a product could say "codes, both directions" or "no codes at
+ * all", and a product with a screen and no scanner had to claim a camera in
+ * order to get a code at all. A real client on the other end takes that
+ * claim at its word: it may answer by showing *its* code and waiting for
+ * yours to be pointed at it, and a product with no scanner then leaves a
+ * person holding a phone in front of a square nothing will ever read. No
+ * error reaches either side, because nothing was asked of either library.
+ *
+ * So the question is put to you, in two parts, and neither part has an
+ * answer this library is willing to guess:
+ *
+ * - `canShow` is true if your product can draw {@link ScannableCode.modules}
+ *   on a screen for another device's camera;
+ * - `canScan` is true if your product has a scanner, has the camera
+ *   permission, and can hand the raw bytes it reads to
+ *   {@link submitScannedCode}.
+ *
+ * **`canScan: true` when you cannot really scan is the expensive mistake**,
+ * and it is expensive because nobody is told. `canShow: false` when you
+ * meant true is the cheap one: {@link getVerificationCode} refuses with
+ * `'code_not_offered'` on the first flow you try, in front of the developer
+ * who can fix it in one line.
+ *
+ * ## A product with a screen and no scanner
+ *
+ * `{ canShow: true, canScan: false }`. The other side is then told it has no
+ * camera to aim at this one, so **it cannot choose to show**: it scans, or
+ * the two of you compare the short string. That is a choice removed from the
+ * far side by a claim withheld here, and it is what makes this the truthful
+ * answer rather than a cautious one.
+ */
+export interface CodeCapabilities {
+  /** This product can draw a code on a screen for another device's camera. */
+  canShow: boolean
+  /** This product can read a code off another device's screen. */
+  canScan: boolean
 }
 
 /**

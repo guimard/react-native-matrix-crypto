@@ -253,6 +253,21 @@ pub enum MachineFfiError {
     ScannedCodeMalformed,
     #[error("the scanned code is for a different verification")]
     ScannedCodeForAnotherFlow,
+    // Appended last, like every variant above and for the same wire-ordinal
+    // reason. It is the half that left `CodeNotOffered` when the code switch
+    // stopped being a single boolean: that variant folded "this build did
+    // not offer to show" together with "the other device cannot scan", and
+    // told a caller to work out which from the switch it had set. A product
+    // that correctly announced showing alone is exactly the product that
+    // fold sent to go and re-check its own switch.
+    //
+    // `ScannedCodeForAnotherFlow` above held the highest ordinal, 23, before
+    // this; this takes 24 and moves nothing. Confirmed against the generated
+    // TypeScript rather than reasoned about, which is the rule every comment
+    // above this one keeps, because the renumbering these comments exist to
+    // prevent is invisible in Rust.
+    #[error("the other device did not offer to scan a code")]
+    PeerCannotScan,
 }
 
 impl From<matrix_crypto_core::MachineError> for MachineFfiError {
@@ -288,6 +303,7 @@ impl From<matrix_crypto_core::MachineError> for MachineFfiError {
             matrix_crypto_core::MachineError::ScannedCodeForAnotherFlow => {
                 Self::ScannedCodeForAnotherFlow
             }
+            matrix_crypto_core::MachineError::PeerCannotScan => Self::PeerCannotScan,
         }
     }
 }
@@ -736,20 +752,47 @@ pub async fn submit_scanned_code(
         .map_err(Into::into)
 }
 
-/// Says whether this product can show a code and read one. Mirrors
-/// `offer_scanning`; see its own doc comment in
+/// Mirror of the core's code capabilities, carrying the UniFFI record
+/// derive.
+///
+/// **A record with two required fields, not a boolean**, and the shape is
+/// the whole point of it: see the core's own `CodeCapabilities` for what the
+/// boolean cost and who paid it. UniFFI gives a field with no default no
+/// default across the boundary either, so a caller in another language that
+/// leaves one out fails to typecheck rather than being handed a yes it never
+/// said.
+#[derive(Debug, Clone, Copy, uniffi::Record)]
+pub struct CodeCapabilities {
+    pub can_show: bool,
+    pub can_scan: bool,
+}
+
+impl From<CodeCapabilities> for matrix_crypto_core::CodeCapabilities {
+    fn from(value: CodeCapabilities) -> Self {
+        // Destructured, not field-accessed: a field added to either record
+        // later must fail this build rather than being silently dropped. See
+        // Global Constraints, and note that a dropped field here is exactly
+        // the defect the core record was introduced to end.
+        let CodeCapabilities { can_show, can_scan } = value;
+        Self { can_show, can_scan }
+    }
+}
+
+/// Says what this product can do with a scannable code. Mirrors
+/// `offer_codes`; see its own doc comment in
 /// `matrix-crypto-core::verification` for what each setting costs, who pays
-/// it, and why off does more than stay quiet.
+/// it, why nothing is claimed until a product says so, and what each of the
+/// four answers puts on the wire.
 ///
 /// **Not `async` and not fallible, unlike every other exported call here.**
-/// It sets one process-wide flag, touches no store and cannot fail, and the
+/// It sets one process-wide word, touches no store and cannot fail, and the
 /// synchronous shape is deliberate rather than incidental: a caller must set
 /// this *before* opening or answering a flow, and an asynchronous one that a
 /// caller forgot to await could land after the flow it was meant to affect
 /// had already announced what it can do.
 #[uniffi::export]
-pub fn offer_scanning(enabled: bool) {
-    matrix_crypto_core::offer_scanning(enabled)
+pub fn offer_codes(capabilities: CodeCapabilities) {
+    matrix_crypto_core::offer_codes(capabilities.into())
 }
 
 /// Says the other device really did scan the code this one showed. Mirrors

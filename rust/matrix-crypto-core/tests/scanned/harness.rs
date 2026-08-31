@@ -749,8 +749,8 @@ pub fn one_of<'a>(
 }
 
 /// Every verification method this library announces **once a product has
-/// called `offer_scanning`**, which a counterparty must answer with if a
-/// code is to be produced at all.
+/// answered `offer_codes` with both halves**, which a counterparty must
+/// answer with if a code is to be produced in either direction.
 ///
 /// The switch is the load-bearing half of that sentence, and it was missing
 /// from it: a build that has not asked announces `["m.sas.v1"]` alone, and
@@ -760,14 +760,51 @@ pub fn one_of<'a>(
 /// comment said.
 ///
 /// Named here so that a test which deliberately answers with *less* than
-/// this -- to drive the refusal a peer that cannot scan produces -- is
-/// visibly doing something different from the ones that do not.
+/// this, to drive what a peer that cannot scan or cannot show produces, is
+/// visibly doing something different from the ones that do not. The two
+/// helpers below are those lesser answers.
 pub fn every_method() -> Vec<matrix_sdk_common::ruma::events::key::verification::VerificationMethod>
 {
     use matrix_sdk_common::ruma::events::key::verification::VerificationMethod;
     vec![
         VerificationMethod::SasV1,
         VerificationMethod::QrCodeShowV1,
+        VerificationMethod::QrCodeScanV1,
+        VerificationMethod::ReciprocateV1,
+    ]
+}
+
+/// What a counterparty that can draw a code and cannot read one answers
+/// with.
+///
+/// **A counterparty this side cannot negotiate a code with at all**, when
+/// this side can only show either, which is the pair `tests/qr_show_only.rs`
+/// exists to drive: two devices that can each put a square on a screen and
+/// neither point a camera at one have no code mode between them. Written out
+/// here rather than derived from the library's own constant, because a
+/// counterparty built from what the library announces would agree with it
+/// however that constant changed.
+pub fn showing_only() -> Vec<matrix_sdk_common::ruma::events::key::verification::VerificationMethod>
+{
+    use matrix_sdk_common::ruma::events::key::verification::VerificationMethod;
+    vec![
+        VerificationMethod::SasV1,
+        VerificationMethod::QrCodeShowV1,
+        VerificationMethod::ReciprocateV1,
+    ]
+}
+
+/// What a counterparty that can read a code and cannot draw one answers
+/// with.
+///
+/// [`showing_only`]'s mirror, and the counterparty a show-only product is
+/// meant to work against: this side draws, that side reads, and the flow
+/// finishes with nothing for anybody to compare.
+pub fn scanning_only() -> Vec<matrix_sdk_common::ruma::events::key::verification::VerificationMethod>
+{
+    use matrix_sdk_common::ruma::events::key::verification::VerificationMethod;
+    vec![
+        VerificationMethod::SasV1,
         VerificationMethod::QrCodeScanV1,
         VerificationMethod::ReciprocateV1,
     ]

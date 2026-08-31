@@ -48,9 +48,9 @@
 
 use matrix_crypto_core::{
     accept_flow, confirm_scan, create_identity, create_machine, device_statuses, flow_stage,
-    identity_status, in_runtime, mark_request_sent, offer_scanning, read_code,
-    receive_sync_changes, request_flow, share_scope_key, submit_scanned_code,
-    take_outgoing_requests, CryptoSignal, FlowStage, MachineConfig, MachineError, TrustState,
+    identity_status, in_runtime, mark_request_sent, offer_codes, read_code, receive_sync_changes,
+    request_flow, share_scope_key, submit_scanned_code, take_outgoing_requests, CodeCapabilities,
+    CryptoSignal, FlowStage, MachineConfig, MachineError, TrustState,
 };
 use matrix_sdk_common::ruma::OwnedUserId;
 use matrix_sdk_crypto::matrix_sdk_qrcode::QrVerificationData;
@@ -114,7 +114,10 @@ fn another_user_verifies_by_scanning_a_code_this_library_showed() {
         // below negotiates the short string alone and nothing here can
         // happen. `tests/qr_announcement.rs` is where that default is the
         // subject rather than the setting.
-        offer_scanning(true);
+        offer_codes(CodeCapabilities {
+            can_show: true,
+            can_scan: true,
+        });
 
         // ---- The other user ---------------------------------------------
         let bob = cross_signed_machine(BOB, BOB_DEVICE).await;

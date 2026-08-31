@@ -360,6 +360,12 @@ describe('toCryptoError for the verification kinds', () => {
    * and a fold between any two of them is exactly what the design's
    * section 4 forbids and what nothing else on this side would catch.
    *
+   * `CodeNotOffered` and `PeerCannotScan` are the pair to watch after them.
+   * They were one variant until the code switch stopped being a single
+   * boolean, they still read almost alike, and they have opposite remedies:
+   * the first is a line the product writes, the second is a fact about the
+   * far side that no line will change.
+   *
    * `MalformedIdentifier` carries a `detail`, so its message has a suffix.
    * It is included with one, because a product meets it that way and
    * because `toCryptoError` reads the name off the front.
@@ -376,6 +382,7 @@ describe('toCryptoError for the verification kinds', () => {
       'MachineFfiError.MalformedIdentifier: flow id',
       'MachineFfiError.PeerIdentityNotKnown',
       'MachineFfiError.CodeNotOffered',
+      'MachineFfiError.PeerCannotScan',
       'MachineFfiError.ScannedCodeRefused',
       'MachineFfiError.ScannedCodeUnrecognised',
       'MachineFfiError.ScannedCodeMalformed',
@@ -467,7 +474,7 @@ describe('every generated error variant maps to a kind of its own', () => {
    * grows a variant this number changes here, deliberately, in the same
    * change that adds the mapping.
    */
-  const EXPECTED_VARIANTS = 35
+  const EXPECTED_VARIANTS = 36
 
   it('refuses to pass having walked nothing', () => {
     for (const [name, tags] of GENERATED) {

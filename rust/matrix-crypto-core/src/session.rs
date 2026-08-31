@@ -379,7 +379,12 @@ impl From<MachineError> for SessionError {
             // match caught all three of them the moment they were declared.
             | MachineError::ScannedCodeUnrecognised
             | MachineError::ScannedCodeMalformed
-            | MachineError::ScannedCodeForAnotherFlow => SessionError::Failed,
+            | MachineError::ScannedCodeForAnotherFlow
+            // The half that left `CodeNotOffered` when the code switch
+            // became two facts rather than one boolean. Same rule, same
+            // unreachability, listed by name for the same reason, and this
+            // match caught it the moment it was declared.
+            | MachineError::PeerCannotScan => SessionError::Failed,
         }
     }
 }

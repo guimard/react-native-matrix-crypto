@@ -164,8 +164,8 @@
 //!
 //! # Code scanning is off unless a build asks
 //!
-//! `offer_scanning(true)` is called once, at the top, and it is not
-//! ceremony: with the switch untouched this library announces `m.sas.v1`
+//! `offer_codes` is answered once, at the top, with both halves, and it is
+//! not ceremony: with the switch untouched this library announces `m.sas.v1`
 //! alone, no code is ever negotiated, and every phase below would fail at
 //! its first code. A product that wants codes turns it on; this test is such
 //! a product.
@@ -186,9 +186,9 @@ use std::time::{Duration, Instant};
 
 use matrix_crypto_core::{
     accept_flow, cancel_flow, confirm_scan, create_identity, create_machine, device_statuses,
-    flow_stage, identity_status, offer_scanning, read_code, receive_sync_changes, request_flow,
-    request_self_flow, set_crypto_observer, share_scope_key, submit_scanned_code, CryptoObserver,
-    CryptoSignal, FlowId, FlowStage, MachineConfig, TrustState,
+    flow_stage, identity_status, offer_codes, read_code, receive_sync_changes, request_flow,
+    request_self_flow, set_crypto_observer, share_scope_key, submit_scanned_code, CodeCapabilities,
+    CryptoObserver, CryptoSignal, FlowId, FlowStage, MachineConfig, TrustState,
 };
 use serde_json::{json, Value};
 
@@ -542,7 +542,10 @@ fn a_third_party_client_and_this_library_verify_each_other_by_scanning_a_code() 
 
     // THE SWITCH. Without this line the library announces `m.sas.v1` alone
     // and no code is negotiated anywhere below. See this file's header.
-    offer_scanning(true);
+    offer_codes(CodeCapabilities {
+        can_show: true,
+        can_scan: true,
+    });
 
     for _ in 0..8 {
         if pump_and_send(&homeserver, &library.token).is_empty() {

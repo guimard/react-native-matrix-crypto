@@ -106,8 +106,9 @@
 
 use matrix_crypto_core::{
     cancel_flow, confirm_scan, create_identity, create_machine, flow_stage, identity_status,
-    in_runtime, mark_request_sent, offer_scanning, read_code, request_flow, share_scope_key,
-    take_outgoing_requests, CryptoSignal, FlowId, FlowStage, MachineConfig, MachineError,
+    in_runtime, mark_request_sent, offer_codes, read_code, request_flow, share_scope_key,
+    take_outgoing_requests, CodeCapabilities, CryptoSignal, FlowId, FlowStage, MachineConfig,
+    MachineError,
 };
 use matrix_sdk_common::ruma::OwnedUserId;
 use matrix_sdk_crypto::matrix_sdk_qrcode::QrVerificationData;
@@ -164,7 +165,10 @@ fn a_halted_code_flow_can_be_abandoned_and_the_same_person_verified_afterwards()
         // A product asks to take part in verification by a scannable code.
         // Off until it does, so without this line every flow below negotiates
         // the short string alone and nothing here can happen.
-        offer_scanning(true);
+        offer_codes(CodeCapabilities {
+            can_show: true,
+            can_scan: true,
+        });
 
         // ---- The other user ----------------------------------------------
         let bob = cross_signed_machine(BOB, BOB_DEVICE).await;

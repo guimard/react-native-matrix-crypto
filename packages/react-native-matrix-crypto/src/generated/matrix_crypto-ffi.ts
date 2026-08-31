@@ -237,8 +237,8 @@ interface NativeModuleInterface {
     id: Uint8Array,
     responseJson: Uint8Array
   ): bigint;
-  ubrn_uniffi_matrix_crypto_ffi_fn_func_offer_scanning(
-    enabled: number,
+  ubrn_uniffi_matrix_crypto_ffi_fn_func_offer_codes(
+    capabilities: Uint8Array,
     uniffi_out_err: UniffiRustCallStatus
   ): void;
   ubrn_uniffi_matrix_crypto_ffi_fn_func_open_crypto_store(
@@ -317,7 +317,7 @@ interface NativeModuleInterface {
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_identity_status(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_mark_request_failed(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_mark_request_sent(): number;
-  ubrn_uniffi_matrix_crypto_ffi_checksum_func_offer_scanning(): number;
+  ubrn_uniffi_matrix_crypto_ffi_checksum_func_offer_codes(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_open_crypto_store(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_probe(): number;
   ubrn_uniffi_matrix_crypto_ffi_checksum_func_probe_with_observer(): number;

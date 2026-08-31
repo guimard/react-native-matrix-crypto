@@ -33,8 +33,8 @@
 
 use matrix_crypto_core::{
     cancel_flow, confirm_scan, create_machine, device_statuses, flow_stage, identity_status,
-    in_runtime, mark_request_sent, offer_scanning, read_code, request_self_flow,
-    take_outgoing_requests, CryptoSignal, FlowStage, MachineConfig, TrustState,
+    in_runtime, mark_request_sent, offer_codes, read_code, request_self_flow,
+    take_outgoing_requests, CodeCapabilities, CryptoSignal, FlowStage, MachineConfig, TrustState,
 };
 use matrix_sdk_common::ruma::{OwnedDeviceId, OwnedUserId, TransactionId};
 use matrix_sdk_crypto::matrix_sdk_qrcode::QrVerificationData;
@@ -181,13 +181,14 @@ fn a_new_login_shows_a_code_and_the_account_verifies_it() {
             .await
             .expect("the bare machine must accept a keys-claim response");
 
-        // ---- The third call site, in both of its states ---------------------
+        // ---- The third call site, in three of its states --------------------
         //
         // `request_self_flow` is the one of the three that only an account
         // with another device to fan out to can reach, so it is read here
-        // rather than in `tests/qr_announcement.rs` with the other two. Both
-        // states, because either assertion alone would pass against a switch
-        // that ignored its argument.
+        // rather than in `tests/qr_announcement.rs` with the other two.
+        // Three states, because any one of them alone would pass against a
+        // switch that ignored its argument, and the first two together would
+        // pass against one that ignored `can_scan`.
         //
         // The flow this opens is thrown away. It exists to be read off the
         // wire and then refused, which is also what makes the real flow
@@ -225,10 +226,54 @@ fn a_new_login_shows_a_code_and_the_account_verifies_it() {
         pump_to_bare(&first.peer, ACCOUNT, ACCOUNT, OLD_DEVICE).await;
         harness::deliver_to_library(Vec::new()).await;
 
-        // The product asks to take part in verification by a scannable code.
-        // Everything below this line depends on it: without it the flow
-        // negotiates the short string alone and no code exists to read.
-        offer_scanning(true);
+        // ---- And what a product with a screen and no scanner fans out -------
+        //
+        // The answer this library had no way to give until this branch, at
+        // the call site a new login uses. A second throwaway flow for the
+        // same reason as the first.
+        offer_codes(CodeCapabilities {
+            can_show: true,
+            can_scan: false,
+        });
+        let show_only = request_self_flow()
+            .await
+            .expect("an account with an identity can be asked to verify a new device");
+        let batch = take_outgoing_requests()
+            .await
+            .expect("the pump must be drainable");
+        let invitation = one_of(
+            &batch,
+            "to_device",
+            "the invitation must be queued for the pump",
+        );
+        assert_eq!(
+            harness::methods_announced(&invitation.body, ACCOUNT, OLD_DEVICE),
+            ["m.sas.v1", "m.qr_code.show.v1", "m.reciprocate.v1"],
+            "a new login that can draw a code and cannot read one must fan out \
+             exactly that. The camera is the entry that must be missing: announced \
+             here, one of this account's own established devices may answer by \
+             showing its screen instead, and a new login with no scanner then waits \
+             for a person to do something impossible"
+        );
+        for request in &batch {
+            mark_request_sent(&request.id, "{}")
+                .await
+                .expect("a to-device response must be accepted");
+        }
+        cancel_flow(&show_only)
+            .await
+            .expect("a live flow can be refused");
+        pump_to_bare(&first.peer, ACCOUNT, ACCOUNT, OLD_DEVICE).await;
+        harness::deliver_to_library(Vec::new()).await;
+
+        // The product asks to take part in verification by a scannable code,
+        // in both directions this time. Everything below this line depends
+        // on it: without it the flow negotiates the short string alone and
+        // no code exists to read.
+        offer_codes(CodeCapabilities {
+            can_show: true,
+            can_scan: true,
+        });
 
         // ---- The flow ------------------------------------------------------
         //

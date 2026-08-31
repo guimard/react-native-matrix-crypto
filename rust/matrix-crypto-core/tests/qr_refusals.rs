@@ -36,8 +36,9 @@
 
 use matrix_crypto_core::{
     accept_flow, cancel_flow, create_identity, create_machine, flow_stage, identity_status,
-    in_runtime, mark_request_sent, offer_scanning, read_code, share_scope_key, submit_scanned_code,
-    take_outgoing_requests, CryptoSignal, FlowId, FlowStage, MachineConfig, MachineError,
+    in_runtime, mark_request_sent, offer_codes, read_code, share_scope_key, submit_scanned_code,
+    take_outgoing_requests, CodeCapabilities, CryptoSignal, FlowId, FlowStage, MachineConfig,
+    MachineError,
 };
 use matrix_sdk_common::ruma::events::key::verification::VerificationMethod;
 use matrix_sdk_common::ruma::OwnedUserId;
@@ -262,7 +263,10 @@ fn every_refusal_a_scannable_code_can_give_is_named() {
         // below negotiates the short string alone and nothing here can
         // happen. `tests/qr_announcement.rs` is where that default is the
         // subject rather than the setting.
-        offer_scanning(true);
+        offer_codes(CodeCapabilities {
+            can_show: true,
+            can_scan: true,
+        });
 
         // ---- The counterparties ----------------------------------------
         let bob = cross_signed_machine(BOB, BOB_DEVICE).await;
@@ -713,9 +717,12 @@ fn every_refusal_a_scannable_code_can_give_is_named() {
             read_code(&sas_only)
                 .await
                 .expect_err("a peer that did not offer to scan cannot be shown a code"),
-            MachineError::CodeNotOffered,
+            MachineError::PeerCannotScan,
             "a flow whose peer cannot scan must not be reported as a stage: waiting \
-             will never help, and the answer is to compare a short string instead"
+             will never help, and the answer is to compare a short string instead. \
+             Nor as `CodeNotOffered`, which this answered until the code switch \
+             stopped being one boolean: that name says the fault is this build's \
+             own announcement, and this side announced everything it has"
         );
         cancel_flow(&sas_only)
             .await

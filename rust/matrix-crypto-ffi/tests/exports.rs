@@ -161,7 +161,7 @@ async fn the_scannable_code_calls_reach_the_core() {
     ));
 }
 
-/// The code-scanning switch reaches the core, and carries its argument.
+/// The code switch reaches the core, and carries **both** of its fields.
 ///
 /// **The one delegation in this crate with an observable effect and no return
 /// value**, which is why it is asserted through the core's own reader rather
@@ -171,29 +171,53 @@ async fn the_scannable_code_calls_reach_the_core() {
 /// codes, announced none, and was told `CodeNotOffered` on the first flow it
 /// tried, with the one call that could have fixed it already made.
 ///
-/// Off first, because the default is what the design's exit criteria rest on,
-/// and then both settings, because a bridge that raised the flag rather than
-/// storing its argument passes an on-only test.
+/// **All four answers, and each field read on its own**, which is the shape
+/// this test grew when the switch stopped being a boolean. A bridge that
+/// carried `can_show` and dropped `can_scan` passes any test that only ever
+/// sets both together, and a bridge that carried one field into both passes
+/// any test that only ever sets them to the same value. Dropping a field is
+/// not a hypothetical hazard here: a product claiming a camera it does not
+/// have is the defect this whole record exists to end, and a bridge is the
+/// one place that claim could be re-introduced with nothing to see it.
+///
+/// Neither first, because the default is what the design's exit criteria
+/// rest on.
 #[test]
-fn the_code_scanning_switch_reaches_the_core() {
+fn both_halves_of_the_code_switch_reach_the_core() {
     assert!(
-        !matrix_crypto_core::scanning_offered(),
-        "a fresh process must not be offering codes: every assertion below is \
-         about a switch that starts off, and this one is the criterion that a \
-         build which never asks says on the wire what it always said"
+        !matrix_crypto_core::code_capabilities().can_show
+            && !matrix_crypto_core::code_capabilities().can_scan,
+        "a fresh process must claim neither half: every assertion below is \
+         about a switch that starts silent, and this one is the criterion that \
+         a build which never asks says on the wire what it always said"
     );
 
-    matrix_crypto_ffi::offer_scanning(true);
-    assert!(
-        matrix_crypto_core::scanning_offered(),
-        "the bridge must carry `true` through to the core's own switch"
-    );
+    for can_show in [false, true] {
+        for can_scan in [false, true] {
+            matrix_crypto_ffi::offer_codes(matrix_crypto_ffi::CodeCapabilities {
+                can_show,
+                can_scan,
+            });
+            let carried = matrix_crypto_core::code_capabilities();
+            assert_eq!(
+                (carried.can_show, carried.can_scan),
+                (can_show, can_scan),
+                "the bridge must carry both fields through to the core's own \
+                 switch, unchanged and unswapped. A bridge that raised a field \
+                 rather than storing what it was handed passes whichever half of \
+                 this loop happens to agree with it and fails the other"
+            );
+        }
+    }
 
-    matrix_crypto_ffi::offer_scanning(false);
+    matrix_crypto_ffi::offer_codes(matrix_crypto_ffi::CodeCapabilities {
+        can_show: false,
+        can_scan: false,
+    });
     assert!(
-        !matrix_crypto_core::scanning_offered(),
-        "and `false` as well. A bridge that set the switch rather than storing \
-         what it was handed passes the assertion above and fails here, and a \
-         product that turned codes off would go on announcing them"
+        !matrix_crypto_core::code_capabilities().can_show
+            && !matrix_crypto_core::code_capabilities().can_scan,
+        "and the switch must be a switch and not a latch, or a product that \
+         stopped offering codes would go on announcing them"
     );
 }
