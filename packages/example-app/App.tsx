@@ -28,6 +28,7 @@ import { FoldWatch } from './src/FoldWatch';
 import { GuidedFlow } from './src/GuidedFlow';
 import { LevelTwoHarness } from './src/LevelTwoHarness';
 import { ProbeHarness } from './src/ProbeHarness';
+import { ScannedCodeWalkthrough } from './src/ScannedCodeWalkthrough';
 import { fetchLevelTwoPlan, type LevelTwoPlan } from './src/levelTwoTransport';
 
 // FoldWatch is rendered outside the conditional below, and before the answer
@@ -96,6 +97,12 @@ function App({ storeDir = '' }: { storeDir?: string }) {
             </Text>
             <ProbeHarness storeDir={storeDir} />
           </>
+        ) : plan.mode === 'scanned-code' ? (
+          // A run for a person rather than for CI. The conductor that hands
+          // out this plan starts a homeserver, logs this device in and then
+          // waits: the whole point is that a human holds a second client's
+          // camera up to this screen, which nothing automated can do.
+          <ScannedCodeWalkthrough plan={plan} storeDir={storeDir} />
         ) : (
           <>
             <Text style={styles.heading}>Level 2 interoperability</Text>

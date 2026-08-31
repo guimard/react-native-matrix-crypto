@@ -1,0 +1,252 @@
+/**
+ * The camera walkthrough's own arc, run on a host machine.
+ *
+ * WHAT THIS ESTABLISHES. That the screen a person holds a phone in front of
+ * drives the published surface in the right order, draws the grid that
+ * surface handed it, asks for a confirmation at the one moment the protocol
+ * asks for one, and reports a refusal as a refusal. Those are the parts of
+ * the walkthrough a person could get wrong by reading them, and until this
+ * file the only way to check any of them was to hold a phone.
+ *
+ * WHAT IS FAKED, AND WHERE. Exactly one thing: the generated binding, which
+ * is the single layer in the chain that reaches Rust. `facade.ts` is the
+ * shipped one, so the payload this test sees as a `Uint8Array` was converted
+ * from an `ArrayBuffer` by the same line that converts it on a device, and
+ * the module array is passed through the same destructuring. The seam is at
+ * the native boundary for `flowRunners.test.ts`'s reason: it is the only
+ * place a host genuinely cannot follow.
+ *
+ * WHAT THIS FILE CANNOT ESTABLISH, AND IT IS THE WHOLE POINT OF THE
+ * WALKTHROUGH. That a camera reads what gets drawn. No test can: it needs a
+ * person, a second client and a lens. `level-two/run_camera_proof.py` sets
+ * that up and then stops. What this file rules out is everything else going
+ * wrong first.
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { startScannedCodeRun, type HttpResult, type ScannedCodeState } from './scannedCodeRunner'
+
+/** The mode byte a self-verification from an established device carries. */
+const MODE_SELF_TRUSTED = 0x01
+
+/**
+ * A payload shaped exactly as the protocol fixes it, so the assertions below
+ * are about a real layout rather than about a blob this file invented: six
+ * header bytes, the version, the mode, a big-endian identifier length, the
+ * identifier, two keys and a shared secret.
+ */
+function samplePayload(flowId: string): ArrayBuffer {
+  const id = new TextEncoder().encode(flowId)
+  const bytes = new Uint8Array(6 + 1 + 1 + 2 + id.length + 32 + 32 + 16)
+  bytes.set(new TextEncoder().encode('MATRIX'), 0)
+  bytes[6] = 0x02
+  bytes[7] = MODE_SELF_TRUSTED
+  bytes[8] = (id.length >> 8) & 0xff
+  bytes[9] = id.length & 0xff
+  bytes.set(id, 10)
+  for (let at = 10 + id.length; at < bytes.length; at += 1) bytes[at] = at & 0xff
+  return bytes.buffer
+}
+
+/** A tiny, honest symbol: the finder pattern in the top row, `true` is dark. */
+function sampleModules(width: number): boolean[] {
+  const modules = new Array<boolean>(width * width).fill(false)
+  for (let x = 0; x < 7; x += 1) modules[x] = true
+  for (let x = width - 7; x < width; x += 1) modules[x] = true
+  return modules
+}
+
+const FLOW = 'flow-under-test'
+const CODE_WIDTH = 45
+
+/**
+ * The native side, faked: a verification that advances one stage each time
+ * it is asked, exactly as a real one advances as syncs arrive.
+ */
+const native = {
+  stages: [] as string[],
+  codeThrows: null as Error | null,
+  confirmed: false,
+  scanningOffered: false,
+  requests: [] as Array<{ id: string; kind: string; body: string }>,
+  syncsReceived: 0,
+  accepted: [] as string[],
+}
+
+vi.mock('react-native-matrix-crypto/src/generated/matrix_crypto', async importOriginal => {
+  const original =
+    await importOriginal<typeof import('react-native-matrix-crypto/src/generated/matrix_crypto')>()
+  return {
+    ...original,
+    createCryptoMachine: vi.fn(async () => undefined),
+    offerScanning: vi.fn((enabled: boolean) => {
+      native.scanningOffered = enabled
+    }),
+    requestSelfVerification: vi.fn(async () => FLOW),
+    acceptVerification: vi.fn(async (id: string) => {
+      native.accepted.push(id)
+    }),
+    verificationStage: vi.fn(async () => {
+      // The last stage repeats once the list runs out, which is what a flow
+      // parked at `done` or `cancelled` really does.
+      const next = native.stages.length > 1 ? native.stages.shift() : native.stages[0]
+      // The REAL generated enum member, never the string the surface
+      // publishes. Returning the string looks right and is not: the facade
+      // maps the enum to the union, an unmapped value comes back
+      // `undefined`, and the walkthrough then waits for a stage it can
+      // never see. That is what the first version of this file did, and it
+      // exhausted the heap rather than failing an assertion.
+      return original.VerificationStage[
+        next as keyof typeof original.VerificationStage
+      ] as never
+    }),
+    verificationCode: vi.fn(async (id: string) => {
+      if (native.codeThrows) throw native.codeThrows
+      return { payload: samplePayload(id), width: CODE_WIDTH, modules: sampleModules(CODE_WIDTH) }
+    }),
+    confirmScan: vi.fn(async () => {
+      native.confirmed = true
+    }),
+    takeOutgoingRequests: vi.fn(async () => {
+      const batch = native.requests
+      native.requests = []
+      return batch
+    }),
+    markRequestSent: vi.fn(async () => undefined),
+    markRequestFailed: vi.fn(async () => undefined),
+    receiveSyncChanges: vi.fn(async () => {
+      native.syncsReceived += 1
+    }),
+    setCryptoObserver: vi.fn(() => undefined),
+    clearCryptoObserver: vi.fn(() => undefined),
+  }
+})
+
+/** A homeserver that answers a sync and accepts anything posted to it. */
+const http = vi.fn(async (method: string, url: string): Promise<HttpResult> => {
+  if (method === 'GET' && url.includes('/sync')) {
+    return { status: 200, text: JSON.stringify({ next_batch: 's1', to_device: { events: [] } }) }
+  }
+  return { status: 200, text: '{}' }
+})
+
+const plan = {
+  homeserver: 'http://127.0.0.1:1',
+  userId: '@somebody:example.org',
+  deviceId: 'DEVICE1',
+  accessToken: 'not-a-real-token',
+}
+
+/** Runs with no real delay, so a whole arc costs milliseconds. */
+const noSleep = () => Promise.resolve()
+
+async function drive(stages: string[]): Promise<{
+  states: ScannedCodeState[]
+  final: ScannedCodeState
+}> {
+  native.stages = [...stages]
+  const states: ScannedCodeState[] = []
+  const run = startScannedCodeRun(plan, '/tmp/store', http, state => states.push({ ...state }), {
+    sleep: noSleep,
+  })
+  // The person's two decisions, made immediately: nothing here is testing
+  // how long a human takes.
+  run.askOtherDevices()
+  run.confirm()
+  await run.finished
+  return { states, final: states[states.length - 1] }
+}
+
+beforeEach(() => {
+  native.stages = []
+  native.codeThrows = null
+  native.confirmed = false
+  native.scanningOffered = false
+  native.requests = []
+  native.syncsReceived = 0
+  native.accepted = []
+  http.mockClear()
+})
+
+describe('the camera walkthrough', () => {
+  it('turns code scanning on before anything else can need it', async () => {
+    await drive(['Requested', 'Ready', 'CodeScanned', 'Done'])
+    expect(native.scanningOffered).toBe(true)
+  })
+
+  it('draws the grid the published surface handed it, not a re-encoding', async () => {
+    const { states } = await drive(['Requested', 'Ready', 'CodeScanned', 'Done'])
+    const withCode = states.find(state => state.code !== undefined)
+    expect(withCode).toBeDefined()
+    const code = withCode!.code!
+    expect(code.width).toBe(CODE_WIDTH)
+    expect(code.modules).toHaveLength(CODE_WIDTH * CODE_WIDTH)
+    // The conversion under test is the facade's, not this file's: the
+    // generated binding speaks ArrayBuffer and the surface speaks
+    // Uint8Array.
+    expect(code.payload).toBeInstanceOf(Uint8Array)
+    expect(Array.from(code.payload.slice(0, 6))).toEqual(
+      Array.from(new TextEncoder().encode('MATRIX')),
+    )
+    expect(code.payload[7]).toBe(MODE_SELF_TRUSTED)
+    // `true` is dark, and the finder pattern is where the protocol puts it.
+    // A screen that drew the negative of this would hand a camera a symbol
+    // no scanner reads, which is the defect the core's own tests caught.
+    expect(code.modules.slice(0, 7)).toEqual([true, true, true, true, true, true, true])
+    expect(code.modules[7]).toBe(false)
+  })
+
+  it('asks the person only at the moment the protocol asks, and then confirms', async () => {
+    const { states, final } = await drive(['Requested', 'Ready', 'CodeScanned', 'Done'])
+    // Asked for at that stage and at no other. Written this way round on
+    // purpose: an earlier version asked only whether the states at `ready`
+    // were free of it, which a screen that offered the button at every
+    // stage still passed. Sabotaging the condition to `if (true)` is what
+    // showed that, and this is the assertion that catches it.
+    const asking = states.filter(state => state.awaitingConfirmation)
+    expect(asking.length).toBeGreaterThan(0)
+    expect(asking.every(state => state.stage === 'code-scanned')).toBe(true)
+    expect(native.confirmed).toBe(true)
+    expect(final.headline).toBe('Verified.')
+    expect(final.finished).toBe(true)
+    expect(final.failed).toBe(false)
+    // A finished run stops drawing the code: leaving a used one on screen
+    // invites a second scan of a flow that is over.
+    expect(final.code).toBeUndefined()
+  })
+
+  it('reports a refused flow as a refusal rather than as a success', async () => {
+    const { final } = await drive(['Requested', 'Ready', 'CodeScanned', 'Cancelled'])
+    expect(final.finished).toBe(true)
+    expect(final.failed).toBe(true)
+    expect(final.headline).toContain('called off')
+    expect(final.code).toBeUndefined()
+  })
+
+  it('names the refusal when this device cannot show a code at all', async () => {
+    // The kind a product actually meets first: an account with no published
+    // signing identity has nothing to put in a code.
+    const refusal = Object.assign(new Error('identity not known'), { name: 'IdentityNotKnown' })
+    native.codeThrows = refusal
+    const { final } = await drive(['Requested', 'Ready', 'Ready', 'Ready'])
+    expect(final.failed).toBe(true)
+    expect(final.headline).toContain('cannot show a code')
+  })
+
+  it('drives the pump, so nothing the library handed over is dropped', async () => {
+    native.requests = [
+      { id: 'r1', kind: 'keys_upload', body: '{}' },
+      { id: 'r2', kind: 'to_device', body: JSON.stringify({ event_type: 'm.key.verification.ready' }) },
+    ]
+    await drive(['Requested', 'Ready', 'CodeScanned', 'Done'])
+    const posted = http.mock.calls.filter(call => call[0] !== 'GET').map(call => String(call[1]))
+    expect(posted.some(url => url.endsWith('/_matrix/client/v3/keys/upload'))).toBe(true)
+    expect(
+      posted.some(url => url.includes('/sendToDevice/m.key.verification.ready/r2')),
+    ).toBe(true)
+  })
+
+  it('feeds every sync it performs to the library', async () => {
+    await drive(['Requested', 'Ready', 'CodeScanned', 'Done'])
+    expect(native.syncsReceived).toBeGreaterThan(0)
+  })
+})

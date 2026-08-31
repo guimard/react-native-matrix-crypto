@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Runs all four level 2 interoperability proofs (design doc section 8)
+# Runs all five level 2 interoperability proofs (design doc section 8)
 # against a Matrix homeserver this script starts, provisions, and destroys.
 #
 #   * `level_two_interop` -- a third-party client decrypts what this library
@@ -41,8 +41,8 @@ set -euo pipefail
 #
 #   ./scripts/run-level-two-interop.sh
 #
-# That is the whole invocation. It needs Docker, a Rust toolchain and a
-# Python 3, and nothing else -- no account on anybody's homeserver, no
+# That is the whole invocation. It needs Docker, a Rust toolchain, a Python 3
+# and a Go toolchain, and nothing else -- no account on anybody's homeserver, no
 # credential, no CI secret. CI runs this same script, so what a contributor
 # runs locally and what stands behind the milestone's headline claim are the
 # same code path rather than two things that look alike.
@@ -139,6 +139,25 @@ LOCALPART=interop
 # see. Same generated password, so a run still has exactly one secret in it.
 LOCALPART_CHALLENGE=interop-challenge
 
+# Three more, for the scanned-code proof alone, and none of them can be one of
+# the accounts above.
+#
+#   * SCANNED is the library's own. It needs an account whose cross-signing
+#     identity THIS LIBRARY mints, so that the device holds the private half;
+#     `level_two_identity` leaves the shared account holding one that a fresh
+#     store cannot hold.
+#   * SCANNER is the other person in the cross-user mode, and mints an
+#     identity of its own, which mode 0x00 needs on both sides.
+#   * SHOWN is the other person in the two phases that leave a flow which
+#     cannot finish. Upstream allows one live verification per person, so such
+#     a flow blocks every later one with the same person; keeping those phases
+#     on their own account is what contains it. The test's header has the whole
+#     of why a flow this library shows does not finish against this
+#     counterparty.
+LOCALPART_SCANNED=interop-scanned
+LOCALPART_SCANNER=interop-scanner
+LOCALPART_SHOWN=interop-shown
+
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 REQUIREMENTS="$REPO_ROOT/rust/matrix-crypto-core/tests/interop/requirements.txt"
 
@@ -191,6 +210,11 @@ cleanup() {
     CONTAINER=""
   fi
   if [ -n "$WORKDIR" ]; then
+    # `chmod` first, and it is not belt and braces: Go writes its module
+    # cache read-only, so a `rm -rf` over one fails file by file. The build
+    # above removes that cache itself; this is what makes the teardown
+    # infallible on the paths where it did not get that far.
+    chmod -R u+w "$WORKDIR" 2>/dev/null || true
     rm -rf "$WORKDIR" || true
     WORKDIR=""
   fi
@@ -230,6 +254,19 @@ if [ -n "${MATRIX_INTEROP_HOMESERVER:-}" ]; then
       Refusing to run rather than skipping that proof, because a proof this
       script quietly declines to run is the failure this milestone keeps
       finding."
+  for named in MATRIX_INTEROP_SCANNED_USER MATRIX_INTEROP_SCANNER_USER \
+               MATRIX_INTEROP_SHOWN_USER; do
+    eval "value=\${$named:-}"
+    [ -n "$value" ] || fail "MATRIX_INTEROP_HOMESERVER is set but $named is not.
+      level_two_scanned needs three MORE accounts, sharing the password in
+      MATRIX_INTEROP_PASSWORD, and none of them may be one of the two above.
+      The reasons are in the LOCALPART_SCANNED block near the top of this file
+      and in that test's own header; they come down to which account may hold a
+      cross-signing identity minted by whom, and to containing a flow that
+      cannot be cleared up.
+      Required rather than optional, because a proof this script quietly
+      declines to run is the failure this repository keeps finding."
+  done
   echo "Using the homeserver named by MATRIX_INTEROP_HOMESERVER; starting no container."
 else
   command -v docker >/dev/null 2>&1 \
@@ -335,7 +372,10 @@ EOF
     -e CONDUWUIT_ALLOW_CHECK_FOR_UPDATES=false \
     "$CONTINUWUITY_IMAGE" \
     --execute "users create-user $LOCALPART $PASSWORD" \
-    --execute "users create-user $LOCALPART_CHALLENGE $PASSWORD" >/dev/null \
+    --execute "users create-user $LOCALPART_CHALLENGE $PASSWORD" \
+    --execute "users create-user $LOCALPART_SCANNED $PASSWORD" \
+    --execute "users create-user $LOCALPART_SCANNER $PASSWORD" \
+    --execute "users create-user $LOCALPART_SHOWN $PASSWORD" >/dev/null \
     || fail "the homeserver container could not be started."
 
   HOST_PORT=$(docker port "$CONTAINER" 8008/tcp 2>/dev/null | head -1 | sed 's/.*://')
@@ -345,6 +385,9 @@ EOF
   export MATRIX_INTEROP_HOMESERVER="http://127.0.0.1:$HOST_PORT"
   export MATRIX_INTEROP_USER="@$LOCALPART:$SERVER_NAME"
   export MATRIX_INTEROP_CHALLENGE_USER="@$LOCALPART_CHALLENGE:$SERVER_NAME"
+  export MATRIX_INTEROP_SCANNED_USER="@$LOCALPART_SCANNED:$SERVER_NAME"
+  export MATRIX_INTEROP_SCANNER_USER="@$LOCALPART_SCANNER:$SERVER_NAME"
+  export MATRIX_INTEROP_SHOWN_USER="@$LOCALPART_SHOWN:$SERVER_NAME"
   export MATRIX_INTEROP_PASSWORD="$PASSWORD"
 
   echo "Homeserver: $MATRIX_INTEROP_HOMESERVER (container $CONTAINER)"
@@ -405,7 +448,10 @@ JSON
 
   wait_for_login "$MATRIX_INTEROP_USER"
   wait_for_login "$MATRIX_INTEROP_CHALLENGE_USER"
-  echo "Homeserver ready, and both accounts it was told to create can log in."
+  wait_for_login "$MATRIX_INTEROP_SCANNED_USER"
+  wait_for_login "$MATRIX_INTEROP_SCANNER_USER"
+  wait_for_login "$MATRIX_INTEROP_SHOWN_USER"
+  echo "Homeserver ready, and all five accounts it was told to create can log in."
 
   # Continuwuity does not reject a configuration key it does not recognise. It
   # logs `Config parameter "x" is unknown to conduwuit, ignoring.` and starts
@@ -462,9 +508,69 @@ from importlib.metadata import version
 print(f"matrix-nio {version('matrix-nio')}, vodozemac {version('vodozemac')}")
 PY
 
+# --- 2bis. the second counterparty, in Go -----------------------------------
+#
+# `matrix-nio` serves every proof but one. It cannot serve the scanned-code
+# proof, and that was established from its own wheel rather than assumed:
+# zero occurrences of the QR vocabulary and zero of the cross-signing
+# vocabulary. A code carries cross-signing keys, so an implementation with
+# neither cannot scan even in principle.
+#
+# mautrix-go v0.30.0 can, and `rust/matrix-crypto-core/tests/level_two_scanned.rs`
+# names the four files in it that do. It is built here rather than vendored so
+# that what the proof runs against is a released module resolved from its own
+# checksummed source, and `-tags goolm` selects mautrix's pure-Go Olm rather
+# than the C libolm binding: no C toolchain is needed, and the two sides then
+# share no cryptographic implementation at all.
+
+if [ -n "${MATRIX_INTEROP_MAUTRIX_PARTY:-}" ]; then
+  echo "Using the counterparty binary named by MATRIX_INTEROP_MAUTRIX_PARTY."
+  [ -x "$MATRIX_INTEROP_MAUTRIX_PARTY" ] \
+    || fail "MATRIX_INTEROP_MAUTRIX_PARTY does not name an executable file."
+else
+  command -v go >/dev/null 2>&1 \
+    || fail "go is not on PATH, and no MATRIX_INTEROP_MAUTRIX_PARTY was set.
+      The scanned-code proof needs a second counterparty, and matrix-nio
+      cannot be it: the installed wheel contains no QR vocabulary and no
+      cross-signing vocabulary at all. Install a Go toolchain, or point
+      MATRIX_INTEROP_MAUTRIX_PARTY at a binary built from
+      rust/matrix-crypto-core/tests/interop/mautrix_party with -tags goolm."
+
+  echo "Building the mautrix-go counterparty..."
+  # Everything Go writes goes inside this run's own working directory, so a
+  # run leaves nothing in the caller's module or build cache.
+  (
+    # `-mod=readonly`, which is the default and is stated anyway: a build
+    # that needed to change `go.mod` or `go.sum` must fail here rather than
+    # rewrite a committed file, which is the same rule `yarn install
+    # --frozen-lockfile` follows elsewhere in this repository.
+    cd "$REPO_ROOT/rust/matrix-crypto-core/tests/interop/mautrix_party" \
+      && GOFLAGS=-mod=readonly \
+         GOMODCACHE="$WORKDIR/go/mod" \
+         GOCACHE="$WORKDIR/go/build" \
+         go build -tags goolm -o "$WORKDIR/mautrix-party" .
+  ) || fail "could not build the mautrix-go counterparty. If this is a network
+      failure, the module proxy is a dependency of this job rather than a
+      defect in this library."
+  # Removed here rather than left to the teardown, and not for tidiness: Go
+  # writes its module cache read-only, so `rm -rf` on the working directory
+  # fails file by file and leaves both the cache and a screenful of
+  # `Permission denied` behind. `go clean` is the supported way to remove it.
+  GOMODCACHE="$WORKDIR/go/mod" go clean -modcache 2>/dev/null || true
+  export MATRIX_INTEROP_MAUTRIX_PARTY="$WORKDIR/mautrix-party"
+fi
+
+# Asserted, not assumed, the same way the Python counterparty is: a
+# counterparty that cannot start must fail here rather than several minutes
+# later as a subprocess that died.
+printf '%s\n' '{"op":"quit"}' | "$MATRIX_INTEROP_MAUTRIX_PARTY" \
+  | grep -q '"ok":true' \
+  || fail "the binary at MATRIX_INTEROP_MAUTRIX_PARTY does not answer the
+      counterparty protocol."
+
 # --- 3. the tests ----------------------------------------------------------
 #
-# FOUR proofs, one homeserver. `level_two_interop` asks whether a third-party
+# FIVE proofs, one homeserver. `level_two_interop` asks whether a third-party
 # client decrypts what this library encrypts; `level_two_verification` asks
 # whether one will complete a device verification with it; `level_two_identity`
 # asks what a decrypted event says about its sender once this library has a
@@ -487,6 +593,12 @@ PY
 # The fourth has an account to itself, for that same reason taken one step
 # further: it begins by asserting the account holds no identity, which the
 # shared one no longer does by the time it would run. See LOCALPART_CHALLENGE.
+#
+# The fifth, `level_two_scanned`, asks whether all three modes of verification
+# by scanning a code work against an implementation that shares no protocol
+# code and no Olm implementation with this one, and whether a code carrying a
+# changed key is refused. It has three accounts to itself and a counterparty
+# of its own, for reasons its header and the LOCALPART_SCANNED block give.
 
 # --- 4. what actually happened ---------------------------------------------
 #
@@ -606,8 +718,20 @@ run_proof level_two_identity_challenge \
   1 \
   "this test spawns no child, so there is exactly one libtest process"
 
+# The scanned-code proof spawns nothing either. ONE of each.
+#
+# It runs last of the five because it is the only one with a second
+# counterparty and three accounts of its own, so a failure in it is
+# unambiguous about which half of the run it came from. Nothing about the
+# order is load-bearing: it shares no account with any other proof, which is
+# what the three extra accounts buy.
+run_proof level_two_scanned \
+  a_third_party_client_and_this_library_verify_each_other_by_scanning_a_code \
+  1 \
+  "this test spawns no child, so there is exactly one libtest process"
+
 echo
-echo "PASS: all four level 2 proofs."
+echo "PASS: all five level 2 proofs."
 echo "      A third-party matrix-nio client decrypted what this library encrypted,"
 echo "      and this library decrypted what matrix-nio sent."
 echo "      A verification matrix-nio opened was announced by this library, agreed"
@@ -629,6 +753,14 @@ echo "      identity that ended up published is the one the pump handed over. Th
 echo "      the one path this library hands to a product whole, and it now has a run"
 echo "      behind it rather than only documentation."
 echo "      See rust/matrix-crypto-core/tests/level_two_identity_challenge.rs."
+echo "      All three modes of verification by scanning a code completed against a"
+echo "      mautrix-go counterparty, which shares no protocol code and no Olm"
+echo "      implementation with this library, and a code carrying one changed byte of"
+echo "      a master key was refused by it with m.key_mismatch. A flow this library"
+echo "      SHOWS is accepted by that counterparty and does not then finish, because"
+echo "      it sends m.key.verification.done before the showing side has confirmed;"
+echo "      the fifth test measures that off the wire rather than asserting it."
+echo "      See rust/matrix-crypto-core/tests/level_two_scanned.rs."
 if [ -n "$CONTAINER" ]; then
   echo "      Proven against a throwaway $SERVER_NAME homeserver this script started"
   echo "      and is about to destroy. No credential was read from anywhere."
