@@ -39,8 +39,8 @@
 
 use matrix_crypto_core::{
     bootstrap_identity, create_identity, create_machine, create_recovery, identity_status,
-    in_runtime, recover_identity, request_self_flow, share_scope_key, take_outgoing_requests,
-    MachineConfig, MachineError,
+    in_runtime, recover_identity, request_flow, request_self_flow, share_scope_key,
+    take_outgoing_requests, MachineConfig, MachineError,
 };
 use matrix_sdk_common::ruma::{OwnedDeviceId, OwnedUserId};
 use matrix_sdk_crypto::OlmMachine;
@@ -125,6 +125,21 @@ fn a_self_verification_is_not_a_way_around_the_gate() {
         assert_eq!(
             recover_identity(PASSPHRASE, &[]).await,
             Err(MachineError::AccountKeysNotFetched)
+        );
+
+        // ---- The seventh entrance, which read nothing at all ------------
+        //
+        // `request_flow` handed this account's own identifiers opens the
+        // same self-verification `request_self_flow` does, and read no gate:
+        // measured, it ran one to `Done` and queued a signature upload on
+        // this very store. Every existing call site in this repository
+        // passes a peer, so closing it costs nothing that was working, which
+        // is the dual of deleting a guard and finding the suite still green.
+        assert_eq!(
+            request_flow(ACCOUNT, "SOMEOTHERDEV").await.err(),
+            Some(MachineError::AccountKeysNotFetched),
+            "the third door into a self-verification reads the same decision as the other \
+             two, because the flow it opens is the same flow"
         );
 
         // ---- The fifth, which used to be served ------------------------

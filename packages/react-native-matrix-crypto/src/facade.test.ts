@@ -1853,6 +1853,14 @@ describe('the signing identity chain, driven through the public surface', () => 
 
     // Upstream's order, and the batch is longer than the four requests that
     // belong to a publication. See `bootstrapCrossSigning`.
+    // The tenth round's split: only a creation hands over the request that
+    // can replace an identity.
+    let publicationPending = false
+    const queueRepublication = (): void => {
+      queue('keys_upload', '{"device_keys":{}}')
+      queue('signature_upload', '{"signed_keys":{}}')
+      queue('keys_upload', '{"device_keys":{}}')
+    }
     const queuePublication = (): void => {
       queue('keys_upload', '{"device_keys":{}}')
       queue('signing_keys_upload', '{"master_key":{}}')
@@ -1873,8 +1881,14 @@ describe('the signing identity chain, driven through the public surface', () => 
         throw new MachineFfiError.AccountKeysNotFetched()
       }
       if (!identityKnown) throw new MachineFfiError.IdentityNotKnown()
+      // The tenth round: an identity no homeserver has confirmed is not this
+      // call's to publish, and this call never hands over the cross-signing
+      // upload at all. The fake modelled the pre-round-nine rules for two
+      // rounds and stayed green through both, which is why the model is now
+      // written to the rules rather than to the outcomes it happened to see.
+      if (publicationPending) throw new MachineFfiError.IdentityNotKnown()
       if (!privateKeysHeld) throw new MachineFfiError.IdentityAlreadyExists()
-      queuePublication()
+      queueRepublication()
     })
 
     vi.mocked(nativeCreateIdentity).mockImplementation(async () => {
@@ -1882,6 +1896,12 @@ describe('the signing identity chain, driven through the public surface', () => 
         queueAccountQuery()
         throw new MachineFfiError.AccountKeysNotFetched()
       }
+      // Creating is the only publisher, and it is also how an interrupted
+      // publication is finished, so a pending one does not refuse here.
+      if (identityKnown && !publicationPending) {
+        throw new MachineFfiError.IdentityAlreadyExists()
+      }
+      publicationPending = true
       if (identityKnown) throw new MachineFfiError.IdentityAlreadyExists()
       identityKnown = true
       privateKeysHeld = true
@@ -1906,6 +1926,11 @@ describe('the signing identity chain, driven through the public surface', () => 
         // of ours for it to bring back.
         if (!chain.accountKeysFetched) chain.accountKeysFetched = true
         else if (chain.signatureUploaded) chain.signatureFetchedBack = true
+        // Its own statement, not another arm of that chain: a homeserver's
+        // answer carrying the identity is what confirms a publication, and
+        // reporting the upload is not. Written as an `else if` first, where
+        // it silently swallowed the arm above it.
+        if (identityKnown) publicationPending = false
       }
       if (kind === 'signing_keys_upload') chain.identityPublished = true
       if (kind === 'signature_upload' && chain.comparisonDone) chain.signatureUploaded = true

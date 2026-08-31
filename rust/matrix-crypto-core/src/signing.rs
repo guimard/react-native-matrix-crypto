@@ -380,17 +380,29 @@ pub struct IdentityStatus {
     /// Whether this device holds an identity it minted and has **not yet
     /// seen the homeserver accept**.
     ///
-    /// True between [`create_identity`] and the moment the publication it
-    /// queued is reported sent, and it survives a relaunch, because the
-    /// identity it describes is on disk and the publication was in memory.
-    /// A process that is killed, offline, or whose upload times out in that
-    /// window reopens its store in exactly this state.
+    /// True from [`create_identity`] until a homeserver's own `/keys/query`
+    /// answer carries that identity back, and it survives a relaunch,
+    /// because the identity it describes is on disk and the publication was
+    /// in memory. A process that is killed, offline, or whose upload times
+    /// out in that window reopens its store in exactly this state.
     ///
-    /// **The remedy is [`bootstrap_identity`], which is the call a product
-    /// already makes on every launch.** It hands back the same publication
-    /// that was lost. Nothing else is required and nothing has been
-    /// damaged: the account has no identity, this device holds the one it
-    /// is about to get, and the two agree.
+    /// **The remedy is [`create_identity`] again, deliberately.** It hands
+    /// back the same publication that was lost.
+    ///
+    /// This paragraph named [`bootstrap_identity`] for one release and that
+    /// was wrong, and it stayed wrong here for one more after the facade was
+    /// corrected and the core was not, which is why it now says so. From
+    /// inside a process, an identity we hold and have never seen accepted is
+    /// indistinguishable from one the account has since replaced, and no
+    /// answer settles that, so finishing is a decision rather than a retry.
+    ///
+    /// **Seven calls read this field**, and the list is here because wiring
+    /// it into two of them and assuming the rest was the ninth round's
+    /// mistake: `bootstrap_identity` and `create_identity` above,
+    /// [`crate::create_recovery`] and [`crate::recover_identity`], and the
+    /// three doors into a self-verification, [`crate::request_self_flow`],
+    /// [`crate::accept_flow`] and [`crate::request_flow`] when it is handed
+    /// this account's own identifiers.
     ///
     /// It is reported because it is the one state in which
     /// `identity_known` is true and the account still has no identity, so a
@@ -743,7 +755,7 @@ pub async fn bootstrap_identity() -> Result<(), MachineError> {
                 .await
                 .map_err(|_upstream| store_failed())?;
 
-            queue_publication(requests);
+            queue_republication(requests);
 
             Ok(())
         })
@@ -768,6 +780,55 @@ fn queue_publication(requests: matrix_sdk_crypto::CrossSigningBootstrapRequests)
         crate::session::queue_action_request(device_keys);
     }
     crate::session::queue_signing_keys_request(requests.upload_signing_keys_req);
+    crate::session::queue_action_request(requests.upload_signatures_req.into());
+}
+
+/// Queues everything a publication sends **except the cross-signing keys
+/// themselves**.
+///
+/// # The one request that can destroy an identity, and the only call allowed
+/// to hand it over
+///
+/// `/keys/device_signing/upload` is the request that replaces an account's
+/// cross-signing identity. Nothing else in a publication can: the device-key
+/// upload republishes this device's own keys, and the signature upload
+/// re-signs this device into the identity the account already has. Both are
+/// idempotent and neither can overwrite anything.
+///
+/// So this exists to make one sentence true without qualification: **the
+/// call a product makes on every launch never hands over the request that
+/// can replace an identity.** The ninth round tried to make that true with a
+/// predicate and closed one arm of a two-armed race. This closes the other by
+/// removing the capability rather than guarding it.
+///
+/// **Measured, on continuwuity three times and on Synapse:** a device that
+/// signed up entirely correctly, with `identity_publication_pending` false
+/// and nothing stale, restarted, was refused and queued the key query as
+/// documented, and had the homeserver answer that query honestly. Another
+/// client of the same account reset the identity in the gap before the
+/// product reported that answer, which is a first-class user-facing action in
+/// every mainstream client. The gate lifted on a truthful answer, and
+/// `bootstrap_identity` republished the old identity over the new one, after
+/// which the status read byte-identical to before and no signal fired.
+///
+/// # Why the omitted request is never needed
+///
+/// `bootstrap_identity` reaches this only with the account's identity
+/// **confirmed**: `may_publish` refuses while
+/// [`IdentityStatus::identity_publication_pending`] is true, and confirmed
+/// means a homeserver's own answer carried that identity back to us. So the
+/// server demonstrably has it, and re-uploading it can only either change
+/// nothing or replace something. There is no third outcome, and the first is
+/// not worth the second.
+///
+/// The other two requests are still queued, and that is not tidiness. A
+/// publication whose signature upload was the part that failed is repaired by
+/// exactly this call, and the signature is what ties this device to the
+/// account's identity.
+fn queue_republication(requests: matrix_sdk_crypto::CrossSigningBootstrapRequests) {
+    if let Some(device_keys) = requests.upload_keys_req {
+        crate::session::queue_action_request(device_keys);
+    }
     crate::session::queue_action_request(requests.upload_signatures_req.into());
 }
 

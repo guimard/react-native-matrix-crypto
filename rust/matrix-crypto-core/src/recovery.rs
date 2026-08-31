@@ -503,10 +503,33 @@ async fn write(
     // those keys produces account data that opens perfectly and restores an
     // identity the account no longer has, and the failure surfaces much
     // later, at `recover_identity`, as unreadable data.
-    if !crate::signing::read_status(machine)
-        .await?
-        .account_keys_fetched
-    {
+    let status = crate::signing::read_status(machine).await?;
+    if status.account_keys_fetched && status.identity_publication_pending {
+        // **A recovery for an identity no homeserver has ever accepted.**
+        //
+        // The private keys are real and complete, so every other check here
+        // passes, and the account data this call returns opens perfectly
+        // with the passphrase. What it restores is an identity that exists
+        // on one device and nowhere else. Measured: a user who sets recovery
+        // up during an interrupted sign-up is shown a recovery key, writes it
+        // down, and months later on a new phone gets `RecoveryDataMalformed`
+        // -- and the remedy that error names, running this call again,
+        // answers `PrivateKeysNotHeld` on a device that holds nothing. Every
+        // door shut but one, and that one needs the device they no longer
+        // have.
+        //
+        // Refusing costs a user one call: `crate::create_identity` finishes
+        // the publication, the confirming answer clears the record, and this
+        // call is served. That is the whole cost, and it is paid before the
+        // recovery key is ever shown rather than months afterwards.
+        //
+        // `IdentityNotKnown` rather than a new variant: what it says is that
+        // the account has no identity this library can point at, which is
+        // exactly true here, and its documented remedy is already
+        // `create_identity`.
+        return Err(MachineError::IdentityNotKnown);
+    }
+    if !status.account_keys_fetched {
         // Queued by the refusal, exactly as `bootstrap_identity` and
         // `recover_identity` do, so the refusal is recoverable rather than
         // a dead end on any process that shared a key before writing.
@@ -783,6 +806,15 @@ async fn restore(
     // `tests/identity_bootstrap_contradicted_answer.rs` closes for the
     // other two callers, arrived at through the one that was not checking.
     let status = crate::signing::read_status(machine).await?;
+    if status.account_keys_fetched && status.identity_publication_pending {
+        // Importing into an identity no homeserver has accepted. Upstream
+        // checks each imported seed against the store's **public** identity,
+        // which here is one this device minted and nothing has confirmed, so
+        // a successful import would leave the device holding keys for an
+        // identity the account may never have. The remedy is the same one
+        // `create_recovery` names: finish the publication first.
+        return Err(MachineError::IdentityNotKnown);
+    }
     if !status.account_keys_fetched {
         // Queued by the refusal, exactly as `bootstrap_identity` does and
         // for the same reason: upstream volunteers an own-account key query
@@ -1275,8 +1307,30 @@ mod tests {
             "self_signing_keys": { ALICE_USER: signing_keys["self_signing_key"] },
             "user_signing_keys": { ALICE_USER: signing_keys["user_signing_key"] },
         });
+        // **The confirming key query is answered with the identity, not with
+        // `{}`.** The creation queues that query alongside the publication,
+        // and only a homeserver's own answer carrying the identity back
+        // records it as accepted. Answering it with an empty object leaves
+        // the publication unconfirmed, and `create_recovery` now refuses
+        // there, because a recovery written against an identity no
+        // homeserver has ever accepted is one the user cannot use on the
+        // device they will need it on. So this loop does what a product
+        // does: it answers each request with what the server would send.
+        let confirming_answer = serde_json::json!({
+            "device_keys": { ALICE_USER: {} },
+            "failures": {},
+            "master_keys": { ALICE_USER: signing_keys["master_key"] },
+            "self_signing_keys": { ALICE_USER: signing_keys["self_signing_key"] },
+            "user_signing_keys": { ALICE_USER: signing_keys["user_signing_key"] },
+        })
+        .to_string();
         for request in &published {
-            mark_request_sent(&request.id, "{}")
+            let body = if request.kind == "keys_query" && request.body.contains(ALICE_USER) {
+                confirming_answer.as_str()
+            } else {
+                "{}"
+            };
+            mark_request_sent(&request.id, body)
                 .await
                 .expect("a bootstrap publication response must be accepted");
         }

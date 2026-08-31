@@ -625,6 +625,79 @@ fn queue(request: impl Into<UpstreamOutgoingRequest>) {
     crate::session::queue_action_request(request.into());
 }
 
+/// Refuses a verification flow with **our own account** until this library
+/// can say what identity that account has.
+///
+/// # One decision, three doors, and why it is not on the flow's other calls
+///
+/// Completing a self-verification signs another of our devices with **this**
+/// device's self-signing key and asks the account's other devices for its
+/// cross-signing seeds, both under whatever identity this store holds. That
+/// is a property of the flow, so every call that can *open* one reads this:
+/// [`request_self_flow`], [`accept_flow`], and [`request_flow`] when it is
+/// handed our own identifiers. `begin_comparison` and `confirm_flow` do not,
+/// because neither can be reached without one of those three having been
+/// served first, and a check there would refuse a user after they had already
+/// compared the string.
+///
+/// **The third door read nothing at all.** `request_flow(our own account, our
+/// own other device)` ran a self-verification to `Done` and queued a
+/// signature upload on a store whose identity the server had never been asked
+/// about, while five other calls refused in the same instant. It was reached
+/// through the public surface all the way up, and every existing call site
+/// passes a peer, so closing it costs nothing that was working.
+///
+/// # Both conditions, and what each costs
+///
+/// **Never asked** (`account_keys_answered` false): the identity this store
+/// holds may be one the account replaced long ago, so signing under it is
+/// signing under nothing. The cost is one pump, and the refusal queues the
+/// query itself.
+///
+/// **Asked, but our own publication is unconfirmed**
+/// (`identity_publication_pending`): the identity exists on this device and
+/// nowhere else that we know of, so a device that verifies against it is
+/// verifying against something the account may never have. The cost here is
+/// real and is the reason it is stated rather than assumed: a device that
+/// minted and published, and is waiting only for the confirming answer, is
+/// refused a self-verification it could have completed correctly. It is one
+/// pump away from being served, and the alternative is a verification whose
+/// signature may reference a key no other client can resolve.
+///
+/// **Another user's flow reads neither**, and that is measured rather than
+/// argued: verifying somebody else needs nothing of our own identity, and an
+/// unconditional check turns `tests/sas_two_party.rs` red at 11 of 13.
+async fn refuse_own_flow_until_the_identity_is_settled(
+    other_user: &matrix_sdk_common::ruma::UserId,
+) -> Result<(), MachineError> {
+    let ours =
+        with_machine(|machine| Box::pin(async move { machine.user_id().to_owned() })).await?;
+    if other_user != ours {
+        return Ok(());
+    }
+    if !crate::session::account_keys_answered() {
+        // Queued *by* the refusal, so it is recoverable rather than a dead
+        // end, for the reason `signing::bootstrap_identity` states in full.
+        with_machine(|machine| {
+            Box::pin(async move {
+                let (id, request) =
+                    machine.query_keys_for_users(std::iter::once(machine.user_id()));
+                crate::session::queue_account_key_query(id, request);
+            })
+        })
+        .await?;
+        return Err(MachineError::AccountKeysNotFetched);
+    }
+    let pending = with_machine(|machine| {
+        Box::pin(async move { crate::signing::identity_is_unpublished(machine).await })
+    })
+    .await?;
+    if pending {
+        return Err(MachineError::IdentityNotKnown);
+    }
+    Ok(())
+}
+
 /// Asks a device to verify itself against this one.
 ///
 /// Advertises exactly one method, the short authentication string, rather
@@ -636,6 +709,21 @@ pub async fn request_flow(user_id: &str, device_id: &str) -> Result<FlowId, Mach
     // `identity.rs` documents: `with_machine` requires a `'static` closure.
     let user_id = user_id.to_owned();
     let device_id = device_id.to_owned();
+
+    // **Parsed and checked before the machine is taken.** This call is the
+    // third door into a self-verification and it read nothing at all: handed
+    // this account's own identifiers it ran one to `Done` and signed another
+    // device under an identity the server had never been asked about. The
+    // identifier errors below still come first for anybody else's flow,
+    // because they are about the arguments rather than about us.
+    {
+        let ours: OwnedUserId = user_id
+            .parse()
+            .map_err(|_| MachineError::MalformedIdentifier {
+                detail: "user id".to_string(),
+            })?;
+        refuse_own_flow_until_the_identity_is_settled(&ours).await?;
+    }
 
     let (flow_id, request, outgoing) = with_machine(move |machine| {
         Box::pin(async move {
@@ -757,6 +845,14 @@ pub async fn request_flow(user_id: &str, device_id: &str) -> Result<FlowId, Mach
 /// no identity for this account. There is nothing to join, and the answer is
 /// [`crate::bootstrap_identity`] rather than a retry.
 pub async fn request_self_flow() -> Result<FlowId, MachineError> {
+    // The same decision the other two doors read, taken before the machine
+    // is held. It gained a second arm in the tenth round: a publication this
+    // device has not seen confirmed is an identity to sign under that the
+    // account may never have, and the flow signs under it either way.
+    let ours =
+        with_machine(|machine| Box::pin(async move { machine.user_id().to_owned() })).await?;
+    refuse_own_flow_until_the_identity_is_settled(&ours).await?;
+
     let (flow_id, request, outgoing) = with_machine(|machine| {
         Box::pin(async move {
             // **The gate first, and unconditionally.** It used to be read
@@ -898,22 +994,7 @@ pub async fn accept_flow(flow: &FlowId) -> Result<(), MachineError> {
         (None, Some(comparison)) => comparison.other_user_id().to_owned(),
         (None, None) => return Err(MachineError::WrongStage),
     };
-    let ours =
-        with_machine(|machine| Box::pin(async move { machine.user_id().to_owned() })).await?;
-    if other_user == ours && !crate::session::account_keys_answered() {
-        // Queued *by* the refusal, so it is recoverable rather than a dead
-        // end, exactly as `request_self_flow` does it and for the reason
-        // `signing::bootstrap_identity` states in full.
-        with_machine(|machine| {
-            Box::pin(async move {
-                let (id, request) =
-                    machine.query_keys_for_users(std::iter::once(machine.user_id()));
-                crate::session::queue_account_key_query(id, request);
-            })
-        })
-        .await?;
-        return Err(MachineError::AccountKeysNotFetched);
-    }
+    refuse_own_flow_until_the_identity_is_settled(&other_user).await?;
 
     let outgoing = match (&handles.request, &handles.comparison) {
         // The request while there is a request to answer, and the
