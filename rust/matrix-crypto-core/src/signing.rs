@@ -380,17 +380,29 @@ pub struct IdentityStatus {
     /// Whether this device holds an identity it minted and has **not yet
     /// seen the homeserver accept**.
     ///
-    /// True between [`create_identity`] and the moment the publication it
-    /// queued is reported sent, and it survives a relaunch, because the
-    /// identity it describes is on disk and the publication was in memory.
-    /// A process that is killed, offline, or whose upload times out in that
-    /// window reopens its store in exactly this state.
+    /// True from [`create_identity`] until a homeserver's own `/keys/query`
+    /// answer carries that identity back, and it survives a relaunch,
+    /// because the identity it describes is on disk and the publication was
+    /// in memory. A process that is killed, offline, or whose upload times
+    /// out in that window reopens its store in exactly this state.
     ///
-    /// **The remedy is [`bootstrap_identity`], which is the call a product
-    /// already makes on every launch.** It hands back the same publication
-    /// that was lost. Nothing else is required and nothing has been
-    /// damaged: the account has no identity, this device holds the one it
-    /// is about to get, and the two agree.
+    /// **The remedy is [`create_identity`] again, deliberately.** It hands
+    /// back the same publication that was lost.
+    ///
+    /// This paragraph named [`bootstrap_identity`] for one release and that
+    /// was wrong, and it stayed wrong here for one more after the facade was
+    /// corrected and the core was not, which is why it now says so. From
+    /// inside a process, an identity we hold and have never seen accepted is
+    /// indistinguishable from one the account has since replaced, and no
+    /// answer settles that, so finishing is a decision rather than a retry.
+    ///
+    /// **Seven calls read this field**, and the list is here because wiring
+    /// it into two of them and assuming the rest was the ninth round's
+    /// mistake: `bootstrap_identity` and `create_identity` above,
+    /// [`crate::create_recovery`] and [`crate::recover_identity`], and the
+    /// three doors into a self-verification, [`crate::request_self_flow`],
+    /// [`crate::accept_flow`] and [`crate::request_flow`] when it is handed
+    /// this account's own identifiers.
     ///
     /// It is reported because it is the one state in which
     /// `identity_known` is true and the account still has no identity, so a
