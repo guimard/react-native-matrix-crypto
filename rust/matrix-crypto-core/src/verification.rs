@@ -759,25 +759,26 @@ pub async fn request_flow(user_id: &str, device_id: &str) -> Result<FlowId, Mach
 pub async fn request_self_flow() -> Result<FlowId, MachineError> {
     let (flow_id, request, outgoing) = with_machine(|machine| {
         Box::pin(async move {
-            // `None` as the timeout, not a duration, for the reason
-            // `signing::read_status` gives at more length: with `Some`,
-            // upstream waits for an in-flight key query for this account
-            // while this call holds the machine lock, and the caller cannot
-            // drain the pump to satisfy it from another task.
-            let identity = machine
-                .get_identity(machine.user_id(), None)
-                .await
-                .map_err(|_upstream| store_failed())?
-                .and_then(|identity| identity.own());
-
-            let Some(identity) = identity else {
-                // The two refusals are separated by the same question
-                // `signing::may_mint` asks first, read from the same place,
-                // so this call and the bootstrap gate cannot come to
-                // disagree about whether anybody has asked.
-                if crate::session::account_keys_answered() {
-                    return Err(MachineError::IdentityNotKnown);
-                }
+            // **The gate first, and unconditionally.** It used to be read
+            // from inside the identity-absent branch below, which meant a
+            // store that already held an identity reached the verification
+            // request having consulted no gate at all. That is the same
+            // shape `recovery.rs`'s `restore` documents and repairs, and
+            // this was its fourth instance: measured on a store holding a
+            // *stale* identity, `bootstrap_identity`, `create_identity`,
+            // `create_recovery` and `recover_identity` all refused while
+            // this call was served and broadcast a verification invitation
+            // to every other device of the account under that stale
+            // identity. Three doc comments claimed this call carried the
+            // gate, including the one that used to sit ten lines below, and
+            // deleting the whole guard left the suite green.
+            //
+            // It is a write rather than a read, which is why the gate
+            // belongs here: completing the flow signs the other device with
+            // this device's self-signing key and asks the account's other
+            // devices for the cross-signing seeds, both under whatever
+            // identity this store holds.
+            if !crate::session::account_keys_answered() {
                 // Queued *by* the refusal, so the refusal is recoverable
                 // rather than a dead end. The reasoning is
                 // `signing::bootstrap_identity`'s, unchanged and not
@@ -789,6 +790,18 @@ pub async fn request_self_flow() -> Result<FlowId, MachineError> {
                     machine.query_keys_for_users(std::iter::once(machine.user_id()));
                 crate::session::queue_account_key_query(id, request);
                 return Err(MachineError::AccountKeysNotFetched);
+            }
+
+            // `None` as the timeout, not a duration, for the reason
+            // `signing::read_status` gives at more length.
+            let identity = machine
+                .get_identity(machine.user_id(), None)
+                .await
+                .map_err(|_upstream| store_failed())?
+                .and_then(|identity| identity.own());
+
+            let Some(identity) = identity else {
+                return Err(MachineError::IdentityNotKnown);
             };
 
             // One method advertised, not upstream's default list, for

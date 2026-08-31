@@ -135,9 +135,133 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use matrix_sdk_crypto::OlmMachine;
+use matrix_sdk_crypto::{OlmMachine, UserIdentity};
 
 use crate::machine::{with_machine, MachineError};
+
+/// The store key this crate records an identity it minted and has **not yet
+/// seen the homeserver accept** under.
+///
+/// # The fact nothing else in this process can remember
+///
+/// `create_identity` writes a minted identity into the crypto store and then
+/// hands the publication to the caller. Between those two moments the store
+/// holds an identity the account does not have, and it holds it **durably**,
+/// because the store is a file and the publication is in a process-local
+/// pump. If that request is never sent -- the process is killed, the device
+/// is offline, the socket times out, the user backgrounds the app -- the
+/// store keeps an identity that no homeserver has ever seen.
+///
+/// *This store holds an identity* and *this account has an identity* are
+/// therefore different facts, and only the store can remember which of them
+/// is true, because the server cannot be asked about a publication that
+/// never arrived. Upstream keeps exactly this fact for itself, on
+/// `PrivateCrossSigningIdentity::shared`, pickled into the store and set by
+/// `receive_cross_signing_upload_response` (`machine/mod.rs:640-648`); it is
+/// not reachable through any public API, so this crate records the same fact
+/// beside it rather than duplicating the reasoning.
+///
+/// # Prefixed, and holding a key rather than a flag
+///
+/// The value is the ed25519 master key of the unpublished identity, not a
+/// boolean, so a record cannot outlive the identity it describes: if the
+/// store's identity later changes -- because the device joined the one the
+/// account really has -- the recorded key no longer matches it and the
+/// record reads as absent without anything having to remember to clear it.
+///
+/// The key is namespaced because it shares one custom-value table with
+/// upstream's own entries (`Store::set_value`, `store/mod.rs:1160-1174`).
+const UNPUBLISHED_IDENTITY_KEY: &str = "org.linagora.rnmc.unpublished_identity";
+
+/// The ed25519 master key of the identity this machine holds, if it holds
+/// one, in the same base64 form the record above stores.
+async fn own_master_key(machine: &OlmMachine) -> Option<String> {
+    machine
+        .get_identity(machine.user_id(), None)
+        .await
+        .ok()
+        .flatten()
+        .and_then(UserIdentity::own)
+        .and_then(|identity| identity.master_key().get_first_key())
+        .map(|key| key.to_base64())
+}
+
+/// Records that this device has minted the identity it now holds and has not
+/// yet seen a homeserver accept it.
+///
+/// Called by [`create_identity`] straight after the mint, and by nothing
+/// else: minting is the only act that can put an identity into this store
+/// that the account does not have.
+///
+/// A store write that fails is not an error the caller can do anything
+/// about, and failing the mint over it would leave the identity minted and
+/// the caller told it was not. The consequence of losing this record is the
+/// state that existed before it: a refusal rather than a wrong publication,
+/// which is the direction this module takes everywhere.
+pub(crate) async fn note_identity_minted(machine: &OlmMachine) {
+    let Some(master_key) = own_master_key(machine).await else {
+        return;
+    };
+    let _ = machine
+        .store()
+        .set_value(UNPUBLISHED_IDENTITY_KEY, &master_key)
+        .await;
+}
+
+/// Records that the identity this machine holds is one a homeserver has.
+///
+/// Called from two places, and both are moments at which the server itself
+/// has told us: `session::mark_sent` when a signing-keys upload is reported
+/// as having succeeded, which is the same instant upstream marks its own
+/// private identity shared; and `session::answer_about_this_account` when a
+/// key query answer asserts the very identity this store holds.
+pub(crate) async fn note_identity_published(machine: &OlmMachine) {
+    let _ = machine
+        .store()
+        .remove_custom_value(UNPUBLISHED_IDENTITY_KEY)
+        .await;
+}
+
+/// Whether the identity this machine holds is one it minted and has never
+/// seen accepted.
+///
+/// `false` for a store holding no identity, for one whose identity arrived
+/// from a homeserver's own answer, for one whose publication was reported,
+/// and for a store written by a version of this crate that kept no record.
+/// That last default is the safe one and it is deliberate: an unrecorded
+/// identity is treated as one the account really has, so a "this account has
+/// no identity" answer contradicts it, which is the refusal
+/// `tests/identity_bootstrap_contradicted_answer.rs` exists for.
+///
+/// # What this exempts, stated rather than left to be found
+///
+/// A `true` here exempts one identity from that contradiction check, so it
+/// is worth naming what that costs. The exemption is wrong only if the
+/// identity really was published and this record was never cleared, and
+/// clearing it takes either a reported upload or any answer that carries the
+/// identity. So the state where it misleads needs all three of: a
+/// publication that reached the server but was never reported; an identity
+/// reset elsewhere afterwards; and then a stale or omitting answer, since an
+/// honest one would carry the new identity and clear the record on its way
+/// past. A device in that state republishes the identity it holds over the
+/// newer one.
+///
+/// That is strictly narrower than what the sixth round exposed, which was
+/// every store holding any identity, and enormously narrower than what the
+/// seventh round cost, which was every interrupted sign-up. It is not zero
+/// and it is not claimed to be.
+pub(crate) async fn identity_is_unpublished(machine: &OlmMachine) -> bool {
+    let Some(held) = own_master_key(machine).await else {
+        return false;
+    };
+    machine
+        .store()
+        .get_value::<String>(UNPUBLISHED_IDENTITY_KEY)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|recorded| recorded == held)
+}
 
 /// Whether the account's private signing keys were held the last time
 /// anything looked, so that an arrival can be told from a standing fact.
@@ -253,6 +377,26 @@ pub struct IdentityStatus {
     /// Never true alongside `account_keys_fetched`. Once upstream knows, a
     /// later answer that settles nothing does not un-know it.
     pub account_keys_answer_unsettled: bool,
+    /// Whether this device holds an identity it minted and has **not yet
+    /// seen the homeserver accept**.
+    ///
+    /// True between [`create_identity`] and the moment the publication it
+    /// queued is reported sent, and it survives a relaunch, because the
+    /// identity it describes is on disk and the publication was in memory.
+    /// A process that is killed, offline, or whose upload times out in that
+    /// window reopens its store in exactly this state.
+    ///
+    /// **The remedy is [`bootstrap_identity`], which is the call a product
+    /// already makes on every launch.** It hands back the same publication
+    /// that was lost. Nothing else is required and nothing has been
+    /// damaged: the account has no identity, this device holds the one it
+    /// is about to get, and the two agree.
+    ///
+    /// It is reported because it is the one state in which
+    /// `identity_known` is true and the account still has no identity, so a
+    /// product that shows "encryption is set up" on `identity_known` alone
+    /// is wrong here and this is how it can tell. It authorises nothing.
+    pub identity_publication_pending: bool,
 }
 
 /// Errors must not carry an identifier or key material, so an upstream store
@@ -281,6 +425,7 @@ pub(crate) async fn read_status(machine: &OlmMachine) -> Result<IdentityStatus, 
         identity_known,
         private_keys_held: machine.cross_signing_status().await.is_complete(),
         account_keys_answer_unsettled: crate::session::account_keys_answer_unsettled(),
+        identity_publication_pending: identity_is_unpublished(machine).await,
     })
 }
 
@@ -615,20 +760,32 @@ fn queue_publication(requests: matrix_sdk_crypto::CrossSigningBootstrapRequests)
 /// automatic remedy for [`MachineError::IdentityNotKnown`], puts that
 /// decision back where it was and the race back with it.
 ///
-/// # What this does about the window it cannot close
+/// # The window is not closed, and the confirming query does not close it
 ///
 /// It queues a fresh account `/keys/query` alongside the publication, so the
 /// product's ordinary pump loop asks the server once more straight after.
-/// That does not prevent the race: the publication is handed out first and a
-/// product that sends it has already sent it. What it prevents is the state
-/// the race otherwise leaves behind, which was measured and is worse than it
-/// looks -- a device holding an identity the account does not have, reporting
-/// `identity_known` and `private_keys_held` like a healthy one, and **never
-/// asking again**, because a served publication queues no query and upstream
-/// volunteers none for an account it already tracks. With the query queued,
-/// the next answer carries the identity the account really has, upstream
-/// drops the private keys that disagree with it, and this device correctly
-/// reports `IdentityAlreadyExists` and joins instead.
+/// What that is worth was overstated here once, and the overstatement was
+/// measured, so it is stated precisely now.
+///
+/// **It covers the branch where the publication did not land**: a device
+/// that minted and never published used to hold an identity the account does
+/// not have, report `identity_known` and `private_keys_held` like a healthy
+/// one, and never ask again, because a served publication queues no query
+/// and upstream volunteers none for an account it already tracks. With the
+/// query queued, the next answer settles that state, and
+/// [`IdentityStatus::identity_publication_pending`] describes it while it
+/// lasts.
+///
+/// **It does not cover the branch where the publication did land**, which is
+/// the branch that does the damage. A product that sent the publication,
+/// answered the authentication challenge and reported the success has
+/// completed the overwrite; the confirming answer then carries *this
+/// device's* identity, it matches the store, the positive branch settles,
+/// and the status reads as a completely healthy device. Nothing in the
+/// status, in any error, or in any later answer says the account's previous
+/// identity was replaced. There is no path back and this module does not
+/// pretend to offer one. What keeps a caller out of that branch is the
+/// decision this call exists to require, not this query.
 ///
 /// # What a caller must do next
 ///
@@ -673,6 +830,14 @@ pub async fn create_identity() -> Result<(), MachineError> {
                 .await
                 .map_err(|_upstream| store_failed())?;
 
+            // Recorded before the publication is queued, and that order is
+            // the point rather than tidiness: between the mint and the
+            // upload landing, this store holds an identity the account does
+            // not have, and if this process dies in that window the record
+            // is the only thing that will say so. Written after the mint
+            // because it names the key the mint produced.
+            note_identity_minted(machine).await;
+
             queue_publication(requests);
 
             // The confirming query. Queued *after* the publication, so the
@@ -692,6 +857,237 @@ pub async fn create_identity() -> Result<(), MachineError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::machine::{create_machine, lock_for_test, reset_for_test, MachineConfig};
+    use crate::runtime::in_runtime;
+    use crate::session::{mark_request_sent, take_outgoing_requests, OutgoingRequest};
+
+    const ACCOUNT: &str = "@alice:example.org";
+    const DEVICE: &str = "DEVICEONE";
+    const STORE_PASSPHRASE: &str = "test-passphrase";
+
+    /// A real homeserver's real answer for an account it holds no identity
+    /// for. Synapse and Dendrite byte for byte, account substituted. Note
+    /// what it is: not an omission, but three explicit empty key maps.
+    const NO_IDENTITY: &str = r#"{"device_keys":{"@alice:example.org":{}},"failures":{},"master_keys":{},"self_signing_keys":{},"user_signing_keys":{}}"#;
+
+    fn config(store_path: &str) -> MachineConfig {
+        MachineConfig {
+            user_id: ACCOUNT.to_string(),
+            device_id: DEVICE.to_string(),
+            store_path: store_path.to_string(),
+            store_passphrase: Some(STORE_PASSPHRASE.to_string()),
+        }
+    }
+
+    fn names_the_account(body: &str) -> bool {
+        let parsed: serde_json::Value = serde_json::from_str(body).expect("JSON");
+        parsed
+            .get("device_keys")
+            .and_then(|users| users.get(ACCOUNT))
+            .is_some()
+    }
+
+    async fn drain_account_query() -> OutgoingRequest {
+        let batch = take_outgoing_requests().await.expect("drain");
+        batch
+            .iter()
+            .find(|r| r.kind == "keys_query" && names_the_account(&r.body))
+            .unwrap_or_else(|| {
+                panic!(
+                    "no account key query; got {:?}",
+                    batch.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>()
+                )
+            })
+            .clone()
+    }
+
+    /// Turns the publication the mint queued into the `/keys/query` answer a
+    /// homeserver that accepted it would send back.
+    fn answer_carrying(publication: &str) -> String {
+        let up: serde_json::Value = serde_json::from_str(publication).expect("JSON");
+        serde_json::json!({
+            "device_keys": { ACCOUNT: {} },
+            "failures": {},
+            "master_keys": { ACCOUNT: up["master_key"] },
+            "self_signing_keys": { ACCOUNT: up["self_signing_key"] },
+            "user_signing_keys": { ACCOUNT: up["user_signing_key"] },
+        })
+        .to_string()
+    }
+
+    /// A relaunch after an interrupted publication can still publish.
+    ///
+    /// **This is the shape of the defect the eighth round exists for, and it
+    /// needs two processes.** The integration test
+    /// `tests/identity_publication_interrupted.rs` drives the record's write
+    /// and both of its clearing moments, but it cannot drive this: by the
+    /// time it mints, the gate is already open, and the gate is monotonic,
+    /// so a rule that refuses the next answer changes nothing it can see.
+    /// Sabotaging the fix away left that file green. Only a *second* process,
+    /// whose gate starts shut, meets the refusal that bricked the account.
+    ///
+    /// `machine::reset_for_test` is what makes that reachable from inside
+    /// `src/`: it drops the held machine and clears `account_keys_answered`,
+    /// so reopening the same store path is a relaunch in every way that
+    /// matters here.
+    #[test]
+    fn a_relaunch_after_an_interrupted_publication_can_still_publish() {
+        let _guard = futures::executor::block_on(lock_for_test());
+        reset_for_test();
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store_path = dir.path().join("store").to_string_lossy().into_owned();
+
+        // ---- The first process: mint, then lose the publication --------
+        {
+            let store_path = store_path.clone();
+            futures::executor::block_on(in_runtime(async move {
+                create_machine(config(&store_path)).await.expect("machine");
+                assert_eq!(
+                    create_identity().await,
+                    Err(MachineError::AccountKeysNotFetched)
+                );
+                let query = drain_account_query().await;
+                mark_request_sent(&query.id, NO_IDENTITY)
+                    .await
+                    .expect("an honest answer about a fresh account");
+                create_identity().await.expect("the deliberate mint");
+
+                let minted = read_status_now().await;
+                assert!(
+                    minted.identity_publication_pending,
+                    "the mint must be recorded as unpublished: {minted:?}"
+                );
+                // Drained and never sent: the process dies here.
+                let _ = take_outgoing_requests().await.expect("drain");
+            }));
+        }
+
+        // ---- The relaunch ----------------------------------------------
+        reset_for_test();
+        {
+            let store_path = store_path.clone();
+            futures::executor::block_on(in_runtime(async move {
+                create_machine(config(&store_path))
+                    .await
+                    .expect("the store the first process wrote must reopen");
+
+                let reopened = read_status_now().await;
+                assert!(
+                    !reopened.account_keys_fetched,
+                    "a new process has asked nothing yet: {reopened:?}"
+                );
+                assert!(
+                    reopened.identity_known && reopened.private_keys_held,
+                    "and the store holds the identity the first process minted: {reopened:?}"
+                );
+                assert!(
+                    reopened.identity_publication_pending,
+                    "and the record that it was never published survived the relaunch,                      which is the whole of the fix: {reopened:?}"
+                );
+
+                // The documented remedy, once.
+                assert_eq!(
+                    bootstrap_identity().await,
+                    Err(MachineError::AccountKeysNotFetched)
+                );
+                let query = drain_account_query().await;
+                mark_request_sent(&query.id, NO_IDENTITY)
+                    .await
+                    .expect("the same honest answer as before");
+
+                let answered = read_status_now().await;
+                assert!(
+                    answered.account_keys_fetched,
+                    "THIS is the assertion the file exists for. Refused here, every write on                      this surface refuses forever, the account can never have cross-signing,                      and the only escape is deleting the store, which is the user's message                      history. Measured on continuwuity and on Synapse: {answered:?}"
+                );
+                assert!(
+                    !answered.account_keys_answer_unsettled,
+                    "and the caller must not be told the answer settled nothing: {answered:?}"
+                );
+
+                bootstrap_identity()
+                    .await
+                    .expect("and the publication that was lost must be handed back");
+                let batch = take_outgoing_requests().await.expect("drain");
+                assert!(
+                    batch.iter().any(|r| r.kind == "signing_keys_upload"),
+                    "which means the upload itself, not merely a success: {:?}",
+                    batch.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>()
+                );
+            }));
+        }
+        reset_for_test();
+    }
+
+    /// An answer that carries the identity clears the record too.
+    ///
+    /// The second of the two moments a homeserver tells us a publication
+    /// landed, and it covers the device whose upload succeeded and whose
+    /// report never happened. Without it that device would keep an identity
+    /// exempt from the contradiction check for the life of the store.
+    ///
+    /// Its own test because the exemption is only observable while it lasts,
+    /// and the file above needs it to last.
+    #[test]
+    fn an_answer_that_carries_the_identity_clears_the_record() {
+        let _guard = futures::executor::block_on(lock_for_test());
+        reset_for_test();
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store_path = dir.path().join("store").to_string_lossy().into_owned();
+
+        futures::executor::block_on(in_runtime(async move {
+            create_machine(config(&store_path)).await.expect("machine");
+            assert_eq!(
+                create_identity().await,
+                Err(MachineError::AccountKeysNotFetched)
+            );
+            let query = drain_account_query().await;
+            mark_request_sent(&query.id, NO_IDENTITY)
+                .await
+                .expect("an honest answer");
+            create_identity().await.expect("the deliberate mint");
+            assert!(read_status_now().await.identity_publication_pending);
+
+            let batch = take_outgoing_requests().await.expect("drain");
+            let publication = batch
+                .iter()
+                .find(|r| r.kind == "signing_keys_upload")
+                .expect("the mint queues its publication")
+                .clone();
+            let confirming = batch
+                .iter()
+                .find(|r| r.kind == "keys_query" && names_the_account(&r.body))
+                .expect("the mint queues its confirming query")
+                .clone();
+
+            // The upload landed; the report never happened. The confirming
+            // query then comes back carrying the identity the server now has.
+            mark_request_sent(&confirming.id, &answer_carrying(&publication.body))
+                .await
+                .expect("the answer must be accepted");
+
+            let settled = read_status_now().await;
+            assert!(
+                !settled.identity_publication_pending,
+                "the server has told us it has this identity, so the record must go: left                  standing, this identity is exempt from the contradiction check forever and                  a later stale answer could republish it over a newer one: {settled:?}"
+            );
+            assert!(settled.account_keys_fetched && settled.identity_known);
+        }));
+        reset_for_test();
+    }
+
+    /// Reads the status through the machine, without the public wrapper,
+    /// because these tests are already inside a `with_machine` closure's
+    /// runtime and the wrapper would take the lock a second time.
+    async fn read_status_now() -> IdentityStatus {
+        crate::machine::with_machine(|machine| Box::pin(read_status(machine)))
+            .await
+            .expect("the machine is live")
+            .expect("reading the status must not fail")
+    }
 
     /// The two rules, stated once and checked against every combination they
     /// can face, without a store or a machine in sight.
@@ -717,35 +1113,38 @@ mod tests {
             for identity_known in [false, true] {
                 for private_keys_held in [false, true] {
                     for account_keys_answer_unsettled in [false, true] {
-                        let status = IdentityStatus {
-                            account_keys_fetched,
-                            identity_known,
-                            private_keys_held,
-                            account_keys_answer_unsettled,
-                        };
+                        for identity_publication_pending in [false, true] {
+                            let status = IdentityStatus {
+                                account_keys_fetched,
+                                identity_known,
+                                private_keys_held,
+                                account_keys_answer_unsettled,
+                                identity_publication_pending,
+                            };
 
-                        let publish = if !account_keys_fetched {
-                            Err(MachineError::AccountKeysNotFetched)
-                        } else if !identity_known {
-                            Err(MachineError::IdentityNotKnown)
-                        } else if !private_keys_held {
-                            Err(MachineError::IdentityAlreadyExists)
-                        } else {
-                            Ok(())
-                        };
-                        assert_eq!(may_publish(&status), publish, "publish, for {status:?}");
+                            let publish = if !account_keys_fetched {
+                                Err(MachineError::AccountKeysNotFetched)
+                            } else if !identity_known {
+                                Err(MachineError::IdentityNotKnown)
+                            } else if !private_keys_held {
+                                Err(MachineError::IdentityAlreadyExists)
+                            } else {
+                                Ok(())
+                            };
+                            assert_eq!(may_publish(&status), publish, "publish, for {status:?}");
 
-                        let create = if !account_keys_fetched {
-                            Err(MachineError::AccountKeysNotFetched)
-                        } else if identity_known {
-                            Err(MachineError::IdentityAlreadyExists)
-                        } else {
-                            Ok(())
-                        };
-                        assert_eq!(may_create(&status), create, "create, for {status:?}");
+                            let create = if !account_keys_fetched {
+                                Err(MachineError::AccountKeysNotFetched)
+                            } else if identity_known {
+                                Err(MachineError::IdentityAlreadyExists)
+                            } else {
+                                Ok(())
+                            };
+                            assert_eq!(may_create(&status), create, "create, for {status:?}");
 
-                        if publish.is_ok() && create.is_ok() {
-                            both_served.push(status);
+                            if publish.is_ok() && create.is_ok() {
+                                both_served.push(status);
+                            }
                         }
                     }
                 }
@@ -768,6 +1167,7 @@ mod tests {
             identity_known: false,
             private_keys_held: false,
             account_keys_answer_unsettled: false,
+            identity_publication_pending: false,
         };
         assert_eq!(
             may_publish(&unasked),
@@ -812,6 +1212,7 @@ mod tests {
                 identity_known: true,
                 private_keys_held,
                 account_keys_answer_unsettled: false,
+                identity_publication_pending: false,
             };
             assert_eq!(
                 may_create(&known),
@@ -834,6 +1235,7 @@ mod tests {
             identity_known: false,
             private_keys_held: false,
             account_keys_answer_unsettled: false,
+            identity_publication_pending: false,
         };
         assert_eq!(
             may_publish(&none),

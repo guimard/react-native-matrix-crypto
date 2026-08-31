@@ -425,6 +425,63 @@ function stringField(source: Record<string, unknown>, field: string): string | u
  * caller-supplied payload or ciphertext content, so this stays safe to
  * surface without reaching a crash report.
  */
+/**
+ * What a fieldless refusal says when it reaches a developer.
+ *
+ * **The message is the only prose most of these ever get.** The Rust
+ * `#[error(...)]` string does not cross the FFI boundary, and a fieldless
+ * variant arrives carrying no `reason` and no `detail`, so without this map
+ * `toCryptoError` produces `crypto error: identity_not_known` and nothing
+ * else. A developer debugging at speed sees that string, in a stack trace or
+ * a log line, and nowhere near it any of the six places this repository
+ * explains what to do.
+ *
+ * That mattered enough to fix rather than document. The gate refusals below
+ * are decisions rather than failures, and the decision is what the message
+ * has to carry: `'identity_not_known'` in particular is the one whose
+ * obvious-looking remedy is the destructive call, and wiring
+ * `createCrossSigningIdentity` to it is how a product mints an identity on a
+ * launch-path error handler, on devices that are frequently killed and
+ * frequently offline.
+ *
+ * Only the refusals whose remedy is a choice are listed. A kind that already
+ * carries a `reason` from the Rust side keeps it: the map is consulted only
+ * when there is nothing better.
+ */
+const MESSAGE_BY_KIND: ReadonlyMap<CryptoErrorKind, string> = new Map([
+  [
+    'account_keys_not_fetched',
+    'this library cannot yet say what identity this account has, so it will not publish or ' +
+      'create one. The key query that lifts this has already been queued: drain ' +
+      'takeOutgoingRequests, send it, report it with markRequestSent, and call again. If ' +
+      'getIdentityStatus().accountKeysAnswerUnsettled is true, calling again will do exactly ' +
+      'this again: stop looping and check the userId you passed to initCrypto against the ' +
+      'canonical user_id your login returned.',
+  ],
+  [
+    'identity_not_known',
+    'the homeserver was asked and this account has no cross-signing identity, so there is ' +
+      'nothing to publish and nothing to join. Creating one is createCrossSigningIdentity, ' +
+      'and it is destructive if the account turns out to have an identity after all: do not ' +
+      'call it from this handler. It belongs where your product has decided this account ' +
+      'should be getting its first identity, having checked something it knows and this ' +
+      'library cannot, such as that no other session is listed on the account.',
+  ],
+  [
+    'identity_already_exists',
+    'this account already has a cross-signing identity and this device does not hold its ' +
+      'private keys. Join it with requestSelfVerification, or restore it with ' +
+      'recoverIdentity. Replacing it would reset the trust of everyone who has verified this ' +
+      'account, and no call on this surface will do it.',
+  ],
+  [
+    'private_keys_not_held',
+    'this device does not hold this account\u2019s private signing keys, so there is nothing ' +
+      'for it to write into server-side storage. getIdentityStatus says whether the remedy is ' +
+      'to join the account\u2019s identity or to create one.',
+  ],
+])
+
 export function toCryptoError(raw: unknown): CryptoError {
   const source = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
   const name = typeof source.name === 'string' ? source.name : ''
@@ -432,7 +489,7 @@ export function toCryptoError(raw: unknown): CryptoError {
     KIND_BY_NAME.get(name) ?? KIND_BY_NAME.get(variantNameFromMessage(source.message) ?? '') ?? 'unknown'
   const reason = stringField(source, 'reason') ?? stringField(source, 'detail')
 
-  const err = new Error(reason ?? `crypto error: ${kind}`) as CryptoError
+  const err = new Error(reason ?? MESSAGE_BY_KIND.get(kind) ?? `crypto error: ${kind}`) as CryptoError
   err.name = 'CryptoError'
   err.kind = kind
   err.retriable = RETRIABLE.has(kind)

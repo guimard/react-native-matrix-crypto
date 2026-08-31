@@ -197,6 +197,7 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
       identityKnown: false,
       privateKeysHeld: false,
       accountKeysAnswerUnsettled: false,
+      identityPublicationPending: false,
     })),
     bootstrapIdentity: vi.fn(async () => {
       throw new actual.MachineFfiError.AccountKeysNotFetched()
@@ -1110,6 +1111,7 @@ beforeEach(() => {
     identityKnown: false,
     privateKeysHeld: false,
     accountKeysAnswerUnsettled: false,
+    identityPublicationPending: false,
   })
   vi.mocked(nativeBootstrapIdentity).mockReset()
   vi.mocked(nativeBootstrapIdentity).mockImplementation(async () => {
@@ -1846,6 +1848,7 @@ describe('the signing identity chain, driven through the public surface', () => 
       // `rust/matrix-crypto-core/tests/identity_bootstrap_unsettled_answer.rs`;
       // what is checked on this side is that it crosses at all, below.
       accountKeysAnswerUnsettled: false,
+      identityPublicationPending: false,
     }))
 
     // Upstream's order, and the batch is longer than the four requests that
@@ -2093,6 +2096,7 @@ describe('the signing identity chain, driven through the public surface', () => 
       identityKnown: false,
       privateKeysHeld: false,
       accountKeysAnswerUnsettled: false,
+      identityPublicationPending: false,
     })
 
     // Refused, and refused as its own kind rather than as 'unknown'. Both
@@ -2123,6 +2127,7 @@ describe('the signing identity chain, driven through the public surface', () => 
       identityKnown: true,
       privateKeysHeld: true,
       accountKeysAnswerUnsettled: false,
+      identityPublicationPending: false,
     })
 
     // The batch is longer than the four requests the bootstrap owns, and
@@ -2302,6 +2307,7 @@ describe('the signing identity chain, driven through the public surface', () => 
       identityKnown: true,
       privateKeysHeld: false,
       accountKeysAnswerUnsettled: false,
+      identityPublicationPending: false,
     })
 
     await expect(bootstrapCrossSigning()).rejects.toSatisfy(
@@ -2383,6 +2389,7 @@ describe('the signing identity chain, driven through the public surface', () => 
       identityKnown: true,
       privateKeysHeld: false,
       accountKeysAnswerUnsettled: false,
+      identityPublicationPending: false,
     })
 
     // ---- Joining -------------------------------------------------------
@@ -2426,6 +2433,7 @@ describe('the signing identity chain, driven through the public surface', () => 
       // identity rather than only recognise it.
       privateKeysHeld: true,
       accountKeysAnswerUnsettled: false,
+      identityPublicationPending: false,
     })
 
     // And it was told, rather than having to ask on a timer. Announced for
@@ -2469,6 +2477,41 @@ describe('the signing identity chain, driven through the public surface', () => 
  * One assertion per direction, each checking the *other* native call was not
  * touched, so a swap fails both halves.
  */
+/**
+ * The one status field that says an account is mid-setup rather than set up.
+ *
+ * `getIdentityStatus` destructures the native record field by field, so a
+ * field the facade forgets to name is silently dropped and every other
+ * assertion in this file still passes. Dropped, a product cannot tell the
+ * one state where `identityKnown` is true and the account still has no
+ * identity, which is exactly the state a killed process leaves behind
+ * between creating an identity and publishing it. That state was
+ * unrecoverable for a whole round, and the field is what makes it legible.
+ *
+ * The behaviour is driven against the real core in
+ * `rust/matrix-crypto-core/tests/identity_publication_interrupted.rs`; what
+ * is checked here is that the value crosses this boundary at all.
+ */
+describe('an identity awaiting publication crosses the facade', () => {
+  it('reports the pending publication alongside the identity it belongs to', async () => {
+    vi.mocked(nativeIdentityStatus).mockResolvedValue({
+      accountKeysFetched: true,
+      identityKnown: true,
+      privateKeysHeld: true,
+      accountKeysAnswerUnsettled: false,
+      identityPublicationPending: true,
+    })
+
+    expect(await getIdentityStatus()).toEqual({
+      accountKeysFetched: true,
+      identityKnown: true,
+      privateKeysHeld: true,
+      accountKeysAnswerUnsettled: false,
+      identityPublicationPending: true,
+    })
+  })
+})
+
 describe('publishing and creating are not the same native call', () => {
   it('routes bootstrapCrossSigning at the publishing call and nothing else', async () => {
     vi.mocked(nativeBootstrapIdentity).mockResolvedValue(undefined)
@@ -2508,6 +2551,7 @@ describe('an answer that settled nothing crosses the facade', () => {
       identityKnown: false,
       privateKeysHeld: false,
       accountKeysAnswerUnsettled: true,
+      identityPublicationPending: false,
     })
 
     expect(await getIdentityStatus()).toEqual({
@@ -2515,6 +2559,7 @@ describe('an answer that settled nothing crosses the facade', () => {
       identityKnown: false,
       privateKeysHeld: false,
       accountKeysAnswerUnsettled: true,
+      identityPublicationPending: false,
     })
   })
 })
@@ -2561,6 +2606,7 @@ describe('the mock defaults survive every describe above', () => {
       identityKnown: false,
       privateKeysHeld: false,
       accountKeysAnswerUnsettled: false,
+      identityPublicationPending: false,
     })
     await expect(bootstrapCrossSigning()).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'account_keys_not_fetched',
