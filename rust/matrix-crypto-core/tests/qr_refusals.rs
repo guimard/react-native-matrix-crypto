@@ -330,7 +330,7 @@ fn every_refusal_a_scannable_code_can_give_is_named() {
         mark_request_sent(
             &own_query.id,
             &serde_json::json!({
-                "device_keys": { ALICE: { ALICE_OTHER_DEVICE: sibling_keys } },
+                "device_keys": { ALICE: { ALICE_OTHER_DEVICE: sibling_keys.clone() } },
             })
             .to_string(),
         )
@@ -794,16 +794,81 @@ fn every_refusal_a_scannable_code_can_give_is_named() {
         create_identity()
             .await
             .expect("an account with no identity may mint one");
-        take_outgoing_requests()
+
+        // **The publication is finished here, not drained and dropped.**
+        // Minting records that this store holds an identity no homeserver
+        // has accepted, and every door into a self-verification refuses
+        // while that record stands: from inside a process, an identity this
+        // device holds and has never seen accepted cannot be told apart from
+        // one the account has since replaced. `accept_flow` below is one of
+        // those doors, because the invitation it answers comes from a device
+        // of this same account.
+        //
+        // Reporting the upload does not clear the record and is not meant
+        // to: the two bodies this library cannot tell from a successful
+        // upload are exactly what a dropped connection hands a product. What
+        // clears it is the query the mint queues behind the publication,
+        // answered the way a homeserver that accepted it would answer, which
+        // is the sequence a product runs and the one this phase now runs.
+        let published = take_outgoing_requests()
             .await
             .expect("the pump must be drainable");
-        assert!(
-            identity_status()
+        let publication = one_of(
+            &published,
+            "signing_keys_upload",
+            "a mint must publish the identity it minted",
+        );
+        let identity: serde_json::Value = serde_json::from_str(&publication.body)
+            .expect("the pump's own body is well-formed JSON");
+        let confirming = published
+            .iter()
+            .find(|request| {
+                request.kind == "keys_query"
+                    && queried_users(&request.body).iter().any(|u| u == ALICE)
+            })
+            .expect("the mint must queue the query that confirms its publication")
+            .clone();
+        for request in &published {
+            if request.id == confirming.id {
+                continue;
+            }
+            mark_request_sent(&request.id, "{}")
                 .await
-                .expect("reading the identity status must not fail")
-                .private_keys_held,
+                .expect("a publication response must be accepted");
+        }
+        // All three key maps, which is what a homeserver holding this
+        // identity sends and what upstream needs to store one, and the
+        // account's other device alongside them: an answer naming no device
+        // of the account would retire the sibling this phase's own flow is
+        // with, and the refusal below would then be about a device this
+        // library had forgotten.
+        mark_request_sent(
+            &confirming.id,
+            &serde_json::json!({
+                "device_keys": { ALICE: { ALICE_OTHER_DEVICE: sibling_keys } },
+                "failures": {},
+                "master_keys": { ALICE: identity["master_key"] },
+                "self_signing_keys": { ALICE: identity["self_signing_key"] },
+                "user_signing_keys": { ALICE: identity["user_signing_key"] },
+            })
+            .to_string(),
+        )
+        .await
+        .expect("the confirming answer must be accepted");
+
+        let minted = identity_status()
+            .await
+            .expect("reading the identity status must not fail");
+        assert!(
+            minted.private_keys_held,
             "the refusal below is about the *other* user's identity, so this one \
              must be in place or it would pass for the reason phase one tested"
+        );
+        assert!(
+            !minted.identity_publication_pending,
+            "and the publication must be confirmed, or the `accept_flow` below is \
+             refused for holding an identity no homeserver has accepted and this \
+             phase measures that refusal instead of the one it is about: {minted:?}"
         );
 
         // Carol has to know Alice's device before she can answer.
