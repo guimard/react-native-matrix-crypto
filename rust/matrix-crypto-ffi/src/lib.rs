@@ -532,6 +532,16 @@ pub async fn request_self_verification() -> Result<String, MachineFfiError> {
 
 /// Agrees to a verification the other side asked for. Mirrors
 /// `accept_flow`.
+///
+/// **This is the other side of the same door `request_self_verification`
+/// carries a note about, and it needed one too.** A self-verification signs
+/// another of this account's devices with this device's self-signing key and
+/// asks the account's other devices for its cross-signing seeds, and either
+/// side may open the flow. So when the counterparty is our own account, this
+/// call reads `bootstrap_identity`'s gate exactly as the sending side does;
+/// when it is anybody else it reads nothing, because verifying another user
+/// needs nothing of our own identity. `accept_flow`'s own doc comment has
+/// the measurement that made the scope necessary in both directions.
 #[uniffi::export]
 pub async fn accept_verification(verification_id: String) -> Result<(), MachineFfiError> {
     matrix_crypto_core::accept_flow(&matrix_crypto_core::FlowId(verification_id))
