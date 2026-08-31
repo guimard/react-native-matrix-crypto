@@ -1814,7 +1814,22 @@ struct RequestState {
     /// `verification.rs` de-duplicates at the only place a duplicate could be
     /// produced: `FlowRecord::key_query_queued` marks a flow the moment its
     /// query is queued, and one flow completes once.
-    queued_peer_queries: Vec<(u64, OwnedTransactionId, KeysQueryRequest)>,
+    ///
+    /// **Carries no sequence, unlike the two slots above, and that is the one
+    /// thing about this queue that is load-bearing.** A stamp taken at queue
+    /// time would sort these ahead of everything upstream produced during the
+    /// same sync, and the request they must not overtake is exactly one of
+    /// those: the signature upload the completion made, which is what the
+    /// query exists to read back. Sent first, the query returns a master key
+    /// that does not carry the signature yet and the person stays
+    /// `Unverified`. So they are stamped at hand-out instead, after the block
+    /// that carries upstream's own requests, which puts them behind it in the
+    /// one order this module hands out. **Measured, not reasoned:** with a
+    /// queue-time stamp, `tests/level_two_scanned.rs` reported `Unverified`
+    /// against a real homeserver after a verification that had demonstrably
+    /// succeeded, and no level 1 test could see it because those answer the
+    /// query by hand.
+    queued_peer_queries: Vec<(OwnedTransactionId, KeysQueryRequest)>,
     pending: BTreeMap<String, Pending>,
     /// Whether a `/keys/query` naming this machine's own account has been
     /// answered **about that account** in this process.
@@ -1978,10 +1993,13 @@ pub(crate) fn queue_account_key_query(id: OwnedTransactionId, request: KeysQuery
 /// Appends rather than replacing, for the reason
 /// [`RequestState::queued_peer_queries`] gives: two verifications with two
 /// people can complete in one sync, and they owe two different questions.
+///
+/// Takes no sequence, which is the other thing that queue says: this request
+/// must not overtake the signature upload the same completion produced, so it
+/// is stamped when it is handed out rather than when it is queued.
 pub(crate) fn queue_peer_key_query(id: OwnedTransactionId, request: KeysQueryRequest) {
     let mut state = STATE.lock().expect("request registry poisoned");
-    let sequence = state.next_sequence();
-    state.queued_peer_queries.push((sequence, id, request));
+    state.queued_peer_queries.push((id, request));
 }
 
 /// Whether a `/keys/query` naming this machine's own account has been asked
@@ -2507,13 +2525,20 @@ pub async fn take_outgoing_requests() -> Result<Vec<OutgoingRequest>, SessionErr
     // person it verified. Not routed through `account_scoped` either, and for
     // the opposite half of the same reason: `verification.rs` queues one only
     // for a flow whose other party is *not* this account, so narrowing could
-    // only ever misclassify. Each keeps the sequence it was queued at, like
-    // the two slots above and unlike the queues before them, because this
-    // module witnessed their production.
-    for (sequence, txn_id, query) in &state.queued_peer_queries {
+    // only ever misclassify.
+    //
+    // **Stamped here rather than at queue time, unlike the two slots above,
+    // and pushed after the block that carries upstream's own requests.** That
+    // ordering is the whole point: the same completion that queued this also
+    // made a signature upload, which upstream holds in its own cache and which
+    // therefore reaches `fresh` in the loop at the top of this function. This
+    // request asks the server to hand back what that upload is about to tell
+    // it, so overtaking it returns a master key without the signature on it
+    // and leaves the person `Unverified`.
+    for (txn_id, query) in &state.queued_peer_queries {
         let body = describe_keys_query(query)?;
         fresh.push((
-            Some(*sequence),
+            None,
             txn_id.to_string(),
             PendingKind::PeerKeysQueryOutOfBand,
             body,

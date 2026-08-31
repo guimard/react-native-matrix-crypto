@@ -485,6 +485,28 @@ fn another_user_verifies_by_scanning_a_code_this_library_showed() {
              twice"
         );
 
+        // AND IT MUST COME OUT BEHIND THE SIGNATURE UPLOAD, NOT IN FRONT OF IT.
+        //
+        // The pump hands out one order and a product sends in it. This query
+        // asks the server to hand back what the upload beside it is about to
+        // tell the server, so a query that went first would be answered with a
+        // master key that does not carry the signature yet, and the person
+        // would read unverified after a verification that succeeded. That is
+        // not hypothetical: it is what a queue-time sequence stamp produced,
+        // and `tests/level_two_scanned.rs` is where it was seen, because a
+        // level 1 test answers the query by hand and cannot notice. This is the
+        // assertion that keeps it from coming back.
+        let position = |id: &str| {
+            owed.iter()
+                .position(|request| request.id == id)
+                .expect("both requests came out of this batch")
+        };
+        assert!(
+            position(&signature.id) < position(&requery.id),
+            "the signature upload must be handed out before the key query that reads it \
+             back: {owed:?}"
+        );
+
         // Answered in the order a product would send them, which is the order
         // the pump handed them out.
         mark_request_sent(&signature.id, r#"{"failures":{}}"#)
