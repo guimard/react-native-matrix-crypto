@@ -2601,12 +2601,42 @@ async fn answer_about_this_account(
     // the question is whether upstream now holds *this* identity, not
     // whether every device that ever signed it is still in the answer.
     if identity.master_key() == &asserted {
-        // The homeserver has just asserted the very identity this store
-        // holds, which is the other moment the server itself tells us a
-        // publication landed. Recorded here as well as at the upload, so a
-        // device whose upload succeeded but whose report never happened
-        // stops being treated as holding something unpublished.
-        crate::signing::note_identity_published(machine).await;
+        // The homeserver has asserted the very identity this store holds,
+        // which is the moment a publication can be recorded as landed.
+        //
+        // **But only if the answer is one a homeserver with that identity
+        // could actually have sent, and that check was missing.** Measured:
+        // this site cleared the record for a body carrying the master key
+        // with *every signature removed*, no self-signing key and no
+        // user-signing key -- a body upstream stores nothing whatever from.
+        // For our own account the stored identity was minted locally rather
+        // than parsed out of any answer, so the branch's usual safety
+        // property, that upstream either parsed an identity into the store
+        // or did not, does not hold here: the comparison degenerates to
+        // "does this body echo our own master key", which anyone who has
+        // seen an upload body can do.
+        //
+        // A homeserver that holds this identity sends all three maps for
+        // our own user, because that is what it was given and what upstream
+        // requires to store one (`get_minimal_set_of_keys` needs the
+        // self-signing key, and `get_user_signing_key_from_response` the
+        // user-signing key, for our own user). Requiring all three is
+        // necessary rather than sufficient, and it is stated as such: it
+        // does not make the site unforgeable by the homeserver, it makes the
+        // forgery cost the whole published identity rather than one echoed
+        // key.
+        //
+        // What stops the forgery mattering is elsewhere and is structural:
+        // `queue_republication` means the launch-time call has no
+        // cross-signing upload to hand over whatever this record says, so a
+        // wrongly cleared record no longer arms anything. Clearing it
+        // wrongly now only makes `create_identity` refuse, which fails
+        // closed.
+        let complete = response.self_signing_keys.contains_key(account)
+            && response.user_signing_keys.contains_key(account);
+        if complete {
+            crate::signing::note_identity_published(machine).await;
+        }
         AnswerAboutAccount::Settled
     } else {
         AnswerAboutAccount::Unsettled
@@ -3238,21 +3268,38 @@ async fn mark_sent(
         PendingKind::SigningKeysUpload => {
             let response = SigningKeysUploadResponse::try_from_http_response(http_response(body))
                 .map_err(|_| SessionError::MalformedPayload)?;
-            let outcome = machine
+            // **Deliberately not a clearing site, and that is the ninth
+            // round's second change.**
+            //
+            // This looks like the moment the homeserver accepted the
+            // publication, and it is not. It is the moment the *caller* said
+            // so, and `refuse_a_non_response`'s own doc comment states which
+            // bodies it cannot tell from a success: the empty body and the
+            // empty object. Measured, ten bodies a refused
+            // `/keys/device_signing/upload` can carry: eight are refused
+            // here, and the two that get through are exactly that pair,
+            // which is what a connection reset, a socket timeout and a
+            // bodiless gateway error hand a product.
+            //
+            // Clearing on those bricked the account permanently. The store
+            // then held an identity no homeserver had, with nothing saying
+            // so, so every later "this account has no identity" answer read
+            // as a contradiction and every write on the surface refused for
+            // ever, with no escape but deleting the user's message history.
+            //
+            // `signing::note_identity_published` is now reached only from
+            // `answer_about_this_account`, where the *server* asserts the
+            // identity in an answer it sent. That costs one round trip on
+            // the happy path -- the confirming query `create_identity`
+            // queues alongside the publication -- and it makes a misreported
+            // upload cost nothing at all, because the record survives it and
+            // the publication stays finishable.
+            machine
                 .mark_request_as_sent(
                     &transaction_id,
                     AnyIncomingResponse::SigningKeysUpload(&response),
                 )
-                .await;
-            if outcome.is_ok() {
-                // The homeserver accepted the publication, which is the
-                // fact `signing::identity_is_unpublished` exists to
-                // remember and the same instant upstream marks its own
-                // private identity shared. Recorded beside upstream's
-                // because upstream's is not reachable from any public API.
-                crate::signing::note_identity_published(machine).await;
-            }
-            outcome
+                .await
         }
     };
 

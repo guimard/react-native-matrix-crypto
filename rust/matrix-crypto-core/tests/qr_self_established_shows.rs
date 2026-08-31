@@ -127,7 +127,7 @@ fn the_device_that_holds_the_identity_shows_a_code_and_a_new_login_scans_it() {
         mark_request_sent(
             &account_query.id,
             &serde_json::json!({
-                "device_keys": { ACCOUNT: { NEW_DEVICE: new_login_keys } },
+                "device_keys": { ACCOUNT: { NEW_DEVICE: new_login_keys.clone() } },
             })
             .to_string(),
         )
@@ -171,11 +171,57 @@ fn the_device_that_holds_the_identity_shows_a_code_and_a_new_login_scans_it() {
             .get("user_signing_key")
             .cloned()
             .expect("a published identity carries a user-signing key");
+        // **The confirming answer, because reporting the upload is not one.**
+        // Minting records that this store holds an identity no homeserver
+        // has accepted, and every door into a self-verification refuses
+        // while that record stands: from inside a process, an identity this
+        // device holds and has never seen accepted cannot be told apart from
+        // one the account has since replaced. The two bodies this library
+        // cannot tell from a successful upload are exactly what a dropped
+        // connection hands a product, so reporting the upload clears
+        // nothing. What clears it is the query the mint queues behind the
+        // publication, answered the way a homeserver that accepted it would
+        // answer: all three key maps for this account, and the account's
+        // other device alongside them, because an answer naming no device of
+        // the account would retire the login this flow is with.
+        let confirming = published
+            .iter()
+            .find(|request| {
+                request.kind == "keys_query"
+                    && queried_users(&request.body).iter().any(|u| u == ACCOUNT)
+            })
+            .expect("the mint must queue the query that confirms its publication")
+            .clone();
         for request in &published {
+            if request.id == confirming.id {
+                continue;
+            }
             mark_request_sent(&request.id, "{}")
                 .await
                 .expect("a bootstrap publication response must be accepted");
         }
+        mark_request_sent(
+            &confirming.id,
+            &serde_json::json!({
+                "device_keys": { ACCOUNT: { NEW_DEVICE: new_login_keys } },
+                "failures": {},
+                "master_keys": { ACCOUNT: master_key.clone() },
+                "self_signing_keys": { ACCOUNT: self_signing_key.clone() },
+                "user_signing_keys": { ACCOUNT: user_signing_key.clone() },
+            })
+            .to_string(),
+        )
+        .await
+        .expect("the confirming answer must be accepted");
+        assert!(
+            !identity_status()
+                .await
+                .expect("reading the identity status must not fail")
+                .identity_publication_pending,
+            "the publication has to be confirmed before any flow with a device of \
+             this account can be opened, and a test that left it owed would be \
+             measuring that refusal rather than the mode it is about"
+        );
 
         // ---- The new login learns what the account published -----------------
         //
