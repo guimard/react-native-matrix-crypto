@@ -329,6 +329,29 @@ fn a_signing_keys_upload_refused_by_a_real_challenge_answered_and_published() {
          that authorises minting one: {status:?}"
     );
 
+    // ---- 4bis. The creation asks for its own answer ---------------------
+    //
+    // **Step 3 above is the diligent product, exactly.** It drained the pump
+    // until it handed nothing back and reported every answer this homeserver
+    // gave. That is what left it with nothing that could refresh the one fact
+    // the call below reads, and it is the state in which a product following
+    // this library's documented remedy replaced another device's live
+    // identity. So the creation refuses once and asks this homeserver itself.
+    assert_eq!(
+        run(create_identity()),
+        Err(MachineError::AccountKeysStale),
+        "a creation may not decide on an answer it did not ask for, and a product that          drained its pump to empty has nothing left that could have refreshed it"
+    );
+    let refresh = harness::pump_and_send(&homeserver, &library.token);
+    assert!(
+        refresh.iter().any(|request| request.kind == "keys_query"),
+        "and the refusal must queue the query that lifts it: {:?}",
+        refresh
+            .iter()
+            .map(|request| request.kind.as_str())
+            .collect::<Vec<_>>()
+    );
+
     // ---- 5. The identity, minted --------------------------------------
     run(create_identity()).expect("an account the server says has no identity may mint one");
 
