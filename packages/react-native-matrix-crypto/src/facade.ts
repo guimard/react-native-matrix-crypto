@@ -1467,16 +1467,24 @@ export async function requestVerification(userId: string, deviceId: string): Pro
  * volunteer the question for an account it already knows about, so a
  * relaunched store starts out having asked nothing.
  *
- * `'identity_not_known'` means the server was asked and said this account has
- * no identity. There is nothing to join, and no retry helps.
+ * `'identity_not_known'` means one of two things, and
+ * `getIdentityStatus().identityPublicationPending` tells them apart. False:
+ * the server was asked and said this account has no identity, so there is
+ * nothing to join and no retry helps. True: this device holds an identity it
+ * minted that no homeserver has ever asserted back, so there is nothing yet
+ * for another device to join it to, and the flow would sign under an
+ * identity the account may never have.
  *
- * This is the same refusal, with the same remedy, that
- * {@link bootstrapCrossSigning} reports: the account needs a first identity,
- * that is {@link createCrossSigningIdentity}, and it is a decision your
- * product makes rather than something this handler calls. This paragraph
- * used to name `bootstrapCrossSigning` as the answer, which stopped being
- * true when creating became its own call and left the two surfaces saying
- * different things about one error.
+ * {@link createCrossSigningIdentity} is the call for both, and for the same
+ * reason each time: creating a first identity and finishing a publication
+ * that was interrupted are the same decision, and it is one your product
+ * makes rather than something this handler calls. This is the same refusal,
+ * with the same remedy, that {@link bootstrapCrossSigning} reports. The
+ * paragraph used to name `bootstrapCrossSigning` as the answer, which
+ * stopped being true when creating became its own call and left the two
+ * surfaces saying different things about one error, and it used to give only
+ * the first of the two meanings, which stopped being true when the gate
+ * gained its second condition.
  */
 export async function requestSelfVerification(): Promise<string> {
   try {
@@ -1642,21 +1650,34 @@ export async function requestSelfVerification(): Promise<string> {
  * no-op. Rejects with `'unknown_flow'` for a transaction id that names no
  * flow -- see the two sections above for the two ways that happens.
  *
- * # One refusal that depends on whose flow it is
+ * # Two refusals that depend on whose flow it is
  *
- * Rejects with `'account_keys_not_fetched'` when the invitation came from
- * **another device of your own account** and this process has not yet asked
- * the homeserver about that account. Completing a self-verification signs
- * one of your devices with this device's self-signing key and asks your
- * other devices for your cross-signing seeds, both under whatever identity
- * this store holds, so it reads the same gate {@link bootstrapCrossSigning}
- * does. The refusal queues the key query that lifts it, the invitation is
- * left answerable, and nothing has been sent.
+ * Both apply only when the invitation came from **another device of your own
+ * account**, and for one reason: completing a self-verification signs one of
+ * your devices with this device's self-signing key and asks your other
+ * devices for your cross-signing seeds, both under whatever identity this
+ * store holds. So this call reads the same gate
+ * {@link bootstrapCrossSigning} does. Either refusal leaves the invitation
+ * answerable and sends nothing.
  *
- * **Accepting a verification from anybody else reads nothing**, because
- * verifying another user needs nothing of your own identity. This paragraph
- * exists because the sending side carried this warning and the receiving
- * side did not, and the receiving side reached the identical write.
+ * Rejects with `'account_keys_not_fetched'` when this process has not yet
+ * asked the homeserver about the account, so it cannot say what identity the
+ * account has. The refusal queues that key query itself, and the remedy is
+ * the ordinary loop: drain the pump, send, report sent, and call this again.
+ *
+ * Rejects with `'identity_not_known'` when the server has been asked and
+ * this device holds an identity it minted that no homeserver has ever
+ * asserted back, which `getIdentityStatus().identityPublicationPending`
+ * reports. Signing under that identity is signing under one the account may
+ * never have. The remedy is to finish the publication rather than to retry:
+ * {@link createCrossSigningIdentity} re-queues it, and it is cleared by the
+ * key query answer that comes back carrying the identity, not by your report
+ * of the upload.
+ *
+ * **Accepting a verification from anybody else reads neither**, because
+ * verifying another user needs nothing of your own identity. This section
+ * exists because the sending side carried these warnings and the receiving
+ * side did not, and the receiving side reaches the identical write.
  */
 export async function acceptVerification(verificationId: string): Promise<void> {
   try {
