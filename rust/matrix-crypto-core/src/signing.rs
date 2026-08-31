@@ -743,7 +743,7 @@ pub async fn bootstrap_identity() -> Result<(), MachineError> {
                 .await
                 .map_err(|_upstream| store_failed())?;
 
-            queue_publication(requests);
+            queue_republication(requests);
 
             Ok(())
         })
@@ -768,6 +768,55 @@ fn queue_publication(requests: matrix_sdk_crypto::CrossSigningBootstrapRequests)
         crate::session::queue_action_request(device_keys);
     }
     crate::session::queue_signing_keys_request(requests.upload_signing_keys_req);
+    crate::session::queue_action_request(requests.upload_signatures_req.into());
+}
+
+/// Queues everything a publication sends **except the cross-signing keys
+/// themselves**.
+///
+/// # The one request that can destroy an identity, and the only call allowed
+/// to hand it over
+///
+/// `/keys/device_signing/upload` is the request that replaces an account's
+/// cross-signing identity. Nothing else in a publication can: the device-key
+/// upload republishes this device's own keys, and the signature upload
+/// re-signs this device into the identity the account already has. Both are
+/// idempotent and neither can overwrite anything.
+///
+/// So this exists to make one sentence true without qualification: **the
+/// call a product makes on every launch never hands over the request that
+/// can replace an identity.** The ninth round tried to make that true with a
+/// predicate and closed one arm of a two-armed race. This closes the other by
+/// removing the capability rather than guarding it.
+///
+/// **Measured, on continuwuity three times and on Synapse:** a device that
+/// signed up entirely correctly, with `identity_publication_pending` false
+/// and nothing stale, restarted, was refused and queued the key query as
+/// documented, and had the homeserver answer that query honestly. Another
+/// client of the same account reset the identity in the gap before the
+/// product reported that answer, which is a first-class user-facing action in
+/// every mainstream client. The gate lifted on a truthful answer, and
+/// `bootstrap_identity` republished the old identity over the new one, after
+/// which the status read byte-identical to before and no signal fired.
+///
+/// # Why the omitted request is never needed
+///
+/// `bootstrap_identity` reaches this only with the account's identity
+/// **confirmed**: `may_publish` refuses while
+/// [`IdentityStatus::identity_publication_pending`] is true, and confirmed
+/// means a homeserver's own answer carried that identity back to us. So the
+/// server demonstrably has it, and re-uploading it can only either change
+/// nothing or replace something. There is no third outcome, and the first is
+/// not worth the second.
+///
+/// The other two requests are still queued, and that is not tidiness. A
+/// publication whose signature upload was the part that failed is repaired by
+/// exactly this call, and the signature is what ties this device to the
+/// account's identity.
+fn queue_republication(requests: matrix_sdk_crypto::CrossSigningBootstrapRequests) {
+    if let Some(device_keys) = requests.upload_keys_req {
+        crate::session::queue_action_request(device_keys);
+    }
     crate::session::queue_action_request(requests.upload_signatures_req.into());
 }
 

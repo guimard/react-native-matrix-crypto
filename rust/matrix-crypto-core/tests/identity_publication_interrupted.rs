@@ -180,6 +180,41 @@ fn a_minted_identity_that_was_never_published_can_still_be_published() {
              that was interrupted, not starting a different one"
         );
 
+        // ---- Act three and a half: a second creation supersedes the first
+        //
+        // **This property moved here in the tenth round.** It used to live in
+        // `tests/identity_bootstrap.rs`, driven by a second and third
+        // `bootstrap_identity`, because that call used to hand over a
+        // publication. It no longer does: the launch-time call cannot queue
+        // the request that replaces an identity. Creating is now the only
+        // producer, so this is the only state the property is reachable in,
+        // and without it the pump's eviction of a stale publication would go
+        // unwitnessed.
+        create_identity()
+            .await
+            .expect("finishing is idempotent: it re-derives the same three keys");
+        let superseding = take_outgoing_requests()
+            .await
+            .expect("draining the pump must not fail");
+        let fresh = superseding
+            .iter()
+            .find(|r| r.kind == "signing_keys_upload")
+            .expect("the second creation queues its own publication");
+        assert_ne!(
+            fresh.id, again.id,
+            "each publication carries its own transaction id, which is what makes the \
+             eviction necessary rather than automatic"
+        );
+        assert_eq!(
+            mark_request_sent(&again.id, "{}").await,
+            Err(matrix_crypto_core::SessionError::UnknownRequest),
+            "and the fresh one must supersede the stale one. Both kept, `pending` grows by \
+             one entry per create-and-drain cycle for the life of the process, and a caller \
+             is handed two ids for one identity and two rounds of user-interactive \
+             authentication to publish it"
+        );
+        let again = fresh.clone();
+
         // ---- Act four: reporting the upload does NOT clear the record --
         //
         // **The second change of the ninth round.** This used to be a
@@ -207,7 +242,10 @@ fn a_minted_identity_that_was_never_published_can_still_be_published() {
         // The confirming query the creation queued, answered with the
         // identity a homeserver that accepted the publication would send
         // back. This is the only clearing site now.
-        let confirming = batch
+        // From the *superseding* drain: the account key query is a single
+        // slot, so the second creation replaced the first one's query too,
+        // which is the same eviction act three and a half just asserted.
+        let confirming = superseding
             .iter()
             .find(|r| r.kind == "keys_query" && names_the_account(&r.body))
             .expect("the creation queues its confirming query")
