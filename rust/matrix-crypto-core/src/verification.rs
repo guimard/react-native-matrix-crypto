@@ -635,45 +635,10 @@ fn queue(request: impl Into<UpstreamOutgoingRequest>) {
 /// cross-signing seeds, both under whatever identity this store holds. That
 /// is a property of the flow, so every call that can *open* one reads this:
 /// [`request_self_flow`], [`accept_flow`], and [`request_flow`] when it is
-/// handed our own identifiers. [`begin_comparison`], [`confirm_flow`] and
-/// [`read_material`] do not, and the reason they do not was stated wrongly
-/// and is corrected here.
-///
-/// # The reason these three carry no guard, corrected
-///
-/// It used to read: *neither can be reached without one of those three
-/// having been served first*. **That sentence is literally true and it does
-/// not carry the property**, which is a different thing, and the difference
-/// was measured rather than reasoned about.
-///
-/// A door served a moment earlier keeps its flow open **across the
-/// transition into the state the guard forbids**. Measured against a real
-/// upstream peer: an inbound self-verification is accepted while the account
-/// has no identity anywhere, so `accept_flow` is served correctly; then
-/// `create_identity` mints, and the publication is unconfirmed. All three
-/// doors refuse `IdentityNotKnown` from that instant. `begin_comparison` on
-/// the flow that is already open is served, and the library sends
-/// `m.key.verification.start` for a self-verification **under an identity no
-/// homeserver has ever seen** -- precisely the act the guard exists to
-/// prevent, in precisely the state it exists to prevent it in.
-///
-/// **It is a correctness wart and not a hole, and the difference is why no
-/// guard is added here on a guess.** None of these three can produce the
-/// request that replaces an identity: `confirm_flow` produces a
-/// `signature_upload`, and `signing.rs`'s publication is the only producer of
-/// a `signing_keys_upload` anywhere in the crate. The cost of the wart is the
-/// one this helper's second condition already names below -- a signature
-/// referencing a key no other client can resolve -- rather than a lost
-/// identity.
-///
-/// **And the original reason for not guarding here still stands on its own
-/// merits**: these are steps inside a flow rather than entrances to one, and
-/// a refusal here lands on a person who has already compared the string,
-/// which is a worse place to refuse than before they started. Closing the
-/// wart properly means refusing at the transition rather than at the step --
-/// cancelling a self-verification whose identity stopped being publishable
-/// under it -- and that is a change with its own two directions to measure,
-/// not a condition to bolt onto three call sites.
+/// handed our own identifiers. `begin_comparison` and `confirm_flow` do not,
+/// because neither can be reached without one of those three having been
+/// served first, and a check there would refuse a user after they had already
+/// compared the string.
 ///
 /// **The third door read nothing at all.** `request_flow(our own account, our
 /// own other device)` ran a self-verification to `Done` and queued a

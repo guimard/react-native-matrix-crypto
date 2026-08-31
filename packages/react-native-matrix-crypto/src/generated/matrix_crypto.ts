@@ -2703,7 +2703,6 @@ export enum MachineFfiError_Tags {
   RecoveryKeyIncorrect = "RecoveryKeyIncorrect",
   RecoveryDataMalformed = "RecoveryDataMalformed",
   RecoveryAlreadyExists = "RecoveryAlreadyExists",
-  AccountKeysStale = "AccountKeysStale",
 }
 /**
  * Mirror of the core's machine error, carrying the UniFFI error derive.
@@ -3208,35 +3207,6 @@ export const MachineFfiError = (() => {
     }
   }
 
-  type AccountKeysStale__interface = {
-    tag: MachineFfiError_Tags.AccountKeysStale;
-  };
-  class AccountKeysStale_
-    extends UniffiError
-    implements AccountKeysStale__interface
-  {
-    /**
-     * @private
-     * This field is private and should not be used, use `tag` instead.
-     */
-    readonly [uniffiTypeNameSymbol] = "MachineFfiError";
-    readonly tag = MachineFfiError_Tags.AccountKeysStale;
-    constructor() {
-      super("MachineFfiError", "AccountKeysStale");
-    }
-
-    static new(): AccountKeysStale_ {
-      return new AccountKeysStale_();
-    }
-
-    static instanceOf(obj: any): obj is AccountKeysStale_ {
-      return obj.tag === MachineFfiError_Tags.AccountKeysStale;
-    }
-    static hasInner(obj: any): obj is AccountKeysStale_ {
-      return false;
-    }
-  }
-
   function instanceOf(obj: any): obj is MachineFfiError {
     return obj[uniffiTypeNameSymbol] === "MachineFfiError";
   }
@@ -3260,7 +3230,6 @@ export const MachineFfiError = (() => {
     RecoveryKeyIncorrect: RecoveryKeyIncorrect_,
     RecoveryDataMalformed: RecoveryDataMalformed_,
     RecoveryAlreadyExists: RecoveryAlreadyExists_,
-    AccountKeysStale: AccountKeysStale_,
   });
 })();
 /**
@@ -3288,8 +3257,7 @@ export type MachineFfiError = InstanceType<
     | "RecoveryNotSetUp"
     | "RecoveryKeyIncorrect"
     | "RecoveryDataMalformed"
-    | "RecoveryAlreadyExists"
-    | "AccountKeysStale"]
+    | "RecoveryAlreadyExists"]
 >;
 
 // FfiConverter for enum MachineFfiError
@@ -3336,8 +3304,6 @@ const FfiConverterTypeMachineFfiError = (() => {
           return new MachineFfiError.RecoveryDataMalformed();
         case 17:
           return new MachineFfiError.RecoveryAlreadyExists();
-        case 18:
-          return new MachineFfiError.AccountKeysStale();
         default:
           throw new UniffiInternalError.UnexpectedEnumCase();
       }
@@ -3416,10 +3382,6 @@ const FfiConverterTypeMachineFfiError = (() => {
           c.writeI32(17);
           return;
         }
-        case MachineFfiError_Tags.AccountKeysStale: {
-          c.writeI32(18);
-          return;
-        }
         default:
           // Throwing from here means that MachineFfiError_Tags hasn't matched an ordinal.
           throw new UniffiInternalError.UnexpectedEnumCase();
@@ -3482,9 +3444,6 @@ const FfiConverterTypeMachineFfiError = (() => {
           return 4;
         }
         case MachineFfiError_Tags.RecoveryAlreadyExists: {
-          return 4;
-        }
-        case MachineFfiError_Tags.AccountKeysStale: {
           return 4;
         }
         default:

@@ -90,13 +90,6 @@ fn a_minted_identity_that_was_never_published_can_still_be_published() {
             "there is nothing to publish yet"
         );
 
-        // **Served with no extra round, and that is the measurement rather
-        // than an accident.** The answer reported above was the answer to the
-        // query *this call's own first refusal* queued
-        // (`fresh_account_key_query`), so it is fresh by the only definition
-        // available: it settled after this call asked. The ordinary sign-up
-        // path therefore costs exactly what it cost before -- one refusal,
-        // one pump, one retry.
         create_identity()
             .await
             .expect("the deliberate, documented, correct call must be served");
@@ -209,7 +202,7 @@ fn a_minted_identity_that_was_never_published_can_still_be_published() {
             Err(MachineError::IdentityNotKnown),
             "the launch-time call may not publish an identity no homeserver has confirmed"
         );
-        finish_the_publication(NO_IDENTITY)
+        create_identity()
             .await
             .expect("and finishing it deliberately must be served, or this is a brick");
 
@@ -237,7 +230,7 @@ fn a_minted_identity_that_was_never_published_can_still_be_published() {
         // producer, so this is the only state the property is reachable in,
         // and without it the pump's eviction of a stale publication would go
         // unwitnessed.
-        finish_the_publication(NO_IDENTITY)
+        create_identity()
             .await
             .expect("finishing is idempotent: it re-derives the same three keys");
         let superseding = take_outgoing_requests()
@@ -293,7 +286,7 @@ fn a_minted_identity_that_was_never_published_can_still_be_published() {
         // identity was minted locally rather than parsed out of any answer,
         // so the comparison degenerates to "does this body echo our own
         // master key", which anyone who has seen an upload body can do.
-        finish_the_publication(NO_IDENTITY)
+        create_identity()
             .await
             .expect("finishing stays available while it is owed");
         let partial_batch = take_outgoing_requests()
@@ -331,7 +324,7 @@ fn a_minted_identity_that_was_never_published_can_still_be_published() {
         // slot, so the second creation replaced the first one's query too,
         // which is the same eviction act three and a half just asserted.
         // A fresh query, because act four and a half consumed the last one.
-        finish_the_publication(NO_IDENTITY)
+        create_identity()
             .await
             .expect("finishing stays available while it is owed");
         let final_batch = take_outgoing_requests()
@@ -372,12 +365,6 @@ async fn fresh_account_key_query() -> OutgoingRequest {
         Err(MachineError::AccountKeysNotFetched),
         "the refusal is what queues the out-of-band query this returns"
     );
-    drain_account_key_query().await
-}
-
-/// Drains the pump and returns the `/keys/query` in it that names this
-/// account.
-async fn drain_account_key_query() -> OutgoingRequest {
     let batch = take_outgoing_requests()
         .await
         .expect("draining the pump must not fail");
@@ -391,42 +378,6 @@ async fn drain_account_key_query() -> OutgoingRequest {
             )
         })
         .clone()
-}
-
-/// Finishes a publication, paying the round the eleventh round added.
-///
-/// # What this costs, which is the thing the file has to say out loud
-///
-/// `create_identity` serves only on an answer that **settled after it
-/// asked**, so a call whose last answer came from somewhere else refuses
-/// [`MachineError::AccountKeysStale`] with the query already queued. The cost
-/// of finishing a legitimate interrupted publication is therefore **one
-/// refusal and one drain-send-report round** -- the same loop a product
-/// already runs, once more -- and then the identical publication, byte for
-/// byte, which act three below still asserts.
-///
-/// # Why the round is not ceremony
-///
-/// `answer` is what the homeserver replies with, and that is the whole
-/// mechanism. Answered `NO_IDENTITY`, as everywhere in this file, the account
-/// really has nothing and the publication proceeds. Answered with another
-/// device's identity, upstream adopts it, this device's stale private keys
-/// are dropped, `identity_publication_pending` goes false on its own and the
-/// creation refuses `IdentityAlreadyExists` instead --
-/// `tests/identity_race_with_a_stale_answer.rs` is where that direction is
-/// driven. Both outcomes come out of the same round, which is why a product
-/// cannot tell them apart without running it.
-async fn finish_the_publication(answer: &str) -> Result<(), MachineError> {
-    assert_eq!(
-        create_identity().await,
-        Err(MachineError::AccountKeysStale),
-        "a creation may not decide on an answer it did not ask for"
-    );
-    let refresh = drain_account_key_query().await;
-    mark_request_sent(&refresh.id, answer)
-        .await
-        .expect("the query that refusal queued must be answerable");
-    create_identity().await
 }
 
 /// The same answer with the two sub-keys removed and every signature

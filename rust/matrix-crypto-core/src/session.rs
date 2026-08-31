@@ -356,13 +356,7 @@ impl From<MachineError> for SessionError {
             | MachineError::RecoveryNotSetUp
             | MachineError::RecoveryKeyIncorrect
             | MachineError::RecoveryDataMalformed
-            | MachineError::RecoveryAlreadyExists
-            // `signing.rs`'s fresh-answer refusal, on the same rule again:
-            // `create_identity` returns `MachineError` directly, so this is
-            // unreachable here, and it is listed by name rather than caught
-            // by a wildcard so the next variant added anywhere still has to
-            // be ruled on in this match.
-            | MachineError::AccountKeysStale => SessionError::Failed,
+            | MachineError::RecoveryAlreadyExists => SessionError::Failed,
         }
     }
 }
@@ -1776,39 +1770,6 @@ struct RequestState {
     ///
     /// Cleared by the same reset as the flag above, for the same reason.
     account_keys_answer_unsettled: bool,
-    /// How many answers about this account have **settled** in this process:
-    /// incremented once, beside `account_keys_answered`, every time an
-    /// accepted `/keys/query` answer leaves upstream knowing whether this
-    /// account has a signing identity.
-    ///
-    /// # Why a count and not another flag
-    ///
-    /// `account_keys_answered` is sticky by design: once upstream knows, it
-    /// knows, and a later answer that settles nothing does not un-know it.
-    /// That makes it useless for the one question `signing::create_identity`
-    /// has to ask before it publishes -- *did the answer I am about to
-    /// decide on arrive after I asked for it* -- because the flag reads the
-    /// same for an answer from a moment ago and an answer from the first
-    /// second of the process.
-    ///
-    /// A count answers that question without a clock. A caller records the
-    /// value it sees when it queues its own key query; when the value has
-    /// moved, an answer has settled since, and it is an answer to a question
-    /// asked no earlier than that call. Nothing here interprets *which*
-    /// answer, and nothing here decides what fresh means:
-    /// `signing::publication_answer_is_fresh` does, and its own
-    /// documentation is where that argument is kept.
-    ///
-    /// **`Unsettled` deliberately does not increment it.** An answer that
-    /// left upstream still not knowing has told this process nothing new
-    /// about whether the account has an identity, so serving on it would be
-    /// serving on the older answer that did -- which is the staleness this
-    /// count exists to measure rather than to launder.
-    ///
-    /// Monotone and never reset in production, like `next_sequence` below
-    /// and for the same reason; cleared by the same test reset as the two
-    /// flags above, because it is a fact about which account was asked.
-    account_answers_settled: u64,
     next_sequence: u64,
 }
 
@@ -1836,7 +1797,6 @@ static STATE: StdMutex<RequestState> = StdMutex::new(RequestState {
     pending: BTreeMap::new(),
     account_keys_answered: false,
     account_keys_answer_unsettled: false,
-    account_answers_settled: 0,
     next_sequence: 0,
 });
 
@@ -1961,21 +1921,6 @@ pub(crate) fn account_keys_answer_unsettled() -> bool {
         .account_keys_answer_unsettled
 }
 
-/// How many answers about this account have settled in this process.
-///
-/// Read by `signing.rs` and by nothing else. It gates nothing on its own: it
-/// is a position, and only a caller holding an earlier position can say
-/// whether anything has happened since. See
-/// [`RequestState::account_answers_settled`] for why the count exists where
-/// a flag does not, and `signing::publication_answer_is_fresh` for what is
-/// done with it.
-pub(crate) fn account_answers_settled() -> u64 {
-    STATE
-        .lock()
-        .expect("request registry poisoned")
-        .account_answers_settled
-}
-
 /// Forgets that this process was ever answered about its own account, and
 /// forgets nothing else.
 ///
@@ -1995,7 +1940,6 @@ pub(crate) fn forget_account_keys_answered_for_test() {
     let mut state = STATE.lock().expect("request registry poisoned");
     state.account_keys_answered = false;
     state.account_keys_answer_unsettled = false;
-    state.account_answers_settled = 0;
 }
 
 #[cfg(test)]
@@ -2009,7 +1953,6 @@ fn reset_request_state_for_test() {
     state.pending.clear();
     state.account_keys_answered = false;
     state.account_keys_answer_unsettled = false;
-    state.account_answers_settled = 0;
     state.next_sequence = 0;
 }
 
@@ -3292,13 +3235,6 @@ pub async fn mark_request_sent(id: &str, response_json: &str) -> Result<(), Sess
             AnswerAboutAccount::Settled => {
                 state.account_keys_answered = true;
                 state.account_keys_answer_unsettled = false;
-                // The flag says *ever*; the count says *how many times*, and
-                // `signing::create_identity` needs the second because the
-                // first cannot distinguish an answer from a moment ago from
-                // one from the first second of the process. Incremented on
-                // this arm alone: see `RequestState::account_answers_settled`
-                // for why an `Unsettled` answer must not move it.
-                state.account_answers_settled += 1;
             }
             AnswerAboutAccount::Unsettled if !state.account_keys_answered => {
                 state.account_keys_answer_unsettled = true;

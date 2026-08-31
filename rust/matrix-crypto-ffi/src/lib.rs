@@ -202,25 +202,6 @@ pub enum MachineFfiError {
     // about the identity rather than about the recovery that protects it.
     #[error("this account already has a server-side recovery")]
     RecoveryAlreadyExists,
-    // Appended last, like every variant above and for the same wire-ordinal
-    // reason. It mirrors the one the core's `MachineError` grew when
-    // `create_identity` stopped deciding on an answer older than the call.
-    //
-    // **Folding it onto `AccountKeysNotFetched` was the alternative and it
-    // was rejected on the surface rather than on the wire.** The two
-    // refusals send a product to the same loop but describe opposite states
-    // -- nobody has asked, against somebody asked long ago -- and only the
-    // second can be true while `IdentityStatus::account_keys_fetched` reads
-    // `true`. A product told the first while the status says the second has
-    // no way to tell the difference, and the field that disambiguates the
-    // first (`account_keys_answer_unsettled`) is about something else.
-    //
-    // An old binding decoding this ordinal throws
-    // `UniffiInternalError.UnexpectedEnumCase` rather than misreading it as
-    // some other refusal, which is the append-only rule's whole point and
-    // the safe direction for a refusal that stops a destructive call.
-    #[error("the account's keys have not been fetched again since this call asked")]
-    AccountKeysStale,
 }
 
 impl From<matrix_crypto_core::MachineError> for MachineFfiError {
@@ -246,7 +227,6 @@ impl From<matrix_crypto_core::MachineError> for MachineFfiError {
             matrix_crypto_core::MachineError::RecoveryKeyIncorrect => Self::RecoveryKeyIncorrect,
             matrix_crypto_core::MachineError::RecoveryDataMalformed => Self::RecoveryDataMalformed,
             matrix_crypto_core::MachineError::RecoveryAlreadyExists => Self::RecoveryAlreadyExists,
-            matrix_crypto_core::MachineError::AccountKeysStale => Self::AccountKeysStale,
         }
     }
 }

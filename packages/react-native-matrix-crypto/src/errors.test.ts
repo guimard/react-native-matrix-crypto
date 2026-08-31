@@ -427,7 +427,7 @@ describe('every generated error variant maps to a kind of its own', () => {
    * grows a variant this number changes here, deliberately, in the same
    * change that adds the mapping.
    */
-  const EXPECTED_VARIANTS = 30
+  const EXPECTED_VARIANTS = 29
 
   it('refuses to pass having walked nothing', () => {
     for (const [name, tags] of GENERATED) {
@@ -487,7 +487,6 @@ describe('every generated error variant maps to a kind of its own', () => {
 describe('a fieldless gate refusal carries its remedy in the message', () => {
   it.each([
     ['MachineFfiError.AccountKeysNotFetched', 'account_keys_not_fetched', 'markRequestSent'],
-    ['MachineFfiError.AccountKeysStale', 'account_keys_stale', 'markRequestSent'],
     ['MachineFfiError.IdentityNotKnown', 'identity_not_known', 'createCrossSigningIdentity'],
     ['MachineFfiError.IdentityAlreadyExists', 'identity_already_exists', 'requestSelfVerification'],
     ['MachineFfiError.PrivateKeysNotHeld', 'private_keys_not_held', 'getIdentityStatus'],
@@ -507,21 +506,6 @@ describe('a fieldless gate refusal carries its remedy in the message', () => {
     // deciding.
     expect(err.message).toContain('do not call it from this handler')
     expect(err.message).toContain('destructive')
-  })
-
-  it('tells the stale refusal apart from the never-asked one, in the message', () => {
-    // The two send a product to the same loop and describe opposite states,
-    // and only this one can be true while `accountKeysFetched` reads `true`.
-    // A developer who reads them as the same thing has no reason to wonder
-    // why a call they made deliberately refused, and the obvious response to
-    // an unexplained refusal on a deliberate call is to make it again.
-    const stale = toCryptoError(new Error('MachineFfiError.AccountKeysStale'))
-    const never = toCryptoError(new Error('MachineFfiError.AccountKeysNotFetched'))
-    expect(stale.kind).not.toBe(never.kind)
-    expect(stale.message).not.toBe(never.message)
-    // And the one thing a product must not conclude from the retry
-    // succeeding: that the round was a formality.
-    expect(stale.message).toContain('identity_already_exists')
   })
 
   it('leaves a reason from the Rust side alone', () => {

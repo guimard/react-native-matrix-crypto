@@ -1813,13 +1813,6 @@ describe('the signing identity chain, driven through the public surface', () => 
     let nextId = 0
     let identityKnown = false
     let privateKeysHeld = false
-    // How many answers about our own account have settled, and where the
-    // creating call's outstanding question stands against that count. A
-    // count rather than a flag because the flag the gate reads is sticky:
-    // after the first answer it never changes again, so it cannot say
-    // whether anything has been learned since a given moment.
-    let answersSettled = 0
-    let askedAfter: number | undefined
     let stage = NativeVerificationStage.Requested
     let keyReported = false
     // Whether the other device's answer to a secret request is on its way in.
@@ -1900,10 +1893,6 @@ describe('the signing identity chain, driven through the public surface', () => 
 
     vi.mocked(nativeCreateIdentity).mockImplementation(async () => {
       if (!chain.accountKeysFetched) {
-        // The refusal queues the query, and records that *this* call asked
-        // for it, which is what makes the ordinary sign-up path below cost
-        // one refusal rather than two.
-        askedAfter = answersSettled
         queueAccountQuery()
         throw new MachineFfiError.AccountKeysNotFetched()
       }
@@ -1912,18 +1901,6 @@ describe('the signing identity chain, driven through the public surface', () => 
       if (identityKnown && !publicationPending) {
         throw new MachineFfiError.IdentityAlreadyExists()
       }
-      // **The eleventh round, modelled as a rule rather than as an outcome.**
-      // The gate above reads the last answer, and that answer is as old as
-      // whenever it happened to land. Serving on it is what let a product
-      // following the documented remedy replace another device's identity.
-      // So the call asks for its own and serves only once one has settled
-      // since; the question is single-use, so a second creation asks again.
-      if (askedAfter === undefined || answersSettled <= askedAfter) {
-        askedAfter = answersSettled
-        queueAccountQuery()
-        throw new MachineFfiError.AccountKeysStale()
-      }
-      askedAfter = undefined
       publicationPending = true
       if (identityKnown) throw new MachineFfiError.IdentityAlreadyExists()
       identityKnown = true
@@ -1947,13 +1924,8 @@ describe('the signing identity chain, driven through the public surface', () => 
         // lifts the bootstrap gate. Every later one is about the peer, and
         // one of those is step seven -- but only once there is a signature
         // of ours for it to bring back.
-        const aboutOurOwnAccount = !chain.accountKeysFetched
         if (!chain.accountKeysFetched) chain.accountKeysFetched = true
         else if (chain.signatureUploaded) chain.signatureFetchedBack = true
-        // Beside the flag, not instead of it: the flag says *ever* and this
-        // says *how many times*, which is the only way the creating call can
-        // tell an answer it asked for from the one already in hand.
-        if (aboutOurOwnAccount || !chain.signatureUploaded) answersSettled += 1
         // Its own statement, not another arm of that chain: a homeserver's
         // answer carrying the identity is what confirms a publication, and
         // reporting the upload is not. Written as an `else if` first, where
@@ -2172,26 +2144,6 @@ describe('the signing identity chain, driven through the public surface', () => 
     await expect(bootstrapCrossSigning()).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'identity_not_known',
     )
-
-    // ---- Step 2a: the creation asks for its own answer ------------------
-    //
-    // **The answer step 1 fetched was asked for by the launch call, and it is
-    // as old as whenever it landed.** Serving on it is what let a product
-    // following this library's own documented remedy replace the identity
-    // another device of the account had published in between: the flag it
-    // reads is sticky, the layer underneath volunteers no further query, and
-    // the `'identity_not_known'` refusal just above queues nothing. So the
-    // creation queues its own question and refuses once, and this round is
-    // where another device's identity would come back and stop it.
-    //
-    // Refused as its own kind, not as `'account_keys_not_fetched'`: the two
-    // send a product to the same loop and describe opposite states, and only
-    // this one can be true while `accountKeysFetched` reads `true`, which it
-    // does two lines above.
-    await expect(createCrossSigningIdentity()).rejects.toSatisfy(
-      (e: unknown) => isCryptoError(e) && e.kind === 'account_keys_stale',
-    )
-    expect(await pump()).toEqual(['keys_query'])
 
     // The product decides, and says so.
     await expect(createCrossSigningIdentity()).resolves.toBeUndefined()
