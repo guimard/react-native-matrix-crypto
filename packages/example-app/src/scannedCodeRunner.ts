@@ -258,7 +258,16 @@ export function startScannedCodeRun(
 
       // THE SWITCH. Without it this build announces the short string alone,
       // no code is ever negotiated, and the other client offers no scanner.
-      offerScannableCodes(true)
+      //
+      // `canScan: false` is the honest answer and not a simplification: this
+      // app draws a code and has no camera, no scanner and no
+      // `submitScannedCode` call anywhere in it. Announcing that it could
+      // scan is exactly the defect the camera run found. A real Element was
+      // told this side could read a code, chose the mode where it shows one
+      // and this side reads it, and the flow died waiting for a camera that
+      // does not exist. Element did nothing wrong; it was told something
+      // untrue.
+      offerScannableCodes({ canShow: true, canScan: false })
 
       unsubscribe = onCryptoSignal((signal: CryptoSignal) => {
         if (signal.kind === 'verification_requested' && announced === null) {

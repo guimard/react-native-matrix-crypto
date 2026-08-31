@@ -66,7 +66,7 @@ const native = {
   stages: [] as string[],
   codeThrows: null as Error | null,
   confirmed: false,
-  scanningOffered: false,
+  capabilitiesOffered: null as { canShow: boolean; canScan: boolean } | null,
   requests: [] as Array<{ id: string; kind: string; body: string }>,
   syncsReceived: 0,
   accepted: [] as string[],
@@ -78,8 +78,8 @@ vi.mock('react-native-matrix-crypto/src/generated/matrix_crypto', async importOr
   return {
     ...original,
     createCryptoMachine: vi.fn(async () => undefined),
-    offerScanning: vi.fn((enabled: boolean) => {
-      native.scanningOffered = enabled
+    offerCodes: vi.fn((capabilities: { canShow: boolean; canScan: boolean }) => {
+      native.capabilitiesOffered = capabilities
     }),
     requestSelfVerification: vi.fn(async () => FLOW),
     acceptVerification: vi.fn(async (id: string) => {
@@ -160,7 +160,7 @@ beforeEach(() => {
   native.stages = []
   native.codeThrows = null
   native.confirmed = false
-  native.scanningOffered = false
+  native.capabilitiesOffered = null
   native.requests = []
   native.syncsReceived = 0
   native.accepted = []
@@ -168,9 +168,16 @@ beforeEach(() => {
 })
 
 describe('the camera walkthrough', () => {
-  it('turns code scanning on before anything else can need it', async () => {
+  // The assertion is the exact record, not that a call happened. This app
+  // draws a code and has no camera: `canScan: true` here would be a lie told
+  // to the other client, and it is the lie the camera run actually hit. A
+  // real Element was told this side could read a code, chose the mode where
+  // it shows one and this side reads it, and the flow died waiting for a
+  // camera that does not exist. Asserting only that codes were offered would
+  // pass on that.
+  it('announces that it can show a code and cannot scan one', async () => {
     await drive(['Requested', 'Ready', 'CodeScanned', 'Done'])
-    expect(native.scanningOffered).toBe(true)
+    expect(native.capabilitiesOffered).toEqual({ canShow: true, canScan: false })
   })
 
   it('draws the grid the published surface handed it, not a re-encoding', async () => {
