@@ -10,11 +10,11 @@ You should get an acknowledgement within a week. If you have not heard anything 
 
 ## What this policy covers
 
-This repository: the two Rust crates, the TypeScript facade, the generated bindings and the native shims that carry calls between them.
+This repository: the two Rust crates, the TypeScript facade, the generated bindings, the native shims that carry calls between them, and the example app under `packages/example-app/` that drives the library.
 
 **Not the cryptography itself.** The primitives, the Olm and Megolm implementations, the verification protocols and the crypto store all come from [`matrix-sdk-crypto`](https://github.com/matrix-org/matrix-rust-sdk) and [`vodozemac`](https://github.com/matrix-org/vodozemac). A defect in either belongs to its own project: report it to Matrix's private security channel, `security@matrix.org`, which both projects inherit — not as a public issue in either repository, which we ask you not to file for a security defect. If you are unsure which side a finding falls on, report it here and say so — sorting that out is our job, not yours.
 
-The example app under `packages/example-app/` is an unsupported demonstration harness, not a product anyone should install. Its accounts are ephemeral — minted per run against a throwaway homeserver that is destroyed when the run ends — but while a run is in flight the app does hold that run's throwaway device access token and an on-device crypto store, so a finding about the harness's own credential or storage handling is still a report here, not something to dismiss. Otherwise the app is out of scope unless the finding is also true of the library it drives.
+That app is an unsupported demonstration harness, not a product anyone should install. Its accounts are ephemeral — minted per run against a throwaway homeserver that is destroyed when the run ends — but while a run is in flight the app does hold that run's throwaway device access token and an on-device crypto store, so the harness's own credential and storage handling is in scope, on the same terms as the library's. Out of scope are only the upstream projects named above, and deployments of the library by third parties.
 
 ## Versions
 
