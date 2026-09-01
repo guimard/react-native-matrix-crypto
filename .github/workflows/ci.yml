@@ -12,6 +12,14 @@ on:
   # so a tag run gates exactly the commit being released.
   workflow_call:
 
+# Nothing here writes to the repository: every job checks out, builds, and
+# asserts. `release.yml` and `docs.yml` already say so for themselves; this
+# file inherited whatever the repository's default happened to be, which on a
+# `push: main` run or a `workflow_call` from a release is a token with more
+# rights than any step needs.
+permissions:
+  contents: read
+
 jobs:
   gates:
     runs-on: ubuntu-latest
@@ -545,7 +553,10 @@ jobs:
           fi
           ls -l /dev/kvm
       - name: Run the probe on an emulator
-        uses: reactivecircus/android-emulator-runner@v2
+        # Pinned to a commit, not to `v2`. This is the only action here that
+        # is not `actions/*`, and `v2` is a tag its owner can move: whoever
+        # holds it decides what runs on this runner. The SHA is v2.38.0.
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
           api-level: 35
           arch: x86_64
