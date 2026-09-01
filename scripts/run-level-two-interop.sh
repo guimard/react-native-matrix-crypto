@@ -542,6 +542,22 @@ EOF
         -keyout "$WORKDIR/fed-$which.key" -out "$WORKDIR/fed-$which.crt" \
         -subj "/CN=$san" -addext "subjectAltName=DNS:$san" >/dev/null 2>&1 \
         || fail "the self-signed certificate for $san could not be generated."
+      # openssl writes a private key 0600, and synapse cannot read it.
+      # `matrixdotorg/synapse`'s entrypoint starts as root and drops to uid 991
+      # before synapse itself opens anything, so a key owned by the host user
+      # is `Permission denied: '/data/fed.key'` and the container exits during
+      # startup -- which is what this leg had been doing. continuwuity's
+      # container stays root and never noticed.
+      #
+      # 0644 rather than a matching `--user` on the container: this key exists
+      # for one throwaway container on one temporary directory, it is a
+      # self-signed certificate for a name that resolves nowhere, and the
+      # config that uses it sets `federation_verify_certificates: false`. There
+      # is nothing here for a wider mode to expose, and pinning the container's
+      # uid instead would change how synapse writes the rest of /data for a
+      # reason that has nothing to do with the rest of /data.
+      chmod 644 "$WORKDIR/fed-$which.key" \
+        || fail "the self-signed key for $san could not be made readable."
     done
   fi
 
