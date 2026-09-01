@@ -7,7 +7,12 @@ set -euo pipefail
 # death that names nothing cannot be told apart from a defect in a dependency.
 # Handled failures (`|| fail`, conditions, loops) do not fire this trap; it
 # reports exactly the unhandled ones.
-trap 'echo "FAIL: an unguarded command failed at line $LINENO (exit $?)." >&2; exit 1' ERR
+# `RUN_FAILED=1` before the message, and it is not decoration: `cleanup`
+# dumps the homeserver's own output only when that flag is set, so a run this
+# trap killed used to reach teardown looking like a clean one and the single
+# thing that would explain it was suppressed. That is how the federated
+# synapse leg stayed unexplained after this trap was added.
+trap 'rc=$?; RUN_FAILED=1; echo "FAIL: an unguarded command failed at line $LINENO (exit $rc)." >&2; exit 1' ERR
 
 # Runs all five level 2 interoperability proofs (design doc section 8)
 # against a Matrix homeserver this script starts, provisions, and destroys --
@@ -971,9 +976,16 @@ $(docker logs "$container-generate" 2>&1 | tail -20 || true)"
     fi
   fi
 
-  HOST_PORT=$(docker port "$CONTAINER" 8008/tcp 2>/dev/null | head -1 | sed 's/.*://')
+  # `|| true`, so that the guard below is the thing that reports this rather
+  # than the ERR trap. `docker port` exits 1 for a container that is not
+  # running, `set -o pipefail` carries that out of the pipeline, and the
+  # assignment then dies one line before the sentence written to explain it.
+  HOST_PORT=$(docker port "$CONTAINER" 8008/tcp 2>/dev/null | head -1 | sed 's/.*://') || true
   [ -n "$HOST_PORT" ] \
-    || { RUN_FAILED=1; fail "the container published no host port for 8008."; }
+    || { RUN_FAILED=1; fail "the container published no host port for 8008.
+      It is $(docker inspect -f '{{.State.Status}} (exit {{.State.ExitCode}})' \
+        "$CONTAINER" 2>/dev/null || echo 'gone'), so it either never started or
+      started and stopped; the homeserver output below says which."; }
 
   export MATRIX_INTEROP_HOMESERVER="http://127.0.0.1:$HOST_PORT"
   export MATRIX_INTEROP_USER="@$LOCALPART:$SERVER_NAME_A"
@@ -987,9 +999,12 @@ $(docker logs "$container-generate" 2>&1 | tail -20 || true)"
     # Server B's client API, for the second counterparty and the account
     # creation below. Plain HTTP on the published port is right: only the
     # federation leg between the containers is TLS.
-    HOST_PORT_B=$(docker port "$CONTAINER_B" 8008/tcp 2>/dev/null | head -1 | sed 's/.*://')
+    # `|| true` for the reason the first one carries.
+    HOST_PORT_B=$(docker port "$CONTAINER_B" 8008/tcp 2>/dev/null | head -1 | sed 's/.*://') || true
     [ -n "$HOST_PORT_B" ] \
-      || { RUN_FAILED=1; fail "the second container published no host port for 8008."; }
+      || { RUN_FAILED=1; fail "the second container published no host port for 8008.
+        It is $(docker inspect -f '{{.State.Status}} (exit {{.State.ExitCode}})' \
+          "$CONTAINER_B" 2>/dev/null || echo 'gone')."; }
     export MATRIX_INTEROP_FEDERATED_HOMESERVER="http://127.0.0.1:$HOST_PORT_B"
     export MATRIX_INTEROP_FEDERATED_USER="@$LOCALPART_FEDERATED:$SERVER_NAME_B"
   fi
