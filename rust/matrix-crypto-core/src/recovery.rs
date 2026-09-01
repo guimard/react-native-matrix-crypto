@@ -119,7 +119,12 @@ use crate::machine::{with_machine, MachineError};
 /// `PUT /user/{id}/account_data/{type}` and exactly what the matching `GET`
 /// answers with. This library never adds an envelope of its own around it,
 /// so a product moves these bytes to and from the homeserver unchanged.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// No `Debug` derive: these entries carry the account's encrypted private
+/// signing keys, and a derived one leaves a ciphertext a single `{:?}` away
+/// from a log. The FFI mirror has refused it for that reason since it was
+/// written; this copy had drifted.
+#[derive(Clone, PartialEq, Eq)]
 pub struct AccountDataEntry {
     /// The global account data event type, such as
     /// `m.secret_storage.default_key`.
@@ -130,7 +135,16 @@ pub struct AccountDataEntry {
 
 /// Everything [`create_recovery`] produced: the one secret to show the user,
 /// and the account data to write.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// No `Debug` derive: `recovery_key` opens this account's stored identity
+/// and must never reach a log. An absence rather than the redacting `Debug`
+/// `MachineConfig` and `Envelope` hand-write -- redact both fields here and
+/// nothing worth printing is left, so refusing the derive turns the call
+/// site into a compile error instead.
+///
+/// `a_second_recovery_refuses_rather_than_taking_the_first_one_away` already
+/// says this type has no derive. That was untrue when it was written.
+#[derive(Clone, PartialEq, Eq)]
 pub struct RecoverySetup {
     /// The base58 recovery key, formatted in groups of four characters as
     /// the specification requires.
