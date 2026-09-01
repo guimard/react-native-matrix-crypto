@@ -119,7 +119,33 @@ use crate::machine::{with_machine, MachineError};
 /// `PUT /user/{id}/account_data/{type}` and exactly what the matching `GET`
 /// answers with. This library never adds an envelope of its own around it,
 /// so a product moves these bytes to and from the homeserver unchanged.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// No `Debug` derive: these entries carry the account's encrypted private
+/// signing keys, and a derived one leaves a ciphertext a single `{:?}` away
+/// from a log. The FFI mirror has refused it for that reason since it was
+/// written; this copy had drifted.
+///
+/// The sentence above documents the invariant; the compile-fail doctest
+/// below enforces it. It exists because the drift this comment describes
+/// went unnoticed until it was found by review: a prose rule does not fail
+/// CI, a `compile_fail` test does.
+///
+/// The doctest takes the trait bound directly rather than constructing a
+/// value and formatting it, and that choice is the guard's whole point: a
+/// `compile_fail` block passes on any compiler error, so a snippet that
+/// names the record's fields could keep passing after `Debug` returns, on
+/// an error no one intended, the day a field is added or renamed. Naming
+/// only the type leaves the missing `Debug` impl as the sole possible
+/// error, so the block fails if and only if the derive comes back.
+///
+/// ```compile_fail
+/// fn requires_debug<T: std::fmt::Debug>() {}
+///
+/// // Compiles only while `AccountDataEntry` has no `Debug` impl; mentions
+/// // no field, so a field changing shape cannot make the block pass.
+/// requires_debug::<matrix_crypto_core::AccountDataEntry>();
+/// ```
+#[derive(Clone, PartialEq, Eq)]
 pub struct AccountDataEntry {
     /// The global account data event type, such as
     /// `m.secret_storage.default_key`.
@@ -130,7 +156,32 @@ pub struct AccountDataEntry {
 
 /// Everything [`create_recovery`] produced: the one secret to show the user,
 /// and the account data to write.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// No `Debug` derive: `recovery_key` opens this account's stored identity
+/// and must never reach a log. An absence rather than the redacting `Debug`
+/// `MachineConfig` and `Envelope` hand-write -- redact both fields here and
+/// nothing worth printing is left, so refusing the derive turns the call
+/// site into a compile error instead.
+///
+/// `a_second_recovery_refuses_rather_than_taking_the_first_one_away` already
+/// says this type has no derive. That was untrue when it was written.
+///
+/// Same guard as [`AccountDataEntry`], and the same shape for the same
+/// reason: the compile-fail doctest below takes the `Debug` bound directly
+/// instead of constructing a value. A `compile_fail` block passes on any
+/// compiler error, and a snippet that fills in the record's fields could
+/// keep passing after `Debug` returns, on a field-rename error no one
+/// intended. Naming only the type leaves the missing impl as the sole
+/// possible error.
+///
+/// ```compile_fail
+/// fn requires_debug<T: std::fmt::Debug>() {}
+///
+/// // Compiles only while `RecoverySetup` has no `Debug` impl; mentions no
+/// // field, so a field changing shape cannot make the block pass.
+/// requires_debug::<matrix_crypto_core::RecoverySetup>();
+/// ```
+#[derive(Clone, PartialEq, Eq)]
 pub struct RecoverySetup {
     /// The base58 recovery key, formatted in groups of four characters as
     /// the specification requires.
