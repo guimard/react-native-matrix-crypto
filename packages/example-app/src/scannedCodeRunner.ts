@@ -253,6 +253,11 @@ export function startScannedCodeRun(
         userId: plan.userId,
         deviceId: plan.deviceId,
         storePath: `${storeDir}/scanned-code`,
+        // A public demo literal, not an example of how to choose a
+        // passphrase -- the canonical caveat is `cryptoConfig.ts`'s
+        // `DEMO_PASSPHRASE`. The store it encrypts persists on the
+        // device, in the app's files directory, until a future harness
+        // run's pre-install `adb uninstall` or a manual app removal.
         storePassphrase: 'scanned-code-walkthrough',
       })
 
