@@ -574,6 +574,25 @@ EOF
         -keyout "$WORKDIR/fed-$which.key" -out "$WORKDIR/fed-$which.crt" \
         -subj "/CN=$san" -addext "subjectAltName=DNS:$san" >/dev/null 2>&1 \
         || fail "the self-signed certificate for $san could not be generated."
+      # openssl writes the private key 0600 -- its own default, independent
+      # of the umask -- owned by the user running this script. The servers
+      # read it through a read-only bind mount, and a bind mount does not
+      # widen a file's permissions: inside the container the file keeps its
+      # mode and its owner, while synapse runs as its own non-root uid (991
+      # in the pinned image; continuwuity likewise runs unprivileged), and
+      # that uid cannot open a 0600 file owned by the runner's uid -- on a
+      # Linux runner the container died at startup with
+      #   PermissionError: [Errno 13] Permission denied: '/data/fed.key'.
+      # Docker Desktop masks mode bits on bind mounts inside its VM (a
+      # container uid read a 0600 root-owned file fine locally), which is
+      # why this surfaced only on the runner. The secrecy a 0600 mode buys
+      # is moot for this key: it is generated for one run, self-signed,
+      # mounted read-only, and dies with the network and the containers it
+      # identifies. What it must be is READABLE by the container's uid, so
+      # both files are made explicitly world-readable for the run.
+      chmod 0644 "$WORKDIR/fed-$which.key" "$WORKDIR/fed-$which.crt" \
+        || fail "the throwaway federation key for $san could not be made
+        readable by the container's uid."
     done
   fi
 
