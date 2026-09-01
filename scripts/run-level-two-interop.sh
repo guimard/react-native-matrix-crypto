@@ -6,12 +6,17 @@ set -euo pipefail
 # died this way on the runner -- forty seconds in, no output, exit 1 -- and a
 # death that names nothing cannot be told apart from a defect in a dependency.
 # Handled failures (`|| fail`, conditions, loops) do not fire this trap; it
-# reports exactly the unhandled ones. RUN_FAILED=1 is set first so the EXIT
-# trap's cleanup dumps the homeserver's own logs: even an unguarded death then
-# gets to name what the container said. (Without it those deaths reported
-# "cleanup: entered (RUN_FAILED=0, ...)" and the logs holding the real defect
-# were never printed.)
-trap 'RUN_FAILED=1; echo "FAIL: an unguarded command failed at line $LINENO (exit $?)." >&2; exit 1' ERR
+# reports exactly the unhandled ones. RUN_FAILED=1 is set first, and it is not
+# decoration: `cleanup` dumps the homeserver's own output only when that flag
+# is set, so a run this trap killed used to reach teardown looking like a
+# clean one -- "cleanup: entered (RUN_FAILED=0, ...)" -- and the single thing
+# that would explain it was suppressed. That is how the federated synapse leg
+# stayed unexplained even after this trap was added. The echo comes first,
+# before RUN_FAILED=1 is set: `$?` must be read while it still holds the
+# failing command's status -- one assignment earlier and the message would
+# report the assignment's 0, not the death's code. The flag is still set
+# before `exit 1`, so the EXIT trap's cleanup sees it.
+trap 'echo "FAIL: an unguarded command failed at line $LINENO (exit $?)." >&2; RUN_FAILED=1; exit 1' ERR
 
 # Runs all five level 2 interoperability proofs (design doc section 8)
 # against a Matrix homeserver this script starts, provisions, and destroys --
@@ -261,16 +266,19 @@ fail() {
 # the whole run then points MATRIX_INTEROP_HOMESERVER at. This used to be an
 # unguarded `docker port ... 2>/dev/null | head -1 | sed ...`: docker port
 # exits 1 when the container exists but is not running (a container that died
-# under the bring-up publishes no port), the 2>/dev/null swallowed the
-# reason, and under set -euo pipefail the run died at that line with the ERR
-# trap naming a line number instead of the container's own last words. On
-# 2026-09-01 the federated synapse leg died exactly there on every run, twenty
-# seconds in, and the log named nothing; what had actually happened was an
-# empty `docker exec cat` capture two steps earlier (see read_generated below)
-# killing the container at startup. The read is therefore guarded, retried a
-# bounded few times in case the daemon is momentarily slow to answer, and a
-# failure prints the container's state and last output: a dead homeserver
-# names itself. On success the port (digits only) is printed to stdout.
+# under the bring-up publishes no port), `set -o pipefail` carries that out of
+# the pipeline, the 2>/dev/null swallowed the reason, and the run died one
+# line before the sentence written to explain it -- the ERR trap naming a
+# line number instead of the container's own last words. (This is why the
+# read happens inside the condition below: the guard, not the ERR trap, must
+# be the thing that reports it.) On 2026-09-01 the federated synapse leg died
+# exactly there on every run, twenty seconds in, and the log named nothing;
+# what had actually happened was an empty `docker exec cat` capture two steps
+# earlier (see read_generated below) killing the container at startup. The
+# read is therefore retried a bounded few times in case the daemon is
+# momentarily slow to answer, and a failure prints the daemon's answer, the
+# container's state, and its last output: a dead homeserver names itself. On
+# success the port (digits only) is printed to stdout.
 published_host_port() {
   local container="$1" answer attempt
   for attempt in 1 2 3; do
@@ -283,7 +291,7 @@ published_host_port() {
   RUN_FAILED=1
   fail "docker port could not read a published 8008/tcp port for container
     $container; the daemon said: ${answer:-<nothing>}. The container's state
-    is $(docker inspect -f '{{.State.Status}} (exit {{.State.ExitCode}})' "$container" 2>&1 || true)
+    is $(docker inspect -f '{{.State.Status}} (exit {{.State.ExitCode}})' "$container" 2>/dev/null || echo 'gone (removed before it could be asked)')
     and its last output was:
     $(docker logs "$container" 2>&1 | tail -30 || true)
     A container that is not running publishes no port, so the defect to read
@@ -578,16 +586,28 @@ EOF
       # of the umask -- owned by the user running this script. The servers
       # read it through a read-only bind mount, and a bind mount does not
       # widen a file's permissions: inside the container the file keeps its
-      # mode and its owner, while synapse runs as its own non-root uid (991
-      # in the pinned image; continuwuity likewise runs unprivileged), and
-      # that uid cannot open a 0600 file owned by the runner's uid -- on a
-      # Linux runner the container died at startup with
-      #   PermissionError: [Errno 13] Permission denied: '/data/fed.key'.
-      # Docker Desktop masks mode bits on bind mounts inside its VM (a
-      # container uid read a 0600 root-owned file fine locally), which is
-      # why this surfaced only on the runner. The secrecy a 0600 mode buys
-      # is moot for this key: it is generated for one run, self-signed,
-      # mounted read-only, and dies with the network and the containers it
+      # mode and its owner. `matrixdotorg/synapse`'s entrypoint starts as
+      # root and drops to uid 991 before synapse itself opens anything, so a
+      # key owned by the host user is `Permission denied:
+      # '/data/fed.key'` (Errno 13) and the container exits during startup --
+      # which is what this leg had been doing. continuwuity's container stays
+      # root, which read the 0600 key without noticing and is why only the
+      # synapse leg failed. Docker Desktop masks mode bits on bind mounts
+      # inside its VM (a container uid read a 0600 root-owned file fine
+      # locally), which is why this surfaced only on the Linux runner.
+      #
+      # 0644 rather than a matching `--user` on the container: this key
+      # exists for one throwaway container in one temporary directory; it is
+      # a self-signed certificate for a name that resolves only on the
+      # per-run docker network -- the aliases below are exactly what make it
+      # resolve there, and nothing off the machine can resolve it at all --
+      # and the configuration that uses it sets
+      # `federation_verify_certificates: false`. There is nothing here for a
+      # wider mode to expose, and pinning the container's uid instead would
+      # change how synapse writes the rest of /data for a reason that has
+      # nothing to do with the rest of /data. The secrecy a 0600 mode buys
+      # is moot for this key: it is generated for one run, mounted
+      # read-only, and dies with the network and the containers it
       # identifies. What it must be is READABLE by the container's uid, so
       # both files are made explicitly world-readable for the run.
       chmod 0644 "$WORKDIR/fed-$which.key" "$WORKDIR/fed-$which.crt" \
