@@ -128,20 +128,22 @@ use crate::machine::{with_machine, MachineError};
 /// The sentence above documents the invariant; the compile-fail doctest
 /// below enforces it. It exists because the drift this comment describes
 /// went unnoticed until it was found by review: a prose rule does not fail
-/// CI, a `compile_fail` test does. The block must fail to compile, and
-/// fails for no other reason than this type not implementing `Debug`, so
-/// re-deriving it turns the doctest red.
+/// CI, a `compile_fail` test does.
+///
+/// The doctest takes the trait bound directly rather than constructing a
+/// value and formatting it, and that choice is the guard's whole point: a
+/// `compile_fail` block passes on any compiler error, so a snippet that
+/// names the record's fields could keep passing after `Debug` returns, on
+/// an error no one intended, the day a field is added or renamed. Naming
+/// only the type leaves the missing `Debug` impl as the sole possible
+/// error, so the block fails if and only if the derive comes back.
 ///
 /// ```compile_fail
-/// use matrix_crypto_core::AccountDataEntry;
+/// fn requires_debug<T: std::fmt::Debug>() {}
 ///
-/// let entry = AccountDataEntry {
-///     event_type: "m.secret_storage.key.test".to_owned(),
-///     content: "{}".to_owned(),
-/// };
-/// // This line only compiles while `AccountDataEntry` has no `Debug` impl;
-/// // a reintroduced derive would make the secret one `{:?}` away from a log.
-/// let _printed: String = format!("{:?}", entry);
+/// // Compiles only while `AccountDataEntry` has no `Debug` impl; mentions
+/// // no field, so a field changing shape cannot make the block pass.
+/// requires_debug::<matrix_crypto_core::AccountDataEntry>();
 /// ```
 #[derive(Clone, PartialEq, Eq)]
 pub struct AccountDataEntry {
@@ -164,20 +166,20 @@ pub struct AccountDataEntry {
 /// `a_second_recovery_refuses_rather_than_taking_the_first_one_away` already
 /// says this type has no derive. That was untrue when it was written.
 ///
-/// Same guard as [`AccountDataEntry`]: the compile-fail doctest below is
-/// what makes the no-`Debug` rule a test failure instead of a sentence.
-/// It must fail to compile, and fails for no other reason than this type
-/// not implementing `Debug`.
+/// Same guard as [`AccountDataEntry`], and the same shape for the same
+/// reason: the compile-fail doctest below takes the `Debug` bound directly
+/// instead of constructing a value. A `compile_fail` block passes on any
+/// compiler error, and a snippet that fills in the record's fields could
+/// keep passing after `Debug` returns, on a field-rename error no one
+/// intended. Naming only the type leaves the missing impl as the sole
+/// possible error.
 ///
 /// ```compile_fail
-/// use matrix_crypto_core::{AccountDataEntry, RecoverySetup};
+/// fn requires_debug<T: std::fmt::Debug>() {}
 ///
-/// let setup = RecoverySetup {
-///     recovery_key: "the one secret that opens this account's identity".to_owned(),
-///     account_data: Vec::<AccountDataEntry>::new(),
-/// };
-/// // This line only compiles while `RecoverySetup` has no `Debug` impl.
-/// let _printed: String = format!("{:?}", setup);
+/// // Compiles only while `RecoverySetup` has no `Debug` impl; mentions no
+/// // field, so a field changing shape cannot make the block pass.
+/// requires_debug::<matrix_crypto_core::RecoverySetup>();
 /// ```
 #[derive(Clone, PartialEq, Eq)]
 pub struct RecoverySetup {
