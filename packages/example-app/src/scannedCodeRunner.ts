@@ -253,6 +253,12 @@ export function startScannedCodeRun(
         userId: plan.userId,
         deviceId: plan.deviceId,
         storePath: `${storeDir}/scanned-code`,
+        // Not a secret, and not an example of how to choose one: a real
+        // product supplies a passphrase it derived or read from the
+        // platform keystore. A literal is fine here because this walkthrough
+        // has no user and throws its store away. Same caveat as
+        // `cryptoConfig.ts`'s `DEMO_PASSPHRASE`, repeated because this is
+        // the file with the working code in it.
         storePassphrase: 'scanned-code-walkthrough',
       })
 
