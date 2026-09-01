@@ -622,6 +622,12 @@ A release is a git tag. Pushing a tag matching `v*` — for example `v0.3.0` —
 
 This library has not been independently audited. It wraps `matrix-sdk-crypto`, which is widely deployed, but the bridge layer around it is new.
 
+**This release shares a room key with every device its recipients have, including devices nobody has signed or verified.** That is upstream's `AllDevices` collection strategy, which upstream itself marks not recommended, per the guidance of MSC4153. It is deliberate, and a condition rather than an oversight holds it there: upstream's identity-based strategy refuses outright when *this* machine holds no cross-signing identity, before it considers a single recipient, and whether to bootstrap one is a decision your product makes rather than one this library takes for you. A product that never calls `bootstrapCrossSigning` would therefore have every send fail rather than share selectively. The trade is real and it is yours to accept; it is stated here so you accept it knowingly.
+
+**Inbound, the mirror of it: this release decrypts events from any device**, at upstream's `Untrusted` trust requirement, which upstream also marks not recommended. Tightening it is not the one-line change it looks like. A verification — a compared string or a scanned code alike — sets *local* trust, and neither stricter tier consults local trust, so either one would refuse events from a peer whose device carries no cross-signature however carefully somebody verified it. `senderVerification` is what reports the difference per event instead, and [Limits you must design around](#limits-you-must-design-around) is where reading it is set out.
+
+Both defaults move when this library gains a way for a product to choose them. Until then, treat them as the posture you are deploying.
+
 If you believe you have found a security issue, please report it privately through GitHub's security advisory feature on this repository rather than opening a public issue.
 
 ## License
