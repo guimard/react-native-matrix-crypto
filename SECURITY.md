@@ -14,7 +14,7 @@ This repository: the two Rust crates, the TypeScript facade, the generated bindi
 
 **Not the cryptography itself.** The primitives, the Olm and Megolm implementations, the verification protocols and the crypto store all come from [`matrix-sdk-crypto`](https://github.com/matrix-org/matrix-rust-sdk) and [`vodozemac`](https://github.com/matrix-org/vodozemac). A defect in either belongs to its own project, and reporting it there reaches the people who can fix it. If you are unsure which side a finding falls on, report it here and say so — sorting that out is our job, not yours.
 
-The example app under `packages/example-app/` is a demonstration. It holds nothing of a user's, ships no release build anyone should install, and is out of scope unless the finding is also true of the library it drives.
+The example app under `packages/example-app/` is an unsupported demonstration harness, not a product anyone should install. Its accounts are ephemeral — minted per run against a throwaway homeserver that is destroyed when the run ends — but while a run is in flight the app does hold that run's throwaway device access token and an on-device crypto store, so a finding about the harness's own credential or storage handling is still a report here, not something to dismiss. Otherwise the app is out of scope unless the finding is also true of the library it drives.
 
 ## Versions
 
@@ -24,4 +24,4 @@ Pre-1.0. Fixes go to the latest published version; there are no maintained relea
 
 **This library has not been independently audited.** It wraps a widely deployed cryptographic library, but the bridge around it is new.
 
-**Two of its defaults are deliberately permissive.** A room key is shared with every device a recipient has, including devices nobody has signed or verified — upstream's `AllDevices` strategy, which upstream marks not recommended per MSC4153. And events are decrypted from any device, at upstream's `Untrusted` trust requirement, which upstream also marks not recommended. Both are argued where they are made, in `rust/matrix-crypto-core/src/session.rs`. Neither is a defect and neither is a report; they are the posture you deploy, and they are the two facts most likely to matter to your threat model.
+**Two of its defaults are deliberately permissive.** A room key is shared with every unblacklisted device a recipient has, including devices nobody has signed or verified — upstream's `AllDevices` strategy, which upstream marks not recommended per MSC4153. And events are decrypted from any device, at upstream's `Untrusted` trust requirement, which upstream also marks not recommended. Both are argued where they are made, in `rust/matrix-crypto-core/src/session.rs`. Neither is a defect and neither is a report; they are the posture you deploy, and they are the two facts most likely to matter to your threat model.
