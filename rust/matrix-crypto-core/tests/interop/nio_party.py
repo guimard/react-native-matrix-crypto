@@ -28,14 +28,16 @@ Nothing is ever printed outside that protocol, and nothing is written to disk
 except nio's own crypto store, in a temporary directory the caller supplies
 and removes.
 
-# Three proofs, one counterparty
+# The level 2 proofs, one counterparty
 
-This process serves all three level 2 tests. `level_two_interop.rs` uses the
-encryption operations (`send`, `collect`); `level_two_verification.rs` uses
-the `sas_*` ones; `level_two_identity.rs` uses `identity_probe` alongside
-`send`. They share the login, the sync pump and the store, which is the whole
-reason they share a file: a second script would be a second, slightly
-different idea of what "settle" means.
+This process serves every level 2 test that takes a matrix-nio counterparty.
+`level_two_interop.rs` uses the encryption operations (`send`, `collect`);
+`level_two_verification.rs` uses the `sas_*` ones; `level_two_identity.rs`
+uses `identity_probe` alongside `send`. `level_two_federated.rs` uses `join`
+and `history` alongside the encryption ones, for the second account it runs
+as, on a second homeserver. They share the login, the sync pump and the
+store, which is the whole reason they share a file: a second script would be
+a second, slightly different idea of what "settle" means.
 
 # Credentials
 
@@ -56,11 +58,14 @@ from nio import (
     Api,
     AsyncClient,
     AsyncClientConfig,
+    JoinResponse,
     LoginResponse,
     MegolmEvent,
+    RoomMessagesResponse,
     RoomSendResponse,
     ToDeviceResponse,
 )
+from nio.api import MessageDirection
 
 # nio marks every device it has not verified as unverified, and refuses by
 # default to send a room key to one. M2 verifies nothing on either side -- our
@@ -79,6 +84,25 @@ class Party:
         # rebuild one from a cancelled comparison, and a cancelled
         # comparison is exactly when `sas_commitment_probe` needs it.
         self.starts = {}
+        # The newest `prev_batch` token per joined room, recorded off every
+        # sync response by `_record_rooms`. `room_messages(start=...)` is
+        # documented to accept a room timeline's prev_batch (or a prior
+        # /messages token); the sync cursor `next_batch` is NOT on that
+        # list, and passing it relies on homeserver-specific token
+        # interchangeability -- a server is free to answer it with an
+        # invalid-pagination-token error, which is what a late joiner's
+        # history fetch then fails on.
+        self.prev_batches = {}
+
+    def _record_rooms(self, response):
+        """Keep each joined room's timeline prev_batch from one sync response."""
+        rooms = getattr(response, "rooms", None)
+        if rooms is None:
+            return
+        for room_id, info in rooms.join.items():
+            prev_batch = info.timeline.prev_batch
+            if prev_batch is not None:
+                self.prev_batches[room_id] = prev_batch
 
     async def op_login(self, cmd):
         homeserver = os.environ["MATRIX_INTEROP_HOMESERVER"]
@@ -119,7 +143,8 @@ class Party:
         is a visible missing step rather than a silent absence.
         """
         for _ in range(rounds):
-            await self.client.sync(timeout=timeout_ms, full_state=False)
+            response = await self.client.sync(timeout=timeout_ms, full_state=False)
+            self._record_rooms(response)
             if self.client.should_upload_keys:
                 await self.client.keys_upload()
             if self.client.should_query_keys:
@@ -128,6 +153,120 @@ class Party:
     async def op_settle(self, cmd):
         await self.settle(rounds=int(cmd.get("rounds", 3)))
         return {"ok": True}
+
+    async def op_join(self, cmd):
+        """Join a room by id, over federation if nio's own homeserver is not
+        the room's origin. Used by `level_two_federated.rs`, which invites
+        this process's user into a room that lives on the other server.
+
+        The join only returns once the whole federation round trip has
+        completed (make_join/send_join), so a successful reply means both
+        servers already agree this user is a member.
+
+        Why this re-implements AsyncClient.join instead of calling it: the
+        pinned matrix-nio 0.26.0's `Api.join` sends the POST with NO body,
+        which Synapse accepts and Continuwuity refuses -- its request
+        deserializer demands JSON, and the refusal reads "M_BAD_JSON
+        deserialization failed: EOF while parsing a value at line 1 column
+        0". `AsyncClient.join` is exactly `_send(JoinResponse, method,
+        path)` with no data, so calling `_send` with an explicit empty
+        object is the same code path with the one byte Continuwuity needs
+        added; it stays nio's own machinery, so JoinResponse parsing and
+        the client's bookkeeping remain upstream's. If a future nio sends
+        a body from Api.join, drop this and call client.join again.
+        """
+        path = f"/_matrix/client/v3/join/{cmd['room_id']}"
+        response = await self.client._send(
+            JoinResponse, "POST", path, data="{}", content_type="application/json"
+        )
+        if not isinstance(response, JoinResponse):
+            return {"ok": False, "error": f"join failed: {response}"}
+        return {"ok": True, "room_id": response.room_id}
+
+    async def op_history(self, cmd):
+        """Backfill room history before the current sync cursor, and report
+        what nio makes of each event it fetches.
+
+        Used by `level_two_federated.rs` for the late joiner's history. A
+        /sync only ever moves forward: the pre-join events a freshly joined
+        client is handed in its first syncs are consumed by those syncs and
+        are not offered to a later `collect`. This op is what a real product
+        does on opening a room -- paginate backwards from where it has
+        synced to -- so the question "what can the late joiner make of the
+        pre-join history" is answered by nio's own decrypt attempt on the
+        fetched events, not by whichever events a previous sync happened
+        to carry. It may backfill across federation from the room's origin
+        server, which for this test is the entire point.
+
+        `until_found` names event ids the caller needs in the result:
+        pages keep being fetched (from the `end` token each page returns,
+        going backwards) until every one of them has been seen or
+        `max_rounds` pages have been read. One page is not enough on its
+        own: the two implementations page differently (Synapse reached the
+        pre-join message in a single page of 20 in the runs this test pins;
+        Continuwuity returned only the two newest events), and an op whose
+        answer depends on which side paginated how would be asserting the
+        pager, not the cryptography.
+        """
+        room_id = cmd["room_id"]
+        limit = int(cmd.get("limit", 20))
+        until_found = set(cmd.get("until_found", []))
+        max_rounds = int(cmd.get("max_rounds", 10))
+        # The room's own prev_batch, recorded off the syncs `settle` ran
+        # after the join -- the one token nio documents for starting
+        # pagination. When no sync carried this room (this op is only ever
+        # called after a settle, so that would already be a broken driver),
+        # start is None and nio omits `from` from the request entirely: the
+        # server answers with its current tail and the pages below still
+        # walk backwards from there. What is not passed is the sync cursor
+        # `next_batch`: pagination tokens and sync tokens are not
+        # interchangeable per the spec, and a server may reject one where it
+        # expects the other.
+        start = self.prev_batches.get(room_id)
+        events = {}
+
+        def record(event):
+            event_id = getattr(event, "event_id", None)
+            if event_id is None:
+                return
+            if isinstance(event, MegolmEvent):
+                try:
+                    decrypted = self.client.decrypt_event(event)
+                    events[event_id] = {
+                        "decrypted": True,
+                        "type": type(decrypted).__name__,
+                        "body": getattr(decrypted, "body", None),
+                    }
+                except Exception as error:  # noqa: BLE001 -- reported, not handled
+                    events[event_id] = {
+                        "decrypted": False,
+                        "type": "MegolmEvent",
+                        "reason": f"{type(error).__name__}: {error}",
+                    }
+            else:
+                events[event_id] = {
+                    "decrypted": True,
+                    "type": type(event).__name__,
+                    "body": getattr(event, "body", None),
+                }
+
+        for _ in range(max_rounds):
+            response = await self.client.room_messages(
+                room_id,
+                start=start,
+                direction=MessageDirection.back,
+                limit=limit,
+            )
+            if not isinstance(response, RoomMessagesResponse):
+                return {"ok": False, "error": f"history fetch failed: {response}"}
+            for event in response.chunk:
+                record(event)
+            found = until_found - set(events)
+            if not found or not response.end or response.end == response.start:
+                break
+            start = response.end
+
+        return {"ok": True, "events": events}
 
     async def op_send(self, cmd):
         """nio encrypts and sends. Direction 2 of the proof."""
@@ -172,6 +311,7 @@ class Party:
 
         while outstanding() and asyncio.get_event_loop().time() < deadline:
             response = await self.client.sync(timeout=3000, full_state=False)
+            self._record_rooms(response)
             rooms = getattr(response, "rooms", None)
             if rooms is not None and room_id in rooms.join:
                 for event in rooms.join[room_id].timeline.events:
