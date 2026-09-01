@@ -253,19 +253,11 @@ export function startScannedCodeRun(
         userId: plan.userId,
         deviceId: plan.deviceId,
         storePath: `${storeDir}/scanned-code`,
-        // Not a secret, and not an example of how to choose one: a real
-        // product supplies a passphrase it derived or read from the
-        // platform keystore. A literal is tolerable here because the run
-        // is a throwaway in the ways that matter: the camera harness
-        // (`level-two/run_camera_proof.py`) creates the account and the
-        // homeserver this `plan.userId` names and destroys both on exit.
-        // What is not thrown away is this store: the harness never deletes
-        // it, so it stays in the app's persistent files directory --
-        // encrypted with this public literal -- until a future harness
-        // run's pre-install `adb uninstall` (see `run_level_two.py`'s
-        // `install_and_launch`) or a manual app removal. Same caveat as
-        // `cryptoConfig.ts`'s `DEMO_PASSPHRASE`, repeated because this is
-        // the file with the working code in it.
+        // A public demo literal, not an example of how to choose a
+        // passphrase -- the canonical caveat is `cryptoConfig.ts`'s
+        // `DEMO_PASSPHRASE`. The store it encrypts persists on the
+        // device, in the app's files directory, until a future harness
+        // run's pre-install `adb uninstall` or a manual app removal.
         storePassphrase: 'scanned-code-walkthrough',
       })
 
