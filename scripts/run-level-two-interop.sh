@@ -6,8 +6,12 @@ set -euo pipefail
 # died this way on the runner -- forty seconds in, no output, exit 1 -- and a
 # death that names nothing cannot be told apart from a defect in a dependency.
 # Handled failures (`|| fail`, conditions, loops) do not fire this trap; it
-# reports exactly the unhandled ones.
-trap 'echo "FAIL: an unguarded command failed at line $LINENO (exit $?)." >&2; exit 1' ERR
+# reports exactly the unhandled ones. RUN_FAILED=1 is set first so the EXIT
+# trap's cleanup dumps the homeserver's own logs: even an unguarded death then
+# gets to name what the container said. (Without it those deaths reported
+# "cleanup: entered (RUN_FAILED=0, ...)" and the logs holding the real defect
+# were never printed.)
+trap 'RUN_FAILED=1; echo "FAIL: an unguarded command failed at line $LINENO (exit $?)." >&2; exit 1' ERR
 
 # Runs all five level 2 interoperability proofs (design doc section 8)
 # against a Matrix homeserver this script starts, provisions, and destroys --
@@ -251,6 +255,39 @@ HOMESERVER_TIMEOUT_SECONDS=${HOMESERVER_TIMEOUT_SECONDS:-90}
 fail() {
   echo "FAIL: $*" >&2
   exit 1
+}
+
+# Reads the host port docker published for a container's 8008/tcp -- the value
+# the whole run then points MATRIX_INTEROP_HOMESERVER at. This used to be an
+# unguarded `docker port ... 2>/dev/null | head -1 | sed ...`: docker port
+# exits 1 when the container exists but is not running (a container that died
+# under the bring-up publishes no port), the 2>/dev/null swallowed the
+# reason, and under set -euo pipefail the run died at that line with the ERR
+# trap naming a line number instead of the container's own last words. On
+# 2026-09-01 the federated synapse leg died exactly there on every run, twenty
+# seconds in, and the log named nothing; what had actually happened was an
+# empty `docker exec cat` capture two steps earlier (see read_generated below)
+# killing the container at startup. The read is therefore guarded, retried a
+# bounded few times in case the daemon is momentarily slow to answer, and a
+# failure prints the container's state and last output: a dead homeserver
+# names itself. On success the port (digits only) is printed to stdout.
+published_host_port() {
+  local container="$1" answer attempt
+  for attempt in 1 2 3; do
+    if answer=$(docker port "$container" 8008/tcp 2>&1) && [ -n "$answer" ]; then
+      printf '%s\n' "$answer" | head -1 | sed 's/.*://'
+      return 0
+    fi
+    sleep 2
+  done
+  RUN_FAILED=1
+  fail "docker port could not read a published 8008/tcp port for container
+    $container; the daemon said: ${answer:-<nothing>}. The container's state
+    is $(docker inspect -f '{{.State.Status}} (exit {{.State.ExitCode}})' "$container" 2>&1 || true)
+    and its last output was:
+    $(docker logs "$container" 2>&1 | tail -30 || true)
+    A container that is not running publishes no port, so the defect to read
+    is above this line, in the bring-up -- the port read is only its messenger."
 }
 
 # --- teardown, on every path out -------------------------------------------
@@ -537,6 +574,25 @@ EOF
         -keyout "$WORKDIR/fed-$which.key" -out "$WORKDIR/fed-$which.crt" \
         -subj "/CN=$san" -addext "subjectAltName=DNS:$san" >/dev/null 2>&1 \
         || fail "the self-signed certificate for $san could not be generated."
+      # openssl writes the private key 0600 -- its own default, independent
+      # of the umask -- owned by the user running this script. The servers
+      # read it through a read-only bind mount, and a bind mount does not
+      # widen a file's permissions: inside the container the file keeps its
+      # mode and its owner, while synapse runs as its own non-root uid (991
+      # in the pinned image; continuwuity likewise runs unprivileged), and
+      # that uid cannot open a 0600 file owned by the runner's uid -- on a
+      # Linux runner the container died at startup with
+      #   PermissionError: [Errno 13] Permission denied: '/data/fed.key'.
+      # Docker Desktop masks mode bits on bind mounts inside its VM (a
+      # container uid read a 0600 root-owned file fine locally), which is
+      # why this surfaced only on the runner. The secrecy a 0600 mode buys
+      # is moot for this key: it is generated for one run, self-signed,
+      # mounted read-only, and dies with the network and the containers it
+      # identifies. What it must be is READABLE by the container's uid, so
+      # both files are made explicitly world-readable for the run.
+      chmod 0644 "$WORKDIR/fed-$which.key" "$WORKDIR/fed-$which.crt" \
+        || fail "the throwaway federation key for $san could not be made
+        readable by the container's uid."
     done
   fi
 
@@ -603,6 +659,36 @@ EOF
     # One iteration per server: A always, B only when FEDERATED=1. The loop
     # exists so the two federated containers are brought up by identical
     # steps rather than by a copy of them that could drift.
+    #
+    # Reads a generated file out of the configuration container with
+    # `docker exec ... cat`. The exec's exit code proves the cat ran, not
+    # that anything came back: the read can exit 0 with an EMPTY stdout (seen
+    # on 2026-09-01 on the GitHub-hosted runners, and reproduced locally on
+    # Docker Desktop), and every guard that used to follow checked the exit
+    # code, not the bytes. The two files fail differently when empty --
+    # synapse reads the log config at startup and exits on a parsed `None`
+    # (TypeError in synapse/config/logger.py) -- and in the federated leg the
+    # run then died namelessly at the docker port read, because a container
+    # that has exited publishes no port. So the read is retried a bounded few
+    # times (the file is in the container; a later read sees it) and an empty
+    # result is named here, with the container's own output as evidence,
+    # while the container still exists to be asked. An empty capture is a
+    # defect of the transport, not of the image, and it names itself.
+    read_generated() {
+      local container="$1" path="$2" dest="$3" attempt
+      for attempt in 1 2 3; do
+        if docker exec "$container" cat "$path" > "$dest" 2>/dev/null \
+            && [ -s "$dest" ]; then
+          return 0
+        fi
+      done
+      RUN_FAILED=1
+      fail "reading $path out of the configuration container $container kept
+        coming back EMPTY (each read itself exited 0 -- docker exec lost the
+        output; retried three times). The configuration container said:
+        $(docker logs "$container" 2>&1 | tail -20 || true)"
+    }
+
     REGISTRATION_SECRET=$(openssl rand -hex 24)
     if [ -n "${GITHUB_ACTIONS:-}" ]; then
       echo "::add-mask::$REGISTRATION_SECRET"
@@ -646,14 +732,8 @@ YAML
         fail "synapse could not generate its configuration. The container said:
 $(docker logs "$container-generate" 2>&1 | tail -20 || true)"
       fi
-      docker exec "$container-generate" cat /data/homeserver.yaml \
-          > "$yaml" 2>/dev/null \
-        || { RUN_FAILED=1; fail "the generated homeserver.yaml could not be read
-        out of the configuration container."; }
-      docker exec "$container-generate" cat "/data/$log_config" \
-          > "$WORKDIR/$log_config" 2>/dev/null \
-        || { RUN_FAILED=1; fail "the generated log configuration could not be read
-        out of the configuration container."; }
+      read_generated "$container-generate" /data/homeserver.yaml "$yaml"
+      read_generated "$container-generate" "/data/$log_config" "$WORKDIR/$log_config"
       docker rm -f "$container-generate" >/dev/null 2>&1 || true
 
       # Two deliberate changes to the image's own template, both appended at
@@ -812,15 +892,27 @@ $(docker logs "$container-generate" 2>&1 | tail -20 || true)"
     # rather than discovered as an unexplained failure: three attempts, and a
     # message that says which host did not answer.
     PULLED=""
+    LAST_PULL_ERROR=""
     for attempt in 1 2 3; do
       if docker image inspect "$CONTINUWUITY_IMAGE" >/dev/null 2>&1; then
         PULLED=1
         break
       fi
       echo "Pulling the homeserver image (attempt $attempt)..."
-      if docker pull --quiet "$CONTINUWUITY_IMAGE" >/dev/null 2>&1; then
+      # The pull's stderr is captured, not silenced, the same rule the
+      # synapse loop keeps: a registry's refusal -- a rate limit answering
+      # toomanyrequests, an unreachable host -- arrives on stderr, and a
+      # pull failure that cannot say what the registry said cannot be told
+      # apart from a defect in this script.
+      PROGRESS="continuwuity image pull attempt $attempt"
+      LAST_PULL_ERROR=$(docker pull --quiet "$CONTINUWUITY_IMAGE" 2>&1 >/dev/null | tail -3) || true
+      if docker image inspect "$CONTINUWUITY_IMAGE" >/dev/null 2>&1; then
         PULLED=1
+        PROGRESS="continuwuity image present"
         break
+      fi
+      if [ -n "$LAST_PULL_ERROR" ]; then
+        echo "  pull said: $LAST_PULL_ERROR"
       fi
       sleep $(( attempt * 5 ))
     done
@@ -828,7 +920,7 @@ $(docker logs "$container-generate" 2>&1 | tail -20 || true)"
       Continuwuity publishes only to its own registry (forgejo.ellis.link);
       there is no ghcr.io or Docker Hub mirror. If that host is down, this
       job cannot run, and that is a dependency rather than a defect in this
-      library."
+      library. The last pull error was: ${LAST_PULL_ERROR:-<none captured>}"
 
     # `--entrypoint` because the image declares the binary as CMD with no
     # ENTRYPOINT, so bare arguments would replace it rather than be passed to
@@ -971,9 +1063,8 @@ $(docker logs "$container-generate" 2>&1 | tail -20 || true)"
     fi
   fi
 
-  HOST_PORT=$(docker port "$CONTAINER" 8008/tcp 2>/dev/null | head -1 | sed 's/.*://')
-  [ -n "$HOST_PORT" ] \
-    || { RUN_FAILED=1; fail "the container published no host port for 8008."; }
+  HOST_PORT=$(published_host_port "$CONTAINER") \
+    || { RUN_FAILED=1; exit 1; }
 
   export MATRIX_INTEROP_HOMESERVER="http://127.0.0.1:$HOST_PORT"
   export MATRIX_INTEROP_USER="@$LOCALPART:$SERVER_NAME_A"
@@ -987,9 +1078,8 @@ $(docker logs "$container-generate" 2>&1 | tail -20 || true)"
     # Server B's client API, for the second counterparty and the account
     # creation below. Plain HTTP on the published port is right: only the
     # federation leg between the containers is TLS.
-    HOST_PORT_B=$(docker port "$CONTAINER_B" 8008/tcp 2>/dev/null | head -1 | sed 's/.*://')
-    [ -n "$HOST_PORT_B" ] \
-      || { RUN_FAILED=1; fail "the second container published no host port for 8008."; }
+    HOST_PORT_B=$(published_host_port "$CONTAINER_B") \
+      || { RUN_FAILED=1; exit 1; }
     export MATRIX_INTEROP_FEDERATED_HOMESERVER="http://127.0.0.1:$HOST_PORT_B"
     export MATRIX_INTEROP_FEDERATED_USER="@$LOCALPART_FEDERATED:$SERVER_NAME_B"
   fi
