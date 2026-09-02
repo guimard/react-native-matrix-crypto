@@ -42,12 +42,22 @@ set -euo pipefail
 # A finding in the PEER tree is React Native's, and it arrives here as a
 # version range this repository does not control -- the consumer's own
 # `react-native` is what gets installed. At the time of writing that tree
-# carries seven high advisories, all of them one `image-size` parser reachable
-# through `metro`, which is a build-time tool for an app developer and not code
-# that ships in one. Failing on those would make this job permanently red and
-# therefore unread. So the peer tree fails on `critical` only, and every
-# finding below that is printed, because "printed and not failed" is a
+# carries seven vulnerable package ENTRIES, which are two advisories against
+# one `image-size` parser plus the five packages that depend on it up to
+# `react-native` itself. `metro` is a build-time tool for an app developer and
+# not code that ships in one. Failing on those would make this job permanently
+# red and therefore unread. So the peer tree fails on `critical` only, and
+# every finding below that is printed, because "printed and not failed" is a
 # decision a reader has to be able to see rather than a silence.
+#
+# ENTRIES AND ADVISORIES ARE NOT THE SAME NUMBER, and this file said "seven
+# high advisories" until a review pointed out that they are not.
+# `metadata.vulnerabilities` counts affected package entries: one advisory
+# fans out across every package that depends on the vulnerable one, and a
+# single package's `via` array can carry several advisories. Seven and two,
+# here -- so the wrong word made a tolerated finding read three and a half
+# times larger than it is, in the one place a reader goes to decide whether
+# tolerating it was reasonable. Both numbers are reported below.
 PROD_LEVEL=low
 PEER_LEVEL=critical
 
@@ -116,7 +126,23 @@ report() {
 
     const counts = meta.vulnerabilities || {}
     const summary = ORDER.map(s => `${counts[s] || 0} ${s}`).join(", ")
-    console.log(`${label}: ${deps} packages, ${summary}`)
+
+    // The distinct advisories behind those entries. `via` holds objects for
+    // the advisories a package is directly affected by and plain strings for
+    // the packages it inherits a problem through, so the objects are the
+    // advisory records and the strings are the fan-out.
+    const advisories = new Set()
+    for (const v of Object.values(report.vulnerabilities || {})) {
+      for (const via of v.via || []) {
+        if (typeof via === "object") advisories.add(via.url || via.title)
+      }
+    }
+    const entries = Object.keys(report.vulnerabilities || {}).length
+    console.log(
+      `${label}: ${deps} packages, ${summary} ` +
+        `(${entries} vulnerable package entr${entries === 1 ? "y" : "ies"}, ` +
+        `${advisories.size} distinct advisor${advisories.size === 1 ? "y" : "ies"})`,
+    )
 
     for (const [name, v] of Object.entries(report.vulnerabilities || {})) {
       if (!v.isDirect && !(v.via || []).some(x => typeof x === "object")) continue
@@ -129,7 +155,11 @@ report() {
     const failFrom = ORDER.indexOf(level)
     const failing = ORDER.slice(failFrom).reduce((n, s) => n + (counts[s] || 0), 0)
     if (failing > 0) {
-      console.error(`FAIL: ${failing} advisory/advisories at ${level} or above in ${label}.`)
+      console.error(
+        `FAIL: ${failing} vulnerable package entr${failing === 1 ? "y" : "ies"} ` +
+          `at ${level} or above in ${label}, from ${advisories.size} ` +
+          `distinct advisor${advisories.size === 1 ? "y" : "ies"}.`,
+      )
       process.exit(1)
     }
     console.log(`PASS: nothing at ${level} or above in ${label}.`)
