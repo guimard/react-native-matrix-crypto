@@ -5,14 +5,28 @@
  * This is the CI twin of `ScannedCodeWalkthrough`, and it differs from it in
  * exactly three ways, each deliberate:
  *
- *   * **Nobody asks from this side.** The walkthrough offers "ask my other
- *     devices to verify" because a person may hold the phone that answers;
- *     here the other side is a phone on a mount running an unmodified
- *     Element, and the observed-working direction (see
- *     `level-two/run_camera_proof.py`'s header) is Element starting the
- *     verification from its own sessions list. This harness waits for the
- *     flow instead of requesting one, so `flow_exists` in the log can only
- *     have come from the phone.
+ *   * **This side asks, and it took a rig to learn why.** This harness used
+ *     to wait for the phone to start the verification, on the grounds that
+ *     Element starting from its own sessions list was the direction a person
+ *     had been observed completing (`level-two/run_camera_proof.py`'s
+ *     header). MEASURED on the rig 2026-09-02, that direction cannot be
+ *     driven: the only verification action Element Classic 1.6.62 offers on
+ *     a session's own screen is "Vérifier de façon interactive avec des
+ *     émojis", it starts SAS, and the side that starts a verification is the
+ *     side that picks its method. The library announces `SasV1` in
+ *     `SHOWING_ONLY`, correctly and deliberately, so Element had a method it
+ *     could use and used it; the code sat on the screen through four runs
+ *     and no camera was ever asked for. Asking from this side moves the
+ *     method choice to where a code can be chosen: Element receives a
+ *     request from a peer that announced it can show, and its responder UI
+ *     is the surface that offers to scan.
+ *
+ *     WHAT THAT COSTS, SAID PLAINLY: `flow_exists` no longer proves the
+ *     phone started the flow, because this side started it. It never was
+ *     the optical claim. `scan_reported` is, and it is untouched: the flow
+ *     reaches `code-scanned` only when the far side reports having read
+ *     this code, which an unmodified Element can only say after its camera
+ *     decoded the symbol on the screen it was aimed at.
  *   * **The one decision a person would make is made at start.** The
  *     runner's `confirm()` is held, not dropped: called before any scan, it
  *     is acted on the moment the flow reaches `code-scanned`. That is honest
@@ -124,6 +138,14 @@ export function CameraProofHarness({ plan, storeDir }: { plan: LevelTwoPlan; sto
       }
       if (progress.finished && !printed) {
         printed = true
+        // The failure's own words, before the checks. `headline` is the only
+        // thing this screen renders, so a run that died on an error used to
+        // put the one useful part -- the error kind, which lives in
+        // `detail` -- nowhere a log could reach. Same rule as the rest of
+        // this file: names and kinds, never an identifier or a payload byte.
+        if (state.failed === true) {
+          console.log(`CAMERA_PROOF failed ${state.headline} ${state.detail ?? ''}`)
+        }
         logChecks(progress)
       }
 
@@ -146,6 +168,12 @@ export function CameraProofHarness({ plan, storeDir }: { plan: LevelTwoPlan; sto
         publish,
       )
       runRef.current = handle
+      // Asked before anything else: the runner consumes this on its first
+      // pass through phase 1, so the request goes out before the first sync
+      // rather than after a round of waiting for a flow nobody will start.
+      // See this file's header for what the rig measured about the other
+      // direction.
+      handle.askOtherDevices()
       // Held, not dropped: acted on the moment the flow reaches
       // code-scanned. See this file's header for why a run that drives both
       // sides may do this and the walkthrough screen may not.

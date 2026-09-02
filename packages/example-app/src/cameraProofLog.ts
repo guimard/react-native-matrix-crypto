@@ -21,10 +21,13 @@
  *     only after `createCryptoMachine` resolved and key publication began,
  *     so an app that crashes at launch or a plan the app never fetched stops
  *     here, named, instead of downstream as a bare timeout.
- *   * `flow_exists` -- a verification flow the library knows about. The
- *     camera-proof run never asks from this side (`askOtherDevices` is not
- *     called), so a flow id can only arrive from the other device: the phone
- *     side really did start a verification against this device.
+ *   * `flow_exists` -- a verification flow the library knows about. This
+ *     run asks from this side (`CameraProofHarness` calls
+ *     `askOtherDevices`), so this check does NOT say who started the flow;
+ *     it says the request this side sent produced a flow the library can
+ *     name. The claim about the far side is `scan_reported`'s to make, and
+ *     it is the stronger one: a flow reaches `code-scanned` only when the
+ *     peer reports having read this code.
  *   * `code_shown` -- `getVerificationCode` returned and the symbol is on
  *     screen. Counts only (width, payload bytes); never a module, never a
  *     byte: the modules are the shared secret drawn as squares.
@@ -139,7 +142,7 @@ export function cameraProofChecks(progress: CameraProofProgress): CameraProofChe
       name: 'flow_exists',
       ok: progress.flowExists,
       detail: progress.flowExists
-        ? 'the phone side started a verification against this device; this run never asks from this side'
+        ? 'a verification flow exists; this run asks from this side, so who started it is not what this check says'
         : 'not reported: no verification flow reached this device',
     },
     {

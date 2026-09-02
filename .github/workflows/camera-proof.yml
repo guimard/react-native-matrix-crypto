@@ -19,16 +19,17 @@
 #   client on one rig is the claim; the design comment on issue #6 says why
 #   that is the honest shape of this assertion.
 #
-#   NOT YET PROVEN, AS OF THIS COMMIT, AND SAID PRECISELY BECAUSE THE REST
-#   NOW IS: the scan. The rig exists and has been run end to end (a Pixel 10
-#   Pro Fold on Android 17 scanning, a booted emulator showing), and a run
-#   reaches a live flow with a real code on the emulator's screen -- and
-#   then stops at CAMERA_PROOF_SUMMARY 3/5. The reason is a finding about
-#   Element, not about the optics: the only verification action this build
-#   offers on a session's own screen starts SAS, which the library also
-#   announces, so Element never offers to scan. The driver's header carries
-#   the measurement. This leg stays dispatch-only until a run has been
-#   watched reaching 5/5.
+#   WHAT A PERSON STILL DOES, AND WHAT THEY DO NOT: they aim the phone,
+#   because there is no fixture. They do not judge. Nobody reads a shield
+#   and nobody decides whether the run worked -- the assertion above is the
+#   protocol and the account state, and the leg fails on its own if either
+#   disagrees. Issue #6 closed on exactly that distinction.
+#
+#   The cost of the missing fixture is repetition rather than honesty, and
+#   it is tracked as issue #29. It is also why the cron below stays
+#   commented: this leg CANNOT tell a human aim from a fixture aim, its
+#   output is identical either way, so scheduling it before the hardware
+#   exists would just fail every night at the optical timeout.
 #
 # WHY DISPATCH-ONLY: while no self-hosted runner carries the `camera-rig`
 # label, a pull_request trigger would queue forever and a push trigger would
@@ -40,11 +41,11 @@ name: camera-proof
 
 on:
   workflow_dispatch:
-  # For when the rig is permanent and the leg has been watched passing: a
-  # nightly catch of optical regressions (glare from a moved lamp, an
-  # Element update that changes a screen the driver names). Leave commented
-  # until then -- a cron that fails for weeks is how a check gets ignored
-  # into uselessness.
+  # For when a fixture exists (issue #29): a nightly catch of optical
+  # regressions (glare from a moved lamp, an Element update that changes a
+  # screen the driver names). Leave commented until then -- with a person
+  # aiming, every unattended run fails at the optical timeout, and a cron
+  # that fails for weeks is how a check gets ignored into uselessness.
   # schedule:
   #   - cron: '23 4 * * *'
 

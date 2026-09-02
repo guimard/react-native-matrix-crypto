@@ -33,11 +33,12 @@ set -euo pipefail
 # WHAT IS VALIDATED AND WHAT IS NOT
 #
 # Every refusal path below works on any machine with no hardware at all.
-# The phone-driving half of the Python program has now run on a real rig:
-# Element is signed in, bootstrapped and navigated to the showing device's
-# session by this driver, and the library draws a real code on the
-# emulator. What has NOT happened is a completed scan -- see the driver's
-# own header for the Element finding that stops it, and issue #6.
+# The phone-driving half of the Python program has run on a real rig and a
+# real camera has completed the scan: 5/5, both witnesses agreeing, with
+# every tap on the phone coming from the driver. A person aims the phone,
+# because there is no fixture -- but nobody judges the result, which is why
+# issue #6 closed. Run this when you are at the rig; the fixture that would
+# let it run unattended is issue #29.
 #
 # THE RIG, DECLARED, NOT SNIFFED
 #
