@@ -25,12 +25,35 @@ WHAT IS VALIDATED AND WHAT IS NOT
 
 Everything up to and including the emulator-side log watching is host-side
 machinery of the same shape as the level 2 conductor's, and every refusal
-path below can be exercised without any hardware. Everything that drives the
-physical phone -- marked with the header "THE PHONE SIDE" -- is written but
-UNVALIDATED: no rig exists as of this commit, so no Element screen has ever
-been tapped by this driver. Its assumptions are prefixed ASSUMPTION and
-checked at runtime rather than trusted; the first real run is expected to
-find work there, and it fails closed at every gap.
+path below can be exercised without any hardware.
+
+The rig exists (a Pixel 10 Pro Fold on Android 17 / API 37 as the scanner, a
+booted emulator as the screen) and has been run end to end. What a full run
+now reaches, MEASURED 2026-09-02, is everything up to and including the code
+being on the screen with a live flow behind it:
+
+  * every host-side step, and the emulator side through install and launch;
+  * the whole phone side through Element: a cleared Element signed in to the
+    throwaway homeserver, the account's cross-signing identity published,
+    the first-session prompts cleared, and the navigation to the showing
+    device's own session -- drawer, "Sécurité et vie privée", "Afficher
+    toutes les sessions", the CameraProof session, its verify action;
+  * the library side reaching `ready` and drawing a real code (45x45, a
+    122-byte payload) on the emulator, with the flow visible to both sides.
+
+WHAT IS STILL NOT PROVEN, AND IT IS THE LAST STEP: no camera has completed a
+scan under this driver. A run ends at CAMERA_PROOF_SUMMARY 3/5 --
+run_started, flow_exists and code_shown pass; scan_reported and flow_done
+fail -- because of a finding about Element rather than about the optics. The
+only verification action this Element build offers on a session's own screen
+is "Vérifier de façon interactive avec des émojis", which starts SAS; the
+library announces SasV1 in SHOWING_ONLY, so Element has a method it can use
+and uses it, and no QR scan is ever offered. The camera does launch and shut
+down again (the phone's own log carries CancelPowerBoost CAMERA_LAUNCH), and
+the flow goes `ready` -> `started` -> `cancelled`. The person-driven flow
+(run_camera_proof.py, step 3) reaches a "Scan QR code" choice, so an entry
+point that offers scanning exists; finding it from a driver is the work this
+file has left.
 
 HOW A RUN IS SEQUENCED
 
@@ -73,6 +96,7 @@ import signal
 import sys
 import tempfile
 import time
+import xml.etree.ElementTree as xml_etree
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -214,6 +238,59 @@ def login_when_ready(homeserver, localpart, password, display_name, timeout_s=90
 # --- The emulator side ------------------------------------------------------
 
 
+# The AppleScript is written against System Events rather than the emulator
+# app, because the emulator has no scripting dictionary: it is a bare qemu
+# binary with a Cocoa window, and `tell application "qemu-system-..."` finds
+# nothing to talk to. The process name carries the host architecture
+# (qemu-system-aarch64 on this rig, qemu-system-x86_64 on an Intel one), so
+# it is discovered by prefix rather than named.
+RAISE_EMULATOR_WINDOW = """
+tell application "System Events"
+    set found to (name of every process whose name starts with "qemu-system")
+    if found is {} then return "none"
+    set target to item 1 of found
+    set frontmost of process target to true
+    return target
+end tell
+"""
+
+
+def raise_emulator_window():
+    """Put the emulator's HOST window in front, where a camera can see it.
+
+    MEASURED on the rig 2026-09-02: the emulator window was open but buried
+    behind an ordinary desktop's other windows, and prepare_emulator's
+    settings do not touch that -- brightness, stay-awake and immersive
+    configure the emulator's VIRTUAL display, while what the mounted camera
+    actually photographs is a rectangle of the Mac's screen. A buried window
+    means the camera sees somebody's browser, the scan never completes, and
+    the leg fails at the timeout with "optics" and no way to tell a covered
+    window from a bad lamp. That is a failure this step can just remove.
+
+    Refused loudly rather than skipped when the rig is a Mac and the raise
+    does not work: an unraised window cannot produce a pass, so continuing
+    would only spend the flow budget to reach a less informative failure. A
+    rig that is not a Mac has no osascript, and arranging its own window is
+    that rig's business -- said once, in the log, not treated as an error.
+    """
+    if shutil.which("osascript") is None:
+        rig_log("no osascript on this host: the rig itself must make sure the "
+                "emulator's window is the thing the camera can see")
+        return
+    result = run_command(["osascript", "-e", RAISE_EMULATOR_WINDOW], timeout=60)
+    raised = result.stdout.strip()
+    require(result.returncode == 0 and raised and raised != "none",
+            "could not bring the emulator's window to the front "
+            f"({result.stderr.strip() or raised or 'no qemu-system process'}).\n"
+            "      The camera is aimed at a rectangle of this machine's "
+            "screen, so a window it cannot see is an optical failure the "
+            "flow timeout would report as 'no scan'. Remedies: start the "
+            "emulator with a window (not -no-window), and grant this runner "
+            "Accessibility permission in System Settings -> Privacy & "
+            "Security so System Events may raise it.")
+    rig_log(f"emulator window raised to the front ({raised})")
+
+
 def prepare_emulator(serial):
     """Everything optics needs that the app cannot ask for itself.
 
@@ -247,6 +324,10 @@ def prepare_emulator(serial):
     adb_on(serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP")
     adb_on(serial, "shell", "wm", "dismiss-keyguard")
     rig_log("emulator display prepared: brightness max, stay-awake, immersive")
+    # Last, because it is the only part of "prepare the display" that is about
+    # the HOST rather than the device, and it should be the most recent window
+    # activation when the app comes up.
+    raise_emulator_window()
 
 
 def install_on_emulator(serial, apk):
@@ -316,15 +397,62 @@ def wait_for_app_line(serial, pattern, timeout_s, what):
 
 # --- The phone side ---------------------------------------------------------
 #
-#   VALIDATED:     nothing in this section. It is written, syntax-checked,
-#                  and failure-named; no Element screen has ever been driven
-#                  by it. The first run on the rig is its first execution.
-#   AWAITS:        the rig.
+#   VALIDATED (2026-09-02, on the rig's phone, a Pixel 10 Pro Fold running
+#   Android 17 / API 37, serial 59021FDCG003NW, against the throwaway
+#   homeserver): the adb-native primitives below -- uiautomator dump, XML
+#   parse, input tap, scroll, input text -- and the whole Element flow from
+#   a cleared app to a live verification: sign-in through the server
+#   editor, the cross-signing bootstrap, the first-session prompts, home ->
+#   profile drawer -> "Sécurité et vie privée" -> "Afficher toutes les
+#   sessions" -> the CameraProof session -> its verify action. Every label
+#   that navigation actually shows is recorded in ELEMENT_CANDIDATE_SCREENS
+#   next to the guesses, the guesses kept but the measured labels leading.
+#   AWAITS: the scan. See this file's header for the Element finding that
+#   stops it -- the verify action on a session's own screen starts SAS, and
+#   no scan choice is offered after it.
 #
-# Every UI step below fails with a named error naming what it looked for,
-# because an unmodified client's screens are exactly the kind of third-party
-# surface that moves between versions -- the failure text is the maintenance
-# manual. ASSUMPTION lines state what is trusted and how it is checked.
+# Every UI step fails with a named error naming what it looked for, because
+# an unmodified client's screens are exactly the kind of third-party surface
+# that moves between versions -- the failure text is the maintenance manual.
+# ASSUMPTION lines state what is trusted and how it is checked.
+
+# MEASURED FACT, and the reason this section has two backends. The first
+# physical rig phone is a Pixel 10 Pro Fold on Android 17 (API 37), and
+# uiautomator2 is PARTLY broken on it. Exactly one RPC fails:
+#   java.lang.IllegalStateException: ApplicationSharedMemory not initialized
+#     at com.android.internal.os.ApplicationSharedMemory.getInstance(...)
+#     at android.view.WindowManagerGlobal.getWindowManagerService(...)
+#     at androidx.test.uiautomator.UiDevice.getDisplaySizeDp(UiDevice.java:312)
+#     at com.wetest.uia2.stub.DeviceInfo.<init>(DeviceInfo.java:58)
+# The path is the whole diagnosis: DeviceInfo asks UiDevice for the display
+# size, which builds a window context, which needs shared memory that only a
+# real instrumentation process initializes -- and the wetest stub runs as a
+# bare app_process. So `d.info` and `d.screenOn` (which reads info) die, and
+# nothing else does: MEASURED 2026-09-02, `dumpWindowHierarchy`, the selector
+# RPCs, `app_start` and `window_size` all answer, 20 samples each, zero
+# misses. An earlier revision of this file said "every RPC fails" and picked
+# its backend by probing `info`; both were wrong, and the correction is why
+# choose_ui_backend now takes the rig's word instead of guessing from one
+# call.
+#
+# The second measured fact is about the SELECTORS, and it is why the two
+# backends match text the same way: u2's `d(text=...)` is case-SENSITIVE,
+# while Element renders its primary buttons through textAllCaps. On the rig
+# phone, `d(text="ACTIVER").exists` is True and `d(text="Activer").exists` is
+# False for the same button. Every candidate list below is written in the
+# case a person would type, so both backends casefold; a backend that did
+# not would miss every French button on this rig and report it as "the
+# screen never appeared".
+#
+# The default backend is adb-native regardless: text search through
+# `uiautomator dump` (a framework built-in, verified working on API 37),
+# taps through `input tap`, scrolling through `input swipe`. Zero phone-side
+# installs. That is the same reasoning this repository keeps elsewhere (the
+# throwaway container rather than a hosted dependency, the pinned-by-digest
+# image rather than a registry's goodwill): a leg whose phone dependency is
+# zero-install survives every future Android version, because nothing on the
+# phone can age out from under it. uiautomator2 stays as a declared option
+# (CAMERA_RIG_UI_BACKEND) for a rig that wants it, never as a requirement.
 
 # ASSUMPTION: the mounted phone runs Element Classic (im.vector.app). That is
 # the one client observed completing this flow (run_camera_proof.py's header),
@@ -334,6 +462,11 @@ def wait_for_app_line(serial, pattern, timeout_s, what):
 # at runtime that the package is actually installed rather than trusting the
 # name:
 #   adb shell pm path <package>
+#
+# ASSUMPTION: at run time, Element is SIGNED OUT. The validation phone holds
+# a real account, so the sign-in screens were never exercised; a phone that
+# opens Element already signed in fails at the first step naming the
+# sign-in texts, which is the named signal to sign out on the rig.
 ELEMENT_CANDIDATE_SCREENS = {
     # step -> (candidate texts, what the step is called). Texts are tried in
     # order until one is tappable; a step fails only when none appear.
@@ -347,9 +480,26 @@ ELEMENT_CANDIDATE_SCREENS = {
     "sign_in_entry": (["I already have an account", "Sign in",
                        "J'ai déjà un compte", "Se connecter"],
                       "the opening screen"),
-    "choose_other_server": (["Other", "Autre"], "the server-choice screen"),
+    # MEASURED on the rig phone (2026-09-02, dump of the screen run #3
+    # timed out on): this build has no "Other"/"Autre" choice at all; the
+    # "Bon retour parmi nous" screen shows the selected server with a
+    # "MODIFIER" button, and the server editor is behind it. The old
+    # guesses stay trailing -- another build may still offer them.
+    "choose_other_server": (["Modifier", "Edit", "Other", "Autre"],
+                            "the control that opens the server editor"),
+    # MEASURED same dump: the server editor ("Sélectionner votre serveur")
+    # carries one EditText prefilled with "matrix.org" and a "SUIVANT"
+    # submit, which server_confirm's candidates already cover.
     "server_confirm": (["OK", "Next", "Continue", "Suivant", "Continuer"],
                        "the server-confirm control"),
+    # MEASURED same dump: the editor returns to the "Bon retour" screen,
+    # whose own continue control is "Poursuivre"; the credentials form is
+    # behind it. "Suivant" stays in the list because re-tapping the
+    # editor's submit while server validation is still running is
+    # harmless, and it keeps an editor-only build moving.
+    "server_continue": (["Poursuivre", "Continue", "Continuer", "Next",
+                         "Suivant"],
+                        "the continue control once the server is chosen"),
     "username_confirm": (["Next", "Continue", "Suivant", "Continuer"],
                          "the username-confirm control"),
     "sign_in_submit": (["Sign in", "Log in", "Next",
@@ -362,54 +512,436 @@ ELEMENT_CANDIDATE_SCREENS = {
     # flow's step 2 says to skip exactly this). element_bootstrap_identity
     # polls the homeserver instead of tapping through whatever it cannot
     # name.
+    #
+    # MEASURED on the rig phone (run #4bis, 2026-09-02), three overlays
+    # stalled the bootstrap until a person tapped them:
+    #   * the password manager's save prompt ("Non, merci"), an
+    #     `android`-package overlay on the password form;
+    #   * the system's notification-permission dialog ("Ne pas autoriser")
+    #     -- also pre-granted structurally in Element.wake, the way CAMERA
+    #     already is, so the dialog should not even appear;
+    #   * Element's notification-method choice ("Google Services"), which
+    #     is a selection, not a dismiss -- push is irrelevant on a rig
+    #     whose homeserver dies with the run, so the first option is
+    #     tapped simply to clear the screen.
     "bootstrap_dismiss": (["Skip", "Maybe later", "Not now", "Cancel",
                            "Set up recovery",
                            "Ignorer", "Passer", "Plus tard", "Pas maintenant",
-                           "Annuler"],
+                           "Annuler",
+                           "Non, merci", "No, thanks",
+                           "Ne pas autoriser", "Don't allow",
+                           "Google Services", "Continue without"],
                           "a first-session prompt"),
-    "settings_entry": (["Settings", "Paramètres"], "the settings entry"),
-    "security_screen": (["Security & Privacy", "Security",
-                         "Sécurité et confidentialité", "Sécurité"],
+    # MEASURED: the settings are behind the profile picture in Element's
+    # sliding drawer; the picture's content-desc is "Image de profile de
+    # l'utilisateur <name>", which is why desc candidates match by prefix.
+    "drawer": (["Image de profile", "Image de profil", "Profile picture"],
+               "the profile avatar that opens the drawer"),
+    # MEASURED on the rig phone: this build says "Sécurité et vie privée",
+    # not the guessed "Sécurité et confidentialité" -- the guess stays in the
+    # list (another build may use it) and the measured label leads.
+    "security_screen": (["Sécurité et vie privée", "Sécurité et confidentialité",
+                         "Security & Privacy", "Security", "Sécurité"],
                         "the security screen"),
-    "verify_action": (["Verify", "Verify session", "Start verification",
+    # MEASURED: the security screen lists sessions behind "Afficher toutes
+    # les sessions"; only that screen shows the session display names.
+    "sessions_list": (["Afficher toutes les sessions", "Gérer les sessions",
+                       "Sessions", "Gérer les appareils"],
+                      "the sessions-list entry"),
+    # MEASURED on the rig phone 2026-09-02, on the CameraProof session's own
+    # screen: this build offers exactly ONE verification action, and it is
+    # named after the fallback method rather than the flow -- "Vérifier de
+    # façon interactive avec des émojis". There is no QR entry point here;
+    # the choice to scan comes one screen later, after the peer has said it
+    # can show a code, which is the negotiation the person-driven flow's
+    # steps 2-3 describe. The shorter guesses stay trailing for other builds.
+    "verify_action": (["Vérifier de façon interactive avec des émojis",
+                       "Verify interactively with emojis",
+                       "Verify", "Verify session", "Start verification",
                        "Vérifier", "Vérifier la session",
                        "Démarrer la vérification"],
                       "the verify action for the showing device"),
+    # The scan choice Element presents once the peer has announced it can
+    # show a code (run_camera_proof.py's step 3: 'choose "Scan QR code"').
+    # UNMEASURED in the rig's locale -- the screen only exists while a live
+    # peer is offering a code, so it cannot be read from a dead account.
+    # A miss here is reported with the screen's own texts (see tap_first_of),
+    # which is the measurement.
+    "scan_choice": (["Scanner le code QR", "Scanner leur code QR",
+                     "Scanner un code QR", "Scanner",
+                     "Scan QR code", "Scan their QR code", "Scan"],
+                    "the scan choice on the verification screen"),
 }
 
 
-class Element:
-    """The unmodified Element on the phone, driven over UI Automator.
+DUMP_PATH = "/sdcard/window_dump.xml"
 
-    Why uiautomator2 and not `adb shell input`: the phone's screen faces the
-    mount, away from anything a person can watch, so taps must be selected by
-    what the UI says, not by where a coordinate happens to land; and the
-    maintenance cost of coordinate taps against a third-party client is the
-    worst kind. Why Python: uiautomator2 is a Python library, and this
-    program already lives in the conductor's Python world.
+
+def texts_of(nodes):
+    """Every label a person would see, from one window dump's nodes.
+
+    Only for diagnostics: a UI step that cannot find what it was told to
+    look for reports this, so the transcript of a failed run carries the
+    measurement that fixes it instead of only the guess that missed. That
+    is the maintenance loop this whole section is built around -- a named
+    failure is worth more when it names the screen as well as the wish.
+    Both backends pass their own FRESH dump: a stale one would describe a
+    screen the step did not actually miss on.
+    """
+    seen = []
+    for node in nodes:
+        for value in ((node.get("text") or "").strip(),
+                      (node.get("content-desc") or "").strip()):
+            if value and value not in seen:
+                seen.append(value[:60])
+    return seen
+
+
+def center_of(bounds):
+    """The centre point of a dump node's `bounds` attribute.
+
+    Module-level because both backends tap by node centre: the adb-native
+    one has no choice, and the u2 one matches against the same hierarchy
+    dump so it can match case-insensitively (see its click_first).
+    """
+    match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
+    x1, y1, x2, y2 = (int(part) for part in match.groups())
+    return (x1 + x2) // 2, (y1 + y2) // 2
+
+
+class Uiautomator2Backend:
+    """The richer RPC backend, used only where its phone-side stub still
+    works. Selected by probing (see choose_ui_backend): the probe is exactly
+    the call the measured API-37 failure breaks, so a broken stub falls
+    through to adb-native by itself.
+    """
+
+    def __init__(self, serial):
+        import uiautomator2 as u2
+        self.device = u2.connect(serial)
+        # The probe is dump_hierarchy, NOT device.info. Two reasons, both
+        # MEASURED on the rig phone (2026-09-02, API 37):
+        #   * `info` goes to the stub's DeviceInfo RPC, which is broken here
+        #     (see the MEASURED FACT block) -- probing with it rejects a
+        #     backend whose every other RPC works, which is the wrong answer;
+        #   * a probe must cross the RPC server to mean anything. `shell` and
+        #     `window_size` do NOT: uiautomator2 routes both through adbutils,
+        #     so they answer even with the RPC server down, and prove no more
+        #     than require_online already proved. dumpWindowHierarchy is the
+        #     RPC, and it is one this backend actually calls.
+        self.device.dump_hierarchy()
+
+    def start(self, package):
+        # app_start, not an explicit activity name: monkey resolves the
+        # launcher entry, so no activity-name assumption survives here.
+        self.device.app_start(package)
+
+    def click_first(self, candidates):
+        # Matched case-insensitively, the way AdbNativeBackend matches, and
+        # for the same MEASURED reason: Element renders its primary buttons
+        # through textAllCaps and the tree carries the RENDERED case. u2's
+        # own selectors are case-SENSITIVE -- measured on the rig phone
+        # 2026-09-02, `d(text="ACTIVER").exists` is True where
+        # `d(text="Activer").exists` is False -- so an exact match here
+        # would silently miss every candidate this driver lists in title
+        # case, and the two backends would not in fact share semantics the
+        # way this class's docstring says they do. The hierarchy dump is one
+        # RPC for the whole screen, which is also cheaper than a selector
+        # round trip per candidate.
+        try:
+            nodes = list(xml_etree.fromstring(
+                self.device.dump_hierarchy()).iter("node"))
+        except xml_etree.ParseError:
+            return None
+        for text in candidates:
+            for node in nodes:
+                node_text = (node.get("text") or "").strip()
+                node_desc = (node.get("content-desc") or "").strip()
+                if (node_text.casefold() == text.casefold()
+                        or node_desc.casefold().startswith(text.casefold())):
+                    x, y = center_of(node.get("bounds"))
+                    self.device.click(x, y)
+                    return text
+        return None
+
+    def scroll_forward(self):
+        try:
+            scroller = self.device(scrollable=True)
+            if scroller.exists:
+                scroller.scroll.forward()
+                return True
+        except Exception:  # noqa: BLE001 -- a scroll that fails is "no more"
+            pass
+        return False
+
+    def editable_count(self):
+        return self.device(className="android.widget.EditText").count
+
+    def type_in_editable(self, index, value):
+        fields = self.device(className="android.widget.EditText")
+        if index >= fields.count:
+            return False
+        # set_text replaces, so a prefilled field (the server editor's
+        # "matrix.org") needs no clearing on this backend.
+        fields[index].set_text(value)
+        return True
+
+    def type_in_first_editable(self, value):
+        return self.type_in_editable(0, value)
+
+    def visible_texts(self):
+        try:
+            return texts_of(xml_etree.fromstring(
+                self.device.dump_hierarchy()).iter("node"))
+        except xml_etree.ParseError:
+            return ["<the window dump was not well-formed XML>"]
+
+
+class AdbNativeBackend:
+    """The zero-install backend: only adb shell primitives that ship in the
+    Android framework itself. This is the backend that survives every future
+    Android version, because nothing it needs is installed ON the phone
+    (see the MEASURED FACT above). Every primitive below was verified live
+    on the rig's Pixel 10 Pro Fold (API 37) on 2026-09-01.
+    """
+
+    def __init__(self, serial):
+        self.serial = serial
+        # Probe with a real dump: if the framework primitive is absent the
+        # backend is refused here, named, rather than failing one UI step
+        # in with a worse-shaped error.
+        self._dump()
+
+    def _dump(self):
+        """One window dump, parsed into a node list.
+
+        Retried a bounded few times: a dump can be refused transiently
+        (MEASURED on the rig phone: shell rc 137, SIGKILLed, with no
+        output). Sustained 137s are the post-u2-probe wedge, which is the
+        caller's problem to wait out, not this loop's.
+        """
+        last_error = ""
+        for attempt in range(3):
+            result = adb_on(self.serial, "shell", "uiautomator", "dump",
+                            timeout=60)
+            if result.returncode == 0 and "dumped" in result.stdout + result.stderr:
+                break
+            last_error = (result.stderr or f"shell rc {result.returncode}").strip()
+            time.sleep(2)
+        else:
+            raise RunFailed(
+                f"`uiautomator dump` failed on the phone: {last_error}.\n"
+                "      The adb-native backend needs that framework primitive; "
+                "its absence on a rig phone would be a finding about the "
+                "device, not something this driver can work around."
+            )
+        xml = adb_on(self.serial, "shell", "cat", DUMP_PATH, timeout=60).stdout
+        try:
+            root = xml_etree.fromstring(xml)
+        except xml_etree.ParseError as error:
+            raise RunFailed(
+                f"the phone's window dump was not well-formed XML ({error}).\n"
+                "      A dump that cannot be read is the same failure shape "
+                "as a screen that cannot be named: reported as itself."
+            )
+        return list(root.iter("node"))
+
+    def start(self, package):
+        # Same rule as the u2 backend: monkey resolves the launcher entry.
+        result = adb_on(self.serial, "shell", "monkey",
+                        "-p", package, "-c", "android.intent.category.LAUNCHER", "1")
+        require(result.returncode == 0,
+                f"launching {package} on the phone failed: {result.stderr.strip()}")
+
+    def click_first(self, candidates):
+        nodes = self._dump()
+        for text in candidates:
+            for node in nodes:
+                node_text = (node.get("text") or "").strip()
+                node_desc = (node.get("content-desc") or "").strip()
+                # Exact on visible text, case-insensitively: Element renders
+                # its primary buttons through textAllCaps, and the dump
+                # carries the RENDERED case -- MEASURED on the rig phone,
+                # the sign-in button dumps as "SE CONNECTER" where the
+                # candidate list says "Se connecter". Matching case would
+                # make every candidate carry both spellings; the styling
+                # choice is Element's to change, not the driver's to know.
+                # Content-desc matches by prefix, also case-insensitively:
+                # descriptions carry instance detail after the label
+                # (MEASURED: "Image de profile de l'utilisateur <name>"),
+                # and an exact match there would force the driver to know
+                # names it has no business knowing. Tapping the center of
+                # the labelled node's bounds works even where the node
+                # itself is not clickable: the touch lands on whatever row
+                # holds it (MEASURED: the drawer's non-clickable labels).
+                if (node_text.casefold() == text.casefold()
+                        or node_desc.casefold().startswith(text.casefold())):
+                    x, y = center_of(node.get("bounds"))
+                    adb_on(self.serial, "shell", "input", "tap", str(x), str(y))
+                    return text
+        return None
+
+    def scroll_forward(self):
+        """One forward scroll of the first scrollable container, if any."""
+        for node in self._dump():
+            if node.get("scrollable") == "true":
+                x1, y1, x2, y2 = (int(part) for part in
+                                  re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]",
+                                           node.get("bounds")).groups())
+                middle = (x1 + x2) // 2
+                # Swipe bottom-to-top inside the container's own bounds:
+                # a full-screen swipe would drag the drawer or the system
+                # bars instead of the list that held the missing text.
+                adb_on(self.serial, "shell", "input", "swipe",
+                       str(middle), str(y2 - 60), str(middle), str(y1 + 60), "300")
+                return True
+        return False
+
+    def _editable_nodes(self):
+        return [node for node in self._dump()
+                if node.get("class", "").endswith("EditText")]
+
+    def editable_count(self):
+        return len(self._editable_nodes())
+
+    def type_in_editable(self, index, value):
+        nodes = self._editable_nodes()
+        if index >= len(nodes):
+            return False
+        x, y = center_of(nodes[index].get("bounds"))
+        adb_on(self.serial, "shell", "input", "tap", str(x), str(y))
+        # Clear any prefill before typing. MEASURED on the rig phone: the
+        # server editor comes up prefilled with "matrix.org" and `input
+        # text` APPENDS, so typing the URL there would have produced
+        # "matrix.orghttp://127.0.0.1:...". MOVE_END plus a DEL sweep is
+        # the framework-only way to empty a field; deleting from an empty
+        # field is harmless, so the sweep is generous on purpose.
+        adb_on(self.serial, "shell", "input", "keyevent", "KEYCODE_MOVE_END",
+               *(["KEYCODE_DEL"] * 64))
+        # MEASURED on the rig phone: `input text` typed a homeserver
+        # URL (http://127.0.0.1:8008) verbatim. Two encodings are
+        # still applied because the values they protect are legal:
+        # % and space are format characters to `input text` itself,
+        # and the remote shell word-splits, so the value is quoted
+        # for it. Passwords are hex and localparts plain, so the
+        # encodings are belt and braces rather than load-bearing.
+        encoded = value.replace("%", "%%").replace(" ", "%s")
+        quoted = "'" + encoded.replace("'", "'\"'\"'") + "'"
+        adb_on(self.serial, "shell", "input", "text", quoted)
+        return True
+
+    def type_in_first_editable(self, value):
+        return self.type_in_editable(0, value)
+
+    def visible_texts(self):
+        return texts_of(self._dump())
+
+
+def wake_screen(serial):
+    """Screen on and keyguard cleared.
+
+    MEASURED on the rig phone: `wm dismiss-keyguard` alone leaves the
+    swipe-only keyguard up (AlternateBouncerView); an upward swipe clears
+    it when no PIN is set. Harmless when the screen is already unlocked.
+    Every UI primitive below -- dump most of all -- needs the screen
+    awake; this runs before the backend probe, not just before sign-in.
+    """
+    adb_on(serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP")
+    adb_on(serial, "shell", "wm", "dismiss-keyguard")
+    adb_on(serial, "shell", "input", "swipe", "540", "1800", "540", "600", "300")
+    # Measured: a dump issued in the same instant as the unlock swipe fails
+    # (empty-handed, before the lock screen has finished dismissing); one
+    # second of settle makes the probe deterministic.
+    time.sleep(1)
+
+
+UI_BACKEND = os.environ.get("CAMERA_RIG_UI_BACKEND", "adb-native")
+
+
+def choose_ui_backend(serial):
+    """adb-native by default; uiautomator2 only when a rig asks for it.
+
+    DECLARED, NOT PROBED, and the reason is measured. The obvious design --
+    try uiautomator2, fall back -- was written first and replaced, because
+    a probe answers the wrong question and costs something to ask:
+
+      * WRONG QUESTION. The probe has to pick one RPC to stand for "u2
+        works here", and no single RPC does. MEASURED on the rig phone
+        (Pixel 10 Pro Fold, Android 17 / API 37, 2026-09-02): `deviceInfo`
+        is broken and `dumpWindowHierarchy`, the selector RPCs and
+        `app_start` are all fine, 20 samples each. A probe on `deviceInfo`
+        rejects a working backend; a probe on `dumpWindowHierarchy` accepts
+        one whose `info` will crash the first caller. Neither is the truth.
+      * COSTS SOMETHING. A failed probe was measured (2026-09-01, on a
+        phone with NO stub installed) to leave the framework's own
+        uiautomator service refusing `uiautomator dump` -- SIGKILLed, shell
+        rc 137 -- for a nondeterministic stretch, once past 600s. That did
+        NOT reproduce on 2026-09-02 with the stub installed, so its trigger
+        is not pinned down; a hazard nobody can characterise is a hazard
+        worth not triggering on a schedule.
+
+    So the rig says which backend it wants and the driver obeys. The
+    default is adb-native because it is the one with nothing to go wrong:
+    `uiautomator dump` + `input tap` are Android framework built-ins, so
+    there is no phone-side install to age out from under this leg, which is
+    the same reasoning this repository keeps elsewhere (the throwaway
+    container over a hosted dependency, the pinned-by-digest image over a
+    registry's goodwill). It is also the backend the phone-side flow below
+    was measured against.
+
+    CAMERA_RIG_UI_BACKEND=uiautomator2 opts a rig into the richer path. It
+    is not the default and it is not required: nothing in this driver needs
+    an RPC that adb-native cannot do.
+    """
+    if UI_BACKEND == "adb-native":
+        return AdbNativeBackend(serial), "adb-native (uiautomator dump + input)"
+    if UI_BACKEND == "uiautomator2":
+        try:
+            return Uiautomator2Backend(serial), "uiautomator2"
+        except ImportError as error:
+            raise RunFailed(
+                f"CAMERA_RIG_UI_BACKEND is 'uiautomator2' but uiautomator2 is "
+                f"not importable ({error}).\n"
+                "      Remedy, on the rig's Python: python3 -m pip install "
+                "uiautomator2 && python3 -m uiautomator2 init (with the phone "
+                "on adb). Or unset CAMERA_RIG_UI_BACKEND: the default backend "
+                "needs no phone-side install at all."
+            )
+        except Exception as error:  # noqa: BLE001 -- reported, not handled
+            raise RunFailed(
+                f"CAMERA_RIG_UI_BACKEND is 'uiautomator2' but the phone at "
+                f"{serial} does not answer its RPC: {error}.\n"
+                "      This is a declared choice, so it is refused rather "
+                "than silently downgraded -- a run that quietly drove a "
+                "different backend than the rig asked for would make every "
+                "later measurement ambiguous. Remedy: re-run `python3 -m "
+                "uiautomator2 init`, or unset CAMERA_RIG_UI_BACKEND to use "
+                "the zero-install default."
+            )
+    raise RunFailed(
+        f"CAMERA_RIG_UI_BACKEND is {UI_BACKEND!r}, which is not a backend this "
+        "driver has. Remedy: 'adb-native' (the default, zero phone-side "
+        "install) or 'uiautomator2'."
+    )
+
+
+class Element:
+    """The unmodified Element on the phone, driven through whichever UI
+    backend the phone supports.
+
+    Why text-selected taps and not coordinates: the phone's screen faces
+    the mount, away from anything a person can watch, so taps must be
+    selected by what the UI says, not by where a coordinate happens to
+    land; and the maintenance cost of coordinate taps against a
+    third-party client is the worst kind. The step/candidate semantics are
+    identical on both backends -- same lists, same failure texts.
     """
 
     def __init__(self, serial, package):
-        try:
-            import uiautomator2 as u2
-        except ImportError as error:
-            raise RunFailed(
-                "uiautomator2 is not importable, and the phone side cannot be "
-                "driven without it. Remedy, on the rig's Python:\n"
-                "      python3 -m pip install uiautomator2\n"
-                "      python3 -m uiautomator2 init   # with the phone on adb\n"
-                f"      (import failed with: {error})"
-            )
-        self.device = u2.connect(serial)
-        try:
-            self.device.info
-        except Exception as error:  # noqa: BLE001 -- reported, not handled
-            raise RunFailed(
-                f"uiautomator2 cannot talk to the phone at {serial}: {error}.\n"
-                "      Remedy: re-run `python3 -m uiautomator2 init` with the "
-                "phone connected, and check the phone is not at a lock screen "
-                "that blocks instrumentation."
-            )
+        wake_screen(serial)
+        self.serial = serial
+        self.backend, backend_name = choose_ui_backend(serial)
+        rig_log(f"phone: UI backend: {backend_name}")
         self.package = package
         installed = adb_on(serial, "shell", "pm", "path", package)
         require(installed.returncode == 0 and installed.stdout.strip(),
@@ -419,29 +951,22 @@ class Element:
                 "to what the rig actually runs and re-check.")
         rig_log(f"phone reachable; {package} is installed")
 
-    def start(self):
-        # app_start, not an explicit activity name: monkey resolves the
-        # launcher entry, so no activity-name assumption survives here.
-        self.device.app_start(self.package)
-
-    def wake(self, serial):
-        adb_on(serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP")
-        adb_on(serial, "shell", "wm", "dismiss-keyguard")
-        camera = adb_on(serial, "shell", "pm", "grant", self.package,
-                        "android.permission.CAMERA")
-        require(camera.returncode == 0,
-                f"granting CAMERA to {self.package} failed: {camera.stderr.strip()}.\n"
-                "      The scanner cannot open without it, and the run refuses "
-                "to time out for a permission prompt nobody can tap.")
-
     def reset(self, serial):
         # ASSUMPTION: the rig phone is dedicated to this leg, so wiping
         # Element's data loses nothing a person put there; what it buys is
-        # a deterministic first launch. The previous run's account dies
-        # with its homeserver in `finally`, and an Element still signed in
-        # to a dead account returns to that stale session on app_start
-        # instead of the onboarding screens the sign-in flow taps for --
-        # so the labels never appear and the run burns its timeouts.
+        # a deterministic first launch. Two measured needs, one act:
+        #   * the previous run's account dies with its homeserver, and an
+        #     Element still signed in to a dead account returns to that
+        #     stale session instead of the onboarding screens the sign-in
+        #     flow taps for -- so the labels never appear and the run burns
+        #     its timeouts;
+        #   * MEASURED (run #4, 2026-09-02): launching an Element left
+        #     mid-flow (the server editor from a previous attempt) brings
+        #     the EXISTING task forward, and the driver then spends the
+        #     sign_in_entry budget reading a screen it is not on. `pm
+        #     clear` drops the task stack as well as the data, so the next
+        #     launch is the welcome screen by construction -- which a
+        #     force-stop alone does not guarantee.
         # pm clear also revokes the CAMERA grant, which is why this runs
         # BEFORE wake: wake is where the grant happens.
         cleared = adb_on(serial, "shell", "pm", "clear", self.package)
@@ -452,28 +977,104 @@ class Element:
                 "so the run refuses to continue on a half-reset phone.")
         rig_log("phone: Element's data cleared; sign-in starts from onboarding")
 
-    def tap_first_of(self, candidates, timeout_s, what):
+    def start(self):
+        self.backend.start(self.package)
+
+    def wake(self, serial):
+        wake_screen(serial)
+        # Keep the phone awake for the whole run, and put the old value back
+        # on every way out (main's finally calls restore_display). MEASURED
+        # on the first physical run 2026-09-01: the phone's ordinary 30 s
+        # screen-off re-locked it mid sign-in, and the leg then spent its
+        # whole 90 s step budget reading the lock screen, failing the
+        # server-choice step with a text that was on the screen behind the
+        # keyguard. A rig phone is a fixture, not a daily driver: the run
+        # may set its sleep policy for the run's duration, the way the
+        # emulator's display prep already does.
+        previous = adb_on(serial, "shell", "settings", "get", "system",
+                          "screen_off_timeout").stdout.strip()
+        self._previous_screen_off_timeout = previous
+        adb_on(serial, "shell", "settings", "put", "system",
+               "screen_off_timeout", "1800000")
+        camera = adb_on(serial, "shell", "pm", "grant", self.package,
+                        "android.permission.CAMERA")
+        require(camera.returncode == 0,
+                f"granting CAMERA to {self.package} failed: {camera.stderr.strip()}.\n"
+                "      The scanner cannot open without it, and the run refuses "
+                "to time out for a permission prompt nobody can tap.")
+        # Same treatment for the notification permission: MEASURED on the rig
+        # phone (run #4bis), the system's POST_NOTIFICATIONS dialog stalled
+        # the first-session bootstrap behind a prompt the driver could not
+        # name. Push is irrelevant on a rig, so the grant is free -- and the
+        # dialog never appears. (The candidates list keeps "Ne pas autoriser"
+        # as the belt to this brace.)
+        adb_on(serial, "shell", "pm", "grant", self.package,
+               "android.permission.POST_NOTIFICATIONS")
+
+    def restore_display(self, serial):
+        """Put the phone's sleep policy back; called from main's finally."""
+        previous = getattr(self, "_previous_screen_off_timeout", None)
+        if previous:
+            adb_on(serial, "shell", "settings", "put", "system",
+                   "screen_off_timeout", previous)
+            rig_log(f"phone screen_off_timeout restored to {previous}")
+
+    def tap_first_of(self, candidates, timeout_s, what, clearing=(),
+                     scrolling=True):
         """Taps the first of `candidates` that appears, within the deadline.
 
-        ASSUMPTION: the rig phone runs in English; every selector here is an
-        on-screen string. A locale change is a one-line addition to
-        `candidates` once observed on the rig.
+        ASSUMPTION: the rig phone's locale is covered by
+        ELEMENT_CANDIDATE_SCREENS; every selector is an on-screen string
+        (fr-FR and en are in the lists today, fr-FR measured). A locale
+        change is a one-line addition to `candidates` once observed.
+
+        A text that is absent scrolls the first scrollable container
+        forward and looks again, bounded: some targets (a session deep in
+        the sessions list) only exist off screen.
+
+        `scrolling` is on by default and MUST be turned off on any screen a
+        swipe can dismiss. Scrolling to find an off-screen label is safe on a
+        list; on Element's verification sheet it is not, because the same
+        gesture that reveals a row also drags the sheet away, taking the open
+        scanner and the live flow with it.
+
+        `clearing` names prompts to dismiss on every miss, and it is opt-in
+        per step rather than always-on for a measured reason. Element's
+        first-session prompts do not stop when the protocol does: MEASURED
+        on the rig 2026-09-02, the account's cross-signing identity was
+        published -- which is what element_bootstrap_identity gates on, and
+        correctly so -- while Element was still two onboarding screens from
+        its home, and it then sat on the analytics opt-in ("Aider a
+        ameliorer Element Classic") until this step timed out looking for a
+        drawer that was never on screen. Any step that waits for a screen
+        during the first session has to keep clearing what Element puts in
+        front of it. It is NOT always-on because the dismiss list contains
+        "Annuler"/"Cancel", and a step that taps those while sign-in is on
+        screen would cancel the sign-in: the steps that pass `clearing` are
+        the ones after sign-in, where dismissing is always the right answer.
         """
         deadline = time.time() + timeout_s
+        scrolls_left = 5
         while time.time() < deadline:
-            for text in candidates:
-                selector = self.device(text=text)
-                if selector.exists:
-                    selector.click()
-                    rig_log(f"phone: tapped {text!r} ({what})")
-                    return
+            hit = self.backend.click_first(candidates)
+            if hit is not None:
+                rig_log(f"phone: tapped {hit!r} ({what})")
+                return
+            if clearing and self.dismiss_any_of(clearing):
+                time.sleep(1)
+                continue
+            if scrolling and scrolls_left > 0 and self.backend.scroll_forward():
+                scrolls_left -= 1
+                time.sleep(1)
+                continue
             time.sleep(2)
         raise RunFailed(
             f"the phone side could not find {what}: none of {candidates} "
             f"appeared within {timeout_s}s.\n"
+            f"      What WAS on screen: {self.backend.visible_texts()}\n"
             "      The rig's Element build differs from what this driver was "
-            "written against. Iterate on the rig: run the flow by hand once, "
-            "read the actual labels, and add them to ELEMENT_CANDIDATE_SCREENS."
+            "written against. The list above is the measurement: add "
+            f"the label that means {what} to ELEMENT_CANDIDATE_SCREENS."
         )
 
     def type_in_first_editable(self, value, what):
@@ -483,11 +1084,14 @@ class Element:
         server/username/password screens, which held for the build this was
         written against and is checked by requiring the field to exist.
         """
+        self.type_in_editable(0, value, what)
+
+    def type_in_editable(self, index, value, what):
+        """Types into the index-th editable on screen (dump order = reading
+        order, so 0 is the top field)."""
         deadline = time.time() + 60
         while time.time() < deadline:
-            field = self.device(className="android.widget.EditText")
-            if field.exists:
-                field.set_text(value)
+            if self.backend.type_in_editable(index, value):
                 rig_log(f"phone: typed into the {what} field")
                 return
             time.sleep(2)
@@ -497,6 +1101,32 @@ class Element:
             "iterate on the rig (see ELEMENT_CANDIDATE_SCREENS)."
         )
 
+    def wait_for_editable(self, tap_candidates, timeout_s, what):
+        """Waits for at least one editable field, tapping the first of
+        `tap_candidates` that appears meanwhile.
+
+        Used where a continue control stands between the driver and a form
+        whose exact shape is Element's to choose: the gate is the field --
+        the thing the next step needs -- not the button, so a build that
+        lands on the form directly is not derailed by a tap meant for a
+        screen it skipped.
+        """
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            if self.backend.editable_count() > 0:
+                return
+            hit = self.backend.click_first(tap_candidates)
+            if hit is not None:
+                rig_log(f"phone: tapped {hit!r} ({what})")
+            time.sleep(2)
+        raise RunFailed(
+            f"no editable field appeared within {timeout_s}s, and none of "
+            f"{tap_candidates} ({what}) moved the flow forward.\n"
+            "      The rig's Element build differs from what this driver was "
+            "written against. Iterate on the rig: run the flow by hand once, "
+            "read the actual labels, and add them to ELEMENT_CANDIDATE_SCREENS."
+        )
+
     def dismiss_any_of(self, candidates):
         """Taps the first of `candidates` that is on screen, if any.
 
@@ -504,12 +1134,10 @@ class Element:
         first-session prompts, where what appears depends on Element's mood
         and the only fact that matters is gated structurally afterwards.
         """
-        for text in candidates:
-            selector = self.device(text=text)
-            if selector.exists:
-                selector.click()
-                rig_log(f"phone: tapped {text!r} (a first-session prompt)")
-                return True
+        hit = self.backend.click_first(candidates)
+        if hit is not None:
+            rig_log(f"phone: tapped {hit!r} (a first-session prompt)")
+            return True
         return False
 
 
@@ -530,12 +1158,30 @@ def element_sign_in(element, serial, homeserver_url, localpart, password):
     element.type_in_first_editable(homeserver_url, "homeserver URL")
     candidates = ELEMENT_CANDIDATE_SCREENS["server_confirm"]
     element.tap_first_of(candidates[0], 30, candidates[1])
-    element.type_in_first_editable(localpart, "username")
-    candidates = ELEMENT_CANDIDATE_SCREENS["username_confirm"]
-    element.tap_first_of(candidates[0], 30, candidates[1])
-    element.type_in_first_editable(password, "password")
-    candidates = ELEMENT_CANDIDATE_SCREENS["sign_in_submit"]
-    element.tap_first_of(candidates[0], 60, candidates[1])
+    # MEASURED on the rig phone (2026-09-02): confirming the server returns
+    # to the "Bon retour parmi nous" screen, and the credentials form is
+    # behind its "Poursuivre" control. Gate on the form (an editable field)
+    # rather than on the button: a build that lands on the form directly is
+    # not derailed by a tap meant for a screen it skipped.
+    candidates = ELEMENT_CANDIDATE_SCREENS["server_continue"]
+    element.wait_for_editable(candidates[0], 60, candidates[1])
+    if element.backend.editable_count() >= 2:
+        # ASSUMPTION, to be measured on the rig: a two-field credentials
+        # form is username over password, in reading order, with a single
+        # submit. A build that proves this wrong fails at the submit step
+        # naming what it looked for.
+        element.type_in_editable(0, localpart, "username")
+        element.type_in_editable(1, password, "password")
+        candidates = ELEMENT_CANDIDATE_SCREENS["sign_in_submit"]
+        element.tap_first_of(candidates[0], 60, candidates[1])
+    else:
+        # The one-field-at-a-time flow this driver was written against.
+        element.type_in_first_editable(localpart, "username")
+        candidates = ELEMENT_CANDIDATE_SCREENS["username_confirm"]
+        element.tap_first_of(candidates[0], 30, candidates[1])
+        element.type_in_first_editable(password, "password")
+        candidates = ELEMENT_CANDIDATE_SCREENS["sign_in_submit"]
+        element.tap_first_of(candidates[0], 60, candidates[1])
     rig_log("phone: sign-in submitted; waiting for the session to settle")
 
 
@@ -556,11 +1202,27 @@ def element_bootstrap_identity(element, homeserver, user_id, token):
     candidates = ELEMENT_CANDIDATE_SCREENS["bootstrap_dismiss"]
 
     deadline = time.time() + IDENTITY_TIMEOUT_SECONDS
+    shape_logged = False
     while time.time() < deadline:
         element.dismiss_any_of(candidates[0])
         status, body = homeserver.call("POST", "/_matrix/client/v3/keys/query",
                                        token, {"device_keys": {user_id: []}})
-        if status == 200 and body.get("self_signing_keys", {}).get(user_id, {}).get("keys"):
+        # The response nests by user id: self_signing_keys is
+        # {user_id: {user_id, usage, keys: {"ed25519:...": "..."}}}. An
+        # earlier revision of this check read .get("keys") one level too
+        # high, which can only ever be absent -- a gate that cannot open
+        # is not a gate. (Continuwuity follows the spec shape; MEASURED
+        # wrong on run #5, which waited out its whole 300 s budget with
+        # Element idle at the room list.)
+        if status == 200 and not shape_logged:
+            shape_logged = True
+            rig_log("keys/query answered: "
+                    + ", ".join(f"{section}={list(body.get(section, {}))}"
+                                for section in ("master_keys",
+                                                "self_signing_keys",
+                                                "user_signing_keys")))
+        if (status == 200
+                and body.get("self_signing_keys", {}).get(user_id, {}).get("keys")):
             rig_log("the account's cross-signing identity is published")
             return
         time.sleep(3)
@@ -579,30 +1241,61 @@ def element_verify_showing_device(element, device_name):
     """Element: verify the emulator's session, ending in the scanner.
 
     This is the person-driven flow's steps 2-3 (run_camera_proof.py's
-    `announce`) with a person replaced by selectors: open the sessions list,
-    find the session named after the showing device, start verification, and
-    let Element choose the mode -- our side announced show-only, so Element
-    presents its scanner. From here the camera does the work: the phone is
-    in the mount, aimed at the display, and the symbol appears when the
-    library has it ready.
+    `announce`) with a person replaced by selectors. MEASURED on the rig
+    phone (2026-09-01), whose account is real, up to the sessions list:
+    home -> the profile-picture drawer -> "Sécurité et vie privée" ->
+    "Afficher toutes les sessions" -> a list of sessions by display name.
+    What a session's own screen offers for verifying it is where the
+    measurement stops: starting a real verification from the validation
+    phone would have touched a real account, so the verify action and the
+    scanner entry below are written and failure-named but unexecuted.
+
+    From the scanner on, the camera does the work: the phone is in the
+    mount, aimed at the display, and the symbol appears when the library
+    has it ready.
     """
-    for step in ("settings_entry", "security_screen"):
+    # Every step here clears first-session prompts while it waits: Element
+    # is still finishing its onboarding at this point (see tap_first_of's
+    # `clearing`), and a prompt it raises between two of these taps would
+    # otherwise time the next one out.
+    prompts = ELEMENT_CANDIDATE_SCREENS["bootstrap_dismiss"][0]
+    for step in ("drawer", "security_screen", "sessions_list"):
         candidates = ELEMENT_CANDIDATE_SCREENS[step]
-        element.tap_first_of(candidates[0], 60, candidates[1])
+        element.tap_first_of(candidates[0], 60, candidates[1], clearing=prompts)
     element.tap_first_of([device_name], 120,
-                         f"the {device_name!r} session in the sessions list")
+                         f"the {device_name!r} session in the sessions list",
+                         clearing=prompts)
     candidates = ELEMENT_CANDIDATE_SCREENS["verify_action"]
-    element.tap_first_of(candidates[0], 60, candidates[1])
-    # ASSUMPTION: for an incoming show-only peer, Element enters its scanner
-    # on its own; where a build instead offers an explicit choice, the
-    # candidate below takes it. Absence is fine either way -- the scan
-    # budget below is what actually decides.
+    element.tap_first_of(candidates[0], 60, candidates[1], clearing=prompts)
+    # The scan choice. The person-driven flow's step 3 is 'choose "Scan QR
+    # code"', so on the observed build this screen exists and has to be
+    # tapped; it is tolerated rather than required because the choice only
+    # appears AFTER the peer has answered the request announcing it can show
+    # a code, and a build that goes straight to the scanner would otherwise
+    # fail here for doing the right thing. The budget is 60s, not the 15s an
+    # earlier revision guessed: what is being waited for is a round trip
+    # through the homeserver, not a screen transition.
+    #
+    # Absence is logged WITH the screen, never silently assumed. If the scan
+    # never happens, this line is what says whether Element was sitting on an
+    # unnamed choice or was genuinely in its scanner all along.
+    candidates = ELEMENT_CANDIDATE_SCREENS["scan_choice"]
     try:
-        element.tap_first_of(["Scan QR code", "Scan"], 15,
-                             "the explicit scan choice, if Element offers one")
+        # scrolling=False, and this is the load-bearing argument on this line.
+        # By here a verification exists and Element is showing it in a
+        # dismissible sheet; the scroll fallback would swipe on that sheet
+        # once every retry, and a swipe there does not look further down a
+        # list, it throws the sheet away -- closing the scanner and
+        # cancelling the flow. MEASURED 2026-09-02: the phone's camera
+        # launched (CancelPowerBoost CAMERA_LAUNCH in its log) and then shut
+        # down, the screen went back to the sessions list, and the library
+        # side saw `started` then `cancelled` for a code it had already put
+        # on the emulator's screen.
+        element.tap_first_of(candidates[0], 60, candidates[1], scrolling=False)
     except RunFailed:
-        rig_log("phone: no explicit scan choice appeared; assuming Element "
-                "entered the scanner by itself")
+        rig_log("phone: no scan choice named in ELEMENT_CANDIDATE_SCREENS "
+                "appeared; Element may have entered its scanner by itself. "
+                f"What was on screen: {element.backend.visible_texts()}")
     rig_log("phone: verification started; Element's camera should be up, "
             "pointed at the mount")
 
@@ -625,8 +1318,11 @@ def wait_for_cross_signature(homeserver, user_id, device_id, token):
         status, body = homeserver.call("POST", "/_matrix/client/v3/keys/query",
                                        token, {"device_keys": {user_id: [device_id]}})
         if status == 200:
+            # Same nesting as the bootstrap gate: self_signing_keys is keyed
+            # by user id, the key ids live under [user_id]["keys"].
             self_signing = set(
-                body.get("self_signing_keys", {}).get(user_id, {}).get("keys", {}).keys())
+                body.get("self_signing_keys", {}).get(user_id, {})
+                    .get("keys", {}).keys())
             device = body.get("device_keys", {}).get(user_id, {}).get(device_id, {})
             signatures = set(device.get("signatures", {}).get(user_id, {}).keys())
             if self_signing and signatures & self_signing:
@@ -722,6 +1418,8 @@ def main():
         NIO_LOCALPART: secrets.token_hex(24),
     }
     plan_server = None
+    element = None
+    phone_serial = None
     try:
         homeserver, homeserver_port = start_homeserver(workdir, passwords)
 
@@ -834,6 +1532,8 @@ def main():
         print(f"FAIL: {failure}", file=sys.stderr)
         return 1
     finally:
+        if element is not None and phone_serial is not None:
+            element.restore_display(phone_serial)
         if plan_server is not None:
             plan_server.stop()
         adb_on(EMULATOR_SERIAL, "shell", "am", "force-stop", PACKAGE)
