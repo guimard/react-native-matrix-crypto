@@ -291,11 +291,20 @@ export function startScannedCodeRun(
       })
 
       let since = ''
+      // Which side opened the flow. Tracked rather than inferred from the
+      // stage: a flow this side requested and a flow the peer requested BOTH
+      // report `requested` until somebody agrees, so the stage cannot tell
+      // them apart. MEASURED 2026-09-02 on the camera rig, where this side
+      // asked for the first time: the stage guard below read `requested` for
+      // this side's own outgoing request, called `acceptVerification` on it,
+      // and the refusal ended the run 46ms after it started.
+      let openedHere = false
       // ---- phase 1: a flow exists ------------------------------------
       while (!stopped && announced === null) {
         if (askRequested) {
           askRequested = false
           announced = await requestSelfVerification()
+          openedHere = true
           await pump(plan, http)
           update({
             headline: 'Asked your other devices to verify.',
@@ -315,7 +324,7 @@ export function startScannedCodeRun(
       // opened. A flow this side opened is already agreed to, and the call
       // would refuse it, so it is made only for the first case.
       let stage = await getVerificationStage(flow)
-      if (stage === 'requested') {
+      if (!openedHere && stage === 'requested') {
         await acceptVerification(flow)
         await pump(plan, http)
       }
