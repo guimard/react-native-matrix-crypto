@@ -739,6 +739,20 @@ class AdbNativeBackend:
         # in with a worse-shaped error.
         self._dump()
 
+    def _adb_or_die(self, result, what):
+        """Fail the step when adb says the command did not run.
+
+        A nonzero rc from `input tap`/`swipe`/`text` means the touch or the
+        keystrokes never landed, and reporting the candidate as tapped would
+        send the next step at a screen the driver never reached. Raised
+        rather than retried: a command adb refuses is a device failure, not
+        a candidate the screen is missing.
+        """
+        if result.returncode != 0:
+            raise RunFailed(
+                f"adb refused the {what} on {self.serial} "
+                f"(rc {result.returncode}): {result.stderr.strip()}")
+
     def _dump(self):
         """One window dump, parsed into a node list.
 
@@ -804,7 +818,9 @@ class AdbNativeBackend:
                 if (node_text.casefold() == text.casefold()
                         or node_desc.casefold().startswith(text.casefold())):
                     x, y = center_of(node.get("bounds"))
-                    adb_on(self.serial, "shell", "input", "tap", str(x), str(y))
+                    self._adb_or_die(
+                        adb_on(self.serial, "shell", "input", "tap", str(x), str(y)),
+                        "tap")
                     return text
         return None
 
@@ -819,8 +835,10 @@ class AdbNativeBackend:
                 # Swipe bottom-to-top inside the container's own bounds:
                 # a full-screen swipe would drag the drawer or the system
                 # bars instead of the list that held the missing text.
-                adb_on(self.serial, "shell", "input", "swipe",
-                       str(middle), str(y2 - 60), str(middle), str(y1 + 60), "300")
+                self._adb_or_die(
+                    adb_on(self.serial, "shell", "input", "swipe",
+                           str(middle), str(y2 - 60), str(middle), str(y1 + 60), "300"),
+                    "swipe")
                 return True
         return False
 
@@ -836,15 +854,19 @@ class AdbNativeBackend:
         if index >= len(nodes):
             return False
         x, y = center_of(nodes[index].get("bounds"))
-        adb_on(self.serial, "shell", "input", "tap", str(x), str(y))
+        self._adb_or_die(
+            adb_on(self.serial, "shell", "input", "tap", str(x), str(y)),
+            "tap")
         # Clear any prefill before typing. MEASURED on the rig phone: the
         # server editor comes up prefilled with "matrix.org" and `input
         # text` APPENDS, so typing the URL there would have produced
         # "matrix.orghttp://127.0.0.1:...". MOVE_END plus a DEL sweep is
         # the framework-only way to empty a field; deleting from an empty
         # field is harmless, so the sweep is generous on purpose.
-        adb_on(self.serial, "shell", "input", "keyevent", "KEYCODE_MOVE_END",
-               *(["KEYCODE_DEL"] * 64))
+        self._adb_or_die(
+            adb_on(self.serial, "shell", "input", "keyevent", "KEYCODE_MOVE_END",
+                   *(["KEYCODE_DEL"] * 64)),
+            "key sweep")
         # MEASURED on the rig phone: `input text` typed a homeserver
         # URL (http://127.0.0.1:8008) verbatim. Two encodings are
         # still applied because the values they protect are legal:
@@ -854,7 +876,9 @@ class AdbNativeBackend:
         # encodings are belt and braces rather than load-bearing.
         encoded = value.replace("%", "%%").replace(" ", "%s")
         quoted = "'" + encoded.replace("'", "'\"'\"'") + "'"
-        adb_on(self.serial, "shell", "input", "text", quoted)
+        self._adb_or_die(
+            adb_on(self.serial, "shell", "input", "text", quoted),
+            "text input")
         return True
 
     def type_in_first_editable(self, value):
