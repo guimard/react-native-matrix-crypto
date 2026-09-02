@@ -32,6 +32,16 @@ import prettier from 'eslint-config-prettier'
 //
 // Matched on the plugin rather than on an array index, so that a React Native
 // upgrade reordering its config does not silently reinstate this.
+//
+// Nothing else is needed for the .js and .mjs files after this. Two overrides
+// were written here for them -- `requireConfigFile: false`, and a `globals`
+// block for `console`/`process`/`URL` in scripts/*.mjs -- and BOTH were dead:
+// the first is a @babel/eslint-parser option and there is no Babel parser left
+// to read it, and the second names globals the shareable config already
+// provides. Each was removed after watching lint produce byte-identical output
+// with and without it, and after checking with a deliberately broken file that
+// `no-undef` and `no-unused-vars` really do fire on both extensions -- a
+// silently unlinted file and a correctly linted one look the same from here.
 const withoutFlow = reactNative.filter(entry => !entry.plugins?.['ft-flow'])
 
 export default [
@@ -80,33 +90,6 @@ export default [
   },
 
   ...withoutFlow,
-
-  {
-    // @react-native/eslint-config parses `**/*.js` with @babel/eslint-parser,
-    // which by default refuses to run without a Babel config it can find for
-    // the file. `yarn lint` runs from the repository root, and Babel resolves
-    // a root config against the process's working directory -- so
-    // packages/example-app/babel.config.js is invisible from here and all four
-    // .js files in this repository fail to parse rather than to lint.
-    //
-    // Turning the requirement off is the right fix rather than pointing Babel
-    // at that config: these files are CommonJS with no syntax needing a
-    // transform, and the example app's Babel config exists for Metro, not for
-    // a linter.
-    files: ['**/*.js'],
-    languageOptions: { parserOptions: { requireConfigFile: false } },
-  },
-
-  {
-    // scripts/*.mjs run under Node, not on a device, and the React Native
-    // config brings only a device's globals. Without this, every `process` and
-    // `console` in scripts/assert-doc-links.mjs reads as no-undef.
-    files: ['scripts/**/*.mjs', '*.mjs'],
-    languageOptions: {
-      sourceType: 'module',
-      globals: { console: 'readonly', process: 'readonly', URL: 'readonly' },
-    },
-  },
 
   {
     // Two of the shareable config's rules describe a React Native app rather
