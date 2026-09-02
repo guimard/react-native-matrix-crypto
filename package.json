@@ -24,6 +24,7 @@
     "gate:uia-example": "./scripts/assert-uia-example.sh",
     "gate:stubs": "./scripts/assert-generated-not-stubbed.sh",
     "gate:ignores": "./scripts/assert-formatter-ignores.sh",
+    "gate:lint-coverage": "./scripts/assert-lint-coverage.sh",
     "gate:surface": "./scripts/assert-public-surface.sh",
     "gate:doc-links": "./scripts/assert-doc-links.sh",
     "gate:measure-guards": "./scripts/assert-measure-guards.sh",

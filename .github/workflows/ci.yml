@@ -40,6 +40,17 @@ jobs:
       # so that `yarn lint` on a laptop and `yarn lint` here are the same
       # command and cannot come to different answers.
       - run: yarn lint
+      # `yarn lint` above blocks on findings -- it exits 1 on an error and,
+      # through --max-warnings 0, on a warning too. What it cannot do is tell
+      # anyone it linted the WRONG SET: `eslint .` exits 0 whether it found
+      # nothing wrong or opened nothing at all, and a file it never read is
+      # indistinguishable from a clean one.
+      #
+      # packages/example-app/vitest.config.mts sat unlinted through this
+      # milestone and through a green run of the step above, because `.mts`
+      # fell between the shareable config's `**/*.ts` and ESLint's own default
+      # extensions. A reviewer found it. This is the mechanism that would have.
+      - run: yarn gate:lint-coverage
       - run: yarn format:check
       - run: yarn gate:workspaces
       - run: yarn gate:boundary
