@@ -7,9 +7,9 @@ is true now and points here for how it came to be known.
 
 ## Publication history
 
-A plain `yarn add` resolves npm's `latest` tag, and a prerelease is published under its own tag, so `yarn add react-native-matrix-crypto@rc` is how you ask for one on purpose. That was not always enough to keep a prerelease away by accident: npm assigns `latest` to the *first* version published to a new package whatever `--tag` says, because a package must always have a `latest`, and `0.1.0-rc.2` was that first version. Until a stable version took `latest` over, `latest` and `rc` pointed at the same prerelease and a bare `yarn add` got it. npm does not allow the `latest` tag to be deleted, so a stable publish is the only thing that moves it. `0.1.0` is that publish.
+A plain `yarn add` resolves npm's `latest` tag, and a prerelease is published under its own tag, so `yarn add react-native-matrix-crypto@rc` is how you ask for one on purpose. That was not always enough to keep a prerelease away by accident: npm assigns `latest` to the _first_ version published to a new package whatever `--tag` says, because a package must always have a `latest`, and `0.1.0-rc.2` was that first version. Until a stable version took `latest` over, `latest` and `rc` pointed at the same prerelease and a bare `yarn add` got it. npm does not allow the `latest` tag to be deleted, so a stable publish is the only thing that moves it. `0.1.0` is that publish.
 
-**Which state the registry is in as you read this is not something this file can tell you.** A file shipped inside an artifact cannot report on the state its own publication creates. `scripts/assert-published-tags.sh` reads the tags back off the registry after every publish and says which state you are in, because every check before a publish can only verify the tag npm was *told*, never the one npm *applied*. Run it, or read the tags yourself with `npm dist-tag ls react-native-matrix-crypto`.
+**Which state the registry is in as you read this is not something this file can tell you.** A file shipped inside an artifact cannot report on the state its own publication creates. `scripts/assert-published-tags.sh` reads the tags back off the registry after every publish and says which state you are in, because every check before a publish can only verify the tag npm was _told_, never the one npm _applied_. Run it, or read the tags yourself with `npm dist-tag ls react-native-matrix-crypto`.
 
 ## How it was built
 
@@ -33,10 +33,10 @@ A foreign implementation has done the rest under test: `rust/matrix-crypto-core/
 
 Next, in order:
 
-* a scannable code read by an ordinary phone camera, as something a run can assert rather than something a person confirms. The method itself has landed and the two paragraphs above say what it cost and what it still owes; this line used to say the method was next, then that a code flow's own stages were still unreadable, which `getVerificationStage`'s `code-scanned` closed, and then that no foreign implementation had read a code, which mautrix-go closed
-* multi participant scenarios and federation neutral test coverage
-* cross implementation testing against both Synapse and Continuwuity
-* a stabilised API, published documentation and multi platform CI for 1.0
+- a scannable code read by an ordinary phone camera, as something a run can assert rather than something a person confirms. The method itself has landed and the two paragraphs above say what it cost and what it still owes; this line used to say the method was next, then that a code flow's own stages were still unreadable, which `getVerificationStage`'s `code-scanned` closed, and then that no foreign implementation had read a code, which mautrix-go closed
+- multi participant scenarios and federation neutral test coverage
+- cross implementation testing against both Synapse and Continuwuity
+- a stabilised API, published documentation and multi platform CI for 1.0
 
 ## Assembling a milestone from parallel branches
 
@@ -60,12 +60,12 @@ longer has.
 
 So, when a milestone is assembled from parallel branches:
 
-* **Merge the documentation sweep last, or run it twice.** A sweep that cannot
+- **Merge the documentation sweep last, or run it twice.** A sweep that cannot
   see three of the branches it is sweeping for has swept a different tree.
-* **Re-read the prose the last merge's code touches, specifically.** A branch
+- **Re-read the prose the last merge's code touches, specifically.** A branch
   that changes a lifecycle, an enumeration, a count or a refusal has probably
   falsified a sentence somewhere, and that sentence will not appear in its diff.
-* **Re-measure at the tip anything stated as a number.** A correct measurement
+- **Re-measure at the tip anything stated as a number.** A correct measurement
   of an earlier tree reads exactly like a correct measurement of this one, which
   is the argument `gate:artifact-provenance` already makes about build stamps;
   it applies to the tree being published as well as to the artifact being

@@ -12,22 +12,22 @@ It exposes [`matrix-sdk-crypto`](https://github.com/matrix-org/matrix-rust-sdk/t
 
 ## Contents
 
-* [Why adopt it](#why-adopt-it)
-* [Requirements](#requirements)
-* [Install](#install)
-* [Getting started](#getting-started)
-* [The pump](#the-pump)
-* [Creating this account's signing identity](#creating-this-accounts-signing-identity)
-* [Joining an identity from a second device](#joining-an-identity-from-a-second-device)
-* [Verifying a device](#verifying-a-device)
-* [Limits you must design around](#limits-you-must-design-around)
-* [What works today](#what-works-today)
-* [API reference and stability](#api-reference-and-stability)
-* [Design notes and history](#design-notes-and-history)
-* [Roadmap](#roadmap)
-* [Contributing](#contributing)
-* [Security](#security)
-* [License](#license)
+- [Why adopt it](#why-adopt-it)
+- [Requirements](#requirements)
+- [Install](#install)
+- [Getting started](#getting-started)
+- [The pump](#the-pump)
+- [Creating this account's signing identity](#creating-this-accounts-signing-identity)
+- [Joining an identity from a second device](#joining-an-identity-from-a-second-device)
+- [Verifying a device](#verifying-a-device)
+- [Limits you must design around](#limits-you-must-design-around)
+- [What works today](#what-works-today)
+- [API reference and stability](#api-reference-and-stability)
+- [Design notes and history](#design-notes-and-history)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [Security](#security)
+- [License](#license)
 
 ## Why adopt it
 
@@ -43,14 +43,14 @@ Two checks stand behind that. On every pull request, a job packs this repository
 
 ## Requirements
 
-* React Native 0.87 or later, with the **New Architecture enabled**. This is a JSI Turbo Module; it does not run on the old architecture.
-* React 19.2 or later
-* iOS 13 or later, Android API 24 or later
+- React Native 0.87 or later, with the **New Architecture enabled**. This is a JSI Turbo Module; it does not run on the old architecture.
+- React 19.2 or later
+- iOS 13 or later, Android API 24 or later
 
-| Platform | Architectures |
-|---|---|
-| iOS | `arm64` device, `arm64` simulator, `x86_64` simulator |
-| Android | `arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86` |
+| Platform | Architectures                                         |
+| -------- | ----------------------------------------------------- |
+| iOS      | `arm64` device, `arm64` simulator, `x86_64` simulator |
+| Android  | `arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`           |
 
 **Expo.** This package contains native code, so it cannot load in Expo Go. A development build (`expo prebuild` + `expo run`) is the expected path; it is not exercised by this repository's CI, which builds with the plain React Native toolchain.
 
@@ -68,40 +68,45 @@ This library performs no network requests. It hands you a list of requests to se
 
 ```ts
 import {
-  createCryptoMachine, shareScopeKey, takeOutgoingRequests,
-  markRequestSent, markRequestFailed,
-  encryptEvent, decryptEvent, asCryptoScopeId,
-} from 'react-native-matrix-crypto'
+  createCryptoMachine,
+  shareScopeKey,
+  takeOutgoingRequests,
+  markRequestSent,
+  markRequestFailed,
+  encryptEvent,
+  decryptEvent,
+  asCryptoScopeId,
+} from "react-native-matrix-crypto";
 
 await createCryptoMachine({
-  userId: '@alice:example.org',
-  deviceId: 'DEVICE1',
+  userId: "@alice:example.org",
+  deviceId: "DEVICE1",
   storePath: `${documentsDir}/crypto`,
-  storePassphrase: secret,   // null is allowed, and means unencrypted at rest
-})
+  storePassphrase: secret, // null is allowed, and means unencrypted at rest
+});
 
-const scope = asCryptoScopeId('!s:example.org')
+const scope = asCryptoScopeId("!s:example.org");
 
 // Drain and send after every call that changes crypto state. Send in the
 // order given, one at a time, and never overlap two drains: see The pump.
 async function pump() {
   for (const request of await takeOutgoingRequests()) {
-    const { ok, status, body } = await yourHomeserverClient.send(request)  // your transport
-    if (ok) await markRequestSent(request.id, body)
-    else await markRequestFailed(request.id, status)
+    const { ok, status, body } = await yourHomeserverClient.send(request); // your transport
+    if (ok) await markRequestSent(request.id, body);
+    else await markRequestFailed(request.id, status);
   }
 }
 
-await pump()                                   // publishes this device's keys
-await shareScopeKey(scope, ['@bob:example.org'])
-await pump()                                   // asks the server about Bob's devices
-await shareScopeKey(scope, ['@bob:example.org'])
-await pump()                                   // now the key actually travels
+await pump(); // publishes this device's keys
+await shareScopeKey(scope, ["@bob:example.org"]);
+await pump(); // asks the server about Bob's devices
+await shareScopeKey(scope, ["@bob:example.org"]);
+await pump(); // now the key actually travels
 
-const envelope = await encryptEvent(scope, 'm.room.message', { body: 'hi' })
+const envelope = await encryptEvent(scope, "m.room.message", { body: "hi" });
 // send envelope.ciphertext as the content of an m.room.encrypted event
 
-const recovered = await decryptEvent(scope, incomingEvent)
+const recovered = await decryptEvent(scope, incomingEvent);
 // recovered.ciphertext is the PLAINTEXT. See Limits.
 ```
 
@@ -145,7 +150,7 @@ full division.
 
 ### Ordering, overlap, and which ids a later drain retires
 
-**Send the requests within one batch in the order you were given them**, one at a time. *Marking* is a different matter and is not ordered at all, because `markRequestSent` is a lookup by id, so you may mark them in whatever order the responses come back. The order is load-bearing because a verification ends with a confirmation followed by an acknowledgement, and the other device **silently discards** an acknowledgement that reaches it before the confirmation it acknowledges; the library orders the batch it hands you correctly but never sees your requests leave, so preserving that order is yours to do.
+**Send the requests within one batch in the order you were given them**, one at a time. _Marking_ is a different matter and is not ordered at all, because `markRequestSent` is a lookup by id, so you may mark them in whatever order the responses come back. The order is load-bearing because a verification ends with a confirmation followed by an acknowledgement, and the other device **silently discards** an acknowledgement that reaches it before the confirmation it acknowledges; the library orders the batch it hands you correctly but never sees your requests leave, so preserving that order is yours to do.
 
 **Do not let a second drain overlap an unfinished one.** `takeOutgoingRequests` hands out three kinds that describe a standing need rather than one message, `keys_upload`, `keys_query` and `keys_claim`, and a later call that hands out a fresh request of one of those kinds usually retires the older id: `markRequestSent` then rejects it with `unknown_request`. Two `keys_query` requests are exceptions, and the next paragraph is about them. That is deliberate, because the machine mints a new id for the same need each time and forgets the old one, but it means two pumps racing, or a pump on a timer alongside a pump after a write, will fail on ids you are legitimately holding. If you do see `unknown_request` for an id from an earlier batch, discard that response and pump again rather than retrying it; nothing is lost, because the need was re-derived rather than dropped. `takeOutgoingRequests`' own doc comment carries the full rule.
 
@@ -164,22 +169,23 @@ import {
   bootstrapCrossSigning,
   createCrossSigningIdentity,
   getIdentityStatus,
-} from 'react-native-matrix-crypto'
+} from "react-native-matrix-crypto";
 
 try {
-  await bootstrapCrossSigning()
+  await bootstrapCrossSigning();
 } catch (e) {
   // The first call in a process is normally refused with
   // 'account_keys_not_fetched'. The key query that lifts it has already been
   // queued by the refusal, so: pump, then call this again.
-  if (e.kind !== 'account_keys_not_fetched') throw e
-  await pump()
-  const { accountKeysAnswerUnsettled } = await getIdentityStatus()
+  if (e.kind !== "account_keys_not_fetched") throw e;
+  await pump();
+  const { accountKeysAnswerUnsettled } = await getIdentityStatus();
   // The server answered and the answer settled nothing, so calling again
   // does exactly this again. Check the user id you passed to createCryptoMachine
   // against the canonical user_id your login returned. See below.
-  if (accountKeysAnswerUnsettled) throw new Error('the homeserver said nothing about this account')
-  await bootstrapCrossSigning()
+  if (accountKeysAnswerUnsettled)
+    throw new Error("the homeserver said nothing about this account");
+  await bootstrapCrossSigning();
 }
 // 'identity_not_known' from either call means the server was asked and this
 // account has no identity. Do NOT handle it by calling
@@ -190,9 +196,9 @@ for (const request of await takeOutgoingRequests()) {
   // In the order you were handed them: device keys, then signing_keys_upload,
   // then signature_upload. A signature may reference a key that is not
   // published yet.
-  const res = await send(request)
-  if (res.ok) await markRequestSent(request.id, await res.text())
-  else await markRequestFailed(request.id, res.status)
+  const res = await send(request);
+  if (res.ok) await markRequestSent(request.id, await res.text());
+  else await markRequestFailed(request.id, res.status);
 }
 ```
 
@@ -204,9 +210,9 @@ The library refuses to create one until it has asked the server and been told th
 
 That used to be enough to lose an identity, because creating was part of the call you make on every launch. It no longer is. What you supply instead is the fact the library cannot have: **that this account is meant to be getting its first identity now.** Anything you know is a better basis than the answer alone:
 
-* the user has just created the account, and this is the sign-up flow rather than a relaunch;
-* `GET /_matrix/client/v3/devices` lists no other session for the account;
-* a person was asked and said yes.
+- the user has just created the account, and this is the sign-up flow rather than a relaunch;
+- `GET /_matrix/client/v3/devices` lists no other session for the account;
+- a person was asked and said yes.
 
 Whatever you use, do not call this on every launch and do not make it the automatic handler for `'identity_not_known'`. Both put the decision back where it was.
 
@@ -231,62 +237,72 @@ This matters more than it sounds, because it is the one state where `identityKno
 Here is the whole loop, both branches. It is the code `rust/matrix-crypto-core/tests/level_two_identity_challenge.rs` runs against a real homeserver's real refusal, step for step; `gate:uia-example` holds this block and that test to the same ordered steps, so it cannot drift from what is actually proven.
 
 <!-- uia-example:begin -->
+
 ```ts
 for (const request of await takeOutgoingRequests()) {
-  if (request.kind !== 'signing_keys_upload') {
-    const res = await send(request)
-    if (res.ok) await markRequestSent(request.id, await res.text())
-    else await markRequestFailed(request.id, res.status)
-    continue
+  if (request.kind !== "signing_keys_upload") {
+    const res = await send(request);
+    if (res.ok) await markRequestSent(request.id, await res.text());
+    else await markRequestFailed(request.id, res.status);
+    continue;
   }
 
   // uia-step: send
-  let res = await post('/_matrix/client/v3/keys/device_signing/upload', request.body)
+  let res = await post(
+    "/_matrix/client/v3/keys/device_signing/upload",
+    request.body,
+  );
 
   // uia-step: accepted
   // The ordinary answer on an account that has no identity yet. Nothing to
   // ask your user, nothing to retry.
   if (res.ok) {
-    await markRequestSent(request.id, await res.text())
-    continue
+    await markRequestSent(request.id, await res.text());
+    continue;
   }
 
   // uia-step: refusal
-  if (res.status !== 401) throw new Error(`signing keys refused with ${res.status}`)
-  await markRequestFailed(request.id, res.status)
+  if (res.status !== 401)
+    throw new Error(`signing keys refused with ${res.status}`);
+  await markRequestFailed(request.id, res.status);
 
   // uia-step: challenge
   // The session is the homeserver's, and knowable only from here. That is
   // why bootstrapCrossSigning has no auth parameter to pass one in through.
-  const challenge = await res.json()
-  const flows = challenge.flows ?? []
-  if (!flows.some((flow) => flow.stages?.includes('m.login.password'))) {
-    throw new Error('this homeserver asked for a flow this code cannot answer')
+  const challenge = await res.json();
+  const flows = challenge.flows ?? [];
+  if (!flows.some((flow) => flow.stages?.includes("m.login.password"))) {
+    throw new Error("this homeserver asked for a flow this code cannot answer");
   }
-  const password = await askYourUserForTheirPassword()
+  const password = await askYourUserForTheirPassword();
 
   // uia-step: merge
   // request.body is opaque. Parse it, add one member, serialise it back. Do
   // not rebuild it: the keys in it are the ones already minted, and a body
   // you construct yourself is a different identity.
-  const body = JSON.parse(request.body)
+  const body = JSON.parse(request.body);
   body.auth = {
-    type: 'm.login.password',
-    identifier: { type: 'm.id.user', user: myUserId },
+    type: "m.login.password",
+    identifier: { type: "m.id.user", user: myUserId },
     password,
     session: challenge.session,
-  }
+  };
 
   // uia-step: resend
   // The same id and the same keys. markRequestFailed left the request
   // pending, so this is a second send of it rather than a new request.
-  res = await post('/_matrix/client/v3/keys/device_signing/upload', JSON.stringify(body))
-  if (!res.ok) throw new Error(`challenge answered and still refused: ${res.status}`)
+  res = await post(
+    "/_matrix/client/v3/keys/device_signing/upload",
+    JSON.stringify(body),
+  );
+  if (!res.ok)
+    throw new Error(`challenge answered and still refused: ${res.status}`);
 
   // uia-step: sent
-  await markRequestSent(request.id, await res.text())
+  await markRequestSent(request.id, await res.text());
 }
 ```
+
 <!-- uia-example:end -->
 
 **A `200` from the second send is the only evidence you get.** `getIdentityStatus` reads the same before and after: holding the account's private signing keys is a local fact, and publishing nothing does not change it. A run of the test above with the retry deleted still reports `identityKnown` and `privateKeysHeld`, and the homeserver still serves somebody else's identity. If you need to know the identity is really on the server, ask the server.
@@ -308,15 +324,19 @@ Nothing is destroyed while this field is true and nothing will be. Refusing to c
 A second login holds none of the account's private signing keys, so `bootstrapCrossSigning` refuses it with `identity_already_exists`. That refusal is the point rather than a gap: creating a second identity over the first would reset the trust of every device and every person who had verified the one the account already has. The new device **joins** that identity, by verifying itself against a device that already holds it.
 
 ```ts
-import { getIdentityStatus, onCryptoSignal, requestSelfVerification } from 'react-native-matrix-crypto'
+import {
+  getIdentityStatus,
+  onCryptoSignal,
+  requestSelfVerification,
+} from "react-native-matrix-crypto";
 
 onCryptoSignal(async (signal) => {
-  if (signal.kind !== 'trust_changed' || signal.user !== myUserId) return
-  const { privateKeysHeld } = await getIdentityStatus()
-  if (privateKeysHeld) thisDeviceCanNowSign()
-})
+  if (signal.kind !== "trust_changed" || signal.user !== myUserId) return;
+  const { privateKeysHeld } = await getIdentityStatus();
+  if (privateKeysHeld) thisDeviceCanNowSign();
+});
 
-const id = await requestSelfVerification()
+const id = await requestSelfVerification();
 // From here it is the flow in the next section, unchanged: pump, wait for
 // 'ready', startVerificationComparison, read the string, show it, confirm.
 ```
@@ -337,35 +357,35 @@ Two people compare a seven-symbol string, read off their two screens, over a cha
 
 ```ts
 // The side that asks.
-const id = await requestVerification('@bob:example.org', 'BOBDEVICE')
+const id = await requestVerification("@bob:example.org", "BOBDEVICE");
 // pump, then wait for their answer to arrive in a later /sync you feed to
 // receiveSyncChanges; getVerificationStage(id) then reads 'ready'.
-await startVerificationComparison(id) // either side may; pump again
-const material = await getVerificationMaterial(id)
+await startVerificationComparison(id); // either side may; pump again
+const material = await getVerificationMaterial(id);
 // Show material.emoji (or material.decimals) to a person and ask.
-await confirmVerification(id, material) // or cancelVerification(id)
+await confirmVerification(id, material); // or cancelVerification(id)
 // Pump once more. The stage reaches 'done', and only then:
-await getDeviceStatuses('@bob:example.org') // BOBDEVICE reads 'verified'
+await getDeviceStatuses("@bob:example.org"); // BOBDEVICE reads 'verified'
 
 // The side that is asked is a different application, in a different process,
 // and the signal channel is what hands it an id.
 onCryptoSignal((signal) => {
-  if (signal.kind !== 'verification_requested') return
-  acceptVerification(signal.verificationId) // or cancelVerification to refuse
+  if (signal.kind !== "verification_requested") return;
+  acceptVerification(signal.verificationId); // or cancelVerification to refuse
   // pump, and carry on from startVerificationComparison above.
-})
-await receiveSyncChanges(encryptionSlice(sync))
+});
+await receiveSyncChanges(encryptionSlice(sync));
 ```
 
-* **Subscribe before your first sync, and keep the subscription.** Every producer runs inside `receiveSyncChanges`, and nothing is consumed while nobody is subscribed, so an invitation that arrives while you are away is announced on the first sync after you come back and the ordinary `useEffect(() => onCryptoSignal(h), [])` does not lose invitations. A `trust_changed` is not re-offered that way; `getDeviceStatuses`, and `getIdentityStatus` for the private-keys one, are the durable answers to those questions.
-* **A subscribe that cannot reach the native module throws, and every subscribe does.** `onCryptoSignal` installs the observer on the first subscription, and returning normally means that worked. If it does not, the exception comes out of `onCryptoSignal` itself rather than being reported as an unsubscribe function for a channel that will never deliver, no listener is registered, and the next subscribe tries again. Subscribing inside an effect sends that throw to your nearest error boundary, which is the intent: the alternative is a screen waiting for an invitation that expires in ten minutes.
-* **Some clients do not ask first, and it makes no difference to your code.** The protocol still carries an older shape in which a peer opens the comparison directly, with no invitation before it. It is what `matrix-nio` implements, and all it implements. It arrives as the same `verification_requested` signal and `acceptVerification` still agrees to it. Two things differ, neither needing a branch: the stage never reads `ready`, so `startVerificationComparison` answers `comparison_already_started`, which means carry on and wait for the string; and `confirmVerification` can finish the flow outright, so the device is verified when that call resolves, though its `trust_changed` still waits for your next `receiveSyncChanges`. This is the one shape that cannot be re-offered after an unsubscribe, because it leaves nothing behind that a later sync can enumerate.
-* **An invitation from a device you have never been told about is discarded on arrival, and is not announced.** The layer underneath needs the sender's device keys to build the flow. `receiveSyncChanges` still resolves successfully, no flow exists, and `acceptVerification` would reject that transaction id with `unknown_flow`. The silence is the channel refusing to hand you an identifier no call here answers to.
-* **Keep the to-device events you could not act on, and the ones you did, until their flow finishes.** Feeding the same event to `receiveSyncChanges` again once you have queried the sender's devices does create the flow and announces it exactly as a first arrival would; you never open the event, you keep an opaque blob and get back the announcement. Flows also live in memory on both sides of this boundary, so a process that restarts mid-verification holds a `verificationId` that now rejects with `unknown_flow`, and the recovery is the same one. Promptly, though: an invitation expires ten minutes after it was sent.
-* **Every step goes through the queue.** Skipping `markRequestSent` is the one way this flow could fail silently, because the state machine advances on that report and on nothing else. It is reported instead: `getVerificationMaterial` rejects with kind `material_not_ready` rather than resolving empty or hanging, and that kind is deliberately **not** retriable. Retrying never resolves it; pumping does.
-* **`getDeviceStatuses` is the only place a verification becomes visible.** Your own device reads `verified` from the moment it exists, because this process holds its private keys, so "some device in this list reads verified" says nothing. What carries a claim is another user's device changing.
-* **`verified` means "trusted", not "a person compared a string with this particular device".** The value maps from one boolean underneath: locally trusted, or signed by an identity you have verified. Once you hold a signing identity, verifying one device of a user moves *every* device of that user to `verified` at once, including devices that appear later, with nobody comparing or scanning anything on any of them. That is correct rather than a defect and it is the point of cross-signing, but a product that reads this value as "a human checked this exact device" is wrong. Read it as "trusted", and ask `senderVerification` if what you need is what one event can be said to prove.
-* **`startVerificationComparison` reports three different things.** `comparison_already_started` means the other side got there first, which is not a failure but does leave you something to do: call `acceptVerification` again, because their start is a question and the flow waits at `started` until you answer it. `verification_ended` means the flow is over and you need a new one. `wrong_stage` means it has not been agreed to yet, or that it went to a scannable code instead, which is a comparison that will never exist rather than one that has not started. `getVerificationStage` is free to call and tells you which at any point.
+- **Subscribe before your first sync, and keep the subscription.** Every producer runs inside `receiveSyncChanges`, and nothing is consumed while nobody is subscribed, so an invitation that arrives while you are away is announced on the first sync after you come back and the ordinary `useEffect(() => onCryptoSignal(h), [])` does not lose invitations. A `trust_changed` is not re-offered that way; `getDeviceStatuses`, and `getIdentityStatus` for the private-keys one, are the durable answers to those questions.
+- **A subscribe that cannot reach the native module throws, and every subscribe does.** `onCryptoSignal` installs the observer on the first subscription, and returning normally means that worked. If it does not, the exception comes out of `onCryptoSignal` itself rather than being reported as an unsubscribe function for a channel that will never deliver, no listener is registered, and the next subscribe tries again. Subscribing inside an effect sends that throw to your nearest error boundary, which is the intent: the alternative is a screen waiting for an invitation that expires in ten minutes.
+- **Some clients do not ask first, and it makes no difference to your code.** The protocol still carries an older shape in which a peer opens the comparison directly, with no invitation before it. It is what `matrix-nio` implements, and all it implements. It arrives as the same `verification_requested` signal and `acceptVerification` still agrees to it. Two things differ, neither needing a branch: the stage never reads `ready`, so `startVerificationComparison` answers `comparison_already_started`, which means carry on and wait for the string; and `confirmVerification` can finish the flow outright, so the device is verified when that call resolves, though its `trust_changed` still waits for your next `receiveSyncChanges`. This is the one shape that cannot be re-offered after an unsubscribe, because it leaves nothing behind that a later sync can enumerate.
+- **An invitation from a device you have never been told about is discarded on arrival, and is not announced.** The layer underneath needs the sender's device keys to build the flow. `receiveSyncChanges` still resolves successfully, no flow exists, and `acceptVerification` would reject that transaction id with `unknown_flow`. The silence is the channel refusing to hand you an identifier no call here answers to.
+- **Keep the to-device events you could not act on, and the ones you did, until their flow finishes.** Feeding the same event to `receiveSyncChanges` again once you have queried the sender's devices does create the flow and announces it exactly as a first arrival would; you never open the event, you keep an opaque blob and get back the announcement. Flows also live in memory on both sides of this boundary, so a process that restarts mid-verification holds a `verificationId` that now rejects with `unknown_flow`, and the recovery is the same one. Promptly, though: an invitation expires ten minutes after it was sent.
+- **Every step goes through the queue.** Skipping `markRequestSent` is the one way this flow could fail silently, because the state machine advances on that report and on nothing else. It is reported instead: `getVerificationMaterial` rejects with kind `material_not_ready` rather than resolving empty or hanging, and that kind is deliberately **not** retriable. Retrying never resolves it; pumping does.
+- **`getDeviceStatuses` is the only place a verification becomes visible.** Your own device reads `verified` from the moment it exists, because this process holds its private keys, so "some device in this list reads verified" says nothing. What carries a claim is another user's device changing.
+- **`verified` means "trusted", not "a person compared a string with this particular device".** The value maps from one boolean underneath: locally trusted, or signed by an identity you have verified. Once you hold a signing identity, verifying one device of a user moves _every_ device of that user to `verified` at once, including devices that appear later, with nobody comparing or scanning anything on any of them. That is correct rather than a defect and it is the point of cross-signing, but a product that reads this value as "a human checked this exact device" is wrong. Read it as "trusted", and ask `senderVerification` if what you need is what one event can be said to prove.
+- **`startVerificationComparison` reports three different things.** `comparison_already_started` means the other side got there first, which is not a failure but does leave you something to do: call `acceptVerification` again, because their start is a question and the flow waits at `started` until you answer it. `verification_ended` means the flow is over and you need a new one. `wrong_stage` means it has not been agreed to yet, or that it went to a scannable code instead, which is a comparison that will never exist rather than one that has not started. `getVerificationStage` is free to call and tells you which at any point.
 
 ### Verifying by a scannable code
 
@@ -376,11 +396,11 @@ A person points one phone's camera at a code on the other's screen, and nobody r
 #### Say what your product can do, because nothing happens until you do
 
 ```ts
-import { offerScannableCodes } from 'react-native-matrix-crypto'
+import { offerScannableCodes } from "react-native-matrix-crypto";
 
 // Once at start-up, next to createCryptoMachine. Most products have a
 // screen and no scanner, and this is what that says.
-offerScannableCodes({ canShow: true, canScan: false })
+offerScannableCodes({ canShow: true, canScan: false });
 ```
 
 **Two questions and not one, and neither has a default.** `canShow` is true if you can draw the grid this library hands you; `canScan` is true if you have a scanner, have the camera permission, and can hand the raw bytes it reads to `submitScannedCode`. Both start false, both stay false until you answer, and leaving a field out is a type error rather than a yes you never said.
@@ -400,25 +420,25 @@ It applies to the whole process rather than to one flow, because it describes yo
 #### Showing a code
 
 ```ts
-import { getVerificationCode, confirmScan } from 'react-native-matrix-crypto'
+import { getVerificationCode, confirmScan } from "react-native-matrix-crypto";
 
-const code = await getVerificationCode(id)
+const code = await getVerificationCode(id);
 // Draw code.modules: width rows of width squares, row-major, true is dark.
 // Leave the usual quiet margin. Then ask a person whether it was scanned.
-await confirmScan(id)   // or cancelVerification(id)
+await confirmScan(id); // or cancelVerification(id)
 // Pump once more. The stage reaches 'done'.
 ```
 
 **Draw `modules`, not `payload`, and that is not a convenience.** The payload is binary and is not text: it carries two raw signing keys and a random shared secret, and there is no string it can honestly be turned into, so a JavaScript code-drawing component, which nearly always takes a string, cannot be given it. `modules` is the symbol this protocol's own encoder built, at a version and error-correction level it fixes deliberately, in its own words because mobile clients have trouble decoding otherwise. Draw `width` rows of `width` squares from it and a camera reads what the protocol meant; re-encode the payload yourself and you get a code this library's own scanner reads back and another client may refuse. The payload is there so a product can move it, to a component of its own or to a test, not so it can be turned into a picture by hand.
 
-**`confirmScan` is where this method's security actually rests**, and it is the same act `confirmVerification` asks for on a string: *that was my other phone, and not somebody's screenshot*. Ask before you call it. Nothing inside this process can observe whether a person recognised the device that scanned, so a product that confirms on its own has verified nothing however well formed its arguments were. Skipping it does not fail loudly, but it does fail: the flow sits open until the ten-minute timeout retires it.
+**`confirmScan` is where this method's security actually rests**, and it is the same act `confirmVerification` asks for on a string: _that was my other phone, and not somebody's screenshot_. Ask before you call it. Nothing inside this process can observe whether a person recognised the device that scanned, so a product that confirms on its own has verified nothing however well formed its arguments were. Skipping it does not fail loudly, but it does fail: the flow sits open until the ten-minute timeout retires it.
 
 #### Reading one
 
 ```ts
-import { submitScannedCode } from 'react-native-matrix-crypto'
+import { submitScannedCode } from "react-native-matrix-crypto";
 
-await submitScannedCode(id, rawBytesFromYourScanner)
+await submitScannedCode(id, rawBytesFromYourScanner);
 // Pump. Nothing is verified when this resolves: the other side has still
 // to confirm, and messages have to cross.
 ```
@@ -431,9 +451,9 @@ It is one call and two protocol steps: the scan is registered, and the message t
 
 There are three modes and all three work here. Which one a flow uses is decided by **which phone is held up**, not by anything you pass.
 
-* **Verifying another user.** Both master signing keys travel in the code, so this device needs its own private signing keys and the other user needs a published identity.
-* **Verifying your own new login, established device showing.** The code carries the account's master key, which the device showing it already trusts.
-* **Verifying your own new login, new login showing.** The same flow with the screens the other way round, and the code says so, because the device showing it holds none of the account's private keys yet.
+- **Verifying another user.** Both master signing keys travel in the code, so this device needs its own private signing keys and the other user needs a published identity.
+- **Verifying your own new login, established device showing.** The code carries the account's master key, which the device showing it already trusts.
+- **Verifying your own new login, new login showing.** The same flow with the screens the other way round, and the code says so, because the device showing it holds none of the account's private keys yet.
 
 Both self modes are here because a product that shipped one of them would work exactly half the time, and which half would be chosen by whichever phone its user picked up rather than by the product.
 
@@ -443,25 +463,25 @@ Every one of them is a sentence you can put on a screen, which is the point: und
 
 `getVerificationCode` refuses with:
 
-| Kind | What it means | What to do |
-|---|---|---|
-| `code_not_offered` | this build did not offer to show a code on this flow, so there is nothing for it to produce | one line before the next flow: `offerScannableCodes({ canShow: true, ... })`. It used to fold the row below in with this one and ask you to work out which from the switch you had set, which stopped being sound the moment the switch became two facts |
-| `peer_cannot_scan` | the other device did not say it can scan, so no code you draw can be read by it | nothing you can do, and waiting will not help: show the short authentication string instead. Two code-showing products with no scanner between them is the ordinary way to meet this, and so is any client that speaks only the short string |
-| `identity_not_known` | this account has no signing identity for the code to carry | `createCrossSigningIdentity`, which is the call that makes one. Not `bootstrapCrossSigning`, which publishes an identity this device already holds and answers this same refusal |
-| `peer_identity_not_known` | the other user has none, and nothing this device does will produce one | compare a short string instead. Deliberately not folded with the row above: the two remedies point at different people |
-| `private_keys_not_held` | verifying another user puts this account's own key in the code, and this device cannot prove it holds one | `requestSelfVerification`, `recoverIdentity`, or `createCrossSigningIdentity` on an account with no identity at all. Verifying your own new login does not need them |
-| `wrong_stage` | nobody has agreed to this flow yet, or it is over | |
-| `unknown_flow` | no flow of that id | |
-| `malformed_identifier` | the flow's own identifier is too long to fit in a code | only reachable from a peer that chose the identifier, and nothing you do will help. Offer a short-string comparison |
+| Kind                      | What it means                                                                                             | What to do                                                                                                                                                                                                                                               |
+| ------------------------- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `code_not_offered`        | this build did not offer to show a code on this flow, so there is nothing for it to produce               | one line before the next flow: `offerScannableCodes({ canShow: true, ... })`. It used to fold the row below in with this one and ask you to work out which from the switch you had set, which stopped being sound the moment the switch became two facts |
+| `peer_cannot_scan`        | the other device did not say it can scan, so no code you draw can be read by it                           | nothing you can do, and waiting will not help: show the short authentication string instead. Two code-showing products with no scanner between them is the ordinary way to meet this, and so is any client that speaks only the short string             |
+| `identity_not_known`      | this account has no signing identity for the code to carry                                                | `createCrossSigningIdentity`, which is the call that makes one. Not `bootstrapCrossSigning`, which publishes an identity this device already holds and answers this same refusal                                                                         |
+| `peer_identity_not_known` | the other user has none, and nothing this device does will produce one                                    | compare a short string instead. Deliberately not folded with the row above: the two remedies point at different people                                                                                                                                   |
+| `private_keys_not_held`   | verifying another user puts this account's own key in the code, and this device cannot prove it holds one | `requestSelfVerification`, `recoverIdentity`, or `createCrossSigningIdentity` on an account with no identity at all. Verifying your own new login does not need them                                                                                     |
+| `wrong_stage`             | nobody has agreed to this flow yet, or it is over                                                         |                                                                                                                                                                                                                                                          |
+| `unknown_flow`            | no flow of that id                                                                                        |                                                                                                                                                                                                                                                          |
+| `malformed_identifier`    | the flow's own identifier is too long to fit in a code                                                    | only reachable from a peer that chose the identifier, and nothing you do will help. Offer a short-string comparison                                                                                                                                      |
 
 `submitScannedCode` refuses with four, because a product has four different things to say:
 
-| Kind | What it means | What to do |
-|---|---|---|
-| `scanned_code_unrecognised` | not one of these codes at all: some other square, or a revision of the format this release does not speak | point the camera at the code the other device is showing |
-| `scanned_code_malformed` | the bytes did not survive whatever brought them here | scan again, and check that your scanner yields bytes rather than text |
-| `scanned_code_for_another_flow` | a real code, for a different verification. Nothing is damaged and nothing is suspicious | the wrong screen was read. Do not alarm anybody about their own mis-aim |
-| `scanned_code_refused` | a code for this flow carrying keys this flow does not expect. **The only one of the four that can mean something is wrong** rather than that somebody aimed badly | refuse, and start again from a fresh request. Do not invite a retry of the same code |
+| Kind                            | What it means                                                                                                                                                     | What to do                                                                           |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `scanned_code_unrecognised`     | not one of these codes at all: some other square, or a revision of the format this release does not speak                                                         | point the camera at the code the other device is showing                             |
+| `scanned_code_malformed`        | the bytes did not survive whatever brought them here                                                                                                              | scan again, and check that your scanner yields bytes rather than text                |
+| `scanned_code_for_another_flow` | a real code, for a different verification. Nothing is damaged and nothing is suspicious                                                                           | the wrong screen was read. Do not alarm anybody about their own mis-aim              |
+| `scanned_code_refused`          | a code for this flow carrying keys this flow does not expect. **The only one of the four that can mean something is wrong** rather than that somebody aimed badly | refuse, and start again from a fresh request. Do not invite a retry of the same code |
 
 `scanned_code_refused` covered all four conditions while the core had them and the boundary did not, and it keeps its name and its wire position while meaning only the narrowest of them. That happened inside this release rather than across two, so no published version ever carried the wide meaning; the narrowing is recorded because the name still reads wider than it is, and a reader who finds it in the source deserves to know it was once the whole set. `CryptoErrorKind` is open in any case, so a kind arriving that your code has never seen is a widening rather than a break, and the `default` branch you already have catches it.
 
@@ -469,44 +489,44 @@ Scanning needs a signing identity on both sides too, so `identity_not_known` and
 
 #### Seven more things to design around
 
-* **Treat the code as secret while the flow is open**, on exactly the terms `SasMaterial` is treated on. The payload carries the shared secret the whole method rests on, and the grid is that same secret drawn as squares, so anything that learns either learns what an interposed party would need to answer the flow as though it had read the screen. No logging, no unencrypted persistence, no crash report. The Rust core redacts its own copy and cannot reach across this boundary to do the same for yours.
-* **A flow can halt where only you can end it, and ending it is not optional.** A peer that declares itself finished the moment it has scanned, rather than after you confirm, spends the message that would have completed the flow. That is a deviation from the specification on their side and it has been measured against a real client, not inferred; nothing here can make such a flow finish. What it leaves behind matters more than the failed verification: the layer underneath allows one live verification per person, and a flow that is neither done nor cancelled stays in its cache and takes the **next two** attempts with that person down with it, silently, with no error attached to either. `cancelVerification` is what frees them. A product that shows a code needs a way off that screen and not only a way forward.
-* **Call `receiveSyncChanges` at least once between two verifications with the same person**, including two with your own account. Without it the second comes back already cancelled: nothing was refused and nothing failed, `getVerificationStage` simply reads `cancelled` from the start. The sweep that empties that cache runs at the top of every sync, and any sync will do, empty included. A product that syncs continuously never meets this; one that drives two verifications from one screen, or from a test, walks straight into it.
-* **A code and a string race, and the code can lose.** On a flow where both were announced, both are live at once and either side may move first. A displayed code may still give way to a short-string comparison, and once either side has scanned it is too late. A code that loses that race is cancelled with nobody refusing it and no error returned to anybody, because nothing was asked. A product showing a square has to be able to take it off the screen.
-* **Scanning is not verifying.** When `submitScannedCode` resolves, nothing is verified: the other side has still to confirm and messages have to cross. What the flow produces at the end is the same `signature_upload` a string comparison produces. **The key query that turns that signature into a `verified` answer is queued for you** on the sync that finishes a flow with another person, so the step everyone omits after a string comparison is not one you have to go and find here. Queued is not answered: it leaves through `takeOutgoingRequests` like anything else, so drain the pump once more when `verification_completed` arrives and expect `unverified` from `getDeviceStatuses` if you read it in between. A flow with one of your own devices needs none of that and reads `verified` the moment it finishes.
-* **A code flow finishing announces `verification_completed`, never `trust_changed`.** The `trust_changed` producer reads the short-string comparison's own final state and a code flow never has one, so a product that waits on that signal after `confirmScan` waits forever. `verification_completed` is what arrives instead, on both screens, and it names the flow rather than the user. Read `getDeviceStatuses` when you get it, which is what both signals tell you to do anyway, and expect another user's devices to turn verified a sync or two later rather than at that instant.
-* **`getVerificationStage` names a code flow's own moment, and two of its answers are still shared.** `code-scanned` is the one stage only a code flow reaches, and reading it is what tells `confirmScan`'s two `wrong_stage` causes apart: nobody has scanned yet, versus the flow is over. This paragraph said that could not be read at all, and adding `code-scanned` is what changed it. What is still shared is `started` and `confirmed`: both flow shapes reach both, so `startVerificationComparison` on a code flow that nobody has scanned yet still answers `comparison_already_started`, whose advice is written for a comparison. Your own state is what tells those apart, because a build that never answered `offerScannableCodes` cannot be in a code flow. **`getVerificationCode` no longer answers `wrong_stage` for a flow that negotiated no code mode**, which it used to do once such a flow had moved on to anything else: the two method lists live on the ready state and nowhere afterwards, so a stage complaint stood in for an answer about methods. It says `peer_cannot_scan`.
+- **Treat the code as secret while the flow is open**, on exactly the terms `SasMaterial` is treated on. The payload carries the shared secret the whole method rests on, and the grid is that same secret drawn as squares, so anything that learns either learns what an interposed party would need to answer the flow as though it had read the screen. No logging, no unencrypted persistence, no crash report. The Rust core redacts its own copy and cannot reach across this boundary to do the same for yours.
+- **A flow can halt where only you can end it, and ending it is not optional.** A peer that declares itself finished the moment it has scanned, rather than after you confirm, spends the message that would have completed the flow. That is a deviation from the specification on their side and it has been measured against a real client, not inferred; nothing here can make such a flow finish. What it leaves behind matters more than the failed verification: the layer underneath allows one live verification per person, and a flow that is neither done nor cancelled stays in its cache and takes the **next two** attempts with that person down with it, silently, with no error attached to either. `cancelVerification` is what frees them. A product that shows a code needs a way off that screen and not only a way forward.
+- **Call `receiveSyncChanges` at least once between two verifications with the same person**, including two with your own account. Without it the second comes back already cancelled: nothing was refused and nothing failed, `getVerificationStage` simply reads `cancelled` from the start. The sweep that empties that cache runs at the top of every sync, and any sync will do, empty included. A product that syncs continuously never meets this; one that drives two verifications from one screen, or from a test, walks straight into it.
+- **A code and a string race, and the code can lose.** On a flow where both were announced, both are live at once and either side may move first. A displayed code may still give way to a short-string comparison, and once either side has scanned it is too late. A code that loses that race is cancelled with nobody refusing it and no error returned to anybody, because nothing was asked. A product showing a square has to be able to take it off the screen.
+- **Scanning is not verifying.** When `submitScannedCode` resolves, nothing is verified: the other side has still to confirm and messages have to cross. What the flow produces at the end is the same `signature_upload` a string comparison produces. **The key query that turns that signature into a `verified` answer is queued for you** on the sync that finishes a flow with another person, so the step everyone omits after a string comparison is not one you have to go and find here. Queued is not answered: it leaves through `takeOutgoingRequests` like anything else, so drain the pump once more when `verification_completed` arrives and expect `unverified` from `getDeviceStatuses` if you read it in between. A flow with one of your own devices needs none of that and reads `verified` the moment it finishes.
+- **A code flow finishing announces `verification_completed`, never `trust_changed`.** The `trust_changed` producer reads the short-string comparison's own final state and a code flow never has one, so a product that waits on that signal after `confirmScan` waits forever. `verification_completed` is what arrives instead, on both screens, and it names the flow rather than the user. Read `getDeviceStatuses` when you get it, which is what both signals tell you to do anyway, and expect another user's devices to turn verified a sync or two later rather than at that instant.
+- **`getVerificationStage` names a code flow's own moment, and two of its answers are still shared.** `code-scanned` is the one stage only a code flow reaches, and reading it is what tells `confirmScan`'s two `wrong_stage` causes apart: nobody has scanned yet, versus the flow is over. This paragraph said that could not be read at all, and adding `code-scanned` is what changed it. What is still shared is `started` and `confirmed`: both flow shapes reach both, so `startVerificationComparison` on a code flow that nobody has scanned yet still answers `comparison_already_started`, whose advice is written for a comparison. Your own state is what tells those apart, because a build that never answered `offerScannableCodes` cannot be in a code flow. **`getVerificationCode` no longer answers `wrong_stage` for a flow that negotiated no code mode**, which it used to do once such a flow had moved on to anything else: the two method lists live on the ready state and nowhere afterwards, so a stage complaint stood in for an answer about methods. It says `peer_cannot_scan`.
 
 ## What works today
 
-| Capability | State |
-|---|---|
-| Rust to UniFFI to JSI to TypeScript chain | working, verified on an iOS simulator and an Android emulator |
-| Byte accurate marshalling, typed errors and Rust to JavaScript callbacks across the boundary | verified |
-| Real `OlmMachine` identity keys, and a persistent encrypted store surviving restart | working, storage through `matrix-sdk-sqlite` |
-| `encryptEvent`, `decryptEvent` | working, group sessions backed by `matrix-sdk-crypto`, proven between two crypto machines with the key travelling through the queue rather than handed over in test code |
-| `receiveSyncChanges`, `shareScopeKey`, `takeOutgoingRequests`, `markRequestSent` | working, over a typed `SyncDelta` and one shared mapping |
-| Interoperability with a third-party Matrix client | proven both directions against `matrix-nio` over a real homeserver, through the Rust core and through the published TypeScript surface on an emulator |
-| Device verification by short string comparison (SAS) | working, in both flow shapes and whichever side opens the comparison, proven against a bare `matrix-sdk-crypto` machine driven directly: an agreement completing, and a genuine disagreement refusing |
-| Device verification by a scannable code | working, and **claiming nothing until a product answers `offerScannableCodes`**, showing and scanning separately. All three modes the protocol defines. Proven against a bare `matrix-sdk-crypto` machine driven directly, and against mautrix-go over a real homeserver in both directions — an implementation sharing neither protocol code nor Olm with this one. Read by a real camera once, in one mode and one direction, recorded in full in the [design notes](DESIGN-NOTES.md). The library sees no camera and draws no picture: it hands over the bytes and the grid of squares, and the product owns the scanner and the screen |
-| A third-party client taking part in a verification | proven over a real homeserver, and it stops short of *completing* one for a reason in the counterparty, described in the [design notes](DESIGN-NOTES.md) |
-| Crypto signal channel (`onCryptoSignal`) | working for verification and for the signing identity. `verification_requested` carries the `verificationId` that `acceptVerification` takes, and is the only way this library hands a receiving side that identifier; `trust_changed` names a user, and the rule is to read status rather than count signals; `verification_completed` names the flow a scanned code finished, on both screens, and carries no trust, so read `getDeviceStatuses` or `getIdentityStatus` when it arrives. The asymmetry between the signals is named on `onCryptoSignal` itself. `unexpected_device` and `key_missing` still have no producer: a missing key arrives as a rejected `decryptEvent` with kind `missing_key` |
-| Creating and publishing this account's cross-signing identity | working, through `createCrossSigningIdentity` for the account's first identity and `bootstrapCrossSigning` for publishing the one this device holds, read with `getIdentityStatus`, with the user-interactive authentication loop left to your product because this library never sees a credential |
-| Joining that identity from a second login | working, through `requestSelfVerification`: the new device verifies itself against one that already holds the identity, the private keys arrive by encrypted gossip on a later sync, and `getIdentityStatus` then reports `privateKeysHeld`. Proven between two crypto machines with everything travelling through the queue. When no second device is to hand, `recoverIdentity` is the other way in |
-| `EventEnvelope.senderVerification` on a decrypted event | working, and it reads `verified` once the whole chain has been driven, which it can be from TypeScript since this release |
-| Sender authenticity, per event | **provided at the end of a chain, not by a call.** Seven steps: hold a signing identity, publish it, have the sender publish and sign theirs, fetch their keys, complete a comparison, upload the signature it produces, and fetch their keys again. Omitting the last step is silent and leaves every event reading `unverified_identity` |
-| Surviving a reinstall | working, through `createRecovery` and `recoverIdentity`: the account's private signing keys are stored encrypted in its own account data under a passphrase, and a device that has lost its store restores them and is the same identity it was. Proven end to end against a real store. `createRecovery` refuses to write over a recovery the account already has, including one another Matrix client wrote. The two account data requests are your product's, because this library performs none |
-| Secret export and import | **not implemented, and not coming.** `exportSecrets` and `importSecrets` would need a `Uint8Array` container that Matrix does not define, so it would be a format this library invented and no other client could read. `createRecovery` delivers the interoperable form instead; the [design notes](DESIGN-NOTES.md) say more |
+| Capability                                                                                   | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Rust to UniFFI to JSI to TypeScript chain                                                    | working, verified on an iOS simulator and an Android emulator                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Byte accurate marshalling, typed errors and Rust to JavaScript callbacks across the boundary | verified                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Real `OlmMachine` identity keys, and a persistent encrypted store surviving restart          | working, storage through `matrix-sdk-sqlite`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `encryptEvent`, `decryptEvent`                                                               | working, group sessions backed by `matrix-sdk-crypto`, proven between two crypto machines with the key travelling through the queue rather than handed over in test code                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `receiveSyncChanges`, `shareScopeKey`, `takeOutgoingRequests`, `markRequestSent`             | working, over a typed `SyncDelta` and one shared mapping                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Interoperability with a third-party Matrix client                                            | proven both directions against `matrix-nio` over a real homeserver, through the Rust core and through the published TypeScript surface on an emulator                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Device verification by short string comparison (SAS)                                         | working, in both flow shapes and whichever side opens the comparison, proven against a bare `matrix-sdk-crypto` machine driven directly: an agreement completing, and a genuine disagreement refusing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Device verification by a scannable code                                                      | working, and **claiming nothing until a product answers `offerScannableCodes`**, showing and scanning separately. All three modes the protocol defines. Proven against a bare `matrix-sdk-crypto` machine driven directly, and against mautrix-go over a real homeserver in both directions — an implementation sharing neither protocol code nor Olm with this one. Read by a real camera once, in one mode and one direction, recorded in full in the [design notes](DESIGN-NOTES.md). The library sees no camera and draws no picture: it hands over the bytes and the grid of squares, and the product owns the scanner and the screen                                                                 |
+| A third-party client taking part in a verification                                           | proven over a real homeserver, and it stops short of _completing_ one for a reason in the counterparty, described in the [design notes](DESIGN-NOTES.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Crypto signal channel (`onCryptoSignal`)                                                     | working for verification and for the signing identity. `verification_requested` carries the `verificationId` that `acceptVerification` takes, and is the only way this library hands a receiving side that identifier; `trust_changed` names a user, and the rule is to read status rather than count signals; `verification_completed` names the flow a scanned code finished, on both screens, and carries no trust, so read `getDeviceStatuses` or `getIdentityStatus` when it arrives. The asymmetry between the signals is named on `onCryptoSignal` itself. `unexpected_device` and `key_missing` still have no producer: a missing key arrives as a rejected `decryptEvent` with kind `missing_key` |
+| Creating and publishing this account's cross-signing identity                                | working, through `createCrossSigningIdentity` for the account's first identity and `bootstrapCrossSigning` for publishing the one this device holds, read with `getIdentityStatus`, with the user-interactive authentication loop left to your product because this library never sees a credential                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Joining that identity from a second login                                                    | working, through `requestSelfVerification`: the new device verifies itself against one that already holds the identity, the private keys arrive by encrypted gossip on a later sync, and `getIdentityStatus` then reports `privateKeysHeld`. Proven between two crypto machines with everything travelling through the queue. When no second device is to hand, `recoverIdentity` is the other way in                                                                                                                                                                                                                                                                                                      |
+| `EventEnvelope.senderVerification` on a decrypted event                                      | working, and it reads `verified` once the whole chain has been driven, which it can be from TypeScript since this release                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Sender authenticity, per event                                                               | **provided at the end of a chain, not by a call.** Seven steps: hold a signing identity, publish it, have the sender publish and sign theirs, fetch their keys, complete a comparison, upload the signature it produces, and fetch their keys again. Omitting the last step is silent and leaves every event reading `unverified_identity`                                                                                                                                                                                                                                                                                                                                                                 |
+| Surviving a reinstall                                                                        | working, through `createRecovery` and `recoverIdentity`: the account's private signing keys are stored encrypted in its own account data under a passphrase, and a device that has lost its store restores them and is the same identity it was. Proven end to end against a real store. `createRecovery` refuses to write over a recovery the account already has, including one another Matrix client wrote. The two account data requests are your product's, because this library performs none                                                                                                                                                                                                        |
+| Secret export and import                                                                     | **not implemented, and not coming.** `exportSecrets` and `importSecrets` would need a `Uint8Array` container that Matrix does not define, so it would be a format this library invented and no other client could read. `createRecovery` delivers the interoperable form instead; the [design notes](DESIGN-NOTES.md) say more                                                                                                                                                                                                                                                                                                                                                                             |
 
 The unimplemented functions exist today as final types that compile, and reject at runtime with a typed `not_implemented` error. That is intentional: a consuming team can build against the real shape while the cryptography underneath is written.
 
 ## Limits you must design around
 
-**A verified device is not a verified sender.** `EventEnvelope.sender` is the value the homeserver delivered, and a successfully decrypted event does not prove who sent it. **Verifying a device does not change this.** A verification establishes *local* trust in a device, whether the two people compared a string or one of them scanned a code, and the path that decides what a decrypted event says about its sender consults *cross-signing*: upstream's `SenderData::from_device` branches on whether the sending device is cross-signed and then on whether that signature is trusted, and never consults local trust. Only the second of those two questions needs a key of ours. So a device can read `verified` from `getDeviceStatuses` while an event from that same device still carries an unauthenticated sender. Treat `sender` and `algorithm` as unauthenticated transport metadata, and not until any particular version: this said "until cross-signing lands in M4", cross-signing has landed, and neither field moved. Both are read from the incoming event and never re-derived. What cross-signing adds is `senderVerification`, a separate value rather than a promotion of those two.
+**A verified device is not a verified sender.** `EventEnvelope.sender` is the value the homeserver delivered, and a successfully decrypted event does not prove who sent it. **Verifying a device does not change this.** A verification establishes _local_ trust in a device, whether the two people compared a string or one of them scanned a code, and the path that decides what a decrypted event says about its sender consults _cross-signing_: upstream's `SenderData::from_device` branches on whether the sending device is cross-signed and then on whether that signature is trusted, and never consults local trust. Only the second of those two questions needs a key of ours. So a device can read `verified` from `getDeviceStatuses` while an event from that same device still carries an unauthenticated sender. Treat `sender` and `algorithm` as unauthenticated transport metadata, and not until any particular version: this said "until cross-signing lands in M4", cross-signing has landed, and neither field moved. Both are read from the incoming event and never re-derived. What cross-signing adds is `senderVerification`, a separate value rather than a promotion of those two.
 
 `EventEnvelope.senderVerification` reports what this library knew about the sender at the moment it decrypted, in its own vocabulary rather than folded into `TrustState`, because they are two subjects. What each value costs to reach is documented at the type and at each member rather than left for you to discover.
 
-**Which two, and the surprising one that is not among them.** The line falls on *whose* cross-signing identity a value depends on. `verified` and `verification_violation` both need an identity of **ours**. `unverified_identity` needs one from **the sender** and nothing from us: the check underneath asks only whether the sending device carries a signature from a self-signing key its own owner published. So this release does produce it, from any peer whose client has cross-signing set up, which is most of them. Handle that branch.
+**Which two, and the surprising one that is not among them.** The line falls on _whose_ cross-signing identity a value depends on. `verified` and `verification_violation` both need an identity of **ours**. `unverified_identity` needs one from **the sender** and nothing from us: the check underneath asks only whether the sending device carries a signature from a self-signing key its own owner published. So this release does produce it, from any peer whose client has cross-signing set up, which is most of them. Handle that branch.
 
 **The other two were right when they were written, and one of them is out.** `verified` arrives through this surface from this release. Reaching the value is still a chain of seven steps rather than a setting, and the step everyone omits is the last one, but every step of it can now be driven from your product. `verification_violation` is the one still waiting, and it waits on a situation rather than on a missing call: it needs a sender whose chain completed and whose identity then changed. Write both branches.
 
@@ -554,10 +574,10 @@ How this library was built, what the measurements do and do not establish, and t
 
 What remains open before 1.0:
 
-* a scannable code read by an ordinary phone camera, as something a run can assert rather than something a person confirms — tracked as [#6](https://github.com/linagora/react-native-matrix-crypto/issues/6)
-* multi participant scenarios and federation neutral test coverage — tracked as [#7](https://github.com/linagora/react-native-matrix-crypto/issues/7)
-* cross implementation testing against both Synapse and Continuwuity — tracked as [#8](https://github.com/linagora/react-native-matrix-crypto/issues/8)
-* a stabilised API, published documentation and multi platform CI for 1.0 — tracked as [#9](https://github.com/linagora/react-native-matrix-crypto/issues/9)
+- a scannable code read by an ordinary phone camera, as something a run can assert rather than something a person confirms — tracked as [#6](https://github.com/linagora/react-native-matrix-crypto/issues/6)
+- multi participant scenarios and federation neutral test coverage — tracked as [#7](https://github.com/linagora/react-native-matrix-crypto/issues/7)
+- cross implementation testing against both Synapse and Continuwuity — tracked as [#8](https://github.com/linagora/react-native-matrix-crypto/issues/8)
+- a stabilised API, published documentation and multi platform CI for 1.0 — tracked as [#9](https://github.com/linagora/react-native-matrix-crypto/issues/9)
 
 ## Contributing
 
@@ -587,21 +607,21 @@ The second drives the same exchange through the UniFFI scaffolding, the JSI bind
 
 Every one of these runs in CI. Each has been observed rejecting a real violation, not merely passing.
 
-| Gate | Enforces |
-|---|---|
-| `gate:workspaces` | the Cargo and yarn workspaces resolve |
-| `gate:boundary` | the core takes no direct `uniffi` dependency |
-| `gate:drift` | committed bindings match the Rust source |
-| `gate:logger` | the bridge contains no logger, in every language it ships: Rust, TypeScript, C/C++/Objective-C, Kotlin, Swift and the podspec |
-| `gate:agility` | no Megolm, Olm, room or Matrix specific identifier reaches the public API |
-| `gate:stubs` | the committed turbo module is really wired up, not an empty shell |
-| `gate:surface` | every name a public module exports reaches `src/index.ts`, so nothing ships unreachable |
-| `gate:doc-links` | every doc link, in Rust and in TypeScript, points at something that exists |
-| `gate:readme` | the README npm shows is the README GitHub shows, and every gate here runs in CI |
-| `gate:uia-example` | the worked example for the signing-keys authentication loop runs the same steps as the test that proves it |
-| `gate:measure-guards` | the B2 measurement harness still refuses the runs it documents refusing |
-| `gate:measure-guards-ios` | the same, for the iOS harness, including its refusal to launch into a log stream it cannot show was already attached |
-| `gate:artifact-provenance` | an artifact size is only ever recorded from a binary this tree built |
+| Gate                       | Enforces                                                                                                                      |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `gate:workspaces`          | the Cargo and yarn workspaces resolve                                                                                         |
+| `gate:boundary`            | the core takes no direct `uniffi` dependency                                                                                  |
+| `gate:drift`               | committed bindings match the Rust source                                                                                      |
+| `gate:logger`              | the bridge contains no logger, in every language it ships: Rust, TypeScript, C/C++/Objective-C, Kotlin, Swift and the podspec |
+| `gate:agility`             | no Megolm, Olm, room or Matrix specific identifier reaches the public API                                                     |
+| `gate:stubs`               | the committed turbo module is really wired up, not an empty shell                                                             |
+| `gate:surface`             | every name a public module exports reaches `src/index.ts`, so nothing ships unreachable                                       |
+| `gate:doc-links`           | every doc link, in Rust and in TypeScript, points at something that exists                                                    |
+| `gate:readme`              | the README npm shows is the README GitHub shows, and every gate here runs in CI                                               |
+| `gate:uia-example`         | the worked example for the signing-keys authentication loop runs the same steps as the test that proves it                    |
+| `gate:measure-guards`      | the B2 measurement harness still refuses the runs it documents refusing                                                       |
+| `gate:measure-guards-ios`  | the same, for the iOS harness, including its refusal to launch into a log stream it cannot show was already attached          |
+| `gate:artifact-provenance` | an artifact size is only ever recorded from a binary this tree built                                                          |
 
 `gate:stubs` exists because of a specific near miss: `ubrn build --and-generate` can emit a turbo module that exports nothing, with exit code zero and no warning, when it reads an Android shared library whose symbol table was stripped. Nothing downstream noticed and the build went green. `gate:drift` cannot catch that either, because two equally empty generations agree with each other perfectly. If you add a gate, add the step that proves it fails on a real violation.
 
@@ -613,18 +633,18 @@ A release is a git tag. Pushing a tag matching `v*` — for example `v0.3.0` —
 
 ### Conventions
 
-* Conventional Commits, imperative mood, one subject per commit.
-* A manifest change and its lockfile update belong in the same commit.
-* Every core to FFI type conversion destructures its source, so a field added later fails the build instead of being silently dropped.
-* Tests assert, they do not print, and `gate:logger` reads `rust/*/tests` to make sure of it. The one thing a test may do that the library may not is write a file: the level 2 proof passes a marker through the filesystem to a spawned child process, which is how the cross-process restore is proved at all.
+- Conventional Commits, imperative mood, one subject per commit.
+- A manifest change and its lockfile update belong in the same commit.
+- Every core to FFI type conversion destructures its source, so a field added later fails the build instead of being silently dropped.
+- Tests assert, they do not print, and `gate:logger` reads `rust/*/tests` to make sure of it. The one thing a test may do that the library may not is write a file: the level 2 proof passes a marker through the filesystem to a spawned child process, which is how the cross-process restore is proved at all.
 
 ## Security
 
 This library has not been independently audited. It wraps `matrix-sdk-crypto`, which is widely deployed, but the bridge layer around it is new.
 
-**This release shares a room key with every device its recipients have, including devices nobody has signed or verified.** That is upstream's `AllDevices` collection strategy, which upstream itself marks not recommended, per the guidance of MSC4153. It is deliberate, and a condition rather than an oversight holds it there: upstream's identity-based strategy refuses outright when *this* machine holds no cross-signing identity, before it considers a single recipient, and acquiring one — by `bootstrapCrossSigning`, by `createCrossSigningIdentity`, by recovery, or by self-verification — is a decision your product makes rather than one this library takes for you. A product that holds none would therefore have every send fail rather than share selectively. The trade is real and it is yours to accept; it is stated here so you accept it knowingly.
+**This release shares a room key with every device its recipients have, including devices nobody has signed or verified.** That is upstream's `AllDevices` collection strategy, which upstream itself marks not recommended, per the guidance of MSC4153. It is deliberate, and a condition rather than an oversight holds it there: upstream's identity-based strategy refuses outright when _this_ machine holds no cross-signing identity, before it considers a single recipient, and acquiring one — by `bootstrapCrossSigning`, by `createCrossSigningIdentity`, by recovery, or by self-verification — is a decision your product makes rather than one this library takes for you. A product that holds none would therefore have every send fail rather than share selectively. The trade is real and it is yours to accept; it is stated here so you accept it knowingly.
 
-**Inbound, the mirror of it: this release decrypts events from any device**, at upstream's `Untrusted` trust requirement, which upstream also marks not recommended. Tightening it is not the one-line change it looks like. A verification — a compared string or a scanned code alike — sets *local* trust, and neither stricter tier consults local trust, so either one would refuse events from a peer whose device carries no cross-signature however carefully somebody verified it. `senderVerification` is what reports the difference per event instead, and [Limits you must design around](#limits-you-must-design-around) is where reading it is set out.
+**Inbound, the mirror of it: this release decrypts events from any device**, at upstream's `Untrusted` trust requirement, which upstream also marks not recommended. Tightening it is not the one-line change it looks like. A verification — a compared string or a scanned code alike — sets _local_ trust, and neither stricter tier consults local trust, so either one would refuse events from a peer whose device carries no cross-signature however carefully somebody verified it. `senderVerification` is what reports the difference per event instead, and [Limits you must design around](#limits-you-must-design-around) is where reading it is set out.
 
 Both defaults move when this library gains a way for a product to choose them. Until then, treat them as the posture you are deploying.
 

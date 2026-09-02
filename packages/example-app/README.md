@@ -13,12 +13,12 @@ live in a module of their own with no `react` or `react-native` import in it.
 
 ## What it covers
 
-* **Step 3 reads a settled value.** Step 2 waits, bounded, for its own observer
+- **Step 3 reads a settled value.** Step 2 waits, bounded, for its own observer
   callback before it reports, so step 3 can be a plain read. The test drives a
   fake binding whose callback is delivered strictly after the call resolves,
   and asserts that precondition before asserting the result, so a green step 3
   cannot come from a callback that had already arrived.
-* **A card that claims a call throws.** The `notYet` card, step 8 as the
+- **A card that claims a call throws.** The `notYet` card, step 8 as the
   walkthrough is numbered today, says a named library function rejects with
   `not_implemented`. `src/cardClaims.test.ts` mocks nothing, calls that
   function through the published entry point, and fails if it stops rejecting.
@@ -27,7 +27,7 @@ live in a module of their own with no `react` or `react-native` import in it.
   rather than the card. That sweep classifies by outcome rather than by
   design: everything else fails on the absent native module instead, which is
   what makes the refused set readable at all.
-* **The signing-identity gate refusing.** Step 6 asks the machine what it knows
+- **The signing-identity gate refusing.** Step 6 asks the machine what it knows
   about the account's signing identity and then asks it to publish one, which
   it refuses because nothing has asked a homeserver yet. The native call is
   faked at the same seam step 4's typed error is, so the real facade decides
@@ -35,14 +35,14 @@ live in a module of their own with no `react` or `react-native` import in it.
   reports `unexpected` when the bootstrap is served instead. The second is the
   one that matters, because a library that minted an identity there would
   replace whatever the account already had.
-* **Cards name functions that exist.** Every `react-native-matrix-crypto`
+- **Cards name functions that exist.** Every `react-native-matrix-crypto`
   import in a card's code snippet is checked against the library's exports.
   One way only: nothing checks that the cards reach every part of the surface,
   and they do not. **No card touches device verification**, by short string or
   by scannable code, so the walkthrough shows nothing about either and nothing
   here notices. What the cards show is the encryption chain, and the surface is
   wider than the cards.
-* **Step ordering, step 2's round trip, step 4's typed error**, and that each
+- **Step ordering, step 2's round trip, step 4's typed error**, and that each
   run starts from an empty signal log rather than accumulating.
 
 ## What it cannot reach, and why
@@ -59,11 +59,11 @@ Consequently **nothing in this suite establishes that the bridge works**. In
 particular these remain exercised only by a human holding a phone, or by
 `scripts/run-probe-on-emulator.sh` and `level-two/run_level_two.py`:
 
-* **Steps 1, 5 and 7 of the walkthrough.** Subscribing installs the native
+- **Steps 1, 5 and 7 of the walkthrough.** Subscribing installs the native
   observer; the identity step opens a real crypto store and reads real keys;
   and step 7 creates a real group session, encrypts one payload and decrypts
   the result to read what the library says about its sender. All three are
-  asserted to *fail* in `src/flowRunners.test.ts`, deliberately, so the hole is
+  asserted to _fail_ in `src/flowRunners.test.ts`, deliberately, so the hole is
   named in the suite rather than hidden by a skip.
 
   Step 7 is the one that must stay that way. Faking the native encrypt and
@@ -73,15 +73,16 @@ particular these remain exercised only by a human holding a phone, or by
   real event exists: on a device, and against a real homeserver and a
   third-party client in
   `rust/matrix-crypto-core/tests/level_two_identity.rs`.
-* **Everything the fake binding stands in for**: that Rust actually reverses
+
+- **Everything the fake binding stands in for**: that Rust actually reverses
   the bytes, reports its own crate version, rejects empty input, and invokes
   the observer callback back across the boundary at all. The tests fix what
   each step does with those answers, not that the answers are real.
-* **`ProbeHarness`, `LevelTwoHarness`, `FoldWatch` and `App.tsx`**, which are
+- **`ProbeHarness`, `LevelTwoHarness`, `FoldWatch` and `App.tsx`**, which are
   React components and are not covered here.
-* **Signal timing.** `PROBE_SIGNAL_MS` and `PROBE_SIGNAL_NTH` are measurements
+- **Signal timing.** `PROBE_SIGNAL_MS` and `PROBE_SIGNAL_NTH` are measurements
   of a real device under a real race. A host machine cannot produce them.
-* **Verification opened from a card.** No card and no probe step opens a
+- **Verification opened from a card.** No card and no probe step opens a
   verification flow, by either method: what the cards show is the encryption
   chain, and the surface is wider than the cards. The scannable code has a
   screen of its own rather than a card, `src/ScannedCodeWalkthrough.tsx`, and
@@ -90,7 +91,7 @@ particular these remain exercised only by a human holding a phone, or by
   all needed a scanner in this app and a second device; the second client
   turned out to be the scanner, and the part that is still true is the next
   bullet.
-* **That a camera reads the code this library renders.** See below: it needs a
+- **That a camera reads the code this library renders.** See below: it needs a
   person, a second client and a lens, and no test can stand in for any of the
   three.
 
@@ -134,19 +135,20 @@ itself:
    scanner should do, but that is the only one observed. A second emulator
    needs its own `adb reverse` to reach the homeserver, which the program
    arranges only for the device it installs the app on.
+
 2. Let that client create the account's signing identity. The account is new
    and has none, a code carries cross-signing keys, so no code can exist until
    it does, and this app cannot mint one because it has no authentication
    loop. Accept when Element offers to set up recovery or verify the session.
    Then open Settings, Sessions, find the phone's session and choose to verify
-   it. **On the phone** the headline changes to *Point the other client's
-   camera at this code* and a black-and-white square appears. If it instead
+   it. **On the phone** the headline changes to _Point the other client's
+   camera at this code_ and a black-and-white square appears. If it instead
    says `identity_not_known`, this step has not finished.
-3. In Element, choose *Scan QR code* and fill the viewfinder with the phone's
-   screen. **On the phone** the headline becomes *The other device says it
-   scanned this code* and a green button appears. Nothing is verified yet:
+3. In Element, choose _Scan QR code_ and fill the viewfinder with the phone's
+   screen. **On the phone** the headline becomes _The other device says it
+   scanned this code_ and a green button appears. Nothing is verified yet:
    this is the one moment the mode asks a person anything.
-4. Press the green button. **On the phone** the headline becomes *Verified*
+4. Press the green button. **On the phone** the headline becomes _Verified_
    and the square disappears; **in Element** the session is marked verified.
 
 **If it does not scan, that is a finding rather than a nuisance**, and which
