@@ -77,19 +77,26 @@ jobs:
           uv venv --seed --clear --python 3.12 "$HOME/.camera-rig-venv"
           echo "$HOME/.camera-rig-venv/bin" >> "$GITHUB_PATH"
 
-      # uiautomator2 is the phone-side driver. Deliberately NOT pinned in a
-      # requirements file here: the measured 5/5 run drove the adb-native
-      # backend (the default), and uiautomator2 is measured PARTLY broken on
-      # the rig phone (one RPC dies; see choose_ui_backend in the driver) --
-      # a pin would claim knowledge this repository does not yet have of a
-      # backend no run has actually driven. The version the rig proves
+      # uiautomator2 is the OPTIONAL host-side driver, installed but not
+      # pushed to the phone: the measured 5/5 run drove the adb-native
+      # backend (the default), whose phone-side footprint is zero -- the
+      # driver's zero-install claim -- and `uiautomator2 init` installs a
+      # stub only that backend uses. A rig that declares
+      # CAMERA_RIG_UI_BACKEND=uiautomator2 gets the init, which the same
+      # declaration makes its driver use. Deliberately NOT pinned in a
+      # requirements file here: uiautomator2 is measured PARTLY broken on
+      # the rig phone (one RPC dies; see choose_ui_backend in the driver),
+      # so a pin would claim knowledge this repository does not yet have of
+      # a backend no run has actually driven. The version the rig proves
       # itself with is the version worth pinning -- that is maintenance work
       # such a run will land. pip runs inside the venv the step above puts
       # first on PATH.
-      - name: Install the phone-side driver
+      - name: Install the uiautomator2 host driver
         run: |
           python3 -m pip install uiautomator2
-          python3 -m uiautomator2 init
+          if [ "${CAMERA_RIG_UI_BACKEND:-adb-native}" = "uiautomator2" ]; then
+            python3 -m uiautomator2 init
+          fi
 
       # The APK must be built for the ABI of THIS rig's emulator; there is
       # no universal choice, so the ABI is read off the booted emulator and
