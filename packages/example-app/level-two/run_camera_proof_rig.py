@@ -1294,9 +1294,16 @@ def element_accept_verification(element):
     """
     prompts = ELEMENT_CANDIDATE_SCREENS["bootstrap_dismiss"][0]
     # 120s, not 60: this waits for a to-device event to cross a homeserver
-    # and for Element to sync it, not for a screen to animate.
+    # and for Element to sync it, not for a screen to animate. `scrolling`
+    # stays off for the same dismissible-surface reason the next steps
+    # cite: the banner is delivered by the peer's to-device event, not
+    # scrolled into view, and it is a one-shot transient -- a banner that
+    # lands between the dump and the swipe would take the swipe and be
+    # dismissed, so a miss must re-dump and re-tap rather than scroll the
+    # room list under it.
     candidates = ELEMENT_CANDIDATE_SCREENS["incoming_request"]
-    element.tap_first_of(candidates[0], 120, candidates[1], clearing=prompts)
+    element.tap_first_of(candidates[0], 120, candidates[1], clearing=prompts,
+                         scrolling=False)
     candidates = ELEMENT_CANDIDATE_SCREENS["accept_request"]
     element.tap_first_of(candidates[0], 60, candidates[1], scrolling=False)
     # scrolling=False for the reason the previous revision established: from
