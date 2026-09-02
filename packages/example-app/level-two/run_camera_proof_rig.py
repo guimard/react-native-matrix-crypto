@@ -1494,7 +1494,26 @@ def main():
         wait_for_app_line(EMULATOR_SERIAL, re.compile(r"^CAMERA_PROOF run_started"),
                           120, "the harness's first line")
 
-        element_accept_verification(element)
+        # The harness dies here when the phone never answers its ask, and
+        # its own FAIL lines stay in the emulator's logcat unless something
+        # reads them. Surface them first, on the same stream as the FAIL
+        # line so the order holds, then let the phone-side failure follow:
+        # a miss otherwise reads as a phone-side selector miss after a full
+        # 120 s banner burn.
+        try:
+            element_accept_verification(element)
+        except RunFailed:
+            camera_proof_lines = [
+                line for line in app_lines(EMULATOR_SERIAL)
+                if line.startswith("CAMERA_PROOF")
+            ]
+            if camera_proof_lines:
+                print("[camera-proof] --- the emulator's CAMERA_PROOF lines "
+                      "so far ---", file=sys.stderr)
+                for line in camera_proof_lines:
+                    print(line, file=sys.stderr)
+                print("[camera-proof] --- end ---", file=sys.stderr)
+            raise
 
         summaries, lines = wait_for_app_line(
             EMULATOR_SERIAL, SUMMARY_PATTERN, FLOW_TIMEOUT_SECONDS,
