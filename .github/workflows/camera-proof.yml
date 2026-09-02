@@ -74,7 +74,7 @@ jobs:
       - name: Set up Python (rig-local, no sudo)
         run: |
           uv python install 3.12
-          uv venv --seed --python 3.12 "$HOME/.camera-rig-venv"
+          uv venv --seed --clear --python 3.12 "$HOME/.camera-rig-venv"
           echo "$HOME/.camera-rig-venv/bin" >> "$GITHUB_PATH"
 
       # uiautomator2 is the phone-side driver. Deliberately NOT pinned in a
