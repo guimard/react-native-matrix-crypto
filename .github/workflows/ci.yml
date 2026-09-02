@@ -275,6 +275,34 @@ jobs:
             console.log("script, no binding.gyp; entry point resolves to " + resolved);
           '
 
+  audit:
+    # `npm audit` over what installing this package actually pulls onto a
+    # consumer's machine. scripts/audit-dependencies.sh carries the reasoning:
+    # which tree it reads and why it reads the packed tarball rather than the
+    # checkout, why npm cannot read this workspace at all, and why its two
+    # thresholds differ.
+    #
+    # Its own job, for two reasons. It needs no `yarn install`, no Rust and no
+    # build, so it starts immediately and finishes in about a minute rather
+    # than queueing behind `gates`. And it is the only check in this workflow
+    # that can turn red on a commit that passed yesterday, with nothing in the
+    # repository having moved -- a new advisory should read as a new advisory
+    # and not as the gates job failing.
+    #
+    # The script is invoked by path rather than through `yarn audit:deps`,
+    # which is the same script: this job installs no dependencies, and there is
+    # no sense making an audit depend on a package manager it does not use.
+    # `yarn audit:deps` is for running it on a laptop.
+    #
+    # `needs:` is deliberately absent. A dependency advisory is worth hearing
+    # about on a pull request whose formatting is wrong.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: '.nvmrc' }
+      - run: ./scripts/audit-dependencies.sh
+
   build-ios:
     # On pull requests this leg builds only the simulator slice, because
     # macOS runners are the cost centre. The full cross-compile matrix

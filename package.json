@@ -23,7 +23,8 @@
     "gate:doc-links": "./scripts/assert-doc-links.sh",
     "gate:measure-guards": "./scripts/assert-measure-guards.sh",
     "gate:measure-guards-ios": "./scripts/assert-measure-guards-ios.sh",
-    "gate:artifact-provenance": "./scripts/assert-artifact-provenance.sh"
+    "gate:artifact-provenance": "./scripts/assert-artifact-provenance.sh",
+    "audit:deps": "./scripts/audit-dependencies.sh"
   },
   "devDependencies": {
     "typedoc": "^0.28.20",
