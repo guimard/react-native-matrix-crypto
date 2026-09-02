@@ -44,13 +44,23 @@ and signed in to the throwaway homeserver, the cross-signing identity
 bootstrapped, the first-session prompts cleared, the incoming request banner
 opened, "Accepter" answered and "Scanner avec cet appareil" chosen.
 
-WHAT IS STILL NOT AUTOMATED, AND IT IS THE WHOLE OF WHAT ISSUE #6 HAS LEFT:
-the aiming. There is no fixture. A person picked the phone up and pointed it
-at the emulator's window, and the run passed because they did. Until a
-fixture exists this leg is a person-assisted proof, which is a stronger
-thing than it was this morning and still not a check CI can assert. It stays
-dispatch-only, and it joins no required check until a run has been watched
-passing with nobody touching the phone.
+A PERSON AIMS THE PHONE, AND THAT IS NOT THE SAME AS A PERSON JUDGING. There
+is no fixture: somebody picks the phone up and points it at the emulator's
+window. What they contribute is a physical gesture, not a verdict. Nobody
+reads a shield, nobody decides whether it worked; the run reads
+`m.key.verification.scanned` off the protocol and then reads the account
+state back as a second witness, and it fails on its own if either
+disagrees. That distinction is why issue #6 closed on this: its grievance
+was a person's judgement standing in for an assertion, and the assertion is
+the machine's now.
+
+What the missing fixture costs is repetition, not honesty, and it is issue
+#29: with nobody to aim, this leg runs when somebody is at the rig, so the
+`schedule:` block in the workflow stays commented and an optical regression
+waits for the next person who runs it by hand. Note what this program cannot
+do about that: it CANNOT tell a human aim from a fixture aim -- its output is
+identical either way -- so the cron and the fixture are one change and never
+two. It stays dispatch-only and joins no required check.
 
 WHY THIS SIDE ASKS, WHICH IS THE FINDING THAT UNBLOCKED THE REST. The driver
 used to navigate Element's settings to the showing device's session and tap

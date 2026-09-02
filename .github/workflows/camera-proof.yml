@@ -19,14 +19,17 @@
 #   client on one rig is the claim; the design comment on issue #6 says why
 #   that is the honest shape of this assertion.
 #
-#   NOT YET AUTOMATED, AS OF THIS COMMIT, AND IT IS ONE THING: the aiming.
-#   A run reaches CAMERA_PROOF_SUMMARY 5/5 with both witnesses agreeing, and
-#   every tap on the phone in it came from the driver -- but there is no
-#   fixture, so a person picked the phone up and pointed it at the
-#   emulator's window. That makes this a person-assisted proof rather than
-#   a check a run can assert, which is exactly the distinction issue #6
-#   exists for. Dispatch-only until a run has been watched passing with
-#   nobody touching the phone.
+#   WHAT A PERSON STILL DOES, AND WHAT THEY DO NOT: they aim the phone,
+#   because there is no fixture. They do not judge. Nobody reads a shield
+#   and nobody decides whether the run worked -- the assertion above is the
+#   protocol and the account state, and the leg fails on its own if either
+#   disagrees. Issue #6 closed on exactly that distinction.
+#
+#   The cost of the missing fixture is repetition rather than honesty, and
+#   it is tracked as issue #29. It is also why the cron below stays
+#   commented: this leg CANNOT tell a human aim from a fixture aim, its
+#   output is identical either way, so scheduling it before the hardware
+#   exists would just fail every night at the optical timeout.
 #
 # WHY DISPATCH-ONLY: while no self-hosted runner carries the `camera-rig`
 # label, a pull_request trigger would queue forever and a push trigger would
@@ -38,11 +41,11 @@ name: camera-proof
 
 on:
   workflow_dispatch:
-  # For when the rig is permanent and the leg has been watched passing: a
-  # nightly catch of optical regressions (glare from a moved lamp, an
-  # Element update that changes a screen the driver names). Leave commented
-  # until then -- a cron that fails for weeks is how a check gets ignored
-  # into uselessness.
+  # For when a fixture exists (issue #29): a nightly catch of optical
+  # regressions (glare from a moved lamp, an Element update that changes a
+  # screen the driver names). Leave commented until then -- with a person
+  # aiming, every unattended run fails at the optical timeout, and a cron
+  # that fails for weeks is how a check gets ignored into uselessness.
   # schedule:
   #   - cron: '23 4 * * *'
 
