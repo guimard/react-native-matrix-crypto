@@ -7,7 +7,7 @@
     "packages/*"
   ],
   "engines": {
-    "node": ">=22.22.3"
+    "node": "^22.22.3 || ^24.3.0 || >=26.0.0"
   },
   "scripts": {
     "docs": "typedoc",
@@ -23,6 +23,7 @@
     "gate:readme": "./scripts/assert-readme-sync.sh",
     "gate:uia-example": "./scripts/assert-uia-example.sh",
     "gate:stubs": "./scripts/assert-generated-not-stubbed.sh",
+    "gate:ignores": "./scripts/assert-formatter-ignores.sh",
     "gate:surface": "./scripts/assert-public-surface.sh",
     "gate:doc-links": "./scripts/assert-doc-links.sh",
     "gate:measure-guards": "./scripts/assert-measure-guards.sh",
@@ -30,14 +31,11 @@
     "gate:artifact-provenance": "./scripts/assert-artifact-provenance.sh"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.0",
     "@react-native/eslint-config": "0.87.1",
     "eslint": "^9.39.0",
     "eslint-config-prettier": "^10.1.8",
-    "globals": "^16.5.0",
     "prettier": "^3.6.2",
     "typedoc": "^0.28.20",
-    "typescript": "5.9.3",
-    "typescript-eslint": "^8.46.0"
+    "typescript": "5.9.3"
   }
 }

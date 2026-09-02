@@ -43,21 +43,29 @@ export default [
       'node_modules/',
       '**/node_modules/',
 
-      // GENERATED BINDINGS -- every entry in scripts/generated-paths.txt that
-      // ESLint has a parser for. That file is this repository's single
-      // definition of "generated", and gate:drift regenerates each entry and
-      // requires a byte-for-byte empty diff against what is committed. So a
-      // `--fix` landing in one of them is not a lint improvement: it is a red
-      // gate on the next run, whose only remedy is to revert the file.
+      // GENERATED BINDINGS -- every entry in scripts/generated-paths.txt,
+      // mirrored whole. That file is this repository's single definition of
+      // "generated", and gate:drift regenerates each entry and requires a
+      // byte-for-byte empty diff against what is committed. So a `--fix`
+      // landing in one of them is not a lint improvement: it is a red gate on
+      // the next run, whose only remedy is to revert the file.
       //
-      // Listed by hand because ESLint loads this config before anything here
+      // Mirrored by hand because ESLint loads this config before anything here
       // could read that list, and a config that reads a file at load time
-      // fails as a config error rather than as the missing file it is. The
-      // four entries omitted (cpp/generated, android, ios, MatrixCrypto.podspec)
-      // hold nothing ESLint parses.
+      // fails as a config error rather than as the missing file it is. Whole
+      // rather than the parseable subset it held first: a subset needs an
+      // argument for every path it leaves out, the same subset in
+      // .prettierignore got one of those arguments wrong, and `gate:ignores`
+      // can check a mirror but not a judgement call. See .prettierignore.
       'packages/react-native-matrix-crypto/src/generated/',
+      'packages/react-native-matrix-crypto/cpp/generated/',
       'packages/react-native-matrix-crypto/src/index.tsx',
       'packages/react-native-matrix-crypto/src/NativeMatrixCrypto.ts',
+      'packages/react-native-matrix-crypto/cpp/react-native-matrix-crypto.cpp',
+      'packages/react-native-matrix-crypto/cpp/react-native-matrix-crypto.h',
+      'packages/react-native-matrix-crypto/android/',
+      'packages/react-native-matrix-crypto/ios/',
+      'packages/react-native-matrix-crypto/MatrixCrypto.podspec',
 
       // The React Native template's native projects, plus build outputs and
       // vendored trees -- all already in .gitignore. Naming them keeps

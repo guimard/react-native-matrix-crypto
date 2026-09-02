@@ -49,6 +49,14 @@ jobs:
       # broken generations agree with each other. gate:stubs reads the
       # committed artifacts and asserts the turbo module is actually wired up.
       - run: yarn gate:stubs
+      # The two ignore lists this repository maintains by hand -- one in
+      # .prettierignore, one in eslint.config.mjs -- really do cover every path
+      # in scripts/generated-paths.txt, asked of Prettier and ESLint themselves
+      # rather than compared as strings. It runs next to gate:stubs because it
+      # guards the same thing from the other side: gate:drift is what makes a
+      # generated file's bytes load-bearing, and a formatter is the one tool
+      # here that rewrites files nobody asked it to.
+      - run: yarn gate:ignores
       - run: yarn gate:logger
       - run: yarn gate:agility
       # Wired in the same change that added it, because this repository has

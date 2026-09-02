@@ -13,13 +13,23 @@ yarn.lock
 # formatter. Measured 2026-09-02 -- a single pass rewrote 3113 lines of
 # src/generated/matrix_crypto.ts and 21 of src/index.tsx.
 #
-# Listed by hand rather than read from generated-paths.txt, because
-# .prettierignore is a static file with no include mechanism. The four entries
-# omitted here (cpp/generated, android, ios, MatrixCrypto.podspec) hold nothing
-# Prettier has a parser for.
+# EVERY entry in that file, mirrored here whole, and mirrored by hand because
+# .prettierignore has no include mechanism. It carried a subset first, with a
+# comment asserting that the omitted paths held nothing Prettier could parse.
+# That was false when it was written: android/README.md is Markdown, sitting
+# under a directory generated-paths.txt lists in full. A subset needs an
+# argument for every line it leaves out, and one of those arguments was already
+# wrong -- so there is no subset. `gate:ignores` fails if this list and that
+# file ever disagree again.
 packages/react-native-matrix-crypto/src/generated/
+packages/react-native-matrix-crypto/cpp/generated/
 packages/react-native-matrix-crypto/src/index.tsx
 packages/react-native-matrix-crypto/src/NativeMatrixCrypto.ts
+packages/react-native-matrix-crypto/cpp/react-native-matrix-crypto.cpp
+packages/react-native-matrix-crypto/cpp/react-native-matrix-crypto.h
+packages/react-native-matrix-crypto/android/
+packages/react-native-matrix-crypto/ios/
+packages/react-native-matrix-crypto/MatrixCrypto.podspec
 
 # Build outputs and vendored trees, all of them already in .gitignore. Naming
 # them again is what keeps `yarn format` from walking a working copy that has
