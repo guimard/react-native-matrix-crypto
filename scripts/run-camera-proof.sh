@@ -33,9 +33,11 @@ set -euo pipefail
 # WHAT IS VALIDATED AND WHAT IS NOT
 #
 # Every refusal path below works on any machine with no hardware at all.
-# The phone-driving half of the Python program is written but UNVALIDATED:
-# no rig exists as of this commit, so no Element screen has ever been tapped
-# by it. See the design comment on issue #6 and the program's own header.
+# The phone-driving half of the Python program has now run on a real rig:
+# Element is signed in, bootstrapped and navigated to the showing device's
+# session by this driver, and the library draws a real code on the
+# emulator. What has NOT happened is a completed scan -- see the driver's
+# own header for the Element finding that stops it, and issue #6.
 #
 # THE RIG, DECLARED, NOT SNIFFED
 #

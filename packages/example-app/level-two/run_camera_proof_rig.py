@@ -27,19 +27,33 @@ Everything up to and including the emulator-side log watching is host-side
 machinery of the same shape as the level 2 conductor's, and every refusal
 path below can be exercised without any hardware.
 
-The physical phone now exists (a Pixel 10 Pro Fold on Android 17, the first
-rig), and the phone side has been validated as far as that phone could take
-it WITHOUT the throwaway homeserver: the adb-native UI primitives (dump,
-parse, tap, scroll, type) and Element's settings-side navigation up to the
-sessions list, against the phone's real Element. See "THE PHONE SIDE" for
-the per-piece split; its header carries the measured labels and the
-measured reason uiautomator2 is an optimization rather than the driver.
-Everything past the sessions list -- the verify action, the scanner, and
-the whole sign-in/bootstrap path (the validation phone holds a real
-account, so those screens were never touched) -- is written but
-UNVALIDATED: assumptions are prefixed ASSUMPTION and checked at runtime
-rather than trusted, and the first full run is expected to find work
-there. It fails closed at every gap.
+The rig exists (a Pixel 10 Pro Fold on Android 17 / API 37 as the scanner, a
+booted emulator as the screen) and has been run end to end. What a full run
+now reaches, MEASURED 2026-09-02, is everything up to and including the code
+being on the screen with a live flow behind it:
+
+  * every host-side step, and the emulator side through install and launch;
+  * the whole phone side through Element: a cleared Element signed in to the
+    throwaway homeserver, the account's cross-signing identity published,
+    the first-session prompts cleared, and the navigation to the showing
+    device's own session -- drawer, "Sécurité et vie privée", "Afficher
+    toutes les sessions", the CameraProof session, its verify action;
+  * the library side reaching `ready` and drawing a real code (45x45, a
+    122-byte payload) on the emulator, with the flow visible to both sides.
+
+WHAT IS STILL NOT PROVEN, AND IT IS THE LAST STEP: no camera has completed a
+scan under this driver. A run ends at CAMERA_PROOF_SUMMARY 3/5 --
+run_started, flow_exists and code_shown pass; scan_reported and flow_done
+fail -- because of a finding about Element rather than about the optics. The
+only verification action this Element build offers on a session's own screen
+is "Vérifier de façon interactive avec des émojis", which starts SAS; the
+library announces SasV1 in SHOWING_ONLY, so Element has a method it can use
+and uses it, and no QR scan is ever offered. The camera does launch and shut
+down again (the phone's own log carries CancelPowerBoost CAMERA_LAUNCH), and
+the flow goes `ready` -> `started` -> `cancelled`. The person-driven flow
+(run_camera_proof.py, step 3) reaches a "Scan QR code" choice, so an entry
+point that offers scanning exists; finding it from a driver is the work this
+file has left.
 
 HOW A RUN IS SEQUENCED
 
@@ -310,6 +324,10 @@ def prepare_emulator(serial):
     adb_on(serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP")
     adb_on(serial, "shell", "wm", "dismiss-keyguard")
     rig_log("emulator display prepared: brightness max, stay-awake, immersive")
+    # Last, because it is the only part of "prepare the display" that is about
+    # the HOST rather than the device, and it should be the most recent window
+    # activation when the app comes up.
+    raise_emulator_window()
 
 
 def install_on_emulator(serial, apk):
@@ -379,19 +397,19 @@ def wait_for_app_line(serial, pattern, timeout_s, what):
 
 # --- The phone side ---------------------------------------------------------
 #
-#   VALIDATED (2026-09-01, on the rig's actual phone, a Pixel 10 Pro Fold
-#   running Android 17 / API 37, serial 59021FDCG003NW): the adb-native
-#   primitives below -- uiautomator dump, XML parse, input tap, scroll
-#   forward, input text (a homeserver URL typed verbatim) -- and the
-#   settings-side navigation of the phone's real Element: home -> profile
-#   drawer -> the security screen -> the sessions list. The labels that
-#   navigation actually shows are recorded in ELEMENT_CANDIDATE_SCREENS
+#   VALIDATED (2026-09-02, on the rig's phone, a Pixel 10 Pro Fold running
+#   Android 17 / API 37, serial 59021FDCG003NW, against the throwaway
+#   homeserver): the adb-native primitives below -- uiautomator dump, XML
+#   parse, input tap, scroll, input text -- and the whole Element flow from
+#   a cleared app to a live verification: sign-in through the server
+#   editor, the cross-signing bootstrap, the first-session prompts, home ->
+#   profile drawer -> "Sécurité et vie privée" -> "Afficher toutes les
+#   sessions" -> the CameraProof session -> its verify action. Every label
+#   that navigation actually shows is recorded in ELEMENT_CANDIDATE_SCREENS
 #   next to the guesses, the guesses kept but the measured labels leading.
-#   AWAITS: everything that needs the throwaway homeserver or the emulator:
-#   sign-in, identity bootstrap, and the verification/scanner itself (the
-#   validation phone holds a real account, so no verification was started
-#   and no sign-in screen was touched). The flow below the sessions list is
-#   written and failure-named but has never executed.
+#   AWAITS: the scan. See this file's header for the Element finding that
+#   stops it -- the verify action on a session's own screen starts SAS, and
+#   no scan choice is offered after it.
 #
 # Every UI step fails with a named error naming what it looked for, because
 # an unmodified client's screens are exactly the kind of third-party surface
@@ -1001,7 +1019,8 @@ class Element:
                    "screen_off_timeout", previous)
             rig_log(f"phone screen_off_timeout restored to {previous}")
 
-    def tap_first_of(self, candidates, timeout_s, what, clearing=()):
+    def tap_first_of(self, candidates, timeout_s, what, clearing=(),
+                     scrolling=True):
         """Taps the first of `candidates` that appears, within the deadline.
 
         ASSUMPTION: the rig phone's locale is covered by
@@ -1012,6 +1031,12 @@ class Element:
         A text that is absent scrolls the first scrollable container
         forward and looks again, bounded: some targets (a session deep in
         the sessions list) only exist off screen.
+
+        `scrolling` is on by default and MUST be turned off on any screen a
+        swipe can dismiss. Scrolling to find an off-screen label is safe on a
+        list; on Element's verification sheet it is not, because the same
+        gesture that reveals a row also drags the sheet away, taking the open
+        scanner and the live flow with it.
 
         `clearing` names prompts to dismiss on every miss, and it is opt-in
         per step rather than always-on for a measured reason. Element's
@@ -1038,7 +1063,7 @@ class Element:
             if clearing and self.dismiss_any_of(clearing):
                 time.sleep(1)
                 continue
-            if scrolls_left > 0 and self.backend.scroll_forward():
+            if scrolling and scrolls_left > 0 and self.backend.scroll_forward():
                 scrolls_left -= 1
                 time.sleep(1)
                 continue
@@ -1256,7 +1281,17 @@ def element_verify_showing_device(element, device_name):
     # unnamed choice or was genuinely in its scanner all along.
     candidates = ELEMENT_CANDIDATE_SCREENS["scan_choice"]
     try:
-        element.tap_first_of(candidates[0], 60, candidates[1])
+        # scrolling=False, and this is the load-bearing argument on this line.
+        # By here a verification exists and Element is showing it in a
+        # dismissible sheet; the scroll fallback would swipe on that sheet
+        # once every retry, and a swipe there does not look further down a
+        # list, it throws the sheet away -- closing the scanner and
+        # cancelling the flow. MEASURED 2026-09-02: the phone's camera
+        # launched (CancelPowerBoost CAMERA_LAUNCH in its log) and then shut
+        # down, the screen went back to the sessions list, and the library
+        # side saw `started` then `cancelled` for a code it had already put
+        # on the emulator's screen.
+        element.tap_first_of(candidates[0], 60, candidates[1], scrolling=False)
     except RunFailed:
         rig_log("phone: no scan choice named in ELEMENT_CANDIDATE_SCREENS "
                 "appeared; Element may have entered its scanner by itself. "
