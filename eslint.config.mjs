@@ -44,6 +44,28 @@ import prettier from 'eslint-config-prettier'
 // silently unlinted file and a correctly linted one look the same from here.
 const withoutFlow = reactNative.filter(entry => !entry.plugins?.['ft-flow'])
 
+// `.mts` and `.cts`, which nothing else here covers.
+//
+// @react-native/eslint-config selects its TypeScript parser and rules on
+// `**/*.ts` and `**/*.tsx` only, and ESLint's own discovery adds just `.js`,
+// `.cjs` and `.mjs` -- so `eslint .` walked straight past
+// packages/example-app/vitest.config.mts and said nothing. Not "linted and
+// clean": never opened. Asked directly it is explicit about it, which is the
+// only reason this is legible at all:
+//
+//   $ eslint packages/example-app/vitest.config.mts
+//   0:0  warning  File ignored because no matching configuration was supplied
+//
+// Extending `files` fixes both halves at once, because a flat config's `files`
+// patterns are also what ESLint adds to its discovery set when it is handed a
+// directory. Every entry that already claims `**/*.ts` claims these too, so a
+// React Native upgrade that changes those rules changes them here as well.
+const withModuleTs = withoutFlow.map(entry =>
+  entry.files?.includes('**/*.ts')
+    ? { ...entry, files: [...entry.files, '**/*.mts', '**/*.cts'] }
+    : entry,
+)
+
 export default [
   {
     // A config object carrying `ignores` and nothing else sets the global
@@ -89,7 +111,7 @@ export default [
     ],
   },
 
-  ...withoutFlow,
+  ...withModuleTs,
 
   {
     // Two of the shareable config's rules describe a React Native app rather
