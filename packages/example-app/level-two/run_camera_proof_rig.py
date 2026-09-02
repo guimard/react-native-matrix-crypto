@@ -466,7 +466,6 @@ ELEMENT_CANDIDATE_SCREENS = {
     # l'utilisateur <name>", which is why desc candidates match by prefix.
     "drawer": (["Image de profile", "Image de profil", "Profile picture"],
                "the profile avatar that opens the drawer"),
-    "settings_entry": (["Settings", "Paramètres"], "the settings entry"),
     # MEASURED on the rig phone: this build says "Sécurité et vie privée",
     # not the guessed "Sécurité et confidentialité" -- the guess stays in the
     # list (another build may use it) and the measured label leads.
@@ -478,14 +477,53 @@ ELEMENT_CANDIDATE_SCREENS = {
     "sessions_list": (["Afficher toutes les sessions", "Gérer les sessions",
                        "Sessions", "Gérer les appareils"],
                       "the sessions-list entry"),
-    "verify_action": (["Verify", "Verify session", "Start verification",
+    # MEASURED on the rig phone 2026-09-02, on the CameraProof session's own
+    # screen: this build offers exactly ONE verification action, and it is
+    # named after the fallback method rather than the flow -- "Vérifier de
+    # façon interactive avec des émojis". There is no QR entry point here;
+    # the choice to scan comes one screen later, after the peer has said it
+    # can show a code, which is the negotiation the person-driven flow's
+    # steps 2-3 describe. The shorter guesses stay trailing for other builds.
+    "verify_action": (["Vérifier de façon interactive avec des émojis",
+                       "Verify interactively with emojis",
+                       "Verify", "Verify session", "Start verification",
                        "Vérifier", "Vérifier la session",
                        "Démarrer la vérification"],
                       "the verify action for the showing device"),
+    # The scan choice Element presents once the peer has announced it can
+    # show a code (run_camera_proof.py's step 3: 'choose "Scan QR code"').
+    # UNMEASURED in the rig's locale -- the screen only exists while a live
+    # peer is offering a code, so it cannot be read from a dead account.
+    # A miss here is reported with the screen's own texts (see tap_first_of),
+    # which is the measurement.
+    "scan_choice": (["Scanner le code QR", "Scanner leur code QR",
+                     "Scanner un code QR", "Scanner",
+                     "Scan QR code", "Scan their QR code", "Scan"],
+                    "the scan choice on the verification screen"),
 }
 
 
 DUMP_PATH = "/sdcard/window_dump.xml"
+
+
+def texts_of(nodes):
+    """Every label a person would see, from one window dump's nodes.
+
+    Only for diagnostics: a UI step that cannot find what it was told to
+    look for reports this, so the transcript of a failed run carries the
+    measurement that fixes it instead of only the guess that missed. That
+    is the maintenance loop this whole section is built around -- a named
+    failure is worth more when it names the screen as well as the wish.
+    Both backends pass their own FRESH dump: a stale one would describe a
+    screen the step did not actually miss on.
+    """
+    seen = []
+    for node in nodes:
+        for value in ((node.get("text") or "").strip(),
+                      (node.get("content-desc") or "").strip()):
+            if value and value not in seen:
+                seen.append(value[:60])
+    return seen
 
 
 def center_of(bounds):
@@ -579,6 +617,13 @@ class Uiautomator2Backend:
 
     def type_in_first_editable(self, value):
         return self.type_in_editable(0, value)
+
+    def visible_texts(self):
+        try:
+            return texts_of(xml_etree.fromstring(
+                self.device.dump_hierarchy()).iter("node"))
+        except xml_etree.ParseError:
+            return ["<the window dump was not well-formed XML>"]
 
 
 class AdbNativeBackend:
@@ -716,6 +761,9 @@ class AdbNativeBackend:
 
     def type_in_first_editable(self, value):
         return self.type_in_editable(0, value)
+
+    def visible_texts(self):
+        return texts_of(self._dump())
 
 
 def wake_screen(serial):
@@ -900,7 +948,7 @@ class Element:
                    "screen_off_timeout", previous)
             rig_log(f"phone screen_off_timeout restored to {previous}")
 
-    def tap_first_of(self, candidates, timeout_s, what):
+    def tap_first_of(self, candidates, timeout_s, what, clearing=()):
         """Taps the first of `candidates` that appears, within the deadline.
 
         ASSUMPTION: the rig phone's locale is covered by
@@ -911,6 +959,21 @@ class Element:
         A text that is absent scrolls the first scrollable container
         forward and looks again, bounded: some targets (a session deep in
         the sessions list) only exist off screen.
+
+        `clearing` names prompts to dismiss on every miss, and it is opt-in
+        per step rather than always-on for a measured reason. Element's
+        first-session prompts do not stop when the protocol does: MEASURED
+        on the rig 2026-09-02, the account's cross-signing identity was
+        published -- which is what element_bootstrap_identity gates on, and
+        correctly so -- while Element was still two onboarding screens from
+        its home, and it then sat on the analytics opt-in ("Aider a
+        ameliorer Element Classic") until this step timed out looking for a
+        drawer that was never on screen. Any step that waits for a screen
+        during the first session has to keep clearing what Element puts in
+        front of it. It is NOT always-on because the dismiss list contains
+        "Annuler"/"Cancel", and a step that taps those while sign-in is on
+        screen would cancel the sign-in: the steps that pass `clearing` are
+        the ones after sign-in, where dismissing is always the right answer.
         """
         deadline = time.time() + timeout_s
         scrolls_left = 5
@@ -919,6 +982,9 @@ class Element:
             if hit is not None:
                 rig_log(f"phone: tapped {hit!r} ({what})")
                 return
+            if clearing and self.dismiss_any_of(clearing):
+                time.sleep(1)
+                continue
             if scrolls_left > 0 and self.backend.scroll_forward():
                 scrolls_left -= 1
                 time.sleep(1)
@@ -927,9 +993,10 @@ class Element:
         raise RunFailed(
             f"the phone side could not find {what}: none of {candidates} "
             f"appeared within {timeout_s}s.\n"
+            f"      What WAS on screen: {self.backend.visible_texts()}\n"
             "      The rig's Element build differs from what this driver was "
-            "written against. Iterate on the rig: run the flow by hand once, "
-            "read the actual labels, and add them to ELEMENT_CANDIDATE_SCREENS."
+            "written against. The list above is the measurement: add "
+            f"the label that means {what} to ELEMENT_CANDIDATE_SCREENS."
         )
 
     def type_in_first_editable(self, value, what):
@@ -1109,23 +1176,38 @@ def element_verify_showing_device(element, device_name):
     mount, aimed at the display, and the symbol appears when the library
     has it ready.
     """
+    # Every step here clears first-session prompts while it waits: Element
+    # is still finishing its onboarding at this point (see tap_first_of's
+    # `clearing`), and a prompt it raises between two of these taps would
+    # otherwise time the next one out.
+    prompts = ELEMENT_CANDIDATE_SCREENS["bootstrap_dismiss"][0]
     for step in ("drawer", "security_screen", "sessions_list"):
         candidates = ELEMENT_CANDIDATE_SCREENS[step]
-        element.tap_first_of(candidates[0], 60, candidates[1])
+        element.tap_first_of(candidates[0], 60, candidates[1], clearing=prompts)
     element.tap_first_of([device_name], 120,
-                         f"the {device_name!r} session in the sessions list")
+                         f"the {device_name!r} session in the sessions list",
+                         clearing=prompts)
     candidates = ELEMENT_CANDIDATE_SCREENS["verify_action"]
-    element.tap_first_of(candidates[0], 60, candidates[1])
-    # ASSUMPTION: for an incoming show-only peer, Element enters its scanner
-    # on its own; where a build instead offers an explicit choice, the
-    # candidate below takes it. Absence is fine either way -- the scan
-    # budget below is what actually decides.
+    element.tap_first_of(candidates[0], 60, candidates[1], clearing=prompts)
+    # The scan choice. The person-driven flow's step 3 is 'choose "Scan QR
+    # code"', so on the observed build this screen exists and has to be
+    # tapped; it is tolerated rather than required because the choice only
+    # appears AFTER the peer has answered the request announcing it can show
+    # a code, and a build that goes straight to the scanner would otherwise
+    # fail here for doing the right thing. The budget is 60s, not the 15s an
+    # earlier revision guessed: what is being waited for is a round trip
+    # through the homeserver, not a screen transition.
+    #
+    # Absence is logged WITH the screen, never silently assumed. If the scan
+    # never happens, this line is what says whether Element was sitting on an
+    # unnamed choice or was genuinely in its scanner all along.
+    candidates = ELEMENT_CANDIDATE_SCREENS["scan_choice"]
     try:
-        element.tap_first_of(["Scan QR code", "Scan"], 15,
-                             "the explicit scan choice, if Element offers one")
+        element.tap_first_of(candidates[0], 60, candidates[1])
     except RunFailed:
-        rig_log("phone: no explicit scan choice appeared; assuming Element "
-                "entered the scanner by itself")
+        rig_log("phone: no scan choice named in ELEMENT_CANDIDATE_SCREENS "
+                "appeared; Element may have entered its scanner by itself. "
+                f"What was on screen: {element.backend.visible_texts()}")
     rig_log("phone: verification started; Element's camera should be up, "
             "pointed at the mount")
 
