@@ -23,6 +23,7 @@
  * wrong first.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import * as generated from 'react-native-matrix-crypto/src/generated/matrix_crypto'
 import { startScannedCodeRun, type HttpResult, type ScannedCodeState } from './scannedCodeRunner'
 
 /** The mode byte a self-verification from an established device carries. */
@@ -56,6 +57,7 @@ function sampleModules(width: number): boolean[] {
 }
 
 const FLOW = 'flow-under-test'
+const PEER_FLOW = 'flow-from-peer'
 const CODE_WIDTH = 45
 
 /**
@@ -70,6 +72,8 @@ const native = {
   requests: [] as Array<{ id: string; kind: string; body: string }>,
   syncsReceived: 0,
   accepted: [] as string[],
+  cancelled: [] as string[],
+  observer: null as { onSignal: (signal: unknown) => void } | null,
 }
 
 vi.mock('react-native-matrix-crypto/src/generated/matrix_crypto', async importOriginal => {
@@ -83,7 +87,16 @@ vi.mock('react-native-matrix-crypto/src/generated/matrix_crypto', async importOr
     }),
     requestSelfVerification: vi.fn(async () => FLOW),
     acceptVerification: vi.fn(async (id: string) => {
+      // The real library refuses a flow this side opened: it is already
+      // agreed to, and the call would end the run. Model that refusal so
+      // the runner's `!openedHere` guard cannot be dropped without a test
+      // failing; any other id is a peer's flow, accepted as the real
+      // library accepts it.
+      if (id === FLOW) throw new original.MachineFfiError.WrongStage()
       native.accepted.push(id)
+    }),
+    cancelVerification: vi.fn(async (id: string) => {
+      native.cancelled.push(id)
     }),
     verificationStage: vi.fn(async () => {
       // The last stage repeats once the list runs out, which is what a flow
@@ -116,8 +129,12 @@ vi.mock('react-native-matrix-crypto/src/generated/matrix_crypto', async importOr
     receiveSyncChanges: vi.fn(async () => {
       native.syncsReceived += 1
     }),
-    setCryptoObserver: vi.fn(() => undefined),
-    clearCryptoObserver: vi.fn(() => undefined),
+    setCryptoObserver: vi.fn((installed: { onSignal: (signal: unknown) => void }) => {
+      native.observer = installed
+    }),
+    clearCryptoObserver: vi.fn(() => {
+      native.observer = null
+    }),
   }
 })
 
@@ -164,8 +181,26 @@ beforeEach(() => {
   native.requests = []
   native.syncsReceived = 0
   native.accepted = []
+  native.cancelled = []
+  native.observer = null
   http.mockClear()
 })
+
+/**
+ * Delivers a peer's verification request through the installed observer,
+ * exactly as a sync would: the runner subscribes on its first await, a few
+ * microtasks after start, and this returns once it is listening.
+ */
+async function firePeerRequest(flowId: string): Promise<void> {
+  while (native.observer === null) await Promise.resolve()
+  native.observer.onSignal(
+    new generated.CryptoSignal.VerificationRequested({
+      user: '@peer:example.org',
+      deviceId: 'PEERDEVICE',
+      verificationId: flowId,
+    }),
+  )
+}
 
 describe('the camera walkthrough', () => {
   // The assertion is the exact record, not that a call happened. This app
@@ -255,5 +290,47 @@ describe('the camera walkthrough', () => {
   it('feeds every sync it performs to the library', async () => {
     await drive(['Requested', 'Ready', 'CodeScanned', 'Done'])
     expect(native.syncsReceived).toBeGreaterThan(0)
+  })
+
+  // Every test above drives the ask branch. This one drives the accept
+  // branch, which no test reached before: the observer never fired and
+  // `native.accepted` was never asserted.
+  it('accepts a verification the peer opened, with no ask from this side', async () => {
+    native.stages = ['Requested', 'Ready', 'CodeScanned', 'Done']
+    const states: ScannedCodeState[] = []
+    const run = startScannedCodeRun(plan, '/tmp/store', http, state => states.push({ ...state }), {
+      sleep: noSleep,
+    })
+    await firePeerRequest(PEER_FLOW)
+    await run.finished
+    // Accepted with the peer's own flow id, and only the peer's.
+    expect(native.accepted).toEqual([PEER_FLOW])
+    // The run then reaches the code/ready stage per the existing fake.
+    const withCode = states.find(state => state.stage === 'ready' && state.code !== undefined)
+    expect(withCode).toBeDefined()
+    const final = states[states.length - 1]
+    expect(final.finished).toBe(true)
+    expect(final.failed).toBe(false)
+  })
+
+  it('fails the run on a deadline rather than wait on an unanswered ask forever', async () => {
+    native.stages = ['Requested']
+    const states: ScannedCodeState[] = []
+    const run = startScannedCodeRun(plan, '/tmp/store', http, state => states.push({ ...state }), {
+      sleep: noSleep,
+      // A budget nobody could answer in, injected rather than faked: the
+      // suite runs on real timers, and the check this proves is the same
+      // one a real 180 s budget drives.
+      unansweredRequestMs: 10,
+    })
+    run.askOtherDevices()
+    await run.finished
+    const final = states[states.length - 1]
+    expect(final.finished).toBe(true)
+    expect(final.failed).toBe(true)
+    expect(final.headline).toContain('unanswered')
+    // The flow this side opened is called off, so the peer's banner does
+    // not outlive the run.
+    expect(native.cancelled).toEqual([FLOW])
   })
 })
