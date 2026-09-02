@@ -60,6 +60,9 @@ const stage: VerificationStage = 'keys-exchanged'
 // by declaration order and this one was added last, so nothing already
 // decoded changed meaning -- and it is a minor version bump rather than a
 // break of the wire.
+// The assignment IS the assertion: this file is compiled, never run, and a
+// value nothing reads is exactly what a type test declares.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const scannedStage: VerificationStage = 'code-scanned'
 
 // `SenderVerification` is CLOSED too, and closed in two places at once: the

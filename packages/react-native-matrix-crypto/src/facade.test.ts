@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CryptoScopeId, SasMaterial, SyncDelta, VerificationStage } from './types'
+import type {
+  CryptoScopeId,
+  SasMaterial,
+  SyncDelta,
+  VerificationStage,
+} from './types'
 import { asCryptoScopeId } from './types'
 import type { CryptoError } from './errors'
 import { isCryptoError } from './errors'
@@ -88,7 +93,9 @@ const scope = asCryptoScopeId('!scope:example.org')
  * reached.
  */
 const { observer } = vi.hoisted(() => ({
-  observer: { current: undefined as { onSignal: (signal: unknown) => void } | undefined },
+  observer: {
+    current: undefined as { onSignal: (signal: unknown) => void } | undefined,
+  },
 }))
 
 /**
@@ -113,8 +120,9 @@ function toArrayBuffer(text: string): ArrayBuffer {
 // `IdentityFfiError` in Task 2/3: `device_identity_keys` now reads the live,
 // store-backed machine, so its error is the machine's, not a throwaway
 // identity-only one.)
-vi.mock('./generated/matrix_crypto', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./generated/matrix_crypto')>()
+vi.mock('./generated/matrix_crypto', async importOriginal => {
+  const actual =
+    await importOriginal<typeof import('./generated/matrix_crypto')>()
   return {
     ...actual,
     // Stateless: both resolve to void on any input, so FIX 1's tests below
@@ -130,21 +138,29 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
     // happened. `CryptoSignal`'s own tagged classes come through
     // `importOriginal` untouched, so a signal this file feeds the observer is
     // built with the real generated constructor.
-    setCryptoObserver: vi.fn((installed: { onSignal: (signal: unknown) => void }) => {
-      observer.current = installed
-    }),
+    setCryptoObserver: vi.fn(
+      (installed: { onSignal: (signal: unknown) => void }) => {
+        observer.current = installed
+      },
+    ),
     clearCryptoObserver: vi.fn(() => {
       observer.current = undefined
     }),
     deviceIdentityKeys: vi.fn(async (userId: string) => {
-      if (userId !== 'bad-id') throw new Error('unexpected call in this fixture')
-      throw new actual.MachineFfiError.MalformedIdentifier({ detail: 'user id' })
+      if (userId !== 'bad-id')
+        throw new Error('unexpected call in this fixture')
+      throw new actual.MachineFfiError.MalformedIdentifier({
+        detail: 'user id',
+      })
     }),
     // Task 7: session, encrypt/decrypt and the outbound pump. Stateless
     // defaults, distinguishable from any input, so a test that forgets to
     // assert on `.mock.calls` would still notice values it did not supply
     // flowing back out.
-    receiveSyncChanges: vi.fn(async () => ({ toDeviceEventCount: 0, newSessionCount: 0 })),
+    receiveSyncChanges: vi.fn(async () => ({
+      toDeviceEventCount: 0,
+      newSessionCount: 0,
+    })),
     encryptEvent: vi.fn(async () => ({
       scope: '!native-scope:example.org',
       algorithm: 'm.native.algorithm',
@@ -166,7 +182,9 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
       senderVerification: actual.SenderVerification.UnsignedDevice,
     })),
     shareScopeKey: vi.fn(async () => undefined),
-    takeOutgoingRequests: vi.fn(async () => [{ id: 'req-1', kind: 'keys_upload', body: '{}' }]),
+    takeOutgoingRequests: vi.fn(async () => [
+      { id: 'req-1', kind: 'keys_upload', body: '{}' },
+    ]),
     markRequestFailed: vi.fn(async () => undefined),
     markRequestSent: vi.fn(async () => undefined),
     // Task 3: the verification surface. Stateless defaults again, and
@@ -203,8 +221,9 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
     // length check; the payload is deliberately not text, because the real
     // one is not either.
     verificationCode: vi.fn(async () => ({
-      payload: new Uint8Array([0x4d, 0x41, 0x54, 0x52, 0x49, 0x58, 0x02, 0x00, 0xfe, 0xff])
-        .buffer as ArrayBuffer,
+      payload: new Uint8Array([
+        0x4d, 0x41, 0x54, 0x52, 0x49, 0x58, 0x02, 0x00, 0xfe, 0xff,
+      ]).buffer as ArrayBuffer,
       width: 3,
       modules: [true, false, false, false, true, false, false, false, false],
     })),
@@ -215,7 +234,9 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
     // returned a promise would let a facade that forgot to make its own call
     // synchronous pass, and the whole point of the synchronous shape is that
     // an unawaited call cannot land after the flow it was meant to affect.
-    offerCodes: vi.fn((_capabilities: { canShow: boolean; canScan: boolean }) => undefined),
+    offerCodes: vi.fn(
+      (_capabilities: { canShow: boolean; canScan: boolean }) => undefined,
+    ),
     // The signing identity. Stateless defaults, and deliberately the
     // "nobody has asked" row rather than a served one: a test that forgot
     // to install the chain fake below gets the refusal the real core would
@@ -239,7 +260,9 @@ vi.mock('./generated/matrix_crypto', async (importOriginal) => {
     // provided coming back out. Every test that cares overrides them.
     createRecovery: vi.fn(async () => ({
       recoveryKey: 'native-recovery-key',
-      accountData: [{ eventType: 'm.native.account.data', content: '{"native":true}' }],
+      accountData: [
+        { eventType: 'm.native.account.data', content: '{"native":true}' },
+      ],
     })),
     recoverIdentity: vi.fn(async () => undefined),
   }
@@ -274,13 +297,17 @@ describe('the calls that reject in JavaScript rather than reaching native code',
   })
 
   it('rejects importSecrets with the same kind, on purpose rather than pending', async () => {
-    await expect(importSecrets(new Uint8Array([1, 2, 3]), 'passphrase')).rejects.toSatisfy(
+    await expect(
+      importSecrets(new Uint8Array([1, 2, 3]), 'passphrase'),
+    ).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'not_implemented',
     )
   })
 
   it('rejects restoreCryptoMachine, the one of the three still waiting on something', async () => {
-    await expect(restoreCryptoMachine(new Uint8Array([1, 2, 3]))).rejects.toSatisfy(
+    await expect(
+      restoreCryptoMachine(new Uint8Array([1, 2, 3])),
+    ).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'not_implemented',
     )
   })
@@ -324,7 +351,9 @@ describe('receiveSyncChanges wiring to the native layer', () => {
     presence: { events: [] },
     account_data: { events: [] },
     to_device: {
-      events: [{ sender: '@bob:example.org', type: 'm.room.encrypted', content: {} }],
+      events: [
+        { sender: '@bob:example.org', type: 'm.room.encrypted', content: {} },
+      ],
     },
     device_lists: { changed: ['@bob:example.org'], left: [] },
     device_one_time_keys_count: { signed_curve25519: 50 },
@@ -343,21 +372,30 @@ describe('receiveSyncChanges wiring to the native layer', () => {
 
     await expect(receiveSyncChanges(delta)).resolves.toBeUndefined()
 
-    expect(vi.mocked(nativeReceiveSyncChanges).mock.calls.at(-1)?.[0]).toBe(JSON.stringify(delta))
+    expect(vi.mocked(nativeReceiveSyncChanges).mock.calls.at(-1)?.[0]).toBe(
+      JSON.stringify(delta),
+    )
   })
 
   it('accepts an empty object -- the shape an ordinary, uneventful sync sends', async () => {
     await expect(receiveSyncChanges({})).resolves.toBeUndefined()
 
-    expect(vi.mocked(nativeReceiveSyncChanges).mock.calls.at(-1)?.[0]).toBe('{}')
+    expect(vi.mocked(nativeReceiveSyncChanges).mock.calls.at(-1)?.[0]).toBe(
+      '{}',
+    )
   })
 
   it('accepts a payload naming at least one recognised field alongside an unrecognised one, tolerating a homeserver-added field', async () => {
-    const delta = { changed_devices: { changed: [], left: [] }, some_future_sync_field: 'value' }
+    const delta = {
+      changed_devices: { changed: [], left: [] },
+      some_future_sync_field: 'value',
+    }
 
     await expect(receiveSyncChanges(delta)).resolves.toBeUndefined()
 
-    expect(vi.mocked(nativeReceiveSyncChanges).mock.calls.at(-1)?.[0]).toBe(JSON.stringify(delta))
+    expect(vi.mocked(nativeReceiveSyncChanges).mock.calls.at(-1)?.[0]).toBe(
+      JSON.stringify(delta),
+    )
   })
 
   /**
@@ -378,10 +416,14 @@ describe('receiveSyncChanges wiring to the native layer', () => {
     // the `encryptionSlice` describe block below for the same pattern.
     await expect(
       receiveSyncChanges({ toDeviceEvents: [] } as unknown as SyncDelta),
-    ).rejects.toSatisfy((e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload')
+    ).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
+    )
     await expect(
       receiveSyncChanges({ nonsense: true } as unknown as SyncDelta),
-    ).rejects.toSatisfy((e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload')
+    ).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
+    )
 
     expect(nativeReceiveSyncChanges).not.toHaveBeenCalled()
   })
@@ -407,7 +449,9 @@ describe('receiveSyncChanges wiring to the native layer', () => {
     // the type, has to be the one that actually stops it.
     await expect(
       receiveSyncChanges(SYNC_RESPONSE as unknown as SyncDelta),
-    ).rejects.toSatisfy((e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload')
+    ).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
+    )
 
     expect(nativeReceiveSyncChanges).not.toHaveBeenCalled()
   })
@@ -442,7 +486,9 @@ describe('receiveSyncChanges wiring to the native layer', () => {
     for (const [field, value] of Object.entries(syncDelta)) {
       vi.mocked(nativeReceiveSyncChanges).mockClear()
 
-      await expect(receiveSyncChanges({ [field]: value })).resolves.toBeUndefined()
+      await expect(
+        receiveSyncChanges({ [field]: value }),
+      ).resolves.toBeUndefined()
 
       expect(nativeReceiveSyncChanges).toHaveBeenCalledOnce()
     }
@@ -461,7 +507,9 @@ describe('receiveSyncChanges wiring to the native layer', () => {
   it('rejects with malformed_payload before ever calling native, when syncDelta stringifies to undefined', async () => {
     vi.mocked(nativeReceiveSyncChanges).mockClear()
 
-    await expect(receiveSyncChanges(undefined as unknown as SyncDelta)).rejects.toSatisfy(
+    await expect(
+      receiveSyncChanges(undefined as unknown as SyncDelta),
+    ).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
     )
 
@@ -490,8 +538,12 @@ describe('encryptionSlice', () => {
   })
 
   it('omits absent fields rather than passing undefined', () => {
-    expect(encryptionSlice({ next_batch: 'x' })).toEqual({ next_batch_token: 'x' })
-    expect(Object.keys(encryptionSlice({ next_batch: 'x' }))).toEqual(['next_batch_token'])
+    expect(encryptionSlice({ next_batch: 'x' })).toEqual({
+      next_batch_token: 'x',
+    })
+    expect(Object.keys(encryptionSlice({ next_batch: 'x' }))).toEqual([
+      'next_batch_token',
+    ])
   })
 
   // The two tests below pin the behaviour that separates this helper from the
@@ -543,7 +595,10 @@ describe('encryptionSlice', () => {
     // `null` is present. Whether native then rejects it is native's business;
     // silently deciding here that the homeserver meant to omit it is not.
     const slice = encryptionSlice({ device_lists: null, next_batch: null })
-    expect(Object.keys(slice).sort()).toEqual(['changed_devices', 'next_batch_token'])
+    expect(Object.keys(slice).sort()).toEqual([
+      'changed_devices',
+      'next_batch_token',
+    ])
     expect(slice.changed_devices).toBeNull()
   })
 
@@ -551,7 +606,9 @@ describe('encryptionSlice', () => {
     // The point of this test: the helper and the guard must agree. An empty
     // sync is the shape most syncs have, and a helper that produced a payload
     // its own library rejects would fail here rather than in a product.
-    await expect(receiveSyncChanges(encryptionSlice({ rooms: {} }))).resolves.toBeUndefined()
+    await expect(
+      receiveSyncChanges(encryptionSlice({ rooms: {} })),
+    ).resolves.toBeUndefined()
   })
 
   it('still rejects a camelCase payload', async () => {
@@ -581,7 +638,9 @@ describe('encryptEvent wiring to the native layer', () => {
     expect(envelope.sender).toBe('@native-sender:example.org')
     // ArrayBuffer -> Uint8Array, the shape EventEnvelope promises.
     expect(envelope.ciphertext).toBeInstanceOf(Uint8Array)
-    expect(new TextDecoder().decode(envelope.ciphertext)).toBe('native-ciphertext')
+    expect(new TextDecoder().decode(envelope.ciphertext)).toBe(
+      'native-ciphertext',
+    )
   })
 
   /**
@@ -639,7 +698,9 @@ describe('encryptEvent wiring to the native layer', () => {
   it('rejects with malformed_payload before ever calling native, when payload stringifies to undefined', async () => {
     vi.mocked(nativeEncryptEvent).mockClear()
 
-    await expect(encryptEvent(scope, 'm.room.message', undefined)).rejects.toSatisfy(
+    await expect(
+      encryptEvent(scope, 'm.room.message', undefined),
+    ).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
     )
 
@@ -649,7 +710,11 @@ describe('encryptEvent wiring to the native layer', () => {
 
 describe('decryptEvent wiring to the native layer', () => {
   it('forwards scope and the JSON-stringified rawEvent verbatim, and rebuilds every field of the returned envelope', async () => {
-    const event = { type: 'm.room.encrypted', sender: '@bob:example.org', content: { algorithm: 'm.native.algorithm' } }
+    const event = {
+      type: 'm.room.encrypted',
+      sender: '@bob:example.org',
+      content: { algorithm: 'm.native.algorithm' },
+    }
 
     const envelope = await decryptEvent(scope, event)
 
@@ -658,7 +723,9 @@ describe('decryptEvent wiring to the native layer', () => {
     expect(call?.[1]).toBe(JSON.stringify(event))
 
     expect(envelope.ciphertext).toBeInstanceOf(Uint8Array)
-    expect(new TextDecoder().decode(envelope.ciphertext)).toBe('native-plaintext')
+    expect(new TextDecoder().decode(envelope.ciphertext)).toBe(
+      'native-plaintext',
+    )
   })
 
   /**
@@ -676,7 +743,9 @@ describe('decryptEvent wiring to the native layer', () => {
   it('rejects with malformed_identifier before ever calling native, when scope is not actually a string at runtime', async () => {
     vi.mocked(nativeDecryptEvent).mockClear()
 
-    await expect(decryptEvent(undefined as unknown as CryptoScopeId, {})).rejects.toSatisfy(
+    await expect(
+      decryptEvent(undefined as unknown as CryptoScopeId, {}),
+    ).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'malformed_identifier',
     )
 
@@ -793,7 +862,9 @@ describe('decryptEvent wiring to the native layer', () => {
       state: 'unverified',
       reason: 'mismatched_sender',
     })
-    expect(impersonated.senderVerification).not.toEqual(ordinary.senderVerification)
+    expect(impersonated.senderVerification).not.toEqual(
+      ordinary.senderVerification,
+    )
 
     // Every other field is identical, so the difference above is the field
     // under test and not something that leaked in beside it.
@@ -937,7 +1008,9 @@ describe('decryptEvent wiring to the native layer', () => {
 
 describe('shareScopeKey wiring to the native layer', () => {
   it('forwards scope and userIds verbatim', async () => {
-    await expect(shareScopeKey(scope, ['@bob:example.org', '@carol:example.org'])).resolves.toBeUndefined()
+    await expect(
+      shareScopeKey(scope, ['@bob:example.org', '@carol:example.org']),
+    ).resolves.toBeUndefined()
 
     const call = vi.mocked(nativeShareScopeKey).mock.calls.at(-1)
     expect(call?.[0]).toBe(scope)
@@ -955,7 +1028,9 @@ describe('takeOutgoingRequests wiring to the native layer', () => {
 
 describe('markRequestSent wiring to the native layer', () => {
   it('forwards id and responseJson verbatim', async () => {
-    await expect(markRequestSent('req-1', '{"ok":true}')).resolves.toBeUndefined()
+    await expect(
+      markRequestSent('req-1', '{"ok":true}'),
+    ).resolves.toBeUndefined()
 
     const call = vi.mocked(nativeMarkRequestSent).mock.calls.at(-1)
     expect(call?.[0]).toBe('req-1')
@@ -1036,7 +1111,9 @@ describe('getDeviceIdentityKeys happy path', () => {
  */
 describe('getDeviceIdentityKeys against a real MalformedIdentifier failure', () => {
   it('maps it to kind malformed_identifier and keeps the Rust diagnostic, not unknown', async () => {
-    const err = await getDeviceIdentityKeys('bad-id', 'DEVICE1').catch((e: unknown) => e)
+    const err = await getDeviceIdentityKeys('bad-id', 'DEVICE1').catch(
+      (e: unknown) => e,
+    )
     expect(isCryptoError(err)).toBe(true)
     if (!isCryptoError(err)) throw err
     expect(err.kind).toBe('malformed_identifier')
@@ -1064,9 +1141,10 @@ describe('storePassphrase wiring to the native layer', () => {
         storePassphrase: 'correct horse battery staple',
       }),
     ).resolves.toBeUndefined()
-    expect(vi.mocked(nativeCreateCryptoMachine).mock.calls.at(-1)?.[0].storePassphrase).toBe(
-      'correct horse battery staple',
-    )
+    expect(
+      vi.mocked(nativeCreateCryptoMachine).mock.calls.at(-1)?.[0]
+        .storePassphrase,
+    ).toBe('correct horse battery staple')
 
     await expect(
       createCryptoMachine({
@@ -1080,7 +1158,10 @@ describe('storePassphrase wiring to the native layer', () => {
     // (UniFFI's `Option<String>`), never the literal `null` -- asserted
     // explicitly so a future regression that forwards `null` verbatim fails
     // here rather than at the native boundary this test cannot reach.
-    expect(vi.mocked(nativeCreateCryptoMachine).mock.calls.at(-1)?.[0].storePassphrase).toBeUndefined()
+    expect(
+      vi.mocked(nativeCreateCryptoMachine).mock.calls.at(-1)?.[0]
+        .storePassphrase,
+    ).toBeUndefined()
   })
 
   it('openCryptoStore forwards a real passphrase, and translates an explicit null to undefined rather than throwing', async () => {
@@ -1092,9 +1173,9 @@ describe('storePassphrase wiring to the native layer', () => {
         storePassphrase: 'correct horse battery staple',
       }),
     ).resolves.toBeUndefined()
-    expect(vi.mocked(nativeOpenCryptoStore).mock.calls.at(-1)?.[0].storePassphrase).toBe(
-      'correct horse battery staple',
-    )
+    expect(
+      vi.mocked(nativeOpenCryptoStore).mock.calls.at(-1)?.[0].storePassphrase,
+    ).toBe('correct horse battery staple')
 
     await expect(
       openCryptoStore({
@@ -1104,7 +1185,9 @@ describe('storePassphrase wiring to the native layer', () => {
         storePassphrase: null,
       }),
     ).resolves.toBeUndefined()
-    expect(vi.mocked(nativeOpenCryptoStore).mock.calls.at(-1)?.[0].storePassphrase).toBeUndefined()
+    expect(
+      vi.mocked(nativeOpenCryptoStore).mock.calls.at(-1)?.[0].storePassphrase,
+    ).toBeUndefined()
   })
 })
 
@@ -1157,13 +1240,17 @@ beforeEach(() => {
   vi.mocked(nativeRequestVerification).mockReset()
   vi.mocked(nativeRequestVerification).mockResolvedValue('native-flow-id')
   vi.mocked(nativeRequestSelfVerification).mockReset()
-  vi.mocked(nativeRequestSelfVerification).mockResolvedValue('native-self-flow-id')
+  vi.mocked(nativeRequestSelfVerification).mockResolvedValue(
+    'native-self-flow-id',
+  )
   vi.mocked(nativeAcceptVerification).mockReset()
   vi.mocked(nativeAcceptVerification).mockResolvedValue(undefined)
   vi.mocked(nativeStartVerificationComparison).mockReset()
   vi.mocked(nativeStartVerificationComparison).mockResolvedValue(undefined)
   vi.mocked(nativeVerificationStage).mockReset()
-  vi.mocked(nativeVerificationStage).mockResolvedValue(NativeVerificationStage.Requested)
+  vi.mocked(nativeVerificationStage).mockResolvedValue(
+    NativeVerificationStage.Requested,
+  )
   vi.mocked(nativeVerificationMaterial).mockReset()
   vi.mocked(nativeVerificationMaterial).mockResolvedValue({
     emoji: [{ symbol: 'native-symbol', description: 'native-word' }],
@@ -1177,8 +1264,9 @@ beforeEach(() => {
   vi.mocked(nativeCancelVerification).mockResolvedValue(undefined)
   vi.mocked(nativeVerificationCode).mockReset()
   vi.mocked(nativeVerificationCode).mockResolvedValue({
-    payload: new Uint8Array([0x4d, 0x41, 0x54, 0x52, 0x49, 0x58, 0x02, 0x00, 0xfe, 0xff])
-      .buffer as ArrayBuffer,
+    payload: new Uint8Array([
+      0x4d, 0x41, 0x54, 0x52, 0x49, 0x58, 0x02, 0x00, 0xfe, 0xff,
+    ]).buffer as ArrayBuffer,
     width: 3,
     modules: [true, false, false, false, true, false, false, false, false],
   })
@@ -1244,7 +1332,9 @@ describe('getDeviceStatuses', () => {
       { deviceId: 'DEVICE-B', trust: 'recognized' },
       { deviceId: 'DEVICE-C', trust: 'verified' },
     ])
-    expect(vi.mocked(nativeDeviceStatuses).mock.calls.at(-1)?.[0]).toBe('@bob:example.org')
+    expect(vi.mocked(nativeDeviceStatuses).mock.calls.at(-1)?.[0]).toBe(
+      '@bob:example.org',
+    )
   })
 
   /**
@@ -1257,7 +1347,9 @@ describe('getDeviceStatuses', () => {
    */
   it('forwards the user id it was given', async () => {
     await getDeviceStatuses('@carol:example.org')
-    expect(vi.mocked(nativeDeviceStatuses).mock.calls.at(-1)?.[0]).toBe('@carol:example.org')
+    expect(vi.mocked(nativeDeviceStatuses).mock.calls.at(-1)?.[0]).toBe(
+      '@carol:example.org',
+    )
   })
 
   it('reports an empty list as an empty list rather than as an error', async () => {
@@ -1277,9 +1369,9 @@ describe('getDeviceStatuses', () => {
 
 describe('requestVerification, acceptVerification and cancelVerification', () => {
   it('forwards both identifiers and returns the flow id native minted', async () => {
-    await expect(requestVerification('@bob:example.org', 'BOBDEVICE')).resolves.toBe(
-      'native-flow-id',
-    )
+    await expect(
+      requestVerification('@bob:example.org', 'BOBDEVICE'),
+    ).resolves.toBe('native-flow-id')
     expect(vi.mocked(nativeRequestVerification).mock.calls.at(-1)).toEqual([
       '@bob:example.org',
       'BOBDEVICE',
@@ -1294,8 +1386,12 @@ describe('requestVerification, acceptVerification and cancelVerification', () =>
    * the variant. That entry is invisible to every Rust test.
    */
   it('reports a device this library has never been told about as unknown_device', async () => {
-    vi.mocked(nativeRequestVerification).mockRejectedValue(new MachineFfiError.UnknownDevice())
-    await expect(requestVerification('@bob:example.org', 'NOSUCHDEVICE')).rejects.toSatisfy(
+    vi.mocked(nativeRequestVerification).mockRejectedValue(
+      new MachineFfiError.UnknownDevice(),
+    )
+    await expect(
+      requestVerification('@bob:example.org', 'NOSUCHDEVICE'),
+    ).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'unknown_device',
     )
   })
@@ -1309,7 +1405,9 @@ describe('requestVerification, acceptVerification and cancelVerification', () =>
    */
   it('asks for no identifiers and returns the flow id native minted', async () => {
     await expect(requestSelfVerification()).resolves.toBe('native-self-flow-id')
-    expect(vi.mocked(nativeRequestSelfVerification).mock.calls.at(-1)).toEqual([])
+    expect(vi.mocked(nativeRequestSelfVerification).mock.calls.at(-1)).toEqual(
+      [],
+    )
     expect(requestSelfVerification.length).toBe(0)
   })
 
@@ -1341,21 +1439,29 @@ describe('requestVerification, acceptVerification and cancelVerification', () =>
 
   it('forwards the flow id to accept and to cancel', async () => {
     await expect(acceptVerification(FLOW)).resolves.toBeUndefined()
-    expect(vi.mocked(nativeAcceptVerification).mock.calls.at(-1)?.[0]).toBe(FLOW)
+    expect(vi.mocked(nativeAcceptVerification).mock.calls.at(-1)?.[0]).toBe(
+      FLOW,
+    )
 
     await expect(cancelVerification(FLOW)).resolves.toBeUndefined()
-    expect(vi.mocked(nativeCancelVerification).mock.calls.at(-1)?.[0]).toBe(FLOW)
+    expect(vi.mocked(nativeCancelVerification).mock.calls.at(-1)?.[0]).toBe(
+      FLOW,
+    )
   })
 
   it('reports an identifier that names no flow as unknown_flow rather than unknown', async () => {
-    vi.mocked(nativeAcceptVerification).mockRejectedValue(new MachineFfiError.UnknownFlow())
+    vi.mocked(nativeAcceptVerification).mockRejectedValue(
+      new MachineFfiError.UnknownFlow(),
+    )
     await expect(acceptVerification('never-a-flow')).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'unknown_flow',
     )
   })
 
   it('reports cancelling an already-cancelled flow as wrong_stage rather than resolving', async () => {
-    vi.mocked(nativeCancelVerification).mockRejectedValue(new MachineFfiError.WrongStage())
+    vi.mocked(nativeCancelVerification).mockRejectedValue(
+      new MachineFfiError.WrongStage(),
+    )
     await expect(cancelVerification(FLOW)).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'wrong_stage',
     )
@@ -1383,7 +1489,7 @@ describe('getVerificationStage', () => {
     // finding: a check that reports success without examining its target.
     // The generated enum is numeric, so its reverse mapping puts the
     // numbers in as keys too; only the names are members.
-    const everyNativeStage = Object.keys(NativeVerificationStage).filter((key) =>
+    const everyNativeStage = Object.keys(NativeVerificationStage).filter(key =>
       Number.isNaN(Number(key)),
     )
     expect(expected).toHaveLength(everyNativeStage.length)
@@ -1404,7 +1510,9 @@ describe('getVerificationStage', () => {
   })
 
   it('reports an identifier that names no flow as unknown_flow', async () => {
-    vi.mocked(nativeVerificationStage).mockRejectedValue(new MachineFfiError.UnknownFlow())
+    vi.mocked(nativeVerificationStage).mockRejectedValue(
+      new MachineFfiError.UnknownFlow(),
+    )
     await expect(getVerificationStage('never-a-flow')).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'unknown_flow',
     )
@@ -1413,8 +1521,12 @@ describe('getVerificationStage', () => {
 
 describe('getVerificationMaterial', () => {
   it('rebuilds the string from the native record, three separate decimals back into one tuple', async () => {
-    await expect(getVerificationMaterial(FLOW)).resolves.toEqual(NATIVE_MATERIAL)
-    expect(vi.mocked(nativeVerificationMaterial).mock.calls.at(-1)?.[0]).toBe(FLOW)
+    await expect(getVerificationMaterial(FLOW)).resolves.toEqual(
+      NATIVE_MATERIAL,
+    )
+    expect(vi.mocked(nativeVerificationMaterial).mock.calls.at(-1)?.[0]).toBe(
+      FLOW,
+    )
   })
 
   it('keeps an absent symbol form absent rather than turning it into an empty list', async () => {
@@ -1453,10 +1565,12 @@ describe('getVerificationMaterial', () => {
    * a machine that will never move.
    */
   it('rejects with material_not_ready, and not retriably, when the pump was never resolved', async () => {
-    vi.mocked(nativeVerificationMaterial).mockRejectedValue(new MachineFfiError.MaterialNotReady())
+    vi.mocked(nativeVerificationMaterial).mockRejectedValue(
+      new MachineFfiError.MaterialNotReady(),
+    )
 
     const rejection = await getVerificationMaterial(FLOW).then(
-      (material) => ({ resolved: material }),
+      material => ({ resolved: material }),
       (e: unknown) => ({ rejected: e }),
     )
 
@@ -1467,7 +1581,9 @@ describe('getVerificationMaterial', () => {
   })
 
   it('reports a flow that is over as wrong_stage, which is the kind that means it never will be ready', async () => {
-    vi.mocked(nativeVerificationMaterial).mockRejectedValue(new MachineFfiError.WrongStage())
+    vi.mocked(nativeVerificationMaterial).mockRejectedValue(
+      new MachineFfiError.WrongStage(),
+    )
     await expect(getVerificationMaterial(FLOW)).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'wrong_stage',
     )
@@ -1598,8 +1714,20 @@ describe('offering scannable codes at all', () => {
  */
 describe('the scannable code, out and back', () => {
   /** What the mocked native call hands back, as the facade must rebuild it. */
-  const NATIVE_PAYLOAD = new Uint8Array([0x4d, 0x41, 0x54, 0x52, 0x49, 0x58, 0x02, 0x00, 0xfe, 0xff])
-  const NATIVE_GRID = [true, false, false, false, true, false, false, false, false]
+  const NATIVE_PAYLOAD = new Uint8Array([
+    0x4d, 0x41, 0x54, 0x52, 0x49, 0x58, 0x02, 0x00, 0xfe, 0xff,
+  ])
+  const NATIVE_GRID = [
+    true,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+  ]
 
   it('hands back both forms of the code, with the payload as bytes and the grid in order', async () => {
     const code = await getVerificationCode(FLOW)
@@ -1623,19 +1751,25 @@ describe('the scannable code, out and back', () => {
    */
   it('carries bytes that are not valid text, unchanged', async () => {
     const code = await getVerificationCode(FLOW)
-    const throughAString = new TextEncoder().encode(new TextDecoder().decode(code.payload))
+    const throughAString = new TextEncoder().encode(
+      new TextDecoder().decode(code.payload),
+    )
     expect(Array.from(throughAString)).not.toEqual(Array.from(code.payload))
   })
 
   it('reports a peer that never offered to scan as code_not_offered, not as a stage', async () => {
-    vi.mocked(nativeVerificationCode).mockRejectedValue(new MachineFfiError.CodeNotOffered())
+    vi.mocked(nativeVerificationCode).mockRejectedValue(
+      new MachineFfiError.CodeNotOffered(),
+    )
     await expect(getVerificationCode(FLOW)).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'code_not_offered',
     )
   })
 
   it('reports a device holding no private signing keys by name rather than as an empty code', async () => {
-    vi.mocked(nativeVerificationCode).mockRejectedValue(new MachineFfiError.PrivateKeysNotHeld())
+    vi.mocked(nativeVerificationCode).mockRejectedValue(
+      new MachineFfiError.PrivateKeysNotHeld(),
+    )
     await expect(getVerificationCode(FLOW)).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'private_keys_not_held',
     )
@@ -1647,7 +1781,9 @@ describe('the scannable code, out and back', () => {
 
     const call = vi.mocked(nativeSubmitScannedCode).mock.calls.at(-1)
     expect(call?.[0]).toBe(FLOW)
-    expect(Array.from(new Uint8Array(call?.[1] as ArrayBuffer))).toEqual([1, 2, 3, 250, 251])
+    expect(Array.from(new Uint8Array(call?.[1] as ArrayBuffer))).toEqual([
+      1, 2, 3, 250, 251,
+    ])
   })
 
   /**
@@ -1661,7 +1797,9 @@ describe('the scannable code, out and back', () => {
     const scanned = backing.subarray(2, 5)
     await submitScannedCode(FLOW, scanned)
 
-    const sent = vi.mocked(nativeSubmitScannedCode).mock.calls.at(-1)?.[1] as ArrayBuffer
+    const sent = vi
+      .mocked(nativeSubmitScannedCode)
+      .mock.calls.at(-1)?.[1] as ArrayBuffer
     expect(Array.from(new Uint8Array(sent))).toEqual([1, 2, 3])
   })
 
@@ -1677,7 +1815,9 @@ describe('the scannable code, out and back', () => {
     ['ScannedCodeForAnotherFlow', 'scanned_code_for_another_flow'],
     ['ScannedCodeRefused', 'scanned_code_refused'],
   ] as const)('reports %s as kind %s', async (variant, kind) => {
-    vi.mocked(nativeSubmitScannedCode).mockRejectedValue(new MachineFfiError[variant]())
+    vi.mocked(nativeSubmitScannedCode).mockRejectedValue(
+      new MachineFfiError[variant](),
+    )
     const rejection = await submitScannedCode(FLOW, new Uint8Array([1])).then(
       () => ({ resolved: true }),
       (e: unknown) => ({ rejected: e }),
@@ -1700,7 +1840,9 @@ describe('the scannable code, out and back', () => {
     ] as const
     const kinds: string[] = []
     for (const variant of variants) {
-      vi.mocked(nativeSubmitScannedCode).mockRejectedValue(new MachineFfiError[variant]())
+      vi.mocked(nativeSubmitScannedCode).mockRejectedValue(
+        new MachineFfiError[variant](),
+      )
       kinds.push(
         await submitScannedCode(FLOW, new Uint8Array([1])).then(
           () => 'resolved',
@@ -1719,7 +1861,9 @@ describe('the scannable code, out and back', () => {
   })
 
   it('reports confirming a flow nobody has scanned as wrong_stage', async () => {
-    vi.mocked(nativeConfirmScan).mockRejectedValue(new MachineFfiError.WrongStage())
+    vi.mocked(nativeConfirmScan).mockRejectedValue(
+      new MachineFfiError.WrongStage(),
+    )
     await expect(confirmScan(FLOW)).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'wrong_stage',
     )
@@ -1728,8 +1872,12 @@ describe('the scannable code, out and back', () => {
 
 describe('confirmVerification', () => {
   it('confirms when the material offered is the material the flow is showing', async () => {
-    await expect(confirmVerification(FLOW, NATIVE_MATERIAL)).resolves.toBeUndefined()
-    expect(vi.mocked(nativeConfirmVerification).mock.calls.at(-1)?.[0]).toBe(FLOW)
+    await expect(
+      confirmVerification(FLOW, NATIVE_MATERIAL),
+    ).resolves.toBeUndefined()
+    expect(vi.mocked(nativeConfirmVerification).mock.calls.at(-1)?.[0]).toBe(
+      FLOW,
+    )
   })
 
   /**
@@ -1744,15 +1892,25 @@ describe('confirmVerification', () => {
    */
   it('refuses material that is not what the flow is showing, without confirming anything', async () => {
     await expect(
-      confirmVerification(FLOW, { ...NATIVE_MATERIAL, decimals: [1111, 2222, 9999] }),
-    ).rejects.toSatisfy((e: unknown) => isCryptoError(e) && e.kind === 'material_mismatch')
+      confirmVerification(FLOW, {
+        ...NATIVE_MATERIAL,
+        decimals: [1111, 2222, 9999],
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'material_mismatch',
+    )
     expect(nativeConfirmVerification).not.toHaveBeenCalled()
   })
 
   it('refuses material whose digits are the right ones in the wrong order', async () => {
     await expect(
-      confirmVerification(FLOW, { ...NATIVE_MATERIAL, decimals: [2222, 1111, 3333] }),
-    ).rejects.toSatisfy((e: unknown) => isCryptoError(e) && e.kind === 'material_mismatch')
+      confirmVerification(FLOW, {
+        ...NATIVE_MATERIAL,
+        decimals: [2222, 1111, 3333],
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'material_mismatch',
+    )
     expect(nativeConfirmVerification).not.toHaveBeenCalled()
   })
 
@@ -1762,7 +1920,9 @@ describe('confirmVerification', () => {
         decimals: [1111, 2222, 3333],
         emoji: [{ symbol: 'a-different-symbol', description: 'native-word' }],
       }),
-    ).rejects.toSatisfy((e: unknown) => isCryptoError(e) && e.kind === 'material_mismatch')
+    ).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'material_mismatch',
+    )
     expect(nativeConfirmVerification).not.toHaveBeenCalled()
   })
 
@@ -1783,7 +1943,9 @@ describe('confirmVerification', () => {
    * nothing to show.
    */
   it('rejects with material_not_ready, and confirms nothing, when the pump was never resolved', async () => {
-    vi.mocked(nativeVerificationMaterial).mockRejectedValue(new MachineFfiError.MaterialNotReady())
+    vi.mocked(nativeVerificationMaterial).mockRejectedValue(
+      new MachineFfiError.MaterialNotReady(),
+    )
 
     await expect(confirmVerification(FLOW, NATIVE_MATERIAL)).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'material_not_ready',
@@ -1792,7 +1954,9 @@ describe('confirmVerification', () => {
   })
 
   it('passes a native rejection from the confirmation itself through as its own kind', async () => {
-    vi.mocked(nativeConfirmVerification).mockRejectedValue(new MachineFfiError.WrongStage())
+    vi.mocked(nativeConfirmVerification).mockRejectedValue(
+      new MachineFfiError.WrongStage(),
+    )
     await expect(confirmVerification(FLOW, NATIVE_MATERIAL)).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'wrong_stage',
     )
@@ -1819,7 +1983,9 @@ describe('confirmVerification', () => {
 describe('startVerificationComparison, and the two conditions its own native error folds', () => {
   it('starts the comparison and forwards the flow id when nothing is wrong', async () => {
     await expect(startVerificationComparison(FLOW)).resolves.toBeUndefined()
-    expect(vi.mocked(nativeStartVerificationComparison).mock.calls.at(-1)?.[0]).toBe(FLOW)
+    expect(
+      vi.mocked(nativeStartVerificationComparison).mock.calls.at(-1)?.[0],
+    ).toBe(FLOW)
     // The stage is not read on the success path: it costs a native call,
     // and there is nothing to tell apart.
     expect(nativeVerificationStage).not.toHaveBeenCalled()
@@ -1829,14 +1995,20 @@ describe('startVerificationComparison, and the two conditions its own native err
     [NativeVerificationStage.Started],
     [NativeVerificationStage.KeysExchanged],
     [NativeVerificationStage.Confirmed],
-  ])('reports comparison_already_started when the peer got there first (stage %i)', async (stage) => {
-    vi.mocked(nativeStartVerificationComparison).mockRejectedValue(new MachineFfiError.WrongStage())
-    vi.mocked(nativeVerificationStage).mockResolvedValue(stage)
+  ])(
+    'reports comparison_already_started when the peer got there first (stage %i)',
+    async stage => {
+      vi.mocked(nativeStartVerificationComparison).mockRejectedValue(
+        new MachineFfiError.WrongStage(),
+      )
+      vi.mocked(nativeVerificationStage).mockResolvedValue(stage)
 
-    await expect(startVerificationComparison(FLOW)).rejects.toSatisfy(
-      (e: unknown) => isCryptoError(e) && e.kind === 'comparison_already_started',
-    )
-  })
+      await expect(startVerificationComparison(FLOW)).rejects.toSatisfy(
+        (e: unknown) =>
+          isCryptoError(e) && e.kind === 'comparison_already_started',
+      )
+    },
+  )
 
   /**
    * The same kind, from a flow that has no comparison behind it at all.
@@ -1851,20 +2023,28 @@ describe('startVerificationComparison, and the two conditions its own native err
    * `code-scanned` assertion below.
    */
   it('reports comparison_already_started for a flow that went to a scanned code', async () => {
-    vi.mocked(nativeStartVerificationComparison).mockRejectedValue(new MachineFfiError.WrongStage())
+    vi.mocked(nativeStartVerificationComparison).mockRejectedValue(
+      new MachineFfiError.WrongStage(),
+    )
     // What a code flow reports before anybody scans: the core maps
     // `QrVerificationState::Started` to this stage, and says so at
     // `stage_of_code`.
-    vi.mocked(nativeVerificationStage).mockResolvedValue(NativeVerificationStage.Started)
+    vi.mocked(nativeVerificationStage).mockResolvedValue(
+      NativeVerificationStage.Started,
+    )
 
     await expect(startVerificationComparison(FLOW)).rejects.toSatisfy(
-      (e: unknown) => isCryptoError(e) && e.kind === 'comparison_already_started',
+      (e: unknown) =>
+        isCryptoError(e) && e.kind === 'comparison_already_started',
     )
   })
 
-  it.each([[NativeVerificationStage.Done], [NativeVerificationStage.Cancelled]])(
+  it.each([
+    [NativeVerificationStage.Done],
+    [NativeVerificationStage.Cancelled],
+  ])(
     'reports verification_ended when the flow is over (stage %i)',
-    async (stage) => {
+    async stage => {
       vi.mocked(nativeStartVerificationComparison).mockRejectedValue(
         new MachineFfiError.WrongStage(),
       )
@@ -1881,9 +2061,12 @@ describe('startVerificationComparison, and the two conditions its own native err
    * own: at `requested` the flow has simply not been agreed to yet, which
    * is what "not at a stage where this call applies" already says.
    */
-  it.each([[NativeVerificationStage.Requested], [NativeVerificationStage.Ready]])(
+  it.each([
+    [NativeVerificationStage.Requested],
+    [NativeVerificationStage.Ready],
+  ])(
     'leaves the rejection as wrong_stage for a flow that is neither under way nor over (stage %i)',
-    async (stage) => {
+    async stage => {
       vi.mocked(nativeStartVerificationComparison).mockRejectedValue(
         new MachineFfiError.WrongStage(),
       )
@@ -1905,8 +2088,12 @@ describe('startVerificationComparison, and the two conditions its own native err
    * for is `confirmScan`.
    */
   it('leaves the rejection as wrong_stage for a flow that became a code somebody scanned', async () => {
-    vi.mocked(nativeStartVerificationComparison).mockRejectedValue(new MachineFfiError.WrongStage())
-    vi.mocked(nativeVerificationStage).mockResolvedValue(NativeVerificationStage.CodeScanned)
+    vi.mocked(nativeStartVerificationComparison).mockRejectedValue(
+      new MachineFfiError.WrongStage(),
+    )
+    vi.mocked(nativeVerificationStage).mockResolvedValue(
+      NativeVerificationStage.CodeScanned,
+    )
 
     await expect(startVerificationComparison(FLOW)).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'wrong_stage',
@@ -1919,7 +2106,9 @@ describe('startVerificationComparison, and the two conditions its own native err
    * not exist would only produce a second error to swallow.
    */
   it('passes a rejection that is not wrong_stage through untouched, without reading the stage', async () => {
-    vi.mocked(nativeStartVerificationComparison).mockRejectedValue(new MachineFfiError.UnknownFlow())
+    vi.mocked(nativeStartVerificationComparison).mockRejectedValue(
+      new MachineFfiError.UnknownFlow(),
+    )
 
     await expect(startVerificationComparison('never-a-flow')).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'unknown_flow',
@@ -1933,8 +2122,12 @@ describe('startVerificationComparison, and the two conditions its own native err
    * be worse than the one it replaced.
    */
   it('keeps the original rejection when the stage cannot be read either', async () => {
-    vi.mocked(nativeStartVerificationComparison).mockRejectedValue(new MachineFfiError.WrongStage())
-    vi.mocked(nativeVerificationStage).mockRejectedValue(new MachineFfiError.UnknownFlow())
+    vi.mocked(nativeStartVerificationComparison).mockRejectedValue(
+      new MachineFfiError.WrongStage(),
+    )
+    vi.mocked(nativeVerificationStage).mockRejectedValue(
+      new MachineFfiError.UnknownFlow(),
+    )
 
     await expect(startVerificationComparison(FLOW)).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'wrong_stage',
@@ -1973,21 +2166,30 @@ describe('a verification by short string, driven end to end through the public s
   }
 
   function installFake(): FakeFlow {
-    const flow: FakeFlow = { stage: NativeVerificationStage.Requested, keyReported: false }
+    const flow: FakeFlow = {
+      stage: NativeVerificationStage.Requested,
+      keyReported: false,
+    }
 
     vi.mocked(nativeRequestVerification).mockImplementation(async () => {
       flow.stage = NativeVerificationStage.Requested
       return FLOW
     })
     vi.mocked(nativeAcceptVerification).mockImplementation(async () => {
-      if (flow.stage !== NativeVerificationStage.Requested) throw new MachineFfiError.WrongStage()
+      if (flow.stage !== NativeVerificationStage.Requested)
+        throw new MachineFfiError.WrongStage()
       flow.stage = NativeVerificationStage.Ready
     })
-    vi.mocked(nativeStartVerificationComparison).mockImplementation(async () => {
-      if (flow.stage !== NativeVerificationStage.Ready) throw new MachineFfiError.WrongStage()
-      flow.stage = NativeVerificationStage.Started
-    })
-    vi.mocked(nativeVerificationStage).mockImplementation(async () => flow.stage)
+    vi.mocked(nativeStartVerificationComparison).mockImplementation(
+      async () => {
+        if (flow.stage !== NativeVerificationStage.Ready)
+          throw new MachineFfiError.WrongStage()
+        flow.stage = NativeVerificationStage.Started
+      },
+    )
+    vi.mocked(nativeVerificationStage).mockImplementation(
+      async () => flow.stage,
+    )
     vi.mocked(nativeVerificationMaterial).mockImplementation(async () => {
       // The rule the whole surface turns on: no report, no string.
       if (flow.stage === NativeVerificationStage.Started && !flow.keyReported) {
@@ -1996,7 +2198,12 @@ describe('a verification by short string, driven end to end through the public s
       if (flow.stage !== NativeVerificationStage.KeysExchanged) {
         throw new MachineFfiError.WrongStage()
       }
-      return { emoji: undefined, decimalOne: 1111, decimalTwo: 2222, decimalThree: 3333 }
+      return {
+        emoji: undefined,
+        decimalOne: 1111,
+        decimalTwo: 2222,
+        decimalThree: 3333,
+      }
     })
     vi.mocked(nativeConfirmVerification).mockImplementation(async () => {
       if (flow.stage !== NativeVerificationStage.KeysExchanged) {
@@ -2054,7 +2261,9 @@ describe('a verification by short string, driven end to end through the public s
     )
     // And confirming is refused for the same reason, so a product cannot
     // skip the string and confirm anyway.
-    await expect(confirmVerification(id, { decimals: [1111, 2222, 3333] })).rejects.toSatisfy(
+    await expect(
+      confirmVerification(id, { decimals: [1111, 2222, 3333] }),
+    ).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'material_not_ready',
     )
 
@@ -2243,7 +2452,7 @@ describe('the signing identity chain, driven through the public surface', () => 
      * the library does not have.
      */
     const queueAccountQuery = (): void => {
-      if (owed.some((request) => request.kind === 'keys_query')) return
+      if (owed.some(request => request.kind === 'keys_query')) return
       queue('keys_query')
     }
 
@@ -2343,18 +2552,21 @@ describe('the signing identity chain, driven through the public surface', () => 
         if (identityKnown) publicationPending = false
       }
       if (kind === 'signing_keys_upload') chain.identityPublished = true
-      if (kind === 'signature_upload' && chain.comparisonDone) chain.signatureUploaded = true
+      if (kind === 'signature_upload' && chain.comparisonDone)
+        chain.signatureUploaded = true
       if (kind === 'to_device' && stage === NativeVerificationStage.Started) {
         keyReported = true
         stage = NativeVerificationStage.KeysExchanged
       }
     })
 
-    vi.mocked(nativeMarkRequestFailed).mockImplementation(async (id: string) => {
-      if (!pending.has(id)) throw new SessionFfiError.UnknownRequest()
-      // A refusal teaches the library nothing and consumes nothing: the
-      // entry stays, which is what lets a product loop on a 401.
-    })
+    vi.mocked(nativeMarkRequestFailed).mockImplementation(
+      async (id: string) => {
+        if (!pending.has(id)) throw new SessionFfiError.UnknownRequest()
+        // A refusal teaches the library nothing and consumes nothing: the
+        // entry stays, which is what lets a product loop on a 401.
+      },
+    )
 
     vi.mocked(nativeReceiveSyncChanges).mockImplementation(async () => {
       if (seedsInFlight) {
@@ -2413,7 +2625,9 @@ describe('the signing identity chain, driven through the public surface', () => 
         // becomes trusted, which is the point of cross-signing and the
         // behaviour change this release ships.
         deviceId: 'BOBPHONE',
-        trust: chainComplete() ? NativeTrustState.Verified : NativeTrustState.Unverified,
+        trust: chainComplete()
+          ? NativeTrustState.Verified
+          : NativeTrustState.Unverified,
       },
     ])
 
@@ -2438,26 +2652,37 @@ describe('the signing identity chain, driven through the public surface', () => 
       return 'self-flow-id'
     })
     vi.mocked(nativeAcceptVerification).mockImplementation(async () => {
-      if (stage !== NativeVerificationStage.Requested) throw new MachineFfiError.WrongStage()
+      if (stage !== NativeVerificationStage.Requested)
+        throw new MachineFfiError.WrongStage()
       stage = NativeVerificationStage.Ready
     })
-    vi.mocked(nativeStartVerificationComparison).mockImplementation(async () => {
-      if (stage !== NativeVerificationStage.Ready) throw new MachineFfiError.WrongStage()
-      stage = NativeVerificationStage.Started
-      // The key message. Reporting it sent is what produces a string, and
-      // reporting is the only thing that advances this flow.
-      queue('to_device')
-    })
+    vi.mocked(nativeStartVerificationComparison).mockImplementation(
+      async () => {
+        if (stage !== NativeVerificationStage.Ready)
+          throw new MachineFfiError.WrongStage()
+        stage = NativeVerificationStage.Started
+        // The key message. Reporting it sent is what produces a string, and
+        // reporting is the only thing that advances this flow.
+        queue('to_device')
+      },
+    )
     vi.mocked(nativeVerificationStage).mockImplementation(async () => stage)
     vi.mocked(nativeVerificationMaterial).mockImplementation(async () => {
       if (stage === NativeVerificationStage.Started && !keyReported) {
         throw new MachineFfiError.MaterialNotReady()
       }
-      if (stage !== NativeVerificationStage.KeysExchanged) throw new MachineFfiError.WrongStage()
-      return { emoji: undefined, decimalOne: 4444, decimalTwo: 5555, decimalThree: 6666 }
+      if (stage !== NativeVerificationStage.KeysExchanged)
+        throw new MachineFfiError.WrongStage()
+      return {
+        emoji: undefined,
+        decimalOne: 4444,
+        decimalTwo: 5555,
+        decimalThree: 6666,
+      }
     })
     vi.mocked(nativeConfirmVerification).mockImplementation(async () => {
-      if (stage !== NativeVerificationStage.KeysExchanged) throw new MachineFfiError.WrongStage()
+      if (stage !== NativeVerificationStage.KeysExchanged)
+        throw new MachineFfiError.WrongStage()
       stage = NativeVerificationStage.Confirmed
     })
 
@@ -2519,7 +2744,7 @@ describe('the signing identity chain, driven through the public surface', () => 
   async function pump(): Promise<string[]> {
     const batch = await takeOutgoingRequests()
     for (const request of batch) await markRequestSent(request.id, '{}')
-    return batch.map((request) => request.kind)
+    return batch.map(request => request.kind)
   }
 
   it('drives every published call of the chain, in order, and translates what it is handed', async () => {
@@ -2568,7 +2793,7 @@ describe('the signing identity chain, driven through the public surface', () => 
     // The batch is longer than the four requests the bootstrap owns, and
     // it is in the order that lets a signature follow the key it names.
     const batch = await takeOutgoingRequests()
-    expect(batch.map((request) => request.kind)).toEqual([
+    expect(batch.map(request => request.kind)).toEqual([
       'keys_upload',
       'signing_keys_upload',
       'signature_upload',
@@ -2577,8 +2802,11 @@ describe('the signing identity chain, driven through the public surface', () => 
     ])
 
     // ---- The authentication loop this library refuses to run for you ----
-    const signingKeys = batch.find((request) => request.kind === 'signing_keys_upload')
-    if (signingKeys === undefined) throw new Error('the bootstrap queued no signing keys upload')
+    const signingKeys = batch.find(
+      request => request.kind === 'signing_keys_upload',
+    )
+    if (signingKeys === undefined)
+      throw new Error('the bootstrap queued no signing keys upload')
 
     // `bootstrapCrossSigning` takes no argument, and these are the two
     // assertions that fail the day someone adds one: the challenge is only
@@ -2608,7 +2836,7 @@ describe('the signing identity chain, driven through the public surface', () => 
     await markRequestSent(signingKeys.id, '{}')
     expect(fake.chain.identityPublished).toBe(true)
 
-    for (const request of batch.filter((r) => r.kind !== 'signing_keys_upload')) {
+    for (const request of batch.filter(r => r.kind !== 'signing_keys_upload')) {
       await markRequestSent(request.id, '{}')
     }
 
@@ -2619,7 +2847,10 @@ describe('the signing identity chain, driven through the public surface', () => 
     // We have an identity and they have one, and we have no opinion of
     // theirs. The ordinary value for a peer running a mainstream client,
     // and also where an incomplete chain lands.
-    expect((await decryptEvent(scope, { type: 'm.room.encrypted' })).senderVerification).toEqual({
+    expect(
+      (await decryptEvent(scope, { type: 'm.room.encrypted' }))
+        .senderVerification,
+    ).toEqual({
       state: 'unverified',
       reason: 'unverified_identity',
     })
@@ -2654,7 +2885,10 @@ describe('the signing identity chain, driven through the public surface', () => 
       { deviceId: 'BOBDEVICE', trust: 'verified' },
       { deviceId: 'BOBPHONE', trust: 'unverified' },
     ])
-    expect((await decryptEvent(scope, { type: 'm.room.encrypted' })).senderVerification).toEqual({
+    expect(
+      (await decryptEvent(scope, { type: 'm.room.encrypted' }))
+        .senderVerification,
+    ).toEqual({
       state: 'unverified',
       reason: 'unverified_identity',
     })
@@ -2674,7 +2908,10 @@ describe('the signing identity chain, driven through the public surface', () => 
     // conjunction. What proves the library behaves this way is
     // `verified_sender.rs`'s
     // `omitting_the_second_key_fetch_leaves_the_sender_below_verified`.
-    expect((await decryptEvent(scope, { type: 'm.room.encrypted' })).senderVerification).toEqual({
+    expect(
+      (await decryptEvent(scope, { type: 'm.room.encrypted' }))
+        .senderVerification,
+    ).toEqual({
       state: 'unverified',
       reason: 'unverified_identity',
     })
@@ -2685,7 +2922,10 @@ describe('the signing identity chain, driven through the public surface', () => 
     expect(await pump()).toEqual(['keys_query'])
 
     // Only now.
-    expect((await decryptEvent(scope, { type: 'm.room.encrypted' })).senderVerification).toEqual({
+    expect(
+      (await decryptEvent(scope, { type: 'm.room.encrypted' }))
+        .senderVerification,
+    ).toEqual({
       state: 'verified',
     })
 
@@ -2753,8 +2993,12 @@ describe('the signing identity chain, driven through the public surface', () => 
     // does not. A map that folded them, or lost either entry, would make
     // both arrive as `'unknown'` and this assertion is what says so.
     const refusal = await bootstrapCrossSigning().catch((e: unknown) => e)
-    expect(isCryptoError(refusal) && refusal.kind).toBe('identity_already_exists')
-    expect(isCryptoError(refusal) && refusal.kind).not.toBe('account_keys_not_fetched')
+    expect(isCryptoError(refusal) && refusal.kind).toBe(
+      'identity_already_exists',
+    )
+    expect(isCryptoError(refusal) && refusal.kind).not.toBe(
+      'account_keys_not_fetched',
+    )
     expect(isCryptoError(refusal) && refusal.retriable).toBe(false)
 
     // And it queued nothing: unlike the first refusal, there is no request
@@ -2790,7 +3034,7 @@ describe('the signing identity chain, driven through the public surface', () => 
     // a product to do: the announcement below is produced inside a sync and
     // consumed there.
     const seen: CryptoSignal[] = []
-    const unsubscribe = onCryptoSignal((signal) => seen.push(signal))
+    const unsubscribe = onCryptoSignal(signal => seen.push(signal))
 
     // ---- Where a second login starts ----------------------------------
     //
@@ -2859,7 +3103,9 @@ describe('the signing identity chain, driven through the public surface', () => 
     expect(await pump()).toEqual(['to_device'])
 
     fake.theOtherDeviceAnswersTheSecretRequest()
-    await receiveSyncChanges({ to_device_events: [{ type: 'm.room.encrypted' }] })
+    await receiveSyncChanges({
+      to_device_events: [{ type: 'm.room.encrypted' }],
+    })
 
     expect(await getIdentityStatus()).toEqual({
       accountKeysFetched: true,
@@ -2873,7 +3119,9 @@ describe('the signing identity chain, driven through the public surface', () => 
 
     // And it was told, rather than having to ask on a timer. Announced for
     // our own user id, which is what sends a product to `getIdentityStatus`.
-    expect(seen).toEqual([{ kind: 'trust_changed', user: OUR_USER, state: 'verified' }])
+    expect(seen).toEqual([
+      { kind: 'trust_changed', user: OUR_USER, state: 'verified' },
+    ])
 
     unsubscribe()
   })
@@ -3032,7 +3280,9 @@ describe('the mock defaults survive every describe above', () => {
   })
 
   it('hands back the module-level pump batch, not a drained model queue', async () => {
-    expect(await takeOutgoingRequests()).toEqual([{ id: 'req-1', kind: 'keys_upload', body: '{}' }])
+    expect(await takeOutgoingRequests()).toEqual([
+      { id: 'req-1', kind: 'keys_upload', body: '{}' },
+    ])
   })
 
   it('hands back the module-level identity status and refusal', async () => {
@@ -3076,16 +3326,21 @@ describe('server-side recovery', () => {
     vi.mocked(nativeCreateRecovery).mockResolvedValue({
       recoveryKey: 'EsTx aaaa bbbb cccc',
       accountData: [
-        { eventType: KEY_DESCRIPTION, content: '{"algorithm":"m.secret_storage.v1.aes-hmac-sha2"}' },
+        {
+          eventType: KEY_DESCRIPTION,
+          content: '{"algorithm":"m.secret_storage.v1.aes-hmac-sha2"}',
+        },
         { eventType: DEFAULT_KEY, content: '{"key":"ABCD1234"}' },
       ],
     })
 
     const setup = await createRecovery('a passphrase', [])
 
-    expect(vi.mocked(nativeCreateRecovery).mock.calls.at(-1)?.[0]).toBe('a passphrase')
+    expect(vi.mocked(nativeCreateRecovery).mock.calls.at(-1)?.[0]).toBe(
+      'a passphrase',
+    )
     expect(setup.recoveryKey).toBe('EsTx aaaa bbbb cccc')
-    expect(setup.accountData.map((entry) => entry.eventType)).toEqual([
+    expect(setup.accountData.map(entry => entry.eventType)).toEqual([
       KEY_DESCRIPTION,
       DEFAULT_KEY,
     ])
@@ -3104,7 +3359,10 @@ describe('server-side recovery', () => {
 
     await createRecovery('a passphrase', [
       { eventType: DEFAULT_KEY, content: { key: 'OLDKEY' } },
-      { eventType: 'm.cross_signing.master', content: { encrypted: { OLDKEY: {} } } },
+      {
+        eventType: 'm.cross_signing.master',
+        content: { encrypted: { OLDKEY: {} } },
+      },
     ])
 
     // The whole point of the argument is that the refusal underneath can
@@ -3114,7 +3372,10 @@ describe('server-side recovery', () => {
     const [, existing] = vi.mocked(nativeCreateRecovery).mock.calls.at(-1) ?? []
     expect(existing).toEqual([
       { eventType: DEFAULT_KEY, content: '{"key":"OLDKEY"}' },
-      { eventType: 'm.cross_signing.master', content: '{"encrypted":{"OLDKEY":{}}}' },
+      {
+        eventType: 'm.cross_signing.master',
+        content: '{"encrypted":{"OLDKEY":{}}}',
+      },
     ])
     expect(typeof existing?.[0]?.content).toBe('string')
     expect(existing?.[0]?.eventType).toBe(DEFAULT_KEY)
@@ -3126,8 +3387,12 @@ describe('server-side recovery', () => {
     cyclic.self = cyclic
 
     await expect(
-      createRecovery('a passphrase', [{ eventType: DEFAULT_KEY, content: cyclic }]),
-    ).rejects.toSatisfy((e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload')
+      createRecovery('a passphrase', [
+        { eventType: DEFAULT_KEY, content: cyclic },
+      ]),
+    ).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
+    )
     expect(vi.mocked(nativeCreateRecovery).mock.calls.length).toBe(before)
   })
 
@@ -3135,15 +3400,22 @@ describe('server-side recovery', () => {
     await expect(
       recoverIdentity('a passphrase', [
         { eventType: DEFAULT_KEY, content: { key: 'ABCD1234' } },
-        { eventType: 'm.cross_signing.master', content: { encrypted: { ABCD1234: {} } } },
+        {
+          eventType: 'm.cross_signing.master',
+          content: { encrypted: { ABCD1234: {} } },
+        },
       ]),
     ).resolves.toBeUndefined()
 
-    const [secret, entries] = vi.mocked(nativeRecoverIdentity).mock.calls.at(-1) ?? []
+    const [secret, entries] =
+      vi.mocked(nativeRecoverIdentity).mock.calls.at(-1) ?? []
     expect(secret).toBe('a passphrase')
     expect(entries).toEqual([
       { eventType: DEFAULT_KEY, content: '{"key":"ABCD1234"}' },
-      { eventType: 'm.cross_signing.master', content: '{"encrypted":{"ABCD1234":{}}}' },
+      {
+        eventType: 'm.cross_signing.master',
+        content: '{"encrypted":{"ABCD1234":{}}}',
+      },
     ])
     // Named separately, because the assertion above would still pass if both
     // fields were strings for the wrong reason: the type must not have been
@@ -3158,8 +3430,12 @@ describe('server-side recovery', () => {
     cyclic.self = cyclic
 
     await expect(
-      recoverIdentity('a passphrase', [{ eventType: DEFAULT_KEY, content: cyclic }]),
-    ).rejects.toSatisfy((e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload')
+      recoverIdentity('a passphrase', [
+        { eventType: DEFAULT_KEY, content: cyclic },
+      ]),
+    ).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'malformed_payload',
+    )
     expect(vi.mocked(nativeRecoverIdentity).mock.calls.length).toBe(before)
   })
 
@@ -3174,12 +3450,16 @@ describe('server-side recovery', () => {
    * unknown", and every Rust test stays green.
    */
   it('tells a wrong secret apart from a recovery that cannot be read', async () => {
-    vi.mocked(nativeRecoverIdentity).mockRejectedValue(new MachineFfiError.RecoveryKeyIncorrect())
+    vi.mocked(nativeRecoverIdentity).mockRejectedValue(
+      new MachineFfiError.RecoveryKeyIncorrect(),
+    )
     await expect(recoverIdentity('the wrong one', [])).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'recovery_key_incorrect',
     )
 
-    vi.mocked(nativeRecoverIdentity).mockRejectedValue(new MachineFfiError.RecoveryDataMalformed())
+    vi.mocked(nativeRecoverIdentity).mockRejectedValue(
+      new MachineFfiError.RecoveryDataMalformed(),
+    )
     await expect(recoverIdentity('the right one', [])).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'recovery_data_malformed',
     )
@@ -3187,12 +3467,18 @@ describe('server-side recovery', () => {
     // Stated on its own, because the two assertions above could both be
     // rewritten to one constant by a defect that also rewrote the expected
     // kinds. This one cannot.
-    vi.mocked(nativeRecoverIdentity).mockRejectedValue(new MachineFfiError.RecoveryKeyIncorrect())
+    vi.mocked(nativeRecoverIdentity).mockRejectedValue(
+      new MachineFfiError.RecoveryKeyIncorrect(),
+    )
     const incorrect = await recoverIdentity('a', []).catch((e: unknown) => e)
-    vi.mocked(nativeRecoverIdentity).mockRejectedValue(new MachineFfiError.RecoveryDataMalformed())
+    vi.mocked(nativeRecoverIdentity).mockRejectedValue(
+      new MachineFfiError.RecoveryDataMalformed(),
+    )
     const malformed = await recoverIdentity('b', []).catch((e: unknown) => e)
     expect(isCryptoError(incorrect) && isCryptoError(malformed)).toBe(true)
-    expect((incorrect as CryptoError).kind).not.toBe((malformed as CryptoError).kind)
+    expect((incorrect as CryptoError).kind).not.toBe(
+      (malformed as CryptoError).kind,
+    )
 
     // Neither is retriable, and that is not an oversight. Retrying the same
     // call with the same secret fails the same way every time; what resolves
@@ -3219,26 +3505,40 @@ describe('server-side recovery', () => {
    * a separate way of being wrong.
    */
   it('reports a cleared pointer as not-set-up rather than as unreadable data', async () => {
-    vi.mocked(nativeRecoverIdentity).mockRejectedValue(new MachineFfiError.RecoveryNotSetUp())
+    vi.mocked(nativeRecoverIdentity).mockRejectedValue(
+      new MachineFfiError.RecoveryNotSetUp(),
+    )
     const cleared = await recoverIdentity('the right one', [
       { eventType: DEFAULT_KEY, content: {} },
     ]).catch((e: unknown) => e)
 
-    vi.mocked(nativeRecoverIdentity).mockRejectedValue(new MachineFfiError.RecoveryDataMalformed())
-    const malformed = await recoverIdentity('the right one', []).catch((e: unknown) => e)
+    vi.mocked(nativeRecoverIdentity).mockRejectedValue(
+      new MachineFfiError.RecoveryDataMalformed(),
+    )
+    const malformed = await recoverIdentity('the right one', []).catch(
+      (e: unknown) => e,
+    )
 
     expect(isCryptoError(cleared) && cleared.kind).toBe('recovery_not_set_up')
-    expect(isCryptoError(malformed) && malformed.kind).toBe('recovery_data_malformed')
-    expect((cleared as CryptoError).kind).not.toBe((malformed as CryptoError).kind)
+    expect(isCryptoError(malformed) && malformed.kind).toBe(
+      'recovery_data_malformed',
+    )
+    expect((cleared as CryptoError).kind).not.toBe(
+      (malformed as CryptoError).kind,
+    )
   })
 
   it('reports the other two refusals as their own kinds rather than as unknown', async () => {
-    vi.mocked(nativeCreateRecovery).mockRejectedValue(new MachineFfiError.PrivateKeysNotHeld())
+    vi.mocked(nativeCreateRecovery).mockRejectedValue(
+      new MachineFfiError.PrivateKeysNotHeld(),
+    )
     await expect(createRecovery('a passphrase', [])).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'private_keys_not_held',
     )
 
-    vi.mocked(nativeCreateRecovery).mockRejectedValue(new MachineFfiError.RecoveryAlreadyExists())
+    vi.mocked(nativeCreateRecovery).mockRejectedValue(
+      new MachineFfiError.RecoveryAlreadyExists(),
+    )
     await expect(createRecovery('a passphrase', [])).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'recovery_already_exists',
     )
@@ -3250,7 +3550,9 @@ describe('server-side recovery', () => {
       (e: unknown) => isCryptoError(e) && e.kind === 'account_keys_not_fetched',
     )
 
-    vi.mocked(nativeRecoverIdentity).mockRejectedValue(new MachineFfiError.RecoveryNotSetUp())
+    vi.mocked(nativeRecoverIdentity).mockRejectedValue(
+      new MachineFfiError.RecoveryNotSetUp(),
+    )
     await expect(recoverIdentity('a passphrase', [])).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'recovery_not_set_up',
     )
@@ -3270,7 +3572,9 @@ describe('server-side recovery', () => {
     await expect(exportSecrets('a passphrase')).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'not_implemented',
     )
-    await expect(importSecrets(new Uint8Array([1, 2, 3]), 'a passphrase')).rejects.toSatisfy(
+    await expect(
+      importSecrets(new Uint8Array([1, 2, 3]), 'a passphrase'),
+    ).rejects.toSatisfy(
       (e: unknown) => isCryptoError(e) && e.kind === 'not_implemented',
     )
   })

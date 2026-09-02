@@ -18,9 +18,12 @@ export function referenceBinding(): BridgeBinding {
         // fixture here once satisfied `toCryptoError`'s old, wrong reading of
         // that shape and hid a real production bug (Task 11) from every Node
         // test. See src/errors.ts's `variantNameFromMessage`/`stringField`.
-        const uniffiShapedError = Object.assign(new Error('ProbeFfiError.Rejected'), {
-          inner: { reason: 'input must not be empty' },
-        })
+        const uniffiShapedError = Object.assign(
+          new Error('ProbeFfiError.Rejected'),
+          {
+            inner: { reason: 'input must not be empty' },
+          },
+        )
         throw toCryptoError(uniffiShapedError)
       }
       // Called directly, on this call's own callback -- not dispatched to a
@@ -34,6 +37,6 @@ export function referenceBinding(): BridgeBinding {
       }
     },
     isCryptoError,
-    errorKind: (e) => (isCryptoError(e) ? e.kind : undefined),
+    errorKind: e => (isCryptoError(e) ? e.kind : undefined),
   }
 }

@@ -28,6 +28,19 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version-file: '.nvmrc', cache: yarn }
       - run: yarn install --frozen-lockfile
+      # Lint and formatting first. They take seconds, they need nothing built,
+      # and they are the two failures a contributor is most likely to arrive
+      # with -- there is no sense spending a Rust build to report them second.
+      #
+      # Neither is a `gate:*` script, so gate:readme does not require a row for
+      # them in the README's table; the paragraph under that table is what says
+      # they run, and this comment is the other half of that promise.
+      #
+      # `--max-warnings 0` lives in the `lint` script rather than on this line,
+      # so that `yarn lint` on a laptop and `yarn lint` here are the same
+      # command and cannot come to different answers.
+      - run: yarn lint
+      - run: yarn format:check
       - run: yarn gate:workspaces
       - run: yarn gate:boundary
       - run: yarn gate:drift

@@ -31,7 +31,11 @@ import { Pressable, ScrollView, StyleSheet, Text } from 'react-native'
 import { CodeMatrix } from './CodeMatrix'
 import { httpJson } from './levelTwoTransport'
 import type { LevelTwoPlan } from './levelTwoTransport'
-import { startScannedCodeRun, type ScannedCodeRun, type ScannedCodeState } from './scannedCodeRunner'
+import {
+  startScannedCodeRun,
+  type ScannedCodeRun,
+  type ScannedCodeState,
+} from './scannedCodeRunner'
 
 export function ScannedCodeWalkthrough({
   plan,
@@ -47,7 +51,7 @@ export function ScannedCodeWalkthrough({
     failed: false,
   })
   const runRef = useRef<ScannedCodeRun | null>(null)
-  const lastHeadlineRef = useRef<string>("")
+  const lastHeadlineRef = useRef<string>('')
   const mountedRef = useRef(true)
 
   useEffect(() => {
@@ -69,7 +73,9 @@ export function ScannedCodeWalkthrough({
         // material and the modules are the same secret drawn as squares.
         if (next.headline !== lastHeadlineRef.current) {
           lastHeadlineRef.current = next.headline
-          console.log(`SCANNED_CODE ${next.stage ?? 'no-stage'} ${next.headline}`)
+          console.log(
+            `SCANNED_CODE ${next.stage ?? 'no-stage'} ${next.headline}`,
+          )
         }
         if (mountedRef.current) setState(next)
       },
@@ -88,24 +94,35 @@ export function ScannedCodeWalkthrough({
     <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.title}>Verify by scanning a code</Text>
       <Text style={styles.intro}>
-        This screen shows a real code for a real verification, produced by this build on this
-        device. Point another Matrix client's camera at it. Nothing here decodes anything: this
-        library never sees a camera, and the squares below are the grid it handed over.
+        This screen shows a real code for a real verification, produced by this
+        build on this device. Point another Matrix client's camera at it.
+        Nothing here decodes anything: this library never sees a camera, and the
+        squares below are the grid it handed over.
       </Text>
 
-      <Text style={state.failed ? styles.headlineBad : styles.headlineGood}>{state.headline}</Text>
+      <Text style={state.failed ? styles.headlineBad : styles.headlineGood}>
+        {state.headline}
+      </Text>
       {state.detail ? <Text style={styles.detail}>{state.detail}</Text> : null}
 
       {state.code ? <CodeMatrix code={state.code} /> : null}
 
       {state.awaitingConfirmation ? (
-        <Pressable accessibilityRole="button" onPress={onConfirm} style={styles.confirmButton}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={onConfirm}
+          style={styles.confirmButton}
+        >
           <Text style={styles.confirmText}>Yes, that was my other device</Text>
         </Pressable>
       ) : null}
 
       {!state.finished && state.code === undefined ? (
-        <Pressable accessibilityRole="button" onPress={onAsk} style={styles.askButton}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={onAsk}
+          style={styles.askButton}
+        >
           <Text style={styles.askText}>Ask my other devices to verify</Text>
         </Pressable>
       ) : null}
@@ -116,7 +133,8 @@ export function ScannedCodeWalkthrough({
         <>
           <Text style={styles.label}>Symbol</Text>
           <Text style={styles.mono}>
-            {state.code.width} squares a side, {state.code.payload.length} bytes of payload
+            {state.code.width} squares a side, {state.code.payload.length} bytes
+            of payload
           </Text>
         </>
       ) : null}

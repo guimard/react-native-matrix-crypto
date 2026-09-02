@@ -14,7 +14,10 @@ const DECL =
 const IMPORTS = /import\s+(?:type\s+)?\{([^}]*)\}\s+from/gs
 
 const files = readdirSync(SRC).filter(
-  (f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && !f.endsWith('.type-test.ts'),
+  f =>
+    f.endsWith('.ts') &&
+    !f.endsWith('.test.ts') &&
+    !f.endsWith('.type-test.ts'),
 )
 
 // Refuse to pass having scanned nothing: a moved directory or a renamed
@@ -34,7 +37,12 @@ for (const file of files.sort()) {
   for (const m of text.matchAll(DECL)) scope.add(m[1])
   for (const m of text.matchAll(IMPORTS)) {
     for (const raw of m[1].split(',')) {
-      const name = raw.trim().replace(/^type\s+/, '').split(/\s+as\s+/).pop()?.trim()
+      const name = raw
+        .trim()
+        .replace(/^type\s+/, '')
+        .split(/\s+as\s+/)
+        .pop()
+        ?.trim()
       if (name) scope.add(name)
     }
   }
@@ -48,16 +56,26 @@ for (const file of files.sort()) {
   }
   for (const [name, lines] of [...missing].sort()) {
     broken += 1
-    console.error(`FAIL: ${file}:${lines.join(',')} {@link ${name}} resolves to nothing.`)
+    console.error(
+      `FAIL: ${file}:${lines.join(',')} {@link ${name}} resolves to nothing.`,
+    )
   }
 }
 
 if (broken > 0) {
   console.error('')
-  console.error(`      ${broken} name(s) linked and not in scope. \`{@link}\` resolves`)
-  console.error('      against the file it is written in, so add the name to that')
-  console.error("      file's type-only import block. Those blocks exist for this.")
+  console.error(
+    `      ${broken} name(s) linked and not in scope. \`{@link}\` resolves`,
+  )
+  console.error(
+    '      against the file it is written in, so add the name to that',
+  )
+  console.error(
+    "      file's type-only import block. Those blocks exist for this.",
+  )
   process.exit(1)
 }
 
-console.log(`PASS: ${checked} {@link} references across ${files.length} files all resolve`)
+console.log(
+  `PASS: ${checked} {@link} references across ${files.length} files all resolve`,
+)

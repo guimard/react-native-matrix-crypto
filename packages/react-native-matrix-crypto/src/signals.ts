@@ -18,6 +18,12 @@ import type { CryptoScopeId, TrustState } from './types'
 // so it adds no cycle either.
 // `tsconfig.json` sets `noUnusedLocals: false`, which is what lets an import
 // exist for a reader rather than for the compiler.
+/* eslint-disable @typescript-eslint/no-unused-vars -- The import below is
+   the paragraph above put into effect: these names are in scope so that the
+   `{@link}`s resolve, and `scripts/assert-doc-links.mjs` fails the build if
+   one of them is missing. ESLint sees an unused binding and would have them
+   deleted; the gate that owns this question wants them kept, so the rule is
+   switched off for this statement and nothing else in the file. */
 import type {
   acceptVerification,
   confirmScan,
@@ -29,6 +35,7 @@ import type {
   requestSelfVerification,
   submitScannedCode,
 } from './facade'
+/* eslint-enable @typescript-eslint/no-unused-vars */
 
 /**
  * Typed, silent by default. Takes no product decision. Spec sections 7, 11.
@@ -45,7 +52,12 @@ import type {
  */
 export type CryptoSignal =
   | { kind: 'trust_changed'; user: string; state: TrustState }
-  | { kind: 'verification_requested'; user: string; device: string; verificationId: string }
+  | {
+      kind: 'verification_requested'
+      user: string
+      device: string
+      verificationId: string
+    }
   | { kind: 'verification_completed'; verificationId: string }
   | { kind: 'unexpected_device'; scope: CryptoScopeId; user: string }
   | { kind: 'key_missing'; scope: CryptoScopeId }

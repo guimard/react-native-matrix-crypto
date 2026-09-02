@@ -46,7 +46,8 @@ function pillStyle(status: OutcomeStatus) {
 }
 
 function StatusPill({ status }: { status: OutcomeStatus }) {
-  const label = status === 'pending' ? 'running' : status === 'ok' ? 'done' : 'unexpected'
+  const label =
+    status === 'pending' ? 'running' : status === 'ok' ? 'done' : 'unexpected'
   return (
     <View style={[styles.pill, pillStyle(status)]}>
       <Text style={styles.pillText}>{label}</Text>
@@ -65,7 +66,10 @@ function StepCard({
   disabled: boolean
   onRerun: () => void
 }) {
-  const resolved: Outcome = outcome ?? { status: 'pending', headline: 'running…' }
+  const resolved: Outcome = outcome ?? {
+    status: 'pending',
+    headline: 'running…',
+  }
   return (
     <View style={styles.card}>
       <View style={styles.cardHeader}>
@@ -79,10 +83,18 @@ function StepCard({
       <Text style={styles.label}>Crosses the boundary</Text>
       <Text style={styles.boundary}>{step.crosses}</Text>
       <Text style={styles.label}>Result</Text>
-      <Text style={resolved.status === 'unexpected' ? styles.headlineBad : styles.headlineGood}>
+      <Text
+        style={
+          resolved.status === 'unexpected'
+            ? styles.headlineBad
+            : styles.headlineGood
+        }
+      >
         {resolved.headline}
       </Text>
-      {resolved.detail ? <Text style={styles.detail}>{resolved.detail}</Text> : null}
+      {resolved.detail ? (
+        <Text style={styles.detail}>{resolved.detail}</Text>
+      ) : null}
       <Pressable
         accessibilityRole="button"
         disabled={disabled}
@@ -96,7 +108,9 @@ function StepCard({
 }
 
 export function GuidedFlow({ storeDir }: { storeDir: string }) {
-  const [outcomes, setOutcomes] = useState<Partial<Record<FlowStep['id'], Outcome>>>({})
+  const [outcomes, setOutcomes] = useState<
+    Partial<Record<FlowStep['id'], Outcome>>
+  >({})
   // Starts true: the automatic run below begins the instant this component
   // mounts, before any button could possibly be pressed. This flag only
   // ever disables controls while a run -- automatic or manual -- is
@@ -104,7 +118,11 @@ export function GuidedFlow({ storeDir }: { storeDir: string }) {
   // subscription in ctxRef.
   const [busy, setBusy] = useState(true)
   const mountedRef = useRef(true)
-  const ctxRef = useRef<RunContext>({ unsubscribe: null, probeSignals: [], storeDir })
+  const ctxRef = useRef<RunContext>({
+    unsubscribe: null,
+    probeSignals: [],
+    storeDir,
+  })
 
   // Declared before the run effect below, so a `storeDir` that changed
   // between renders reaches the context before anything reads it. The ref's
@@ -159,11 +177,12 @@ export function GuidedFlow({ storeDir }: { storeDir: string }) {
   return (
     <View style={styles.container}>
       <Text style={styles.intro}>
-        {FLOW_STEPS.length} steps through this library's public API, from a bare connectivity check to real
-        cryptography, ending
-        honestly on what is not built yet. Every result below is live: computed by this build, on this device, right
-        now -- not a canned example. The steps below already ran once, automatically, when this screen opened;
-        "Run all" and each card's own re-run button only repeat that.
+        {FLOW_STEPS.length} steps through this library's public API, from a bare
+        connectivity check to real cryptography, ending honestly on what is not
+        built yet. Every result below is live: computed by this build, on this
+        device, right now -- not a canned example. The steps below already ran
+        once, automatically, when this screen opened; "Run all" and each card's
+        own re-run button only repeat that.
       </Text>
       <Pressable
         accessibilityRole="button"

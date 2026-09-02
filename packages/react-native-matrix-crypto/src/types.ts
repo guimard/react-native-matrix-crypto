@@ -11,6 +11,12 @@
 // typechecker, which resolves it. `tsconfig.json` sets
 // `noUnusedLocals: false`, which is what lets an import exist for a reader
 // rather than for the compiler.
+/* eslint-disable @typescript-eslint/no-unused-vars -- The import below is
+   the paragraph above put into effect: these names are in scope so that the
+   `{@link}`s resolve, and `scripts/assert-doc-links.mjs` fails the build if
+   one of them is missing. ESLint sees an unused binding and would have them
+   deleted; the gate that owns this question wants them kept, so the rule is
+   switched off for this statement and nothing else in the file. */
 import type {
   acceptVerification,
   confirmScan,
@@ -24,6 +30,7 @@ import type {
   startVerificationComparison,
   submitScannedCode,
 } from './facade'
+/* eslint-enable @typescript-eslint/no-unused-vars */
 
 /**
  * Opaque identifier for a cryptographic scope.
@@ -508,7 +515,11 @@ export type SenderVerification =
   // No device could be linked to the event: `'missing'` because none is in
   // the store, `'insecure_source'` because the key came from an imported
   // session, a legacy backup or an unsafe forward.
-  | { state: 'unverified'; reason: 'no_device'; problem: 'missing' | 'insecure_source' }
+  | {
+      state: 'unverified'
+      reason: 'no_device'
+      problem: 'missing' | 'insecure_source'
+    }
 
 /** Typed envelope for an encrypted or decrypted event. */
 export interface EventEnvelope {

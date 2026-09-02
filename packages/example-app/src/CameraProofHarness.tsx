@@ -70,7 +70,11 @@ import {
   type CameraProofProgress,
 } from './cameraProofLog'
 import { httpJson, type LevelTwoPlan } from './levelTwoTransport'
-import { startScannedCodeRun, type ScannedCodeRun, type ScannedCodeState } from './scannedCodeRunner'
+import {
+  startScannedCodeRun,
+  type ScannedCodeRun,
+  type ScannedCodeState,
+} from './scannedCodeRunner'
 
 /**
  * The one run this process performs, memoised at module scope -- the same
@@ -80,7 +84,13 @@ import { startScannedCodeRun, type ScannedCodeRun, type ScannedCodeState } from 
  */
 let cameraProofRun: Promise<unknown> | null = null
 
-export function CameraProofHarness({ plan, storeDir }: { plan: LevelTwoPlan; storeDir: string }) {
+export function CameraProofHarness({
+  plan,
+  storeDir,
+}: {
+  plan: LevelTwoPlan
+  storeDir: string
+}) {
   const { width, height } = useWindowDimensions()
   const [code, setCode] = useState<ScannableCode | undefined>(undefined)
   const [headline, setHeadline] = useState('Starting…')
@@ -88,7 +98,9 @@ export function CameraProofHarness({ plan, storeDir }: { plan: LevelTwoPlan; sto
 
   useEffect(() => {
     let cancelled = false
-    const progressRef: { current: CameraProofProgress } = { current: initialCameraProofProgress() }
+    const progressRef: { current: CameraProofProgress } = {
+      current: initialCameraProofProgress(),
+    }
     let lastStage: ScannedCodeState['stage']
     let loggedStarted = false
     let loggedCode = false
@@ -103,10 +115,12 @@ export function CameraProofHarness({ plan, storeDir }: { plan: LevelTwoPlan; sto
       // LEVEL2_SUMMARY.
       const checks = cameraProofChecks(progress)
       for (const check of checks) {
-        console.log(`CAMERA_PROOF_CHECK ${check.name} ${check.ok ? 'PASS' : 'FAIL'} ${check.detail}`)
+        console.log(
+          `CAMERA_PROOF_CHECK ${check.name} ${check.ok ? 'PASS' : 'FAIL'} ${check.detail}`,
+        )
       }
       console.log(
-        `CAMERA_PROOF_SUMMARY ${checks.filter((check) => check.ok).length}/${checks.length}`,
+        `CAMERA_PROOF_SUMMARY ${checks.filter(check => check.ok).length}/${checks.length}`,
       )
     }
 
@@ -121,13 +135,20 @@ export function CameraProofHarness({ plan, storeDir }: { plan: LevelTwoPlan; sto
       // each fact once.
       if (!loggedStarted) {
         loggedStarted = true
-        console.log('CAMERA_PROOF run_started waiting for the phone side to start a verification')
+        console.log(
+          'CAMERA_PROOF run_started waiting for the phone side to start a verification',
+        )
       }
       if (state.stage !== lastStage) {
         lastStage = state.stage
         console.log(`CAMERA_PROOF stage ${state.stage ?? 'none'}`)
       }
-      if (!loggedCode && !hadCode && progress.codeShown && state.code !== undefined) {
+      if (
+        !loggedCode &&
+        !hadCode &&
+        progress.codeShown &&
+        state.code !== undefined
+      ) {
         loggedCode = true
         console.log(
           `CAMERA_PROOF code_shown width=${state.code.width} payload_bytes=${state.code.payload.length}`,
@@ -144,7 +165,9 @@ export function CameraProofHarness({ plan, storeDir }: { plan: LevelTwoPlan; sto
         // `detail` -- nowhere a log could reach. Same rule as the rest of
         // this file: names and kinds, never an identifier or a payload byte.
         if (state.failed === true) {
-          console.log(`CAMERA_PROOF failed ${state.headline} ${state.detail ?? ''}`)
+          console.log(
+            `CAMERA_PROOF failed ${state.headline} ${state.detail ?? ''}`,
+          )
         }
         logChecks(progress)
       }

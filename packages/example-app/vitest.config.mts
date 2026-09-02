@@ -41,7 +41,9 @@ export default defineConfig({
       enforce: 'pre',
       resolveId(source: string, importer: string | undefined) {
         const from = (importer ?? '').replace(/\\/g, '/')
-        return source === './index.tsx' && from.endsWith(BOOTSTRAP_IMPORTER) ? BOOTSTRAP_STUB : null
+        return source === './index.tsx' && from.endsWith(BOOTSTRAP_IMPORTER)
+          ? BOOTSTRAP_STUB
+          : null
       },
       load(id: string) {
         return id === BOOTSTRAP_STUB ? 'export {}' : null

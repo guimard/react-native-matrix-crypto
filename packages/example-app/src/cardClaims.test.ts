@@ -46,7 +46,11 @@ import { runNotYet, type Outcome } from './flowRunners'
  * is a tripwire on the library's progress, not a description anyone has to
  * remember to update.
  */
-const NOT_IMPLEMENTED_TODAY = ['exportSecrets', 'importSecrets', 'restoreCryptoMachine']
+const NOT_IMPLEMENTED_TODAY = [
+  'exportSecrets',
+  'importSecrets',
+  'restoreCryptoMachine',
+]
 
 /** The card that names one of them and asserts it rejects. */
 const NOT_YET_CARD: FlowStep = FLOW_STEPS.find(step => step.id === 'notYet')!
@@ -62,8 +66,13 @@ const NOT_YET_CARD: FlowStep = FLOW_STEPS.find(step => step.id === 'notYet')!
  * without needing a correct call for each signature, which is what lets it
  * be a sweep rather than a hand-maintained table.
  */
-async function rejectsNotImplemented(fn: (...args: unknown[]) => unknown): Promise<boolean> {
-  const placeholders = ['placeholder', 'placeholder', 'placeholder'].slice(0, fn.length)
+async function rejectsNotImplemented(
+  fn: (...args: unknown[]) => unknown,
+): Promise<boolean> {
+  const placeholders = ['placeholder', 'placeholder', 'placeholder'].slice(
+    0,
+    fn.length,
+  )
   try {
     await fn(...placeholders)
     return false
@@ -78,9 +87,12 @@ describe('the notYet card claims a call rejects, so the call must reject', () =>
     // this is the assertion that fails, and it fails with the same words
     // the card put on screen: "Unexpected error shape".
     let outcome: Outcome | undefined
-    await runNotYet({ unsubscribe: null, probeSignals: [], storeDir: '' }, (_id, committed) => {
-      outcome = committed
-    })
+    await runNotYet(
+      { unsubscribe: null, probeSignals: [], storeDir: '' },
+      (_id, committed) => {
+        outcome = committed
+      },
+    )
 
     expect(outcome?.status, outcome?.headline).toBe('ok')
     expect(outcome?.headline).toContain('"not_implemented"')
@@ -91,7 +103,9 @@ describe('the notYet card claims a call rejects, so the call must reject', () =>
     // pointing at the same function, and a card that demonstrates one
     // function while the row below it exercises another is a worse lie than
     // a stale one, because it looks right.
-    const named = NOT_IMPLEMENTED_TODAY.filter(name => NOT_YET_CARD.call.includes(name))
+    const named = NOT_IMPLEMENTED_TODAY.filter(name =>
+      NOT_YET_CARD.call.includes(name),
+    )
     expect(named).toHaveLength(1)
   })
 })
@@ -101,12 +115,15 @@ describe('the library surface the cards describe', () => {
     const found: string[] = []
     for (const [name, value] of Object.entries(lib)) {
       if (typeof value !== 'function') continue
-      if (await rejectsNotImplemented(value as (...args: unknown[]) => unknown)) found.push(name)
+      if (await rejectsNotImplemented(value as (...args: unknown[]) => unknown))
+        found.push(name)
     }
 
     // Refuse to pass having swept nothing: an entry point that stopped
     // exporting functions would leave both sides empty and agree.
-    expect(Object.values(lib).filter(v => typeof v === 'function').length).toBeGreaterThan(10)
+    expect(
+      Object.values(lib).filter(v => typeof v === 'function').length,
+    ).toBeGreaterThan(10)
     expect(found.sort()).toEqual([...NOT_IMPLEMENTED_TODAY].sort())
   })
 
@@ -117,7 +134,9 @@ describe('the library surface the cards describe', () => {
     // the card would ever find out.
     const imported = new Set<string>()
     for (const step of FLOW_STEPS) {
-      const match = /import \{([^}]*)\} from 'react-native-matrix-crypto'/.exec(step.call)
+      const match = /import \{([^}]*)\} from 'react-native-matrix-crypto'/.exec(
+        step.call,
+      )
       if (!match) continue
       for (const name of match[1].split(',')) {
         const trimmed = name.trim()
@@ -139,6 +158,8 @@ describe('the environment these claims are checked in', () => {
     // checks is one the facade settles in JavaScript; the moment a native
     // module appears in this process, that is no longer obviously true and
     // the file's own description of itself needs rewriting.
-    expect((globalThis as Record<string, unknown>).NativeMatrixCrypto).toBeUndefined()
+    expect(
+      (globalThis as Record<string, unknown>).NativeMatrixCrypto,
+    ).toBeUndefined()
   })
 })

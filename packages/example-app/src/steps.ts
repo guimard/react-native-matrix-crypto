@@ -74,7 +74,7 @@ export const FLOW_STEPS: FlowStep[] = [
     title: "6. Publish this account's signing identity",
     call: "import { bootstrapCrossSigning, getIdentityStatus, isCryptoError } from 'react-native-matrix-crypto';\n\nconst status = await getIdentityStatus();\n\ntry {\n  await bootstrapCrossSigning();\n} catch (e) {\n  if (isCryptoError(e) && e.kind === 'account_keys_not_fetched') {\n    // Ask the homeserver first: drain takeOutgoingRequests, send the\n    // key query this refusal already queued, report it with\n    // markRequestSent, then call bootstrapCrossSigning again.\n  }\n}",
     crosses:
-      "Rust reads three separate facts about the account out of the live machine: whether a key query naming it has been answered in this process, whether this machine holds a public signing identity for it, and whether it holds the private half. Then it is asked to mint one, and refuses. The refusal crosses back as a typed error whose kind names the remedy. Nothing is minted and nothing is published.",
+      'Rust reads three separate facts about the account out of the live machine: whether a key query naming it has been answered in this process, whether this machine holds a public signing identity for it, and whether it holds the private half. Then it is asked to mint one, and refuses. The refusal crosses back as a typed error whose kind names the remedy. Nothing is minted and nothing is published.',
     why: "A signing identity is what lets one device vouch for another without a person comparing anything. Minting a second one over an account's existing identity resets the trust of every device and every person who ever verified that account, and there is no warning and nothing this process can afterwards detect. So the call refuses until the server has actually been asked. This walkthrough stops at the refusal on purpose: finishing the bootstrap means answering that key query, and answering it with a body this app invented is precisely the mistake the gate exists to prevent.",
   },
   {
@@ -97,7 +97,8 @@ export const FLOW_STEPS: FlowStep[] = [
     id: 'layers',
     title: '9. Where the layers are',
     call: '// No call -- everything above already crossed all five.',
-    crosses: 'Nothing new here. A summary of what every step above actually passed through.',
+    crosses:
+      'Nothing new here. A summary of what every step above actually passed through.',
     why: 'Five layers, each doing one job: the TypeScript facade (types the public surface), generated bindings (translate types), the JSI Turbo Module (crosses the JS/native boundary), UniFFI scaffolding (matches Rust to JavaScript), and the Rust core (the cryptography itself).',
   },
 ]

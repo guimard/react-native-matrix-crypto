@@ -3,7 +3,14 @@ import type { CryptoScopeId } from './types'
 // same terms `types.ts` and `signals.ts` state at length: `{@link}` resolves
 // against what the file has in scope, so a name the comments send a reader
 // to has to be one of them. Type-only, so it is erased.
+/* eslint-disable @typescript-eslint/no-unused-vars -- The import below is
+   the paragraph above put into effect: these names are in scope so that the
+   `{@link}`s resolve, and `scripts/assert-doc-links.mjs` fails the build if
+   one of them is missing. ESLint sees an unused binding and would have them
+   deleted; the gate that owns this question wants them kept, so the rule is
+   switched off for this statement and nothing else in the file. */
 import type { bootstrapCrossSigning } from './facade'
+/* eslint-enable @typescript-eslint/no-unused-vars */
 
 /**
  * Deliberately open, per spec section 4bis.4: a new variant is a minor bump,
@@ -522,7 +529,10 @@ const KIND_BY_NAME = new Map<string, CryptoErrorKind>([
 // spins forever against a machine that will never move. Reporting it
 // non-retriable is what sends a reader to the doc comment that says which
 // call is missing.
-const RETRIABLE: ReadonlySet<CryptoErrorKind> = new Set(['missing_key', 'unshared_session'])
+const RETRIABLE: ReadonlySet<CryptoErrorKind> = new Set([
+  'missing_key',
+  'unshared_session',
+])
 
 export function isCryptoError(e: unknown): e is CryptoError {
   return e instanceof Error && BRAND in e
@@ -560,7 +570,10 @@ function variantNameFromMessage(message: unknown): string | undefined {
  * confirmed the same way as the `.name` gap above. Checked second, so a
  * hand-built fixture with the field at the top level still works.
  */
-function stringField(source: Record<string, unknown>, field: string): string | undefined {
+function stringField(
+  source: Record<string, unknown>,
+  field: string,
+): string | undefined {
   if (typeof source[field] === 'string') return source[field] as string
   const inner = source.inner
   if (typeof inner === 'object' && inner !== null) {
@@ -639,13 +652,20 @@ const MESSAGE_BY_KIND: ReadonlyMap<CryptoErrorKind, string> = new Map([
 ])
 
 export function toCryptoError(raw: unknown): CryptoError {
-  const source = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const source = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<
+    string,
+    unknown
+  >
   const name = typeof source.name === 'string' ? source.name : ''
   const kind =
-    KIND_BY_NAME.get(name) ?? KIND_BY_NAME.get(variantNameFromMessage(source.message) ?? '') ?? 'unknown'
+    KIND_BY_NAME.get(name) ??
+    KIND_BY_NAME.get(variantNameFromMessage(source.message) ?? '') ??
+    'unknown'
   const reason = stringField(source, 'reason') ?? stringField(source, 'detail')
 
-  const err = new Error(reason ?? MESSAGE_BY_KIND.get(kind) ?? `crypto error: ${kind}`) as CryptoError
+  const err = new Error(
+    reason ?? MESSAGE_BY_KIND.get(kind) ?? `crypto error: ${kind}`,
+  ) as CryptoError
   err.name = 'CryptoError'
   err.kind = kind
   err.retriable = RETRIABLE.has(kind)

@@ -1,0 +1,64 @@
+# Prettier's ignore list. The rule for adding to it: a path belongs here when
+# reformatting it would break something, not merely when nobody has formatted
+# it yet.
+
+node_modules/
+yarn.lock
+
+# GENERATED BINDINGS. scripts/generated-paths.txt is this repository's single
+# definition of "generated", and gate:drift regenerates every entry there and
+# requires a byte-for-byte empty diff against what is committed. Prettier does
+# not know that: `prettier --write` reformats these files perfectly happily,
+# and the next `yarn gate:drift` then fails on a diff whose only cause is the
+# formatter. Measured 2026-09-02 -- a single pass rewrote 3113 lines of
+# src/generated/matrix_crypto.ts and 21 of src/index.tsx.
+#
+# Listed by hand rather than read from generated-paths.txt, because
+# .prettierignore is a static file with no include mechanism. The four entries
+# omitted here (cpp/generated, android, ios, MatrixCrypto.podspec) hold nothing
+# Prettier has a parser for.
+packages/react-native-matrix-crypto/src/generated/
+packages/react-native-matrix-crypto/src/index.tsx
+packages/react-native-matrix-crypto/src/NativeMatrixCrypto.ts
+
+# Build outputs and vendored trees, all of them already in .gitignore. Naming
+# them again is what keeps `yarn format` from walking a working copy that has
+# actually built something.
+rust/target/
+build/
+**/build/
+**/Pods/
+api-docs/
+*.xcframework/
+
+# Machine-written and re-written on every measurement run, by
+# scripts/measure-artifacts.sh. It happens to emit exactly what Prettier would
+# (`JSON.stringify(all, null, 2) + '\n'`), so this is not currently load-
+# bearing -- it is here so that a change to that script's output cannot start
+# a fight between the script and the formatter that neither side loses.
+artifact-sizes.json
+
+# The React Native template's native projects for the example app. Xcode and
+# Android Studio write files in here (asset catalogues, `Contents.json`,
+# generated Gradle bits) in their own formats and rewrite them on their own
+# schedule; a formatter fighting an IDE over those is churn with no reader.
+packages/example-app/ios/
+packages/example-app/android/
+
+# THE TYPE TEST'S LINE STRUCTURE IS THE TEST. Eleven `@ts-expect-error`
+# directives in this file each apply to the line that follows them, and the
+# assertions they guard are single-line object literals. Prettier breaks those
+# literals across lines, which moves the error the compiler reports onto an
+# inner line -- so the directive above it becomes "Unused '@ts-expect-error'
+# directive" (TS2578) AND the error it was there to absorb becomes real.
+# Measured 2026-09-02: one `prettier --write` turned a clean `tsc --noEmit`
+# into six errors, three of each kind, and every one of them named a line
+# whose code had not changed.
+#
+# The narrower fix is a `// prettier-ignore` above each of the five literals,
+# and it was not taken: the next `@ts-expect-error` written here would need a
+# sixth, nothing would ask for it, and the failure it causes reads as a broken
+# assertion rather than as a formatter. The file is a sheet of compile-time
+# assertions that is never executed; there is nothing here for a formatter to
+# make more readable that is worth that trap.
+packages/react-native-matrix-crypto/src/types.type-test.ts

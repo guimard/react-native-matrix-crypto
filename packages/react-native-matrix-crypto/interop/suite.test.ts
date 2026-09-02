@@ -5,19 +5,26 @@ import { referenceBinding } from './reference'
 describe('interop suite', () => {
   it('passes every check against the reference binding', async () => {
     const checks = await runInteropSuite(referenceBinding())
-    const failed = checks.filter((c) => !c.ok)
-    expect(failed, `failed: ${failed.map((c) => c.name).join(', ')}`).toHaveLength(0)
+    const failed = checks.filter(c => !c.ok)
+    expect(
+      failed,
+      `failed: ${failed.map(c => c.name).join(', ')}`,
+    ).toHaveLength(0)
     expect(checks).toHaveLength(5)
   })
 
   it('reports a failure rather than throwing when a binding misbehaves', async () => {
     const broken = referenceBinding()
-    broken.runProbe = async () => ({ echoed: 'wrong', payload: new Uint8Array(), coreVersion: '' })
+    broken.runProbe = async () => ({
+      echoed: 'wrong',
+      payload: new Uint8Array(),
+      coreVersion: '',
+    })
 
     // This binding never signals either, so it would otherwise sit out the
     // whole `signal` budget on the way to the assertion below.
     const checks = await runInteropSuite(broken, { signalWaitMs: 100 })
-    expect(checks.find((c) => c.name === 'record')?.ok).toBe(false)
+    expect(checks.find(c => c.name === 'record')?.ok).toBe(false)
   })
 
   it('resolves with a fatal check rather than rejecting when runProbe throws synchronously', async () => {
@@ -34,7 +41,9 @@ describe('interop suite', () => {
     await expect(result).resolves.toBeDefined()
 
     const checks = await result
-    expect(checks).toEqual([{ name: 'fatal', ok: false, detail: expect.stringContaining('boom') }])
+    expect(checks).toEqual([
+      { name: 'fatal', ok: false, detail: expect.stringContaining('boom') },
+    ])
   })
 
   it('sees a signal the binding delivers after runProbe has already resolved', async () => {
@@ -53,7 +62,7 @@ describe('interop suite', () => {
     }
 
     const checks = await runInteropSuite(binding)
-    const signal = checks.find((c) => c.name === 'signal')
+    const signal = checks.find(c => c.name === 'signal')
     expect(signal?.ok).toBe(true)
     expect(signal?.detail).toBe('probe_started')
   })
@@ -78,7 +87,7 @@ describe('interop suite', () => {
     binding.runProbe = (input, payload) => direct(input, payload, undefined)
 
     const checks = await runInteropSuite(binding, { signalWaitMs: 100 })
-    const signal = checks.find((c) => c.name === 'signal')
+    const signal = checks.find(c => c.name === 'signal')
     expect(signal?.ok).toBe(false)
     expect(signal?.detail).toBe('(none)')
   })
@@ -90,10 +99,13 @@ describe('interop suite', () => {
     // their own call's signal -- never "probe_started,probe_started".
     const binding = referenceBinding()
 
-    const [checksA, checksB] = await Promise.all([runInteropSuite(binding), runInteropSuite(binding)])
+    const [checksA, checksB] = await Promise.all([
+      runInteropSuite(binding),
+      runInteropSuite(binding),
+    ])
 
     for (const checks of [checksA, checksB]) {
-      const signal = checks.find((c) => c.name === 'signal')
+      const signal = checks.find(c => c.name === 'signal')
       expect(signal?.ok).toBe(true)
       expect(signal?.detail).toBe('probe_started')
     }

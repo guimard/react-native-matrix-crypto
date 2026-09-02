@@ -109,7 +109,10 @@ function bytesToText(bytes: Uint8Array): string {
 // walkthrough silent is that both are produced while a sync is applied
 // (`receiveSyncChanges`), and this walkthrough applies none. Step 3
 // demonstrates a different channel entirely, not this one.
-export async function runSubscribe(ctx: RunContext, commit: Commit): Promise<void> {
+export async function runSubscribe(
+  ctx: RunContext,
+  commit: Commit,
+): Promise<void> {
   try {
     ctx.unsubscribe?.()
     ctx.unsubscribe = onCryptoSignal(() => {
@@ -119,7 +122,10 @@ export async function runSubscribe(ctx: RunContext, commit: Commit): Promise<voi
     })
     commit('subscribe', { status: 'ok', headline: 'Listening for signals' })
   } catch (e) {
-    commit('subscribe', { status: 'unexpected', headline: `Unexpected: ${String(e)}` })
+    commit('subscribe', {
+      status: 'unexpected',
+      headline: `Unexpected: ${String(e)}`,
+    })
   }
 }
 
@@ -130,13 +136,17 @@ export async function runSubscribe(ctx: RunContext, commit: Commit): Promise<voi
 export async function runCall(ctx: RunContext, commit: Commit): Promise<void> {
   try {
     ctx.probeSignals = []
-    const report = await runProbe('hello', new Uint8Array([1, 2, 3]), signal => {
-      // Counted, not used here: this screen races ProbeHarness's own call on
-      // every cold launch, and the count is how ProbeHarness's row says which
-      // delivery it timed. See src/signalOrder.ts.
-      nthSignal()
-      ctx.probeSignals = [...ctx.probeSignals, signal.kind]
-    })
+    const report = await runProbe(
+      'hello',
+      new Uint8Array([1, 2, 3]),
+      signal => {
+        // Counted, not used here: this screen races ProbeHarness's own call on
+        // every cold launch, and the count is how ProbeHarness's row says which
+        // delivery it timed. See src/signalOrder.ts.
+        nthSignal()
+        ctx.probeSignals = [...ctx.probeSignals, signal.kind]
+      },
+    )
     // The promise above and the observer callback reach JavaScript
     // independently, and which lands first is a dispatch detail of the
     // binding rather than something the API promises. On Android release
@@ -173,7 +183,10 @@ export async function runCall(ctx: RunContext, commit: Commit): Promise<void> {
       detail: `bytes came back reversed: [1, 2, 3] -> ${bytesToText(report.payload)}`,
     })
   } catch (e) {
-    commit('call', { status: 'unexpected', headline: `Unexpected: ${String(e)}` })
+    commit('call', {
+      status: 'unexpected',
+      headline: `Unexpected: ${String(e)}`,
+    })
   }
 }
 
@@ -191,7 +204,10 @@ export async function runCall(ctx: RunContext, commit: Commit): Promise<void> {
 // this step reads is already settled by the time it runs, on every path
 // that reaches it: the mount run, "Run all", a step 2 re-run, and a re-run
 // of this step on its own.
-export async function runSignal(ctx: RunContext, commit: Commit): Promise<void> {
+export async function runSignal(
+  ctx: RunContext,
+  commit: Commit,
+): Promise<void> {
   // Deduplicated for display: a dev-mode double-mount (React or Fast
   // Refresh remounting this screen) can leave an earlier instance's
   // in-flight call still resolving into the current context, which is
@@ -207,10 +223,16 @@ export async function runSignal(ctx: RunContext, commit: Commit): Promise<void> 
 }
 
 // Step 4: deliberately triggers the typed-error path.
-export async function runTypedError(_ctx: RunContext, commit: Commit): Promise<void> {
+export async function runTypedError(
+  _ctx: RunContext,
+  commit: Commit,
+): Promise<void> {
   try {
     await runProbe('', new Uint8Array())
-    commit('typedError', { status: 'unexpected', headline: 'Unexpected: resolved instead of rejecting' })
+    commit('typedError', {
+      status: 'unexpected',
+      headline: 'Unexpected: resolved instead of rejecting',
+    })
   } catch (e) {
     const kind = isCryptoError(e) ? e.kind : undefined
     commit(
@@ -219,9 +241,13 @@ export async function runTypedError(_ctx: RunContext, commit: Commit): Promise<v
         ? {
             status: 'ok',
             headline: 'Expected error received -- kind: "rejected"',
-            detail: 'This is success: it proves a typed error survived the FFI boundary intact.',
+            detail:
+              'This is success: it proves a typed error survived the FFI boundary intact.',
           }
-        : { status: 'unexpected', headline: `Unexpected error shape: ${String(e)}` },
+        : {
+            status: 'unexpected',
+            headline: `Unexpected error shape: ${String(e)}`,
+          },
     )
   }
 }
@@ -236,11 +262,15 @@ export async function runTypedError(_ctx: RunContext, commit: Commit): Promise<v
 // ProbeHarness doing the same: the library holds one machine per process
 // and documents a second create with a matching configuration as resolving
 // against the existing one.
-export async function runIdentity(ctx: RunContext, commit: Commit): Promise<void> {
+export async function runIdentity(
+  ctx: RunContext,
+  commit: Commit,
+): Promise<void> {
   try {
     await createCryptoMachine(demoMachineConfig(ctx.storeDir))
     const keys = await getDeviceIdentityKeys(DEMO_USER_ID, DEMO_DEVICE_ID)
-    const wellFormed = keys.curve25519.length === 43 && keys.ed25519.length === 43
+    const wellFormed =
+      keys.curve25519.length === 43 && keys.ed25519.length === 43
     commit('identity', {
       status: wellFormed ? 'ok' : 'unexpected',
       headline: wellFormed
@@ -249,7 +279,10 @@ export async function runIdentity(ctx: RunContext, commit: Commit): Promise<void
       detail: `curve25519: ${keys.curve25519}\ned25519: ${keys.ed25519}`,
     })
   } catch (e) {
-    commit('identity', { status: 'unexpected', headline: `Unexpected: ${String(e)}` })
+    commit('identity', {
+      status: 'unexpected',
+      headline: `Unexpected: ${String(e)}`,
+    })
   }
 }
 
@@ -294,7 +327,10 @@ function describeSender(verification: SenderVerification | undefined): string {
 // because the refusal only means what it means alongside them: with
 // `accountKeysFetched` false, `identityKnown` false says "nobody has asked",
 // not "the account has none".
-export async function runSigningIdentity(_ctx: RunContext, commit: Commit): Promise<void> {
+export async function runSigningIdentity(
+  _ctx: RunContext,
+  commit: Commit,
+): Promise<void> {
   try {
     const status = await getIdentityStatus()
     const shape =
@@ -305,7 +341,8 @@ export async function runSigningIdentity(_ctx: RunContext, commit: Commit): Prom
       await bootstrapCrossSigning()
       commit('signingIdentity', {
         status: 'unexpected',
-        headline: 'Unexpected: an identity was minted with no server ever asked',
+        headline:
+          'Unexpected: an identity was minted with no server ever asked',
         detail: shape,
       })
     } catch (e) {
@@ -315,14 +352,22 @@ export async function runSigningIdentity(_ctx: RunContext, commit: Commit): Prom
         kind === 'account_keys_not_fetched'
           ? {
               status: 'ok',
-              headline: 'Refused, as it must be, with kind "account_keys_not_fetched"',
+              headline:
+                'Refused, as it must be, with kind "account_keys_not_fetched"',
               detail: `${shape}\nThe key query that lifts this refusal is already queued: drain takeOutgoingRequests, send it, report it, call again.`,
             }
-          : { status: 'unexpected', headline: `Unexpected error shape: ${String(e)}`, detail: shape },
+          : {
+              status: 'unexpected',
+              headline: `Unexpected error shape: ${String(e)}`,
+              detail: shape,
+            },
       )
     }
   } catch (e) {
-    commit('signingIdentity', { status: 'unexpected', headline: `Unexpected: ${String(e)}` })
+    commit('signingIdentity', {
+      status: 'unexpected',
+      headline: `Unexpected: ${String(e)}`,
+    })
   }
 }
 
@@ -335,7 +380,10 @@ export async function runSigningIdentity(_ctx: RunContext, commit: Commit): Prom
 // first. What it cannot show is a value above `unsigned_device`; those need
 // a peer whose client published a cross-signing identity, which is what
 // rust/matrix-crypto-core/tests/level_two_identity.rs drives.
-export async function runSenderCheck(_ctx: RunContext, commit: Commit): Promise<void> {
+export async function runSenderCheck(
+  _ctx: RunContext,
+  commit: Commit,
+): Promise<void> {
   try {
     const scope = asCryptoScopeId(DEMO_SENDER_SCOPE)
     // One share is what creates the group session this card then uses. It
@@ -372,7 +420,10 @@ export async function runSenderCheck(_ctx: RunContext, commit: Commit): Promise<
         : 'This card expects unsigned_device, because nothing in this walkthrough publishes a signing identity.',
     })
   } catch (e) {
-    commit('senderCheck', { status: 'unexpected', headline: `Unexpected: ${String(e)}` })
+    commit('senderCheck', {
+      status: 'unexpected',
+      headline: `Unexpected: ${String(e)}`,
+    })
   }
 }
 
@@ -399,12 +450,18 @@ export async function runSenderCheck(_ctx: RunContext, commit: Commit): Promise<
 // rejects in JavaScript before any native call (`restoreCryptoMachine`,
 // `exportSecrets`, `importSecrets`). Do not repoint it without moving the
 // card in `steps.ts` with it; the test asserts the two agree.
-export async function runNotYet(_ctx: RunContext, commit: Commit): Promise<void> {
+export async function runNotYet(
+  _ctx: RunContext,
+  commit: Commit,
+): Promise<void> {
   try {
     // Not a secret and not protecting anything: the facade rejects this call
     // before it reads the argument, which is the whole point of the step.
     await exportSecrets('example-app-not-implemented-probe')
-    commit('notYet', { status: 'unexpected', headline: 'Unexpected: resolved instead of rejecting' })
+    commit('notYet', {
+      status: 'unexpected',
+      headline: 'Unexpected: resolved instead of rejecting',
+    })
   } catch (e) {
     const kind = isCryptoError(e) ? e.kind : undefined
     commit(
@@ -413,23 +470,34 @@ export async function runNotYet(_ctx: RunContext, commit: Commit): Promise<void>
         ? {
             status: 'ok',
             headline: 'Expected error received -- kind: "not_implemented"',
-            detail: 'Not a bug: the type is final today, and the behavior is scheduled, not missing.',
+            detail:
+              'Not a bug: the type is final today, and the behavior is scheduled, not missing.',
           }
-        : { status: 'unexpected', headline: `Unexpected error shape: ${String(e)}` },
+        : {
+            status: 'unexpected',
+            headline: `Unexpected error shape: ${String(e)}`,
+          },
     )
   }
 }
 
 // Step 9: closing tally. Purely local -- everything above already crossed
 // all five layers; this just names them.
-export async function runLayers(_ctx: RunContext, commit: Commit): Promise<void> {
+export async function runLayers(
+  _ctx: RunContext,
+  commit: Commit,
+): Promise<void> {
   commit('layers', {
     status: 'ok',
-    headline: 'TypeScript facade -> generated bindings -> JSI Turbo Module -> UniFFI scaffolding -> Rust core',
+    headline:
+      'TypeScript facade -> generated bindings -> JSI Turbo Module -> UniFFI scaffolding -> Rust core',
   })
 }
 
-export const STEP_RUNNERS: Record<FlowStep['id'], (ctx: RunContext, commit: Commit) => Promise<void>> = {
+export const STEP_RUNNERS: Record<
+  FlowStep['id'],
+  (ctx: RunContext, commit: Commit) => Promise<void>
+> = {
   subscribe: runSubscribe,
   call: runCall,
   signal: runSignal,

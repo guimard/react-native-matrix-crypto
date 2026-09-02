@@ -49,7 +49,10 @@
  * step list, not however many checks were seen.
  */
 
-import type { ScannableCode, VerificationStage } from 'react-native-matrix-crypto'
+import type {
+  ScannableCode,
+  VerificationStage,
+} from 'react-native-matrix-crypto'
 
 /**
  * The subset of `ScannedCodeState` the reduction reads, restated so this file
@@ -129,7 +132,9 @@ export function nextCameraProofProgress(
  * "not reported", never disappears -- the rule the other two harnesses keep,
  * for the reason in their headers.
  */
-export function cameraProofChecks(progress: CameraProofProgress): CameraProofCheck[] {
+export function cameraProofChecks(
+  progress: CameraProofProgress,
+): CameraProofCheck[] {
   return [
     {
       name: 'run_started',

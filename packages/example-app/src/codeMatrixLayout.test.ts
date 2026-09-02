@@ -56,7 +56,7 @@ import { QUIET_ZONE_SQUARES, codeMatrixLayout } from './codeMatrixLayout'
 function encode(payload: Uint8Array): ScannableCode {
   const qr = qrcode(0, 'M')
   qr.addData(
-    Array.from(payload, (byte) => String.fromCharCode(byte)).join(''),
+    Array.from(payload, byte => String.fromCharCode(byte)).join(''),
     'Byte',
   )
   qr.make()
@@ -85,7 +85,10 @@ function payloadOf(length: number): Uint8Array {
  * rounding, and `it('never overflows...')` below covers the rounding
  * separately.
  */
-function paint(rows: boolean[][], scale: number): { data: Uint8ClampedArray; size: number } {
+function paint(
+  rows: boolean[][],
+  scale: number,
+): { data: Uint8ClampedArray; size: number } {
   const squares = rows.length + QUIET_ZONE_SQUARES * 2
   const size = squares * scale
   const data = new Uint8ClampedArray(size * size * 4).fill(255)
@@ -94,8 +97,10 @@ function paint(rows: boolean[][], scale: number): { data: Uint8ClampedArray; siz
       if (!rows[y][x]) continue
       for (let dy = 0; dy < scale; dy += 1) {
         for (let dx = 0; dx < scale; dx += 1) {
-          const px = ((y + QUIET_ZONE_SQUARES) * scale + dy) * size
-            + (x + QUIET_ZONE_SQUARES) * scale + dx
+          const px =
+            ((y + QUIET_ZONE_SQUARES) * scale + dy) * size +
+            (x + QUIET_ZONE_SQUARES) * scale +
+            dx
           data[px * 4] = 0
           data[px * 4 + 1] = 0
           data[px * 4 + 2] = 0
@@ -128,7 +133,7 @@ describe('codeMatrixLayout', () => {
     const payload = payloadOf(126)
     const code = encode(payload)
     const { rows } = codeMatrixLayout(code, 360)
-    const transposed = rows.map((_, y) => rows.map((row) => row[y]))
+    const transposed = rows.map((_, y) => rows.map(row => row[y]))
     expect(transposed).not.toEqual(rows)
     expect(decode(transposed)).toEqual(Array.from(payload))
   })
@@ -164,7 +169,10 @@ describe('codeMatrixLayout', () => {
     // reading a buffer; a camera reads a bright screen, and a symbol that
     // runs to the edge of one is the commonest reason a scan fails. This is
     // the assertion standing in for that.
-    const { squareSize, quietZone } = codeMatrixLayout(encode(payloadOf(126)), 360)
+    const { squareSize, quietZone } = codeMatrixLayout(
+      encode(payloadOf(126)),
+      360,
+    )
     expect(QUIET_ZONE_SQUARES).toBe(4)
     expect(quietZone).toBe(squareSize * QUIET_ZONE_SQUARES)
   })
@@ -181,8 +189,8 @@ describe('codeMatrixLayout', () => {
 
   it('refuses a code whose modules do not match its width', () => {
     const code = encode(payloadOf(126))
-    expect(() => codeMatrixLayout({ ...code, modules: code.modules.slice(0, -1) }, 360)).toThrow(
-      /refusing to draw a symbol/,
-    )
+    expect(() =>
+      codeMatrixLayout({ ...code, modules: code.modules.slice(0, -1) }, 360),
+    ).toThrow(/refusing to draw a symbol/)
   })
 })
