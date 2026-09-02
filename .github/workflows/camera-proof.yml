@@ -19,17 +19,12 @@
 #   client on one rig is the claim; the design comment on issue #6 says why
 #   that is the honest shape of this assertion.
 #
-#   WHAT A PERSON STILL DOES, AND WHAT THEY DO NOT: they aim the phone,
-#   because there is no fixture. They do not judge. Nobody reads a shield
-#   and nobody decides whether the run worked -- the assertion above is the
-#   protocol and the account state, and the leg fails on its own if either
-#   disagrees. Issue #6 closed on exactly that distinction.
-#
-#   The cost of the missing fixture is repetition rather than honesty, and
-#   it is tracked as issue #29. It is also why the cron below stays
-#   commented: this leg CANNOT tell a human aim from a fixture aim, its
-#   output is identical either way, so scheduling it before the hardware
-#   exists would just fail every night at the optical timeout.
+#   WHAT A PERSON STILL DOES: they aim the phone, because there is no
+#   fixture. The aim-vs-judge distinction is the driver's header's to make
+#   (run_camera_proof_rig.py carries the measurement); what this file owns
+#   is the scheduling consequence. The missing fixture is tracked as issue
+#   #29, and it is why the cron below stays commented: with a person
+#   aiming, an unattended run fails every night at the optical timeout.
 #
 # WHY DISPATCH-ONLY: while no self-hosted runner carries the `camera-rig`
 # label, a pull_request trigger would queue forever and a push trigger would
@@ -83,11 +78,14 @@ jobs:
           echo "$HOME/.camera-rig-venv/bin" >> "$GITHUB_PATH"
 
       # uiautomator2 is the phone-side driver. Deliberately NOT pinned in a
-      # requirements file here: the phone side is unvalidated, and a pin is
-      # a claim of knowledge this repository does not yet have. The version
-      # the rig proves itself with is the version worth pinning -- that is
-      # maintenance work the first real run will land. pip runs inside the
-      # venv the step above puts first on PATH.
+      # requirements file here: the measured 5/5 run drove the adb-native
+      # backend (the default), and uiautomator2 is measured PARTLY broken on
+      # the rig phone (one RPC dies; see choose_ui_backend in the driver) --
+      # a pin would claim knowledge this repository does not yet have of a
+      # backend no run has actually driven. The version the rig proves
+      # itself with is the version worth pinning -- that is maintenance work
+      # such a run will land. pip runs inside the venv the step above puts
+      # first on PATH.
       - name: Install the phone-side driver
         run: |
           python3 -m pip install uiautomator2
