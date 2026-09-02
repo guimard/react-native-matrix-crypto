@@ -73,6 +73,11 @@ const native = {
   syncsReceived: 0,
   accepted: [] as string[],
   cancelled: [] as string[],
+  cancelCalls: 0,
+  // How long each stage read parks, in real milliseconds. Zero for every
+  // test but the unanswered-ask race, whose deadline must have certainly
+  // passed by the loop's first read; a real sync's news arrives no faster.
+  readDelayMs: 0,
   observer: null as { onSignal: (signal: unknown) => void } | null,
 }
 
@@ -96,9 +101,24 @@ vi.mock('react-native-matrix-crypto/src/generated/matrix_crypto', async importOr
       native.accepted.push(id)
     }),
     cancelVerification: vi.fn(async (id: string) => {
+      native.cancelCalls += 1
+      // The real library refuses to cancel a flow whose stage has moved on
+      // from `requested`: by the time a deadline cancel lands, the peer may
+      // already have answered. Model that refusal so the runner's
+      // `wrong_stage` re-read cannot be dropped without a test failing; a
+      // flow genuinely still waiting at `requested` is cancelled, as the
+      // real library cancels it.
+      if (native.stages[0] !== 'Requested') throw new original.MachineFfiError.WrongStage()
       native.cancelled.push(id)
     }),
     verificationStage: vi.fn(async () => {
+      // A test that needs the wall clock to have moved before this read
+      // returns parks a real delay here (see `native.readDelayMs`); the
+      // suite runs on real timers, and the deadline it underpins is the
+      // same one a real 180 s budget drives.
+      if (native.readDelayMs > 0) {
+        await new Promise<void>(resolve => setTimeout(resolve, native.readDelayMs))
+      }
       // The last stage repeats once the list runs out, which is what a flow
       // parked at `done` or `cancelled` really does.
       const next = native.stages.length > 1 ? native.stages.shift() : native.stages[0]
@@ -182,6 +202,8 @@ beforeEach(() => {
   native.syncsReceived = 0
   native.accepted = []
   native.cancelled = []
+  native.cancelCalls = 0
+  native.readDelayMs = 0
   native.observer = null
   http.mockClear()
 })
@@ -332,5 +354,43 @@ describe('the camera walkthrough', () => {
     // The flow this side opened is called off, so the peer's banner does
     // not outlive the run.
     expect(native.cancelled).toEqual([FLOW])
+  })
+
+  // The race the deadline's `wrong_stage` handling exists for: the stage is
+  // read at `requested`, and between that read and the cancel the peer
+  // answers, so the cancel is refused and the flow must not be reported as
+  // unanswered. Two `Requested` entries feed the phase-2 preamble read and
+  // the loop's first read; the script then moves to `ready`, exactly as the
+  // flow does once the peer accepts.
+  it('rides out the peer answering in the gap the deadline cancel targets', async () => {
+    native.stages = ['Requested', 'Requested', 'Ready', 'Ready', 'CodeScanned', 'Done']
+    // The accept takes real time to arrive, as a sync would: park each
+    // stage read so the deadline has certainly passed by the loop's first
+    // read, and the race lands on that read rather than on whichever later
+    // one the wall clock happens to reach.
+    native.readDelayMs = 20
+    const states: ScannedCodeState[] = []
+    const run = startScannedCodeRun(plan, '/tmp/store', http, state => states.push({ ...state }), {
+      sleep: noSleep,
+      // A budget nobody could answer in, injected rather than faked: the
+      // suite runs on real timers, and the check this proves is the same
+      // one a real 180 s budget drives.
+      unansweredRequestMs: 10,
+    })
+    run.askOtherDevices()
+    await run.finished
+    const final = states[states.length - 1]
+    // The cancel was attempted, and refused with the real `WrongStage`
+    // because the scripted flow had moved on since the read above.
+    expect(native.cancelCalls).toBe(1)
+    expect(native.cancelled).toEqual([])
+    // The runner took the refusal as the race it is: no unanswered failure
+    // was published, and the loop's ordinary stage handling carried the run
+    // to `ready` with a code and on to a success.
+    expect(states.some(state => state.headline.includes('unanswered'))).toBe(false)
+    expect(states.some(state => state.stage === 'ready' && state.code !== undefined)).toBe(true)
+    expect(final.finished).toBe(true)
+    expect(final.failed).toBe(false)
+    expect(final.headline).toBe('Verified.')
   })
 })

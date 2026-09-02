@@ -365,13 +365,20 @@ export function startScannedCodeRun(
         ) {
           // The peer's banner outlives the run unless the flow is called
           // off, and the flow this side opened is this side's to close. A
-          // `wrong_stage` here means the peer answered between the stage
-          // read and this call, which ends the same way; anything else is
-          // reported by the outer handler.
+          // `wrong_stage` says the stage moved since the read above:
+          // either the peer answered between the read and this call -- the
+          // flow is no longer this side's to close, and the answer ends the
+          // run the same way -- or the flow already ended on its own. Re-read
+          // once and let the loop's normal stage handling name it; only a
+          // flow still stuck at `requested` falls through to the failure
+          // below. Anything else is reported by the outer handler.
           try {
             await cancelVerification(flow)
           } catch (error) {
             if (!isCryptoError(error) || error.kind !== 'wrong_stage') throw error
+            stage = await getVerificationStage(flow)
+            update({ stage })
+            if (stage !== 'requested') continue
           }
           update({
             headline: 'The verification request went unanswered.',
