@@ -64,14 +64,25 @@ jobs:
         with: { node-version-file: '.nvmrc', cache: yarn }
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '17' }
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
+      # Python is set up WITHOUT actions/setup-python: on a self-hosted macOS
+      # runner that action hardcodes AGENT_TOOLSDIRECTORY to
+      # /Users/runner/hostedtoolcache (the hosted-image path) and then needs
+      # `sudo installer` -- neither
+      # has any business being needed on this rig. uv resolves and installs
+      # the interpreter into the runner user's home, no privilege involved.
+      # uv is part of the rig provisioning, like Docker and the SDK.
+      - name: Set up Python (rig-local, no sudo)
+        run: |
+          uv python install 3.12
+          uv venv --seed --clear --python 3.12 "$HOME/.camera-rig-venv"
+          echo "$HOME/.camera-rig-venv/bin" >> "$GITHUB_PATH"
 
       # uiautomator2 is the phone-side driver. Deliberately NOT pinned in a
       # requirements file here: the phone side is unvalidated, and a pin is
       # a claim of knowledge this repository does not yet have. The version
       # the rig proves itself with is the version worth pinning -- that is
-      # maintenance work the first real run will land.
+      # maintenance work the first real run will land. pip runs inside the
+      # venv the step above puts first on PATH.
       - name: Install the phone-side driver
         run: |
           python3 -m pip install uiautomator2
