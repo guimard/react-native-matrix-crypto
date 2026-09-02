@@ -28,32 +28,42 @@ machinery of the same shape as the level 2 conductor's, and every refusal
 path below can be exercised without any hardware.
 
 The rig exists (a Pixel 10 Pro Fold on Android 17 / API 37 as the scanner, a
-booted emulator as the screen) and has been run end to end. What a full run
-now reaches, MEASURED 2026-09-02, is everything up to and including the code
-being on the screen with a live flow behind it:
+booted emulator as the screen). MEASURED 2026-09-02, a run drives every step
+below by itself, and a real camera has completed the scan:
 
-  * every host-side step, and the emulator side through install and launch;
-  * the whole phone side through Element: a cleared Element signed in to the
-    throwaway homeserver, the account's cross-signing identity published,
-    the first-session prompts cleared, and the navigation to the showing
-    device's own session -- drawer, "Sécurité et vie privée", "Afficher
-    toutes les sessions", the CameraProof session, its verify action;
-  * the library side reaching `ready` and drawing a real code (45x45, a
-    122-byte payload) on the emulator, with the flow visible to both sides.
+  CAMERA_PROOF_CHECK run_started   PASS
+  CAMERA_PROOF_CHECK flow_exists   PASS
+  CAMERA_PROOF_CHECK code_shown    PASS   45x45, a 122-byte payload
+  CAMERA_PROOF_CHECK scan_reported PASS   the peer sent m.key.verification.scanned
+  CAMERA_PROOF_CHECK flow_done     PASS
+  CAMERA_PROOF_SUMMARY 5/5
+  witness: the showing device's keys are signed by the account's self-signing key
 
-WHAT IS STILL NOT PROVEN, AND IT IS THE LAST STEP: no camera has completed a
-scan under this driver. A run ends at CAMERA_PROOF_SUMMARY 3/5 --
-run_started, flow_exists and code_shown pass; scan_reported and flow_done
-fail -- because of a finding about Element rather than about the optics. The
-only verification action this Element build offers on a session's own screen
-is "Vérifier de façon interactive avec des émojis", which starts SAS; the
-library announces SasV1 in SHOWING_ONLY, so Element has a method it can use
-and uses it, and no QR scan is ever offered. The camera does launch and shut
-down again (the phone's own log carries CancelPowerBoost CAMERA_LAUNCH), and
-the flow goes `ready` -> `started` -> `cancelled`. The person-driven flow
-(run_camera_proof.py, step 3) reaches a "Scan QR code" choice, so an entry
-point that offers scanning exists; finding it from a driver is the work this
-file has left.
+Every tap on the phone in that run came from this program: Element cleared
+and signed in to the throwaway homeserver, the cross-signing identity
+bootstrapped, the first-session prompts cleared, the incoming request banner
+opened, "Accepter" answered and "Scanner avec cet appareil" chosen.
+
+WHAT IS STILL NOT AUTOMATED, AND IT IS THE WHOLE OF WHAT ISSUE #6 HAS LEFT:
+the aiming. There is no fixture. A person picked the phone up and pointed it
+at the emulator's window, and the run passed because they did. Until a
+fixture exists this leg is a person-assisted proof, which is a stronger
+thing than it was this morning and still not a check CI can assert. It stays
+dispatch-only, and it joins no required check until a run has been watched
+passing with nobody touching the phone.
+
+WHY THIS SIDE ASKS, WHICH IS THE FINDING THAT UNBLOCKED THE REST. The driver
+used to navigate Element's settings to the showing device's session and tap
+its verify action, and the navigation worked perfectly -- drawer, "Sécurité
+et vie privée", "Afficher toutes les sessions", the session by name. The
+destination was wrong. The only action that screen offers is "Vérifier de
+façon interactive avec des émojis"; it starts SAS, the side that starts a
+verification is the side that picks its method, and the library announces
+SasV1 in SHOWING_ONLY deliberately -- so Element had a method it could use
+and used it. Four runs ended at 3/5 with the code on screen and no camera
+ever asked for. Asking from this side makes Element the RESPONDER, and a
+responder is offered what the requester announced: its own UI then reads
+"Scanner avec cet appareil".
 
 HOW A RUN IS SEQUENCED
 
@@ -532,44 +542,52 @@ ELEMENT_CANDIDATE_SCREENS = {
                            "Ne pas autoriser", "Don't allow",
                            "Google Services", "Continue without"],
                           "a first-session prompt"),
-    # MEASURED: the settings are behind the profile picture in Element's
-    # sliding drawer; the picture's content-desc is "Image de profile de
-    # l'utilisateur <name>", which is why desc candidates match by prefix.
-    "drawer": (["Image de profile", "Image de profil", "Profile picture"],
-               "the profile avatar that opens the drawer"),
-    # MEASURED on the rig phone: this build says "Sécurité et vie privée",
-    # not the guessed "Sécurité et confidentialité" -- the guess stays in the
-    # list (another build may use it) and the measured label leads.
-    "security_screen": (["Sécurité et vie privée", "Sécurité et confidentialité",
-                         "Security & Privacy", "Security", "Sécurité"],
-                        "the security screen"),
-    # MEASURED: the security screen lists sessions behind "Afficher toutes
-    # les sessions"; only that screen shows the session display names.
-    "sessions_list": (["Afficher toutes les sessions", "Gérer les sessions",
-                       "Sessions", "Gérer les appareils"],
-                      "the sessions-list entry"),
-    # MEASURED on the rig phone 2026-09-02, on the CameraProof session's own
-    # screen: this build offers exactly ONE verification action, and it is
-    # named after the fallback method rather than the flow -- "Vérifier de
-    # façon interactive avec des émojis". There is no QR entry point here;
-    # the choice to scan comes one screen later, after the peer has said it
-    # can show a code, which is the negotiation the person-driven flow's
-    # steps 2-3 describe. The shorter guesses stay trailing for other builds.
-    "verify_action": (["Vérifier de façon interactive avec des émojis",
-                       "Verify interactively with emojis",
-                       "Verify", "Verify session", "Start verification",
-                       "Vérifier", "Vérifier la session",
-                       "Démarrer la vérification"],
-                      "the verify action for the showing device"),
-    # The scan choice Element presents once the peer has announced it can
-    # show a code (run_camera_proof.py's step 3: 'choose "Scan QR code"').
-    # UNMEASURED in the rig's locale -- the screen only exists while a live
-    # peer is offering a code, so it cannot be read from a dead account.
-    # A miss here is reported with the screen's own texts (see tap_first_of),
-    # which is the measurement.
-    "scan_choice": (["Scanner le code QR", "Scanner leur code QR",
-                     "Scanner un code QR", "Scanner",
-                     "Scan QR code", "Scan their QR code", "Scan"],
+    # The navigation that used to live here -- profile drawer, "Sécurité et
+    # vie privée", "Afficher toutes les sessions", the session by name, and
+    # its verify action -- is gone with the direction that needed it. It all
+    # worked; the destination was wrong. See element_accept_verification.
+    # The labels are in the commit that removed them if that path is ever
+    # revisited, and out of this dict because a candidate nothing consults
+    # is a claim about a screen this driver no longer visits.
+    # Element receiving a verification request from this side. UNMEASURED:
+    # this is the surface the 2026-09-02 finding sends the driver to, and no
+    # run has reached it yet. A miss is reported with the screen's own texts
+    # (see tap_first_of), which is the measurement that fixes this entry.
+    # MEASURED on the rig 2026-09-02, first run in which this side asked:
+    # Element announces the request as a banner carrying a TITLE and the
+    # requesting user, and NO button text at all --
+    #   'Demande de vérification'
+    #   'libraryparty (@libraryparty:level-two.test)'
+    # -- so the thing to tap is the banner itself, and every verb this
+    # driver guessed first ("Accepter", "Vérifier", "Prêt") was absent. The
+    # guesses stay trailing for a build that puts a button there.
+    "incoming_request": (["Demande de vérification", "Verification Request",
+                          "Verification request",
+                          "Vérifier", "Verify",
+                          "Accepter", "Accept",
+                          "Prêt", "Ready",
+                          "Continuer", "Continue"],
+                         "Element's incoming verification request"),
+    # MEASURED on the rig 2026-09-02: tapping the banner opens a sheet that
+    # asks whether to answer the request at all, and it is a separate screen
+    # from the method choice -- 'Vérifier' as its title, then 'Accepter',
+    # 'Refuser', 'Ce n'était pas moi'. Nothing about a code appears until
+    # this is answered.
+    "accept_request": (["Accepter", "Accept"],
+                       "the control that answers the verification request"),
+    # MEASURED on the rig 2026-09-02, on the screen behind 'Accepter', and
+    # this is the screen four earlier runs never reached:
+    #   'Scannez le code avec votre autre appareil, ou échangez et scannez'
+    #   'Scanner avec cet appareil'                    <- this
+    #   'Impossible de scanner'
+    #   'Vérifier en comparant des émoticônes à la place'
+    # The last two are deliberately NOT candidates: both are ways of NOT
+    # scanning, and tapping either would end the run in the emoji fallback
+    # this leg exists to avoid. Matching is exact (casefold), so the bare
+    # "Scanner" below cannot match "Scanner avec cet appareil" by accident.
+    "scan_choice": (["Scanner avec cet appareil", "Scan with this device",
+                     "Scanner le code QR", "Scanner leur code QR",
+                     "Scan QR code", "Scan their QR code"],
                     "the scan choice on the verification screen"),
 }
 
@@ -1237,66 +1255,52 @@ def element_bootstrap_identity(element, homeserver, user_id, token):
     )
 
 
-def element_verify_showing_device(element, device_name):
-    """Element: verify the emulator's session, ending in the scanner.
+def element_accept_verification(element):
+    """Element, from wherever it is to a scanner, driven by a request this
+    side sent.
 
-    This is the person-driven flow's steps 2-3 (run_camera_proof.py's
-    `announce`) with a person replaced by selectors. MEASURED on the rig
-    phone (2026-09-01), whose account is real, up to the sessions list:
-    home -> the profile-picture drawer -> "Sécurité et vie privée" ->
-    "Afficher toutes les sessions" -> a list of sessions by display name.
-    What a session's own screen offers for verifying it is where the
-    measurement stops: starting a real verification from the validation
-    phone would have touched a real account, so the verify action and the
-    scanner entry below are written and failure-named but unexecuted.
+    MEASURED 2026-09-02, and this function is the whole of what that
+    measurement changed. The previous shape navigated Element's own settings
+    to the showing device's session and tapped its verify action, because
+    that is the path a person had been observed completing. It cannot be
+    driven: the only action that screen offers is "Vérifier de façon
+    interactive avec des émojis", and the side that starts a verification is
+    the side that picks its method, so Element picked SAS every time and the
+    camera was never asked for. The navigation itself worked perfectly --
+    drawer, "Sécurité et vie privée", "Afficher toutes les sessions", the
+    session by name -- which is why it took four runs to see that the
+    destination was wrong rather than the route.
 
-    From the scanner on, the camera does the work: the phone is in the
-    mount, aimed at the display, and the symbol appears when the library
-    has it ready.
+    So this side asks (CameraProofHarness calls askOtherDevices) and Element
+    answers. Element is the RESPONDER now, and a responder does not choose
+    the method: it is offered what the requester announced, which here
+    includes showing a code. Its own responder UI is the surface that offers
+    to scan.
+
+    UNVALIDATED, and said plainly because the last function that claimed
+    otherwise cost four runs: no run has reached Element's incoming-request
+    UI yet. Both steps below fail naming what they looked for AND what was on
+    screen, which is the measurement that fixes them.
     """
-    # Every step here clears first-session prompts while it waits: Element
-    # is still finishing its onboarding at this point (see tap_first_of's
-    # `clearing`), and a prompt it raises between two of these taps would
-    # otherwise time the next one out.
     prompts = ELEMENT_CANDIDATE_SCREENS["bootstrap_dismiss"][0]
-    for step in ("drawer", "security_screen", "sessions_list"):
-        candidates = ELEMENT_CANDIDATE_SCREENS[step]
-        element.tap_first_of(candidates[0], 60, candidates[1], clearing=prompts)
-    element.tap_first_of([device_name], 120,
-                         f"the {device_name!r} session in the sessions list",
-                         clearing=prompts)
-    candidates = ELEMENT_CANDIDATE_SCREENS["verify_action"]
-    element.tap_first_of(candidates[0], 60, candidates[1], clearing=prompts)
-    # The scan choice. The person-driven flow's step 3 is 'choose "Scan QR
-    # code"', so on the observed build this screen exists and has to be
-    # tapped; it is tolerated rather than required because the choice only
-    # appears AFTER the peer has answered the request announcing it can show
-    # a code, and a build that goes straight to the scanner would otherwise
-    # fail here for doing the right thing. The budget is 60s, not the 15s an
-    # earlier revision guessed: what is being waited for is a round trip
-    # through the homeserver, not a screen transition.
-    #
-    # Absence is logged WITH the screen, never silently assumed. If the scan
-    # never happens, this line is what says whether Element was sitting on an
-    # unnamed choice or was genuinely in its scanner all along.
+    # 120s, not 60: this waits for a to-device event to cross a homeserver
+    # and for Element to sync it, not for a screen to animate.
+    candidates = ELEMENT_CANDIDATE_SCREENS["incoming_request"]
+    element.tap_first_of(candidates[0], 120, candidates[1], clearing=prompts)
+    candidates = ELEMENT_CANDIDATE_SCREENS["accept_request"]
+    element.tap_first_of(candidates[0], 60, candidates[1], scrolling=False)
+    # scrolling=False for the reason the previous revision established: from
+    # here Element is showing a verification in a dismissible sheet, and a
+    # swipe on that throws the sheet away rather than looking further down it.
+    # Required, not tolerated. An earlier revision let this one pass when
+    # nothing matched, on the theory that a build might enter its scanner by
+    # itself; what that actually bought was converting a nameable failure
+    # into a 360s optical timeout, which reads as "the camera saw nothing"
+    # and sends the next person to check the lamp. This screen has been
+    # measured on the rig, and a build that changes it should say so here.
     candidates = ELEMENT_CANDIDATE_SCREENS["scan_choice"]
-    try:
-        # scrolling=False, and this is the load-bearing argument on this line.
-        # By here a verification exists and Element is showing it in a
-        # dismissible sheet; the scroll fallback would swipe on that sheet
-        # once every retry, and a swipe there does not look further down a
-        # list, it throws the sheet away -- closing the scanner and
-        # cancelling the flow. MEASURED 2026-09-02: the phone's camera
-        # launched (CancelPowerBoost CAMERA_LAUNCH in its log) and then shut
-        # down, the screen went back to the sessions list, and the library
-        # side saw `started` then `cancelled` for a code it had already put
-        # on the emulator's screen.
-        element.tap_first_of(candidates[0], 60, candidates[1], scrolling=False)
-    except RunFailed:
-        rig_log("phone: no scan choice named in ELEMENT_CANDIDATE_SCREENS "
-                "appeared; Element may have entered its scanner by itself. "
-                f"What was on screen: {element.backend.visible_texts()}")
-    rig_log("phone: verification started; Element's camera should be up, "
+    element.tap_first_of(candidates[0], 60, candidates[1], scrolling=False)
+    rig_log("phone: verification accepted; Element's camera should be up, "
             "pointed at the mount")
 
 
@@ -1480,7 +1484,7 @@ def main():
         wait_for_app_line(EMULATOR_SERIAL, re.compile(r"^CAMERA_PROOF run_started"),
                           120, "the harness's first line")
 
-        element_verify_showing_device(element, SHOWING_DEVICE_NAME)
+        element_accept_verification(element)
 
         summaries, lines = wait_for_app_line(
             EMULATOR_SERIAL, SUMMARY_PATTERN, FLOW_TIMEOUT_SECONDS,
