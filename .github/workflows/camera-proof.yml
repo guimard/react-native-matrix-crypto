@@ -65,8 +65,9 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '17' }
       # Python is set up WITHOUT actions/setup-python: on a self-hosted macOS
-      # runner that action hardcodes AGENT_TOOLSDIRECTORY to /Users/runner
-      # (the hosted-image path) and then needs `sudo installer` -- neither
+      # runner that action hardcodes AGENT_TOOLSDIRECTORY to
+      # /Users/runner/hostedtoolcache (the hosted-image path) and then needs
+      # `sudo installer` -- neither
       # has any business being needed on this rig. uv resolves and installs
       # the interpreter into the runner user's home, no privilege involved.
       # uv is part of the rig provisioning, like Docker and the SDK.
