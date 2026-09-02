@@ -70,6 +70,8 @@ const native = {
   confirmed: false,
   capabilitiesOffered: null as { canShow: boolean; canScan: boolean } | null,
   requests: [] as Array<{ id: string; kind: string; body: string }>,
+  lastHanded: [] as Array<{ id: string; kind: string; body: string }>,
+  failedStatuses: [] as number[],
   syncsReceived: 0,
   accepted: [] as string[],
   cancelled: [] as string[],
@@ -110,6 +112,14 @@ vi.mock('react-native-matrix-crypto/src/generated/matrix_crypto', async importOr
       // real library cancels it.
       if (native.stages[0] !== 'Requested') throw new original.MachineFfiError.WrongStage()
       native.cancelled.push(id)
+      // The real library queues the cancel to-device: the pump is what
+      // delivers it. Model that half too, so the deadline branch's delivery
+      // loop has a request to drain.
+      native.requests.push({
+        id: 'cancel-request',
+        kind: 'to_device',
+        body: JSON.stringify({ event_type: 'm.key.verification.cancel' }),
+      })
     }),
     verificationStage: vi.fn(async () => {
       // A test that needs the wall clock to have moved before this read
@@ -142,10 +152,17 @@ vi.mock('react-native-matrix-crypto/src/generated/matrix_crypto', async importOr
     takeOutgoingRequests: vi.fn(async () => {
       const batch = native.requests
       native.requests = []
+      native.lastHanded = batch
       return batch
     }),
     markRequestSent: vi.fn(async () => undefined),
-    markRequestFailed: vi.fn(async () => undefined),
+    markRequestFailed: vi.fn(async (id: string, status: number) => {
+      native.failedStatuses.push(status)
+      // The real machine keeps a refused request outstanding, so the next
+      // drain hands it over again -- the retry is an ordinary second send.
+      const refused = native.lastHanded.find(request => request.id === id)
+      if (refused) native.requests.push(refused)
+    }),
     receiveSyncChanges: vi.fn(async () => {
       native.syncsReceived += 1
     }),
@@ -203,6 +220,8 @@ beforeEach(() => {
   native.accepted = []
   native.cancelled = []
   native.cancelCalls = 0
+  native.lastHanded = []
+  native.failedStatuses = []
   native.readDelayMs = 0
   native.observer = null
   http.mockClear()
@@ -392,5 +411,63 @@ describe('the camera walkthrough', () => {
     expect(final.finished).toBe(true)
     expect(final.failed).toBe(false)
     expect(final.headline).toBe('Verified.')
+  })
+
+  // The deadline's call-off is queued, not sent: the pump delivers it, and
+  // a refused request stays queued for the next drain. This test holds the
+  // delivery loop to that: the server refuses the first post, the second
+  // lands, and the run says none of it.
+  it('keeps pumping the call-off until the server takes it', async () => {
+    native.stages = ['Requested']
+    native.readDelayMs = 20
+    let posts = 0
+    http.mockImplementation(async (method: string) => {
+      if (method === 'GET') {
+        return { status: 200, text: JSON.stringify({ next_batch: 's1', to_device: { events: [] } }) }
+      }
+      posts += 1
+      return posts <= 1 ? { status: 500, text: '{}' } : { status: 200, text: '{}' }
+    })
+    const states: ScannedCodeState[] = []
+    const run = startScannedCodeRun(plan, '/tmp/store', http, state => states.push({ ...state }), {
+      sleep: noSleep,
+      unansweredRequestMs: 10,
+    })
+    run.askOtherDevices()
+    await run.finished
+    const final = states[states.length - 1]
+    // One refusal, then a delivery, and the pump after it drained an empty
+    // queue -- the proof the runner waits for, so the state says nothing
+    // about an undelivered call-off.
+    expect(native.failedStatuses).toEqual([500])
+    expect(final.failed).toBe(true)
+    expect(final.headline).toContain('unanswered')
+    expect(final.detail).not.toContain('could not be delivered')
+  })
+
+  // The same loop when the server never takes it: the budget runs out, the
+  // run still ends, and it says the call-off may not have reached the peer
+  // rather than claiming a banner that may still be up.
+  it('says when the call-off could not be delivered', async () => {
+    native.stages = ['Requested']
+    native.readDelayMs = 20
+    http.mockImplementation(async (method: string) => {
+      if (method === 'GET') {
+        return { status: 200, text: JSON.stringify({ next_batch: 's1', to_device: { events: [] } }) }
+      }
+      return { status: 502, text: '{}' }
+    })
+    const states: ScannedCodeState[] = []
+    const run = startScannedCodeRun(plan, '/tmp/store', http, state => states.push({ ...state }), {
+      sleep: noSleep,
+      unansweredRequestMs: 10,
+    })
+    run.askOtherDevices()
+    await run.finished
+    const final = states[states.length - 1]
+    expect(native.failedStatuses).toEqual([502, 502, 502])
+    expect(final.failed).toBe(true)
+    expect(final.headline).toContain('unanswered')
+    expect(final.detail).toContain('could not be delivered')
   })
 })

@@ -122,6 +122,18 @@ const SYNC_TIMEOUT_MS = 5_000
 const UNANSWERED_REQUEST_MS = 180_000
 
 /**
+ * How many pumps get to deliver the call-off, and how long between them.
+ *
+ * `cancelVerification` only queues the refusal -- the pump is what posts
+ * it -- and a request the server refuses stays queued for the next pump, so
+ * the retry is an ordinary second send. Three attempts covers the transient
+ * cases a retry can fix without making a person wait on a cleanup they were
+ * never asked to watch.
+ */
+const CANCEL_PUMP_ATTEMPTS = 3
+const CANCEL_PUMP_RETRY_MS = 500
+
+/**
  * The endpoint each `kind` of outgoing request belongs to.
  *
  * The product owns transport, so the product owns this mapping, and a `kind`
@@ -380,21 +392,39 @@ export function startScannedCodeRun(
             update({ stage })
             if (stage !== 'requested') continue
           }
+          // The peer's banner outlives the run unless the call-off is
+          // delivered, and delivery is the pump's half: `cancelVerification`
+          // only queues the refusal, and a request the server refuses stays
+          // queued for the next drain. Delivery is proven when a pump drains
+          // an empty queue; a network failure throws, posts nothing, and is
+          // retried the same way. A budget that runs out without that proof
+          // is said in the state below rather than swallowed.
+          let delivered = false
+          for (let attempt = 0; attempt < CANCEL_PUMP_ATTEMPTS; attempt++) {
+            let pending = -1
+            try {
+              pending = await pump(plan, http)
+            } catch {
+              // Nothing was posted, so the queue is untouched for the next
+              // attempt, and `pending` keeps its sentinel: a throw must not
+              // read as a drained queue.
+            }
+            if (pending === 0) {
+              delivered = true
+              break
+            }
+            if (attempt < CANCEL_PUMP_ATTEMPTS - 1) await sleep(CANCEL_PUMP_RETRY_MS)
+          }
           update({
             headline: 'The verification request went unanswered.',
             detail: `Nothing accepted it within ${Math.round(unansweredRequestMs / 1000)} s, ` +
-              'so the run called it off. Start again and accept from the other device.',
+              'so the run called it off. Start again and accept from the other device.' +
+              (delivered
+                ? ''
+                : ' The call-off could not be delivered; the other device may still show the request.'),
             finished: true,
             failed: true,
           })
-          // Published before the last sync, and the sync fails quietly:
-          // this run's end is already named, and a network blip on the way
-          // out must not rename it to a generic error.
-          try {
-            await pump(plan, http)
-          } catch {
-            // named above; nothing to add
-          }
           return
         }
         // Every stage that is over ends the loop, not just the refusal.
