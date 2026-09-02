@@ -224,6 +224,59 @@ def login_when_ready(homeserver, localpart, password, display_name, timeout_s=90
 # --- The emulator side ------------------------------------------------------
 
 
+# The AppleScript is written against System Events rather than the emulator
+# app, because the emulator has no scripting dictionary: it is a bare qemu
+# binary with a Cocoa window, and `tell application "qemu-system-..."` finds
+# nothing to talk to. The process name carries the host architecture
+# (qemu-system-aarch64 on this rig, qemu-system-x86_64 on an Intel one), so
+# it is discovered by prefix rather than named.
+RAISE_EMULATOR_WINDOW = """
+tell application "System Events"
+    set found to (name of every process whose name starts with "qemu-system")
+    if found is {} then return "none"
+    set target to item 1 of found
+    set frontmost of process target to true
+    return target
+end tell
+"""
+
+
+def raise_emulator_window():
+    """Put the emulator's HOST window in front, where a camera can see it.
+
+    MEASURED on the rig 2026-09-02: the emulator window was open but buried
+    behind an ordinary desktop's other windows, and prepare_emulator's
+    settings do not touch that -- brightness, stay-awake and immersive
+    configure the emulator's VIRTUAL display, while what the mounted camera
+    actually photographs is a rectangle of the Mac's screen. A buried window
+    means the camera sees somebody's browser, the scan never completes, and
+    the leg fails at the timeout with "optics" and no way to tell a covered
+    window from a bad lamp. That is a failure this step can just remove.
+
+    Refused loudly rather than skipped when the rig is a Mac and the raise
+    does not work: an unraised window cannot produce a pass, so continuing
+    would only spend the flow budget to reach a less informative failure. A
+    rig that is not a Mac has no osascript, and arranging its own window is
+    that rig's business -- said once, in the log, not treated as an error.
+    """
+    if shutil.which("osascript") is None:
+        rig_log("no osascript on this host: the rig itself must make sure the "
+                "emulator's window is the thing the camera can see")
+        return
+    result = run_command(["osascript", "-e", RAISE_EMULATOR_WINDOW], timeout=60)
+    raised = result.stdout.strip()
+    require(result.returncode == 0 and raised and raised != "none",
+            "could not bring the emulator's window to the front "
+            f"({result.stderr.strip() or raised or 'no qemu-system process'}).\n"
+            "      The camera is aimed at a rectangle of this machine's "
+            "screen, so a window it cannot see is an optical failure the "
+            "flow timeout would report as 'no scan'. Remedies: start the "
+            "emulator with a window (not -no-window), and grant this runner "
+            "Accessibility permission in System Settings -> Privacy & "
+            "Security so System Events may raise it.")
+    rig_log(f"emulator window raised to the front ({raised})")
+
+
 def prepare_emulator(serial):
     """Everything optics needs that the app cannot ask for itself.
 
