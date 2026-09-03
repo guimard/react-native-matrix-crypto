@@ -270,7 +270,10 @@ async fn verification_of_event_from(
     alice_device_keys: &serde_json::Value,
     alice_key_id: &str,
     alice_key: &serde_json::Value,
-) -> Vec<(SenderTrustRequirement, Result<Option<SenderVerification>, SessionError>)> {
+) -> Vec<(
+    SenderTrustRequirement,
+    Result<Option<SenderVerification>, SessionError>,
+)> {
     let peer_user: OwnedUserId = user_id.parse().expect("a literal user id parses");
     let peer_device: OwnedDeviceId = device_id.into();
     let alice_user: OwnedUserId = ALICE_USER.parse().expect("a literal user id parses");
@@ -497,7 +500,10 @@ async fn verification_of_event_from(
             // to assert on the error kind instead.
             Err(_) => {}
         }
-        matrix.push((*requirement, decrypted.map(|envelope| envelope.sender_verification)));
+        matrix.push((
+            *requirement,
+            decrypted.map(|envelope| envelope.sender_verification),
+        ));
     }
     matrix
 }

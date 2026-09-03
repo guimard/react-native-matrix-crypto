@@ -245,9 +245,12 @@ fn a_tightened_sender_trust_requirement_refuses_an_unsigned_sender() {
             .into_iter()
             .find(|r| r.kind == "keys_query")
             .expect("the machine must ask who exists before it can decrypt from anyone");
-        mark_request_sent(&query.id, &query_body(BOB_USER, BOB_DEVICE, &bob_device_keys))
-            .await
-            .expect("a keys-query response must be accepted");
+        mark_request_sent(
+            &query.id,
+            &query_body(BOB_USER, BOB_DEVICE, &bob_device_keys),
+        )
+        .await
+        .expect("a keys-query response must be accepted");
 
         // The mirror image, on the bare side: Bob learns Alice's device, so
         // he has something to claim a one-time key from below. Driven
@@ -356,10 +359,13 @@ fn a_tightened_sender_trust_requirement_refuses_an_unsigned_sender() {
              of the truth here"
         );
 
-        let legacy_tier =
-            decrypt_event(SCOPE, &bob_event, SenderTrustRequirement::IdentitySignedOrLegacy)
-                .await
-                .expect_err("the legacy-tolerant requirement must refuse an unsigned sender too");
+        let legacy_tier = decrypt_event(
+            SCOPE,
+            &bob_event,
+            SenderTrustRequirement::IdentitySignedOrLegacy,
+        )
+        .await
+        .expect_err("the legacy-tolerant requirement must refuse an unsigned sender too");
         assert_eq!(
             legacy_tier,
             SessionError::SenderNotTrusted,

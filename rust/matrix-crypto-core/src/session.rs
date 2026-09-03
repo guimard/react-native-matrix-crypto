@@ -1235,9 +1235,7 @@ pub async fn decrypt_event(
     let settings = DecryptionSettings {
         sender_device_trust_requirement: match requirement {
             SenderTrustRequirement::Any => TrustRequirement::Untrusted,
-            SenderTrustRequirement::IdentitySignedOrLegacy => {
-                TrustRequirement::CrossSignedOrLegacy
-            }
+            SenderTrustRequirement::IdentitySignedOrLegacy => TrustRequirement::CrossSignedOrLegacy,
             SenderTrustRequirement::IdentitySigned => TrustRequirement::CrossSigned,
         },
     };
@@ -1246,9 +1244,7 @@ pub async fn decrypt_event(
     // the machine lock for this closure's duration; see its own doc
     // comment in `machine.rs`.
     let result = with_machine(move |machine| {
-        Box::pin(async move {
-            machine.decrypt_room_event(&raw, &room_id, &settings).await
-        })
+        Box::pin(async move { machine.decrypt_room_event(&raw, &room_id, &settings).await })
     })
     .await?;
 
@@ -5273,8 +5269,12 @@ mod tests {
     /// already asserts for `encrypt_event`.
     #[test]
     fn malformed_raw_json_is_rejected_before_any_decryption_is_attempted() {
-        let err =
-            futures::executor::block_on(decrypt_event("!s:example.org", "{oops", SenderTrustRequirement::Any)).unwrap_err();
+        let err = futures::executor::block_on(decrypt_event(
+            "!s:example.org",
+            "{oops",
+            SenderTrustRequirement::Any,
+        ))
+        .unwrap_err();
         assert_eq!(err, SessionError::MalformedPayload);
     }
 
@@ -5284,7 +5284,12 @@ mod tests {
     /// kind.
     #[test]
     fn a_malformed_scope_is_rejected_for_decryption_too() {
-        let err = futures::executor::block_on(decrypt_event("nonsense", "{}", SenderTrustRequirement::Any)).unwrap_err();
+        let err = futures::executor::block_on(decrypt_event(
+            "nonsense",
+            "{}",
+            SenderTrustRequirement::Any,
+        ))
+        .unwrap_err();
         assert_eq!(err, SessionError::MalformedIdentifier);
     }
 
@@ -5295,9 +5300,18 @@ mod tests {
     /// discovered by a consumer sent to inspect the wrong argument.
     #[test]
     fn a_bad_scope_and_a_bad_payload_are_told_apart() {
-        let bad_scope = futures::executor::block_on(decrypt_event("nonsense", "{}", SenderTrustRequirement::Any)).unwrap_err();
-        let bad_payload =
-            futures::executor::block_on(decrypt_event("!s:example.org", "{oops", SenderTrustRequirement::Any)).unwrap_err();
+        let bad_scope = futures::executor::block_on(decrypt_event(
+            "nonsense",
+            "{}",
+            SenderTrustRequirement::Any,
+        ))
+        .unwrap_err();
+        let bad_payload = futures::executor::block_on(decrypt_event(
+            "!s:example.org",
+            "{oops",
+            SenderTrustRequirement::Any,
+        ))
+        .unwrap_err();
 
         assert_eq!(bad_scope, SessionError::MalformedIdentifier);
         assert_eq!(bad_payload, SessionError::MalformedPayload);

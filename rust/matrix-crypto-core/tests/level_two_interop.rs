@@ -709,8 +709,12 @@ fn level_two_interoperability_over_a_real_homeserver() {
     let nio_raw_event =
         nio_raw_event.expect("the counterparty's own encrypted event must arrive in /sync");
 
-    let recovered = run(decrypt_event(&scope, &nio_raw_event.to_string(), SenderTrustRequirement::Any))
-        .expect("the library must decrypt what matrix-nio encrypted");
+    let recovered = run(decrypt_event(
+        &scope,
+        &nio_raw_event.to_string(),
+        SenderTrustRequirement::Any,
+    ))
+    .expect("the library must decrypt what matrix-nio encrypted");
     let plaintext: Value = serde_json::from_slice(&recovered.ciphertext)
         .expect("a decrypted content is well-formed JSON");
     assert_eq!(
@@ -734,8 +738,12 @@ fn level_two_interoperability_over_a_real_homeserver() {
             .as_str()
             .expect("a megolm content's ciphertext is a base64 string")
     ));
-    let refusal = run(decrypt_event(&scope, &corrupted_from_nio.to_string(), SenderTrustRequirement::Any))
-        .expect_err("a corrupted ciphertext must not decrypt");
+    let refusal = run(decrypt_event(
+        &scope,
+        &corrupted_from_nio.to_string(),
+        SenderTrustRequirement::Any,
+    ))
+    .expect_err("a corrupted ciphertext must not decrypt");
     assert_eq!(
         refusal,
         SessionError::Undecryptable,

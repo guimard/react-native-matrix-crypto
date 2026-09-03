@@ -86,8 +86,8 @@ use matrix_crypto_core::{
     begin_comparison, confirm_flow, create_identity, create_machine, decrypt_event,
     device_statuses, flow_stage, identity_status, in_runtime, mark_request_sent, read_material,
     receive_sync_changes, request_flow, share_scope_key, take_outgoing_requests, with_machine,
-    FlowId, FlowStage, MachineConfig, OutgoingRequest, SenderTrustRequirement,
-    SenderVerification, TrustState,
+    FlowId, FlowStage, MachineConfig, OutgoingRequest, SenderTrustRequirement, SenderVerification,
+    TrustState,
 };
 use matrix_sdk_common::ruma::api::client::keys::claim_keys::v3::Response as KeysClaimResponse;
 use matrix_sdk_common::ruma::api::client::keys::get_keys::v3::Response as KeysQueryResponse;
@@ -220,7 +220,13 @@ fn relay_to(body: &str, sender: &str, user_id: &str, device_id: &str) -> Option<
 fn addresses(body: &str, user_id: &str, device_id: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(body)
         .ok()
-        .and_then(|request| request.get("messages")?.get(user_id)?.get(device_id).cloned())
+        .and_then(|request| {
+            request
+                .get("messages")?
+                .get(user_id)?
+                .get(device_id)
+                .cloned()
+        })
         .is_some()
 }
 
@@ -1697,10 +1703,9 @@ fn a_bootstrapped_machine_withholds_the_scope_key_from_an_identityless_user() {
         )
         .await
         .expect("the bare machine must accept its own upload response");
-        let peer_device_keys = serde_json::to_value(
-            &device_keys_of(&peer, &peer_user, &peer_device).await,
-        )
-        .expect("upstream device keys serialise");
+        let peer_device_keys =
+            serde_json::to_value(&device_keys_of(&peer, &peer_user, &peer_device).await)
+                .expect("upstream device keys serialise");
         let (peer_key_id, peer_key) = batch
             .iter()
             .find_map(|r| match r.request() {

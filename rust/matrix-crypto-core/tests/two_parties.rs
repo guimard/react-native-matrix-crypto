@@ -689,10 +689,13 @@ fn two_parties_exchange_a_group_key_and_each_decrypts_what_the_other_encrypted()
             "$re-addressed:example.org",
             bob_encrypted.content.json().get(),
         );
-        let readdressed_envelope = decrypt_event(SCOPE, &readdressed_event, SenderTrustRequirement::Any).await.expect(
-            "re-addressing an event does not stop it decrypting -- Megolm \
+        let readdressed_envelope =
+            decrypt_event(SCOPE, &readdressed_event, SenderTrustRequirement::Any)
+                .await
+                .expect(
+                    "re-addressing an event does not stop it decrypting -- Megolm \
                  authenticates the session, not the envelope's sender claim",
-        );
+                );
         assert!(
             readdressed_envelope.ciphertext == BOB_PAYLOAD.as_bytes(),
             "a re-addressed event still decrypts to the same plaintext \
