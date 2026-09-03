@@ -90,9 +90,11 @@ function App({ storeDir = '' }: { storeDir?: string }) {
     // platform this app runs on can produce ('web' and friends) takes the
     // loopback-only list, which is the safe half of the two. See
     // `PLAN_URLS` in levelTwoTransport.ts.
-    void fetchLevelTwoPlan(Platform.OS === 'android' ? 'android' : 'ios').then(found => {
-      if (!cancelled) setPlan(found)
-    })
+    void fetchLevelTwoPlan(Platform.OS === 'android' ? 'android' : 'ios').then(
+      found => {
+        if (!cancelled) setPlan(found)
+      },
+    )
     return () => {
       cancelled = true
     }
