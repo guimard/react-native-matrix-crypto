@@ -23,6 +23,7 @@
  * wrong first.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import * as generated from 'react-native-matrix-crypto/src/generated/matrix_crypto'
 import {
   startScannedCodeRun,
   type HttpResult,
@@ -61,6 +62,7 @@ function sampleModules(width: number): boolean[] {
 }
 
 const FLOW = 'flow-under-test'
+const PEER_FLOW = 'flow-from-peer'
 const CODE_WIDTH = 45
 
 /**
@@ -73,8 +75,17 @@ const native = {
   confirmed: false,
   capabilitiesOffered: null as { canShow: boolean; canScan: boolean } | null,
   requests: [] as Array<{ id: string; kind: string; body: string }>,
+  lastHanded: [] as Array<{ id: string; kind: string; body: string }>,
+  failedStatuses: [] as number[],
   syncsReceived: 0,
   accepted: [] as string[],
+  cancelled: [] as string[],
+  cancelCalls: 0,
+  // How long each stage read parks, in real milliseconds. Zero for every
+  // test but the unanswered-ask race, whose deadline must have certainly
+  // passed by the loop's first read; a real sync's news arrives no faster.
+  readDelayMs: 0,
+  observer: null as { onSignal: (signal: unknown) => void } | null,
 }
 
 vi.mock(
@@ -94,9 +105,44 @@ vi.mock(
       ),
       requestSelfVerification: vi.fn(async () => FLOW),
       acceptVerification: vi.fn(async (id: string) => {
+        // The real library refuses a flow this side opened: it is already
+        // agreed to, and the call would end the run. Model that refusal so
+        // the runner's `!openedHere` guard cannot be dropped without a test
+        // failing; any other id is a peer's flow, accepted as the real
+        // library accepts it.
+        if (id === FLOW) throw new original.MachineFfiError.WrongStage()
         native.accepted.push(id)
       }),
+      cancelVerification: vi.fn(async (id: string) => {
+        native.cancelCalls += 1
+        // The real library refuses to cancel a flow whose stage has moved on
+        // from `requested`: by the time a deadline cancel lands, the peer may
+        // already have answered. Model that refusal so the runner's
+        // `wrong_stage` re-read cannot be dropped without a test failing; a
+        // flow genuinely still waiting at `requested` is cancelled, as the
+        // real library cancels it.
+        if (native.stages[0] !== 'Requested')
+          throw new original.MachineFfiError.WrongStage()
+        native.cancelled.push(id)
+        // The real library queues the cancel to-device: the pump is what
+        // delivers it. Model that half too, so the deadline branch's delivery
+        // loop has a request to drain.
+        native.requests.push({
+          id: 'cancel-request',
+          kind: 'to_device',
+          body: JSON.stringify({ event_type: 'm.key.verification.cancel' }),
+        })
+      }),
       verificationStage: vi.fn(async () => {
+        // A test that needs the wall clock to have moved before this read
+        // returns parks a real delay here (see `native.readDelayMs`); the
+        // suite runs on real timers, and the deadline it underpins is the
+        // same one a real 180 s budget drives.
+        if (native.readDelayMs > 0) {
+          await new Promise<void>(resolve =>
+            setTimeout(resolve, native.readDelayMs),
+          )
+        }
         // The last stage repeats once the list runs out, which is what a flow
         // parked at `done` or `cancelled` really does.
         const next =
@@ -125,15 +171,28 @@ vi.mock(
       takeOutgoingRequests: vi.fn(async () => {
         const batch = native.requests
         native.requests = []
+        native.lastHanded = batch
         return batch
       }),
       markRequestSent: vi.fn(async () => undefined),
-      markRequestFailed: vi.fn(async () => undefined),
+      markRequestFailed: vi.fn(async (id: string, status: number) => {
+        native.failedStatuses.push(status)
+        // The real machine keeps a refused request outstanding, so the next
+        // drain hands it over again -- the retry is an ordinary second send.
+        const refused = native.lastHanded.find(request => request.id === id)
+        if (refused) native.requests.push(refused)
+      }),
       receiveSyncChanges: vi.fn(async () => {
         native.syncsReceived += 1
       }),
-      setCryptoObserver: vi.fn(() => undefined),
-      clearCryptoObserver: vi.fn(() => undefined),
+      setCryptoObserver: vi.fn(
+        (installed: { onSignal: (signal: unknown) => void }) => {
+          native.observer = installed
+        },
+      ),
+      clearCryptoObserver: vi.fn(() => {
+        native.observer = null
+      }),
     }
   },
 )
@@ -190,8 +249,30 @@ beforeEach(() => {
   native.requests = []
   native.syncsReceived = 0
   native.accepted = []
+  native.cancelled = []
+  native.cancelCalls = 0
+  native.lastHanded = []
+  native.failedStatuses = []
+  native.readDelayMs = 0
+  native.observer = null
   http.mockClear()
 })
+
+/**
+ * Delivers a peer's verification request through the installed observer,
+ * exactly as a sync would: the runner subscribes on its first await, a few
+ * microtasks after start, and this returns once it is listening.
+ */
+async function firePeerRequest(flowId: string): Promise<void> {
+  while (native.observer === null) await Promise.resolve()
+  native.observer.onSignal(
+    new generated.CryptoSignal.VerificationRequested({
+      user: '@peer:example.org',
+      deviceId: 'PEERDEVICE',
+      verificationId: flowId,
+    }),
+  )
+}
 
 describe('the camera walkthrough', () => {
   // The assertion is the exact record, not that a call happened. This app
@@ -319,5 +400,194 @@ describe('the camera walkthrough', () => {
   it('feeds every sync it performs to the library', async () => {
     await drive(['Requested', 'Ready', 'CodeScanned', 'Done'])
     expect(native.syncsReceived).toBeGreaterThan(0)
+  })
+
+  // Every test above drives the ask branch. This one drives the accept
+  // branch, which no test reached before: the observer never fired and
+  // `native.accepted` was never asserted.
+  it('accepts a verification the peer opened, with no ask from this side', async () => {
+    native.stages = ['Requested', 'Ready', 'CodeScanned', 'Done']
+    const states: ScannedCodeState[] = []
+    const run = startScannedCodeRun(
+      plan,
+      '/tmp/store',
+      http,
+      state => states.push({ ...state }),
+      {
+        sleep: noSleep,
+      },
+    )
+    await firePeerRequest(PEER_FLOW)
+    await run.finished
+    // Accepted with the peer's own flow id, and only the peer's.
+    expect(native.accepted).toEqual([PEER_FLOW])
+    // The run then reaches the code/ready stage per the existing fake.
+    const withCode = states.find(
+      state => state.stage === 'ready' && state.code !== undefined,
+    )
+    expect(withCode).toBeDefined()
+    const final = states[states.length - 1]
+    expect(final.finished).toBe(true)
+    expect(final.failed).toBe(false)
+  })
+
+  it('fails the run on a deadline rather than wait on an unanswered ask forever', async () => {
+    native.stages = ['Requested']
+    const states: ScannedCodeState[] = []
+    const run = startScannedCodeRun(
+      plan,
+      '/tmp/store',
+      http,
+      state => states.push({ ...state }),
+      {
+        sleep: noSleep,
+        // A budget nobody could answer in, injected rather than faked: the
+        // suite runs on real timers, and the check this proves is the same
+        // one a real 180 s budget drives.
+        unansweredRequestMs: 10,
+      },
+    )
+    run.askOtherDevices()
+    await run.finished
+    const final = states[states.length - 1]
+    expect(final.finished).toBe(true)
+    expect(final.failed).toBe(true)
+    expect(final.headline).toContain('unanswered')
+    // The flow this side opened is called off, so the peer's banner does
+    // not outlive the run.
+    expect(native.cancelled).toEqual([FLOW])
+  })
+
+  // The race the deadline's `wrong_stage` handling exists for: the stage is
+  // read at `requested`, and between that read and the cancel the peer
+  // answers, so the cancel is refused and the flow must not be reported as
+  // unanswered. Two `Requested` entries feed the phase-2 preamble read and
+  // the loop's first read; the script then moves to `ready`, exactly as the
+  // flow does once the peer accepts.
+  it('rides out the peer answering in the gap the deadline cancel targets', async () => {
+    native.stages = [
+      'Requested',
+      'Requested',
+      'Ready',
+      'Ready',
+      'CodeScanned',
+      'Done',
+    ]
+    // The accept takes real time to arrive, as a sync would: park each
+    // stage read so the deadline has certainly passed by the loop's first
+    // read, and the race lands on that read rather than on whichever later
+    // one the wall clock happens to reach.
+    native.readDelayMs = 20
+    const states: ScannedCodeState[] = []
+    const run = startScannedCodeRun(
+      plan,
+      '/tmp/store',
+      http,
+      state => states.push({ ...state }),
+      {
+        sleep: noSleep,
+        // A budget nobody could answer in, injected rather than faked: the
+        // suite runs on real timers, and the check this proves is the same
+        // one a real 180 s budget drives.
+        unansweredRequestMs: 10,
+      },
+    )
+    run.askOtherDevices()
+    await run.finished
+    const final = states[states.length - 1]
+    // The cancel was attempted, and refused with the real `WrongStage`
+    // because the scripted flow had moved on since the read above.
+    expect(native.cancelCalls).toBe(1)
+    expect(native.cancelled).toEqual([])
+    // The runner took the refusal as the race it is: no unanswered failure
+    // was published, and the loop's ordinary stage handling carried the run
+    // to `ready` with a code and on to a success.
+    expect(states.some(state => state.headline.includes('unanswered'))).toBe(
+      false,
+    )
+    expect(
+      states.some(state => state.stage === 'ready' && state.code !== undefined),
+    ).toBe(true)
+    expect(final.finished).toBe(true)
+    expect(final.failed).toBe(false)
+    expect(final.headline).toBe('Verified.')
+  })
+
+  // The deadline's call-off is queued, not sent: the pump delivers it, and
+  // a refused request stays queued for the next drain. This test holds the
+  // delivery loop to that: the server refuses the first post, the second
+  // lands, and the run says none of it.
+  it('keeps pumping the call-off until the server takes it', async () => {
+    native.stages = ['Requested']
+    native.readDelayMs = 20
+    let posts = 0
+    http.mockImplementation(async (method: string) => {
+      if (method === 'GET') {
+        return {
+          status: 200,
+          text: JSON.stringify({ next_batch: 's1', to_device: { events: [] } }),
+        }
+      }
+      posts += 1
+      return posts <= 1
+        ? { status: 500, text: '{}' }
+        : { status: 200, text: '{}' }
+    })
+    const states: ScannedCodeState[] = []
+    const run = startScannedCodeRun(
+      plan,
+      '/tmp/store',
+      http,
+      state => states.push({ ...state }),
+      {
+        sleep: noSleep,
+        unansweredRequestMs: 10,
+      },
+    )
+    run.askOtherDevices()
+    await run.finished
+    const final = states[states.length - 1]
+    // One refusal, then a delivery, and the pump after it drained an empty
+    // queue -- the proof the runner waits for, so the state says nothing
+    // about an undelivered call-off.
+    expect(native.failedStatuses).toEqual([500])
+    expect(final.failed).toBe(true)
+    expect(final.headline).toContain('unanswered')
+    expect(final.detail).not.toContain('could not be delivered')
+  })
+
+  // The same loop when the server never takes it: the budget runs out, the
+  // run still ends, and it says the call-off may not have reached the peer
+  // rather than claiming a banner that may still be up.
+  it('says when the call-off could not be delivered', async () => {
+    native.stages = ['Requested']
+    native.readDelayMs = 20
+    http.mockImplementation(async (method: string) => {
+      if (method === 'GET') {
+        return {
+          status: 200,
+          text: JSON.stringify({ next_batch: 's1', to_device: { events: [] } }),
+        }
+      }
+      return { status: 502, text: '{}' }
+    })
+    const states: ScannedCodeState[] = []
+    const run = startScannedCodeRun(
+      plan,
+      '/tmp/store',
+      http,
+      state => states.push({ ...state }),
+      {
+        sleep: noSleep,
+        unansweredRequestMs: 10,
+      },
+    )
+    run.askOtherDevices()
+    await run.finished
+    const final = states[states.length - 1]
+    expect(native.failedStatuses).toEqual([502, 502, 502])
+    expect(final.failed).toBe(true)
+    expect(final.headline).toContain('unanswered')
+    expect(final.detail).toContain('could not be delivered')
   })
 })

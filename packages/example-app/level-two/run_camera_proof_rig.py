@@ -87,10 +87,10 @@ HOW A RUN IS SEQUENCED
   4. prepare the emulator's display for optics (brightness, stay-awake,
      immersive) and install the app without launching it;
   5. THE PHONE SIDE: drive Element on the phone -- sign in to the throwaway
-     homeserver, bootstrap the account's cross-signing identity, then open
-     the verification of the emulator's session so its camera faces the
-     symbol;
-  6. launch the app on the emulator and wait for `CAMERA_PROOF` lines;
+     homeserver and bootstrap the account's cross-signing identity;
+  6. launch the app on the emulator and wait for `CAMERA_PROOF` lines, and
+     once the harness's ask is up, answer the incoming request banner on the
+     phone so its camera faces the symbol;
   7. assert exactly one `CAMERA_PROOF_SUMMARY 5/5` within the timeout, then
      the second witness over /keys/query;
   8. assert nothing this run minted leaked into the emulator's log;
@@ -422,14 +422,13 @@ def wait_for_app_line(serial, pattern, timeout_s, what):
 #   homeserver): the adb-native primitives below -- uiautomator dump, XML
 #   parse, input tap, scroll, input text -- and the whole Element flow from
 #   a cleared app to a live verification: sign-in through the server
-#   editor, the cross-signing bootstrap, the first-session prompts, home ->
-#   profile drawer -> "Sécurité et vie privée" -> "Afficher toutes les
-#   sessions" -> the CameraProof session -> its verify action. Every label
-#   that navigation actually shows is recorded in ELEMENT_CANDIDATE_SCREENS
-#   next to the guesses, the guesses kept but the measured labels leading.
-#   AWAITS: the scan. See this file's header for the Element finding that
-#   stops it -- the verify action on a session's own screen starts SAS, and
-#   no scan choice is offered after it.
+#   editor, the cross-signing bootstrap, the first-session prompts, then
+#   the answer to this side's ask -- the incoming request banner ->
+#   "Accepter" -> "Scanner avec cet appareil". That last path is the one
+#   the 5/5 run measured end to end on 2026-09-02, every tap driven by
+#   this program. Every label the screens actually show is recorded in
+#   ELEMENT_CANDIDATE_SCREENS next to the guesses, the guesses kept but
+#   the measured labels leading.
 #
 # Every UI step fails with a named error naming what it looked for, because
 # an unmodified client's screens are exactly the kind of third-party surface
@@ -559,10 +558,9 @@ ELEMENT_CANDIDATE_SCREENS = {
     # The labels are in the commit that removed them if that path is ever
     # revisited, and out of this dict because a candidate nothing consults
     # is a claim about a screen this driver no longer visits.
-    # Element receiving a verification request from this side. UNMEASURED:
-    # this is the surface the 2026-09-02 finding sends the driver to, and no
-    # run has reached it yet. A miss is reported with the screen's own texts
-    # (see tap_first_of), which is the measurement that fixes this entry.
+    # Element receiving a verification request from this side. A miss is
+    # reported with the screen's own texts (see tap_first_of), which is the
+    # measurement that fixes this entry.
     # MEASURED on the rig 2026-09-02, first run in which this side asked:
     # Element announces the request as a banner carrying a TITLE and the
     # requesting user, and NO button text at all --
@@ -572,7 +570,6 @@ ELEMENT_CANDIDATE_SCREENS = {
     # driver guessed first ("Accepter", "Vérifier", "Prêt") was absent. The
     # guesses stay trailing for a build that puts a button there.
     "incoming_request": (["Demande de vérification", "Verification Request",
-                          "Verification request",
                           "Vérifier", "Verify",
                           "Accepter", "Accept",
                           "Prêt", "Ready",
@@ -593,8 +590,10 @@ ELEMENT_CANDIDATE_SCREENS = {
     #   'Vérifier en comparant des émoticônes à la place'
     # The last two are deliberately NOT candidates: both are ways of NOT
     # scanning, and tapping either would end the run in the emoji fallback
-    # this leg exists to avoid. Matching is exact (casefold), so the bare
-    # "Scanner" below cannot match "Scanner avec cet appareil" by accident.
+    # this leg exists to avoid. Node text matches exactly (casefolded),
+    # while content-desc matches by casefolded prefix -- which is precisely
+    # why no bare "Scanner"/"Scan" entry remains in this list: a short
+    # entry could prefix-match a longer row the driver did not mean to tap.
     "scan_choice": (["Scanner avec cet appareil", "Scan with this device",
                      "Scanner le code QR", "Scanner leur code QR",
                      "Scan QR code", "Scan their QR code"],
@@ -740,6 +739,20 @@ class AdbNativeBackend:
         # in with a worse-shaped error.
         self._dump()
 
+    def _adb_or_die(self, result, what):
+        """Fail the step when adb says the command did not run.
+
+        A nonzero rc from `input tap`/`swipe`/`text` means the touch or the
+        keystrokes never landed, and reporting the candidate as tapped would
+        send the next step at a screen the driver never reached. Raised
+        rather than retried: a command adb refuses is a device failure, not
+        a candidate the screen is missing.
+        """
+        if result.returncode != 0:
+            raise RunFailed(
+                f"adb refused the {what} on {self.serial} "
+                f"(rc {result.returncode}): {result.stderr.strip()}")
+
     def _dump(self):
         """One window dump, parsed into a node list.
 
@@ -805,7 +818,9 @@ class AdbNativeBackend:
                 if (node_text.casefold() == text.casefold()
                         or node_desc.casefold().startswith(text.casefold())):
                     x, y = center_of(node.get("bounds"))
-                    adb_on(self.serial, "shell", "input", "tap", str(x), str(y))
+                    self._adb_or_die(
+                        adb_on(self.serial, "shell", "input", "tap", str(x), str(y)),
+                        "tap")
                     return text
         return None
 
@@ -820,8 +835,10 @@ class AdbNativeBackend:
                 # Swipe bottom-to-top inside the container's own bounds:
                 # a full-screen swipe would drag the drawer or the system
                 # bars instead of the list that held the missing text.
-                adb_on(self.serial, "shell", "input", "swipe",
-                       str(middle), str(y2 - 60), str(middle), str(y1 + 60), "300")
+                self._adb_or_die(
+                    adb_on(self.serial, "shell", "input", "swipe",
+                           str(middle), str(y2 - 60), str(middle), str(y1 + 60), "300"),
+                    "swipe")
                 return True
         return False
 
@@ -837,15 +854,19 @@ class AdbNativeBackend:
         if index >= len(nodes):
             return False
         x, y = center_of(nodes[index].get("bounds"))
-        adb_on(self.serial, "shell", "input", "tap", str(x), str(y))
+        self._adb_or_die(
+            adb_on(self.serial, "shell", "input", "tap", str(x), str(y)),
+            "tap")
         # Clear any prefill before typing. MEASURED on the rig phone: the
         # server editor comes up prefilled with "matrix.org" and `input
         # text` APPENDS, so typing the URL there would have produced
         # "matrix.orghttp://127.0.0.1:...". MOVE_END plus a DEL sweep is
         # the framework-only way to empty a field; deleting from an empty
         # field is harmless, so the sweep is generous on purpose.
-        adb_on(self.serial, "shell", "input", "keyevent", "KEYCODE_MOVE_END",
-               *(["KEYCODE_DEL"] * 64))
+        self._adb_or_die(
+            adb_on(self.serial, "shell", "input", "keyevent", "KEYCODE_MOVE_END",
+                   *(["KEYCODE_DEL"] * 64)),
+            "key sweep")
         # MEASURED on the rig phone: `input text` typed a homeserver
         # URL (http://127.0.0.1:8008) verbatim. Two encodings are
         # still applied because the values they protect are legal:
@@ -855,7 +876,9 @@ class AdbNativeBackend:
         # encodings are belt and braces rather than load-bearing.
         encoded = value.replace("%", "%%").replace(" ", "%s")
         quoted = "'" + encoded.replace("'", "'\"'\"'") + "'"
-        adb_on(self.serial, "shell", "input", "text", quoted)
+        self._adb_or_die(
+            adb_on(self.serial, "shell", "input", "text", quoted),
+            "text input")
         return True
 
     def type_in_first_editable(self, value):
@@ -1287,17 +1310,28 @@ def element_accept_verification(element):
     includes showing a code. Its own responder UI is the surface that offers
     to scan.
 
-    UNVALIDATED, and said plainly because the last function that claimed
-    otherwise cost four runs: no run has reached Element's incoming-request
-    UI yet. Both steps below fail naming what they looked for AND what was on
-    screen, which is the measurement that fixes them.
+    A miss on any step below is reported with the screen's own texts, which
+    is the measurement that fixes it.
     """
     prompts = ELEMENT_CANDIDATE_SCREENS["bootstrap_dismiss"][0]
     # 120s, not 60: this waits for a to-device event to cross a homeserver
-    # and for Element to sync it, not for a screen to animate.
+    # and for Element to sync it, not for a screen to animate. `scrolling`
+    # stays off for the same dismissible-surface reason the next steps
+    # cite: the banner is delivered by the peer's to-device event, not
+    # scrolled into view, and it is a one-shot transient -- a banner that
+    # lands between the dump and the swipe would take the swipe and be
+    # dismissed, so a miss must re-dump and re-tap rather than scroll the
+    # room list under it.
     candidates = ELEMENT_CANDIDATE_SCREENS["incoming_request"]
-    element.tap_first_of(candidates[0], 120, candidates[1], clearing=prompts)
+    element.tap_first_of(candidates[0], 120, candidates[1], clearing=prompts,
+                         scrolling=False)
     candidates = ELEMENT_CANDIDATE_SCREENS["accept_request"]
+    # No `clearing` here, on purpose: clearing stops at the sheet because
+    # the bootstrap_dismiss list contains "Annuler"/"Cancel" and the
+    # verification sheet is dismissible, so a clearing tap inside it would
+    # cancel the flow. First-session prompts are done by now anyway -- the
+    # bootstrap gates on the published identity, and the prompts stand in
+    # front of exactly that.
     element.tap_first_of(candidates[0], 60, candidates[1], scrolling=False)
     # scrolling=False for the reason the previous revision established: from
     # here Element is showing a verification in a dismissible sheet, and a
@@ -1482,7 +1516,7 @@ def main():
         prepare_emulator(EMULATOR_SERIAL)
         install_on_emulator(EMULATOR_SERIAL, arguments.apk)
 
-        # --- THE PHONE SIDE: unvalidated, awaits the rig -------------------
+        # --- THE PHONE SIDE: measured on the rig 2026-09-02, 5/5 ----------
         element = Element(phone_serial, ELEMENT_PACKAGE)
         element_sign_in(
             element, phone_serial, f"http://127.0.0.1:{homeserver_port}",
@@ -1494,7 +1528,26 @@ def main():
         wait_for_app_line(EMULATOR_SERIAL, re.compile(r"^CAMERA_PROOF run_started"),
                           120, "the harness's first line")
 
-        element_accept_verification(element)
+        # The harness dies here when the phone never answers its ask, and
+        # its own FAIL lines stay in the emulator's logcat unless something
+        # reads them. Surface them first, on the same stream as the FAIL
+        # line so the order holds, then let the phone-side failure follow:
+        # a miss otherwise reads as a phone-side selector miss after a full
+        # 120 s banner burn.
+        try:
+            element_accept_verification(element)
+        except RunFailed:
+            camera_proof_lines = [
+                line for line in app_lines(EMULATOR_SERIAL)
+                if line.startswith("CAMERA_PROOF")
+            ]
+            if camera_proof_lines:
+                print("[camera-proof] --- the emulator's CAMERA_PROOF lines "
+                      "so far ---", file=sys.stderr)
+                for line in camera_proof_lines:
+                    print(line, file=sys.stderr)
+                print("[camera-proof] --- end ---", file=sys.stderr)
+            raise
 
         summaries, lines = wait_for_app_line(
             EMULATOR_SERIAL, SUMMARY_PATTERN, FLOW_TIMEOUT_SECONDS,

@@ -52,11 +52,12 @@
  * payload byte, never a module -- the payload is authentication material and
  * the modules are the same secret drawn as squares.
  *
- * VALIDATED vs AWAITING THE RIG: the reduction this feeds
+ * VALIDATED: the reduction this feeds
  * (`cameraProofLog.ts`) and the runner it drives (`scannedCodeRunner.ts`)
- * are host-tested, and this component typechecks. Nothing here has run on a
- * device yet: the first real run is the rig's, and the leg fails closed if
- * any piece of it is absent.
+ * are host-tested, and this component typechecks -- and this component has
+ * now run on the rig (MEASURED 2026-09-02: the 5/5 camera-proof run drove
+ * this harness on the emulator, every tap on the phone coming from the
+ * driver). The leg fails closed if any piece of it is absent.
  */
 
 import React, { useEffect, useRef, useState } from 'react'
@@ -136,7 +137,7 @@ export function CameraProofHarness({
       if (!loggedStarted) {
         loggedStarted = true
         console.log(
-          'CAMERA_PROOF run_started waiting for the phone side to start a verification',
+          'CAMERA_PROOF run_started waiting for a verification flow to reach this device',
         )
       }
       if (state.stage !== lastStage) {

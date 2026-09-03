@@ -31,6 +31,7 @@
  */
 import {
   acceptVerification,
+  cancelVerification,
   confirmScan,
   createCryptoMachine,
   encryptionSlice,
@@ -108,6 +109,29 @@ const STAGE_POLL_MS = 400
 
 /** How long a single long-polled `/sync` asks the homeserver to wait. */
 const SYNC_TIMEOUT_MS = 5_000
+
+/**
+ * How long an ask from this side waits for the other devices to answer it.
+ *
+ * 3 min -- a person accepts within a minute or two, and the rig's own
+ * banner budget is 120 s, so anything still unanswered after this is a peer
+ * that will not answer. The walkthrough screen has no cancel, so without
+ * this deadline an ask nobody answers would park the run at `requested`
+ * forever; pre-change, the self-accept refusal failed the run in ~46 ms.
+ */
+const UNANSWERED_REQUEST_MS = 180_000
+
+/**
+ * How many pumps get to deliver the call-off, and how long between them.
+ *
+ * `cancelVerification` only queues the refusal -- the pump is what posts
+ * it -- and a request the server refuses stays queued for the next pump, so
+ * the retry is an ordinary second send. Three attempts covers the transient
+ * cases a retry can fix without making a person wait on a cleanup they were
+ * never asked to watch.
+ */
+const CANCEL_PUMP_ATTEMPTS = 3
+const CANCEL_PUMP_RETRY_MS = 500
 
 /**
  * The endpoint each `kind` of outgoing request belongs to.
@@ -243,11 +267,16 @@ export function startScannedCodeRun(
   storeDir: string,
   http: HttpJson,
   publish: Publish,
-  options: { sleep?: (ms: number) => Promise<void> } = {},
+  options: {
+    sleep?: (ms: number) => Promise<void>
+    unansweredRequestMs?: number
+  } = {},
 ): ScannedCodeRun {
   const sleep =
     options.sleep ??
     ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
+  const unansweredRequestMs =
+    options.unansweredRequestMs ?? UNANSWERED_REQUEST_MS
 
   let state: ScannedCodeState = {
     headline: 'Starting…',
@@ -318,12 +347,14 @@ export function startScannedCodeRun(
       // this side's own outgoing request, called `acceptVerification` on it,
       // and the refusal ended the run 46ms after it started.
       let openedHere = false
+      let askedAt = 0
       // ---- phase 1: a flow exists ------------------------------------
       while (!stopped && announced === null) {
         if (askRequested) {
           askRequested = false
           announced = await requestSelfVerification()
           openedHere = true
+          askedAt = Date.now()
           await pump(plan, http)
           update({
             headline: 'Asked your other devices to verify.',
@@ -335,6 +366,11 @@ export function startScannedCodeRun(
         since = await syncOnce(plan, http, since)
       }
       if (stopped || announced === null) return
+
+      // The peer's flow won the race: an ask set while this loop was
+      // syncing is moot now that a flow exists, and the flag has no later
+      // reader -- reset it rather than leave it stale.
+      askRequested = false
 
       const flow = announced
       update({ verificationId: flow })
@@ -353,6 +389,71 @@ export function startScannedCodeRun(
       while (!stopped && code === undefined) {
         stage = await getVerificationStage(flow)
         update({ stage })
+        // An ask nobody answers would otherwise park the run here for the
+        // life of the process: the walkthrough screen has no cancel, and a
+        // stage that stays `requested` is a peer that will not answer. The
+        // budget is generous (see UNANSWERED_REQUEST_MS), and the run fails
+        // rather than wait forever.
+        if (
+          openedHere &&
+          stage === 'requested' &&
+          Date.now() - askedAt > unansweredRequestMs
+        ) {
+          // The peer's banner outlives the run unless the flow is called
+          // off, and the flow this side opened is this side's to close. A
+          // `wrong_stage` says the stage moved since the read above:
+          // either the peer answered between the read and this call -- the
+          // flow is no longer this side's to close, and the answer ends the
+          // run the same way -- or the flow already ended on its own. Re-read
+          // once and let the loop's normal stage handling name it; only a
+          // flow still stuck at `requested` falls through to the failure
+          // below. Anything else is reported by the outer handler.
+          try {
+            await cancelVerification(flow)
+          } catch (error) {
+            if (!isCryptoError(error) || error.kind !== 'wrong_stage')
+              throw error
+            stage = await getVerificationStage(flow)
+            update({ stage })
+            if (stage !== 'requested') continue
+          }
+          // The peer's banner outlives the run unless the call-off is
+          // delivered, and delivery is the pump's half: `cancelVerification`
+          // only queues the refusal, and a request the server refuses stays
+          // queued for the next drain. Delivery is proven when a pump drains
+          // an empty queue; a network failure throws, posts nothing, and is
+          // retried the same way. A budget that runs out without that proof
+          // is said in the state below rather than swallowed.
+          let delivered = false
+          for (let attempt = 0; attempt < CANCEL_PUMP_ATTEMPTS; attempt++) {
+            let pending = -1
+            try {
+              pending = await pump(plan, http)
+            } catch {
+              // Nothing was posted, so the queue is untouched for the next
+              // attempt, and `pending` keeps its sentinel: a throw must not
+              // read as a drained queue.
+            }
+            if (pending === 0) {
+              delivered = true
+              break
+            }
+            if (attempt < CANCEL_PUMP_ATTEMPTS - 1)
+              await sleep(CANCEL_PUMP_RETRY_MS)
+          }
+          update({
+            headline: 'The verification request went unanswered.',
+            detail:
+              `Nothing accepted it within ${Math.round(unansweredRequestMs / 1000)} s, ` +
+              'so the run called it off. Start again and accept from the other device.' +
+              (delivered
+                ? ''
+                : ' The call-off could not be delivered; the other device may still show the request.'),
+            finished: true,
+            failed: true,
+          })
+          return
+        }
         // Every stage that is over ends the loop, not just the refusal.
         // A loop that waits only for the one ending it expects spins for
         // ever on any other, and this one runs on a phone in a person's
