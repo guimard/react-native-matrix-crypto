@@ -261,19 +261,41 @@ async fn drain_for(kind: &str, why: &str) -> matrix_crypto_core::OutgoingRequest
 /// peer genuinely encrypted.
 ///
 /// `bootstrap` is the single axis the two peers differ on.
+/// Alice's published keys, as the peer machine has to be told them: the
+/// device keys a `/keys/query` answers with, and the one one-time key a
+/// `/keys/claim` hands over.
+///
+/// Grouped rather than passed as three parameters, which is not a style
+/// preference: as three they put this helper at eight arguments, one over
+/// `clippy::too_many_arguments`, and `cargo clippy -- -D warnings` is a
+/// step of the gates job. They travel together at both call sites and are
+/// read together in the two responses below, so the group is the shape
+/// they already had.
+struct AliceKeys<'a> {
+    device_keys: &'a serde_json::Value,
+    key_id: &'a str,
+    key: &'a serde_json::Value,
+}
+
 async fn verification_of_event_from(
     user_id: &str,
     device_id: &str,
     payload: &str,
     bootstrap: bool,
     requirements: &[SenderTrustRequirement],
-    alice_device_keys: &serde_json::Value,
-    alice_key_id: &str,
-    alice_key: &serde_json::Value,
+    alice: AliceKeys<'_>,
 ) -> Vec<(
     SenderTrustRequirement,
     Result<Option<SenderVerification>, SessionError>,
 )> {
+    // Destructured back into the three names the body already used, so
+    // grouping them cost the reader nothing below this line.
+    let AliceKeys {
+        device_keys: alice_device_keys,
+        key_id: alice_key_id,
+        key: alice_key,
+    } = alice;
+
     let peer_user: OwnedUserId = user_id.parse().expect("a literal user id parses");
     let peer_device: OwnedDeviceId = device_id.into();
     let alice_user: OwnedUserId = ALICE_USER.parse().expect("a literal user id parses");
@@ -480,25 +502,23 @@ async fn verification_of_event_from(
     let mut matrix = Vec::new();
     for requirement in requirements {
         let decrypted = decrypt_event(SCOPE, &event, *requirement).await;
-        match &decrypted {
-            Ok(envelope) => {
-                // The control on every authenticity assertion below. If
-                // decryption itself broke, the value under test would be
-                // meaningless rather than wrong, and this says which of
-                // the two happened.
-                assert!(
-                    envelope.ciphertext == payload.as_bytes(),
-                    "the library must recover the peer's payload byte for byte \
-                     (recovered {} bytes, sent {} bytes)",
-                    envelope.ciphertext.len(),
-                    payload.len()
-                );
-            }
-            // A refusal under a tightened requirement is the finding this
-            // matrix exists to make: it says nothing about the ciphertext,
-            // so there is no payload to check -- the caller is expected
-            // to assert on the error kind instead.
-            Err(_) => {}
+        // Only the success arm has anything to check, which is why this is
+        // an `if let` and not a `match`. A refusal under a tightened
+        // requirement is the finding this matrix exists to make: it says
+        // nothing about the ciphertext, so there is no payload to check --
+        // the caller is expected to assert on the error kind instead.
+        if let Ok(envelope) = &decrypted {
+            // The control on every authenticity assertion below. If
+            // decryption itself broke, the value under test would be
+            // meaningless rather than wrong, and this says which of the
+            // two happened.
+            assert!(
+                envelope.ciphertext == payload.as_bytes(),
+                "the library must recover the peer's payload byte for byte \
+                 (recovered {} bytes, sent {} bytes)",
+                envelope.ciphertext.len(),
+                payload.len()
+            );
         }
         matrix.push((
             *requirement,
@@ -610,9 +630,11 @@ fn a_cross_signed_peer_produces_unverified_identity_against_a_library_with_no_id
                 SenderTrustRequirement::IdentitySignedOrLegacy,
                 SenderTrustRequirement::IdentitySigned,
             ],
-            &alice_device_keys,
-            &bob_key_id,
-            &bob_key,
+            AliceKeys {
+                device_keys: &alice_device_keys,
+                key_id: &bob_key_id,
+                key: &bob_key,
+            },
         )
         .await;
 
@@ -631,9 +653,11 @@ fn a_cross_signed_peer_produces_unverified_identity_against_a_library_with_no_id
                 SenderTrustRequirement::IdentitySignedOrLegacy,
                 SenderTrustRequirement::IdentitySigned,
             ],
-            &alice_device_keys,
-            &carol_key_id,
-            &carol_key,
+            AliceKeys {
+                device_keys: &alice_device_keys,
+                key_id: &carol_key_id,
+                key: &carol_key,
+            },
         )
         .await;
 
