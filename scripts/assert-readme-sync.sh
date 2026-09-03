@@ -80,7 +80,16 @@ for gate in $GATES; do
     UNWIRED="${UNWIRED:+$UNWIRED
 }$gate"
   fi
-  if ! grep -qF "| \`$gate\` |" "$ROOT_README"; then
+  # Whitespace-tolerant, and it has to be. This was `grep -qF "| \`$gate\` |"`,
+  # which requires exactly one space on each side of the cell -- and Prettier
+  # pads every cell in a Markdown table out to the width of its column. Commit
+  # 0e93565 ran Prettier over the READMEs and turned this gate red for all
+  # thirteen gates at once, reporting that the table names none of them while
+  # the table sat there naming all of them. That padding is what is committed
+  # on main, so a gate that reads a table has to read the table as it is
+  # actually written; the whitespace between the pipes was never the thing
+  # being asserted.
+  if ! grep -qE "^\|[[:space:]]*\`$gate\`[[:space:]]*\|" "$ROOT_README"; then
     UNLISTED="${UNLISTED:+$UNLISTED
 }$gate"
   fi
