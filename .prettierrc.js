@@ -12,12 +12,26 @@
 // the one it replaces should see the same three answers rather than have to
 // know which of them the version bump silently absorbed.
 //
-// The version matters and is pinned to a major in package.json: Prettier 2 and
-// 3 disagree about Markdown, and the docs in this repository are formatted by
-// 3. Measured 2026-09-02 -- `prettier@2.8.8 --check README.md` reports the file
-// as unformatted, `prettier@3.6.2 --check` accepts it. So a contributor running
-// the 2.8.8 that packages/example-app used to pin would have reformatted every
-// README on their first save.
+// The version matters and is pinned EXACTLY in package.json, not to a range,
+// because Prettier disagrees with itself in two different sizes.
+//
+// Across majors: Prettier 2 and 3 disagree about Markdown, and the docs in this
+// repository are formatted by 3. Measured 2026-09-02 -- `prettier@2.8.8 --check
+// README.md` reports the file as unformatted, 3.x accepts it. So a contributor
+// running the 2.8.8 that packages/example-app used to pin would have
+// reformatted every README on their first save.
+//
+// Inside a minor, which is why the `^3.6.2` this line used to carry was not
+// enough. That range resolved to 3.9.6, so the lockfile was doing all of the
+// pinning and the manifest claimed something weaker than what was running.
+// Measured 2026-09-03 -- against the tree 3.9.6 calls clean, `prettier@3.6.2
+// --check .` rejects three files: levelTwoSuite.ts, crypto-suite.ts and
+// facade.ts, over the space in `for (let i = 0; i < n; )` and over where a
+// wrapped union type breaks. Both versions satisfy `^3.6.2`, so a lockfile
+// refresh could have swapped one for the other and turned `format:check` red
+// on a tree nobody had touched -- a check that reads its own toolchain instead
+// of the source. `yarn format:check` holds this source to one shape, and the
+// shape has to belong to one version.
 module.exports = {
   arrowParens: 'avoid',
   semi: false,
