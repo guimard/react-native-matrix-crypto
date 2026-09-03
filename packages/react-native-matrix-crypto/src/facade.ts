@@ -519,6 +519,33 @@ export async function decryptEvent(
   if (typeof scope !== 'string') {
     throw toCryptoError({ name: 'MalformedIdentifier' })
   }
+  // The same discipline, for the same reason, on the requirement: a
+  // caller that bypasses the closed union (plain JS, or `as any`) can
+  // reach this with a value that is none of the three. The generated
+  // enum converter has no default arm, so an unmatched value would
+  // leave the wire buffer unwritten and cross the boundary as whatever
+  // bytes happened to be there -- the one case that must be a refusal
+  // rather than a garbage value, and `nativeSenderTrustRequirementOf`
+  // deliberately cannot produce the refusal: its exhaustiveness is what
+  // makes a future union member a compile error there, and a `default`
+  // arm would have cost exactly that. So the runtime half lives here,
+  // before native, like the scope guard above.
+  //
+  // `rejected`, the generic input refusal, rather than a malformed
+  // kind: the value is a caller's own argument and nothing about it is
+  // malformed wire content.
+  if (
+    senderTrustRequirement !== 'any' &&
+    senderTrustRequirement !== 'identity_signed_or_legacy' &&
+    senderTrustRequirement !== 'identity_signed'
+  ) {
+    throw toCryptoError({
+      name: 'Rejected',
+      reason:
+        'senderTrustRequirement must be one of \'any\', \'identity_signed_or_legacy\' ' +
+        'or \'identity_signed\'',
+    })
+  }
   const rawEventJson = stringifyOrMalformed(rawEvent)
   try {
     const decrypted = await nativeDecryptEvent(

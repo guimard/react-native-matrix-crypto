@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   CryptoScopeId,
   SasMaterial,
+  SenderTrustRequirement,
   SyncDelta,
   VerificationStage,
 } from './types'
@@ -755,6 +756,29 @@ describe('decryptEvent wiring to the native layer', () => {
     expect(vi.mocked(nativeDecryptEvent).mock.calls.at(-1)?.[2]).toBe(
       NativeSenderTrustRequirement.IdentitySigned,
     )
+  })
+
+  /**
+   * The runtime half of the same guarantee the union gives at compile
+   * time: a plain-JS caller can pass a value that is none of the three,
+   * and the generated enum converter has no default arm, so letting it
+   * through would cross an unwritten buffer as garbage rather than fail.
+   * Refused before native, as the generic input refusal.
+   */
+  it('rejects a requirement value outside the closed union before ever calling native', async () => {
+    vi.mocked(nativeDecryptEvent).mockClear()
+
+    await expect(
+      decryptEvent(
+        scope,
+        { type: 'm.room.encrypted' },
+        'nonsense' as unknown as SenderTrustRequirement,
+      ),
+    ).rejects.toSatisfy(
+      (e: unknown) => isCryptoError(e) && e.kind === 'rejected',
+    )
+
+    expect(nativeDecryptEvent).not.toHaveBeenCalled()
   })
 
   /**
