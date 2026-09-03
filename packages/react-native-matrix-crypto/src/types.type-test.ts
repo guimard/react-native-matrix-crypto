@@ -116,6 +116,7 @@ const undelivered: SenderVerification = {
 // compiler when a later version adds a tier, rather than handed a silent
 // default on a trust decision.
 // @ts-expect-error SenderTrustRequirement is closed: a value outside the union is not assignable
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const fabricatedRequirement: SenderTrustRequirement = 'x-fabricated-requirement'
 
 const permissive: SenderTrustRequirement = 'any'
