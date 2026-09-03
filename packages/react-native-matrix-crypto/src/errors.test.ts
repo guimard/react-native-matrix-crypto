@@ -41,7 +41,9 @@ describe('toCryptoError', () => {
   })
 
   it('rejects bare objects that are not Error instances', () => {
-    const fakeErr = { [Symbol.for('react-native-matrix-crypto.CryptoError')]: true }
+    const fakeErr = {
+      [Symbol.for('react-native-matrix-crypto.CryptoError')]: true,
+    }
     expect(isCryptoError(fakeErr)).toBe(false)
   })
 
@@ -153,7 +155,10 @@ describe('toCryptoError against the real UniFFI error shape', () => {
   })
 
   it('recovers the variant from the "<Type>.<Variant>" prefix of .message when .name is not a recognized kind', () => {
-    const err = toCryptoError({ name: 'Error', message: 'ProbeFfiError.Rejected' })
+    const err = toCryptoError({
+      name: 'Error',
+      message: 'ProbeFfiError.Rejected',
+    })
     expect(err.kind).toBe('rejected')
   })
 
@@ -212,8 +217,12 @@ describe('toCryptoError against the real UniFFI error shape', () => {
    * Both are asserted, and asserted to agree.
    */
   it('maps SessionFfiError.MalformedIdentifier to the same kind as the machine variant', () => {
-    const fromSession = toCryptoError(new Error('SessionFfiError.MalformedIdentifier'))
-    const fromMachine = toCryptoError(new Error('MachineFfiError.MalformedIdentifier'))
+    const fromSession = toCryptoError(
+      new Error('SessionFfiError.MalformedIdentifier'),
+    )
+    const fromMachine = toCryptoError(
+      new Error('MachineFfiError.MalformedIdentifier'),
+    )
     expect(fromSession.kind).toBe('malformed_identifier')
     expect(fromMachine.kind).toBe('malformed_identifier')
     expect(fromSession.retriable).toBe(false)
@@ -225,7 +234,9 @@ describe('toCryptoError against the real UniFFI error shape', () => {
    * because this is the layer a consumer actually reads a kind off.
    */
   it('keeps a malformed identifier and a malformed payload on distinct kinds', () => {
-    const identifier = toCryptoError(new Error('SessionFfiError.MalformedIdentifier'))
+    const identifier = toCryptoError(
+      new Error('SessionFfiError.MalformedIdentifier'),
+    )
     const payload = toCryptoError(new Error('SessionFfiError.MalformedPayload'))
     expect(identifier.kind).not.toBe(payload.kind)
   })
@@ -277,7 +288,8 @@ describe('toCryptoError against the real UniFFI error shape', () => {
     // class produces elsewhere, not a hypothetical one.
     const err = toCryptoError({
       name: 'Error',
-      message: 'ProbeFfiError.Rejected: probe rejected: input must not be empty',
+      message:
+        'ProbeFfiError.Rejected: probe rejected: input must not be empty',
     })
     expect(err.kind).toBe('rejected')
   })
@@ -388,7 +400,9 @@ describe('toCryptoError for the verification kinds', () => {
       'MachineFfiError.ScannedCodeMalformed',
       'MachineFfiError.ScannedCodeForAnotherFlow',
     ]
-    const kinds = variants.map((message) => toCryptoError(new Error(message)).kind)
+    const kinds = variants.map(
+      message => toCryptoError(new Error(message)).kind,
+    )
 
     expect(new Set(kinds).size).toBe(variants.length)
     expect(kinds).not.toContain('unknown')
@@ -403,8 +417,12 @@ describe('toCryptoError for the verification kinds', () => {
    * same way.
    */
   it('maps MachineFfiError.UnknownDevice to the same kind as the session variant', () => {
-    const fromMachine = toCryptoError(new Error('MachineFfiError.UnknownDevice'))
-    const fromSession = toCryptoError(new Error('SessionFfiError.UnknownDevice'))
+    const fromMachine = toCryptoError(
+      new Error('MachineFfiError.UnknownDevice'),
+    )
+    const fromSession = toCryptoError(
+      new Error('SessionFfiError.UnknownDevice'),
+    )
     expect(fromMachine.kind).toBe('unknown_device')
     expect(fromSession.kind).toBe('unknown_device')
   })
@@ -419,8 +437,12 @@ describe('toCryptoError for the verification kinds', () => {
     expect(toCryptoError({ name: 'ComparisonAlreadyStarted' }).kind).toBe(
       'comparison_already_started',
     )
-    expect(toCryptoError({ name: 'VerificationEnded' }).kind).toBe('verification_ended')
-    expect(toCryptoError({ name: 'MaterialMismatch' }).kind).toBe('material_mismatch')
+    expect(toCryptoError({ name: 'VerificationEnded' }).kind).toBe(
+      'verification_ended',
+    )
+    expect(toCryptoError({ name: 'MaterialMismatch' }).kind).toBe(
+      'material_mismatch',
+    )
   })
 })
 
@@ -478,17 +500,23 @@ describe('every generated error variant maps to a kind of its own', () => {
 
   it('refuses to pass having walked nothing', () => {
     for (const [name, tags] of GENERATED) {
-      expect(Object.values(tags).length, `${name} enumerated no variants`).toBeGreaterThan(0)
+      expect(
+        Object.values(tags).length,
+        `${name} enumerated no variants`,
+      ).toBeGreaterThan(0)
     }
-    const total = GENERATED.reduce((sum, [, tags]) => sum + Object.values(tags).length, 0)
+    const total = GENERATED.reduce(
+      (sum, [, tags]) => sum + Object.values(tags).length,
+      0,
+    )
     expect(total).toBe(EXPECTED_VARIANTS)
   })
 
   it.each(
     GENERATED.flatMap(([enumName, tags]) =>
-      Object.values(tags).map((variant) => [`${enumName}.${variant}`] as const),
+      Object.values(tags).map(variant => [`${enumName}.${variant}`] as const),
     ),
-  )('maps %s to a kind rather than to unknown', (message) => {
+  )('maps %s to a kind rather than to unknown', message => {
     const err = toCryptoError(new Error(message))
     expect(err.kind).not.toBe('unknown')
     expect(typeof err.kind).toBe('string')
@@ -509,7 +537,7 @@ describe('every generated error variant maps to a kind of its own', () => {
     (_name, tags) => {
       const variants = Object.values(tags)
       const kinds = variants.map(
-        (variant) => toCryptoError(new Error(`${_name}.${variant}`)).kind,
+        variant => toCryptoError(new Error(`${_name}.${variant}`)).kind,
       )
       expect(new Set(kinds).size).toBe(variants.length)
     },
@@ -533,10 +561,26 @@ describe('every generated error variant maps to a kind of its own', () => {
  */
 describe('a fieldless gate refusal carries its remedy in the message', () => {
   it.each([
-    ['MachineFfiError.AccountKeysNotFetched', 'account_keys_not_fetched', 'markRequestSent'],
-    ['MachineFfiError.IdentityNotKnown', 'identity_not_known', 'createCrossSigningIdentity'],
-    ['MachineFfiError.IdentityAlreadyExists', 'identity_already_exists', 'requestSelfVerification'],
-    ['MachineFfiError.PrivateKeysNotHeld', 'private_keys_not_held', 'getIdentityStatus'],
+    [
+      'MachineFfiError.AccountKeysNotFetched',
+      'account_keys_not_fetched',
+      'markRequestSent',
+    ],
+    [
+      'MachineFfiError.IdentityNotKnown',
+      'identity_not_known',
+      'createCrossSigningIdentity',
+    ],
+    [
+      'MachineFfiError.IdentityAlreadyExists',
+      'identity_already_exists',
+      'requestSelfVerification',
+    ],
+    [
+      'MachineFfiError.PrivateKeysNotHeld',
+      'private_keys_not_held',
+      'getIdentityStatus',
+    ],
   ])('%s names its remedy', (variant, kind, remedy) => {
     const err = toCryptoError(new Error(variant))
     expect(err.kind).toBe(kind)

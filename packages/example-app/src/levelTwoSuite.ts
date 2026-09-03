@@ -102,8 +102,10 @@ export type LevelTwoStep = (typeof LEVEL_TWO_STEPS)[number]
  *
  * The counterparty is never told any of them.
  */
-const LIBRARY_BODY = 'encrypted by react-native-matrix-crypto through the facade'
-const LIBRARY_CONTROL_BODY = 'the control that must never decrypt at the counterparty'
+const LIBRARY_BODY =
+  'encrypted by react-native-matrix-crypto through the facade'
+const LIBRARY_CONTROL_BODY =
+  'the control that must never decrypt at the counterparty'
 const NIO_BODY = 'encrypted by matrix-nio for the facade'
 const NIO_CONTROL_BODY = 'the control the facade must never decrypt'
 
@@ -154,7 +156,7 @@ const STORE_PASSPHRASE = 'level-two-facade-run'
 /** UTF-8, written out: React Native ships no `TextDecoder`. */
 function utf8Decode(bytes: Uint8Array): string {
   let out = ''
-  for (let i = 0; i < bytes.length; ) {
+  for (let i = 0; i < bytes.length;) {
     const first = bytes[i]
     let code: number
     let width: number
@@ -228,9 +230,13 @@ const KEY_BEARING_EVENT_TYPE = 'm.room.encrypted'
  * are only distinguishable one level in, at the event type the body itself
  * declares, and by the device the message is addressed to.
  */
-function carriesTheKey(batch: OutgoingRequest[], userId: string, deviceId: string): boolean {
+function carriesTheKey(
+  batch: OutgoingRequest[],
+  userId: string,
+  deviceId: string,
+): boolean {
   return batch.some(
-    (request) =>
+    request =>
       request.kind === 'to_device' &&
       declaredEventType(request.body) === KEY_BEARING_EVENT_TYPE &&
       addresses(request.body, userId, deviceId),
@@ -266,7 +272,9 @@ export interface LevelTwoOptions {
  * Never throws. A step that cannot be attempted reports FAIL; the run always
  * produces {@link LEVEL_TWO_STEPS}`.length` checks.
  */
-export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<InteropCheck[]> {
+export async function runLevelTwoSuite(
+  options: LevelTwoOptions,
+): Promise<InteropCheck[]> {
   const { plan, storeDir } = options
   const scope = asCryptoScopeId(plan.roomId)
   const mutation = plan.mutation
@@ -281,7 +289,9 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
   let nioControlEvent: Record<string, unknown> | undefined
 
   /** One `/sync`, its slice fed to the machine, its raw body returned. */
-  const syncAndFeed = async (timeoutMs: number): Promise<Record<string, unknown>> => {
+  const syncAndFeed = async (
+    timeoutMs: number,
+  ): Promise<Record<string, unknown>> => {
     const body = await syncOnce(plan, since, timeoutMs)
     since = typeof body.next_batch === 'string' ? body.next_batch : since
     const slice = encryptionSlice(body)
@@ -312,31 +322,48 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
       const batch = await pumpAndSend()
       if (batch.length === 0) return round
     }
-    throw new Error('the pump still had work after eight rounds; it is not settling')
+    throw new Error(
+      'the pump still had work after eight rounds; it is not settling',
+    )
   }
 
   /** Encrypts one payload and returns both the envelope and its content object. */
   const encryptOne = async (
     body: string,
   ): Promise<{ envelope: EventEnvelope; content: Record<string, unknown> }> => {
-    const envelope = await encryptEvent(scope, ROOM_EVENT_TYPE, { body, msgtype: 'm.text' })
-    const content = JSON.parse(utf8Decode(envelope.ciphertext)) as Record<string, unknown>
+    const envelope = await encryptEvent(scope, ROOM_EVENT_TYPE, {
+      body,
+      msgtype: 'm.text',
+    })
+    const content = JSON.parse(utf8Decode(envelope.ciphertext)) as Record<
+      string,
+      unknown
+    >
     return { envelope, content }
   }
 
   /** Sends one `m.room.encrypted` content object to the room, returning its event id. */
-  const sendToRoom = async (content: Record<string, unknown>, txn: string): Promise<string> => {
+  const sendToRoom = async (
+    content: Record<string, unknown>,
+    txn: string,
+  ): Promise<string> => {
     const path =
       `/_matrix/client/v3/rooms/${encodeURIComponent(plan.roomId)}` +
       `/send/${ENCRYPTED_EVENT_TYPE}/${encodeURIComponent(txn)}`
-    const { status, text } = await httpJson('PUT', `${plan.homeserver}${path}`, {
-      token: plan.accessToken,
-      body: JSON.stringify(content),
-      timeoutMs: 60_000,
-    })
-    if (status !== 200) throw new Error(`sending the encrypted event returned HTTP ${status}`)
+    const { status, text } = await httpJson(
+      'PUT',
+      `${plan.homeserver}${path}`,
+      {
+        token: plan.accessToken,
+        body: JSON.stringify(content),
+        timeoutMs: 60_000,
+      },
+    )
+    if (status !== 200)
+      throw new Error(`sending the encrypted event returned HTTP ${status}`)
     const eventId = (JSON.parse(text) as Record<string, unknown>).event_id
-    if (typeof eventId !== 'string') throw new Error('the room send returned no event id')
+    if (typeof eventId !== 'string')
+      throw new Error('the room send returned no event id')
     return eventId
   }
 
@@ -345,7 +372,10 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
       name: 'machine_created',
       run: async () => {
         if (storeDir === '') {
-          return { ok: false, detail: 'the host supplied no writable store path' }
+          return {
+            ok: false,
+            detail: 'the host supplied no writable store path',
+          }
         }
         await createCryptoMachine({
           userId: plan.userId,
@@ -355,7 +385,8 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
         })
         return {
           ok: true,
-          detail: 'a store was created for the identity the homeserver issued this run',
+          detail:
+            'a store was created for the identity the homeserver issued this run',
         }
       },
     },
@@ -369,7 +400,7 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
         // unwrapped -- a run that synthesised bodies of its own would prove
         // nothing about whether real ones are accepted.
         const batch = await takeOutgoingRequests()
-        const upload = batch.find((request) => request.kind === 'keys_upload')
+        const upload = batch.find(request => request.kind === 'keys_upload')
         if (upload === undefined) {
           return {
             ok: false,
@@ -411,12 +442,18 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
         since = typeof body.next_batch === 'string' ? body.next_batch : null
         const keys = Object.keys(body)
         if (keys.length < 2) {
-          return { ok: false, detail: `this /sync body has only ${keys.length} top-level field(s)` }
+          return {
+            ok: false,
+            detail: `this /sync body has only ${keys.length} top-level field(s)`,
+          }
         }
         const slice = encryptionSlice(body)
         const mapped = Object.keys(slice).length
         if (mapped === 0) {
-          return { ok: false, detail: 'the mapping produced nothing from this /sync body' }
+          return {
+            ok: false,
+            detail: 'the mapping produced nothing from this /sync body',
+          }
         }
         let rejected = ''
         try {
@@ -448,7 +485,10 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
         // nothing yet: its key upload is what the homeserver will later
         // report as a device-list change, and that change is what
         // `sync_teaches_the_machine` rests on.
-        const reply = await counterpartyOp(plan, { op: 'login', room_id: plan.roomId })
+        const reply = await counterpartyOp(plan, {
+          op: 'login',
+          room_id: plan.roomId,
+        })
         nioDeviceId = String(reply.device_id ?? '')
         const joined = reply.joined === true
         return {
@@ -486,13 +526,14 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
         await shareScopeKey(scope, [plan.nioUserId])
         const batch = await takeOutgoingRequests()
         const query = batch.find(
-          (request) =>
-            request.kind === 'keys_query' && request.body.indexOf(plan.nioUserId) !== -1,
+          request =>
+            request.kind === 'keys_query' &&
+            request.body.indexOf(plan.nioUserId) !== -1,
         )
         const key = carriesTheKey(batch, plan.nioUserId, nioDeviceId)
         const declared = batch
-          .filter((request) => request.kind === 'to_device')
-          .map((request) => declaredEventType(request.body))
+          .filter(request => request.kind === 'to_device')
+          .map(request => declaredEventType(request.body))
         for (const request of batch) {
           const response = await sendOutgoing(plan, request)
           await markRequestSent(request.id, response.text)
@@ -552,7 +593,8 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
         for (let attempt = 0; attempt < 6 && !reported; attempt += 1) {
           const body = await syncOnce(plan, since, attempt === 0 ? 0 : 4000)
           since = typeof body.next_batch === 'string' ? body.next_batch : since
-          const deviceLists = body.device_lists as Record<string, unknown> | null | undefined
+          const deviceLists = body.device_lists as
+            Record<string, unknown> | null | undefined
           const changed = (deviceLists?.changed as string[] | undefined) ?? []
           changedCount = changed.length
           reported = changed.indexOf(plan.nioUserId) !== -1
@@ -574,14 +616,16 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
         if (!reported) {
           return {
             ok: false,
-            detail: 'no /sync in this window reported the counterparty as changed',
+            detail:
+              'no /sync in this window reported the counterparty as changed',
           }
         }
 
         const after = await takeOutgoingRequests()
         const asked = after.filter(
-          (request) =>
-            request.kind === 'keys_query' && request.body.indexOf(plan.nioUserId) !== -1,
+          request =>
+            request.kind === 'keys_query' &&
+            request.body.indexOf(plan.nioUserId) !== -1,
         )
         // Handed back, not marked: the query is the input to the next step.
         return {
@@ -612,11 +656,15 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
 
         await shareScopeKey(scope, [plan.nioUserId])
         const afterQuery = await takeOutgoingRequests()
-        const claim = afterQuery.find((request) => request.kind === 'keys_claim')
-        const keyTooEarly = carriesTheKey(afterQuery, plan.nioUserId, nioDeviceId)
+        const claim = afterQuery.find(request => request.kind === 'keys_claim')
+        const keyTooEarly = carriesTheKey(
+          afterQuery,
+          plan.nioUserId,
+          nioDeviceId,
+        )
         const declaredEarly = afterQuery
-          .filter((request) => request.kind === 'to_device')
-          .map((request) => declaredEventType(request.body))
+          .filter(request => request.kind === 'to_device')
+          .map(request => declaredEventType(request.body))
         if (claim === undefined || keyTooEarly) {
           return {
             ok: false,
@@ -627,12 +675,13 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
         }
         let claimed = 0
         for (const request of afterQuery) {
-          if (mutation === 'skip_keys_claim' && request.kind === 'keys_claim') continue
+          if (mutation === 'skip_keys_claim' && request.kind === 'keys_claim')
+            continue
           const response = await sendOutgoing(plan, request)
           if (request.kind === 'keys_claim') {
-            const keys = (JSON.parse(response.text) as Record<string, unknown>).one_time_keys as
-              | Record<string, Record<string, unknown>>
-              | undefined
+            const keys = (JSON.parse(response.text) as Record<string, unknown>)
+              .one_time_keys as
+              Record<string, Record<string, unknown>> | undefined
             claimed = Object.keys(keys?.[plan.nioUserId] ?? {}).length
           }
           await markRequestSent(request.id, response.text)
@@ -642,8 +691,8 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
         const afterClaim = await takeOutgoingRequests()
         const delivered = carriesTheKey(afterClaim, plan.nioUserId, nioDeviceId)
         const declaredLate = afterClaim
-          .filter((request) => request.kind === 'to_device')
-          .map((request) => declaredEventType(request.body))
+          .filter(request => request.kind === 'to_device')
+          .map(request => declaredEventType(request.body))
         for (const request of afterClaim) {
           if (
             mutation === 'withhold_room_key' &&
@@ -679,7 +728,10 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
         if (mutation === 'corrupt_the_event_nio_must_read') {
           content.ciphertext = corruptOneCharacter(String(content.ciphertext))
         }
-        const eventId = await sendToRoom(content, `level-two-facade-${String(Date.now())}`)
+        const eventId = await sendToRoom(
+          content,
+          `level-two-facade-${String(Date.now())}`,
+        )
         const reply = await counterpartyOp(plan, {
           op: 'collect',
           room_id: plan.roomId,
@@ -690,7 +742,10 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
         const events = reply.events as Record<string, Record<string, unknown>>
         const outcome = events[eventId]
         if (outcome === undefined) {
-          return { ok: false, detail: 'the counterparty never saw the event at all' }
+          return {
+            ok: false,
+            detail: 'the counterparty never saw the event at all',
+          }
         }
         const decrypted = outcome.decrypted === true
         const bodyMatches = outcome.body === LIBRARY_BODY
@@ -719,7 +774,10 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
         if (mutation !== 'intact_control_to_nio') {
           content.ciphertext = corruptOneCharacter(String(content.ciphertext))
         }
-        const eventId = await sendToRoom(content, `level-two-control-${String(Date.now())}`)
+        const eventId = await sendToRoom(
+          content,
+          `level-two-control-${String(Date.now())}`,
+        )
         const reply = await counterpartyOp(plan, {
           op: 'collect',
           room_id: plan.roomId,
@@ -730,7 +788,10 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
         const events = reply.events as Record<string, Record<string, unknown>>
         const outcome = events[eventId]
         if (outcome === undefined) {
-          return { ok: false, detail: 'the counterparty never saw the control event at all' }
+          return {
+            ok: false,
+            detail: 'the counterparty never saw the control event at all',
+          }
         }
         const refused = outcome.decrypted !== true
         const reason = String(outcome.reason ?? '')
@@ -777,26 +838,40 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
 
         const ingestedBefore = toDeviceEventsIngested
         const nioEvents: Record<string, Record<string, unknown>> = {}
-        for (let attempt = 0; attempt < 12 && Object.keys(nioEvents).length < 2; attempt += 1) {
+        for (
+          let attempt = 0;
+          attempt < 12 && Object.keys(nioEvents).length < 2;
+          attempt += 1
+        ) {
           const body = await syncAndFeed(attempt === 0 ? 0 : 4000)
           const rooms = body.rooms as Record<string, unknown> | undefined
-          const join = rooms?.join as Record<string, Record<string, unknown>> | undefined
-          const timeline = join?.[plan.roomId]?.timeline as Record<string, unknown> | undefined
-          for (const raw of (timeline?.events as Record<string, unknown>[] | undefined) ?? []) {
+          const join = rooms?.join as
+            Record<string, Record<string, unknown>> | undefined
+          const timeline = join?.[plan.roomId]?.timeline as
+            Record<string, unknown> | undefined
+          for (const raw of (timeline?.events as
+            Record<string, unknown>[] | undefined) ?? []) {
             const id = raw.event_id
-            if (typeof id === 'string' && wanted.indexOf(id) !== -1) nioEvents[id] = raw
+            if (typeof id === 'string' && wanted.indexOf(id) !== -1)
+              nioEvents[id] = raw
           }
         }
         const arrived = Object.keys(nioEvents).length
         if (arrived < 2) {
-          return { ok: false, detail: `only ${arrived} of the counterparty's two events arrived` }
+          return {
+            ok: false,
+            detail: `only ${arrived} of the counterparty's two events arrived`,
+          }
         }
         // Kept for the step below, which must corrupt an event this machine
         // has never decrypted intact.
         nioControlEvent = nioEvents[wanted[1]]
 
         const envelope = await decryptEvent(scope, nioEvents[wanted[0]])
-        const plaintext = JSON.parse(utf8Decode(envelope.ciphertext)) as Record<string, unknown>
+        const plaintext = JSON.parse(utf8Decode(envelope.ciphertext)) as Record<
+          string,
+          unknown
+        >
         const ingested = toDeviceEventsIngested - ingestedBefore
         const ok =
           plaintext.body === NIO_BODY &&
@@ -890,11 +965,15 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
         // Same: the container's destruction is what guarantees this.
       }
 
-      const loggedOut = await httpJson('POST', `${plan.homeserver}/_matrix/client/v3/logout`, {
-        token: plan.accessToken,
-        body: '{}',
-        timeoutMs: 30_000,
-      })
+      const loggedOut = await httpJson(
+        'POST',
+        `${plan.homeserver}/_matrix/client/v3/logout`,
+        {
+          token: plan.accessToken,
+          body: '{}',
+          timeoutMs: 30_000,
+        },
+      )
       const whoami = await httpJson(
         'GET',
         `${plan.homeserver}/_matrix/client/v3/account/whoami`,
@@ -914,7 +993,11 @@ export async function runLevelTwoSuite(options: LevelTwoOptions): Promise<Intero
   let stopped = false
   for (const step of steps) {
     if (stopped) {
-      checks.push({ name: step.name, ok: false, detail: 'not reached: an earlier step failed' })
+      checks.push({
+        name: step.name,
+        ok: false,
+        detail: 'not reached: an earlier step failed',
+      })
       continue
     }
     try {

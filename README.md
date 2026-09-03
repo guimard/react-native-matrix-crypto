@@ -37,7 +37,7 @@ Two checks stand behind that. On every pull request, a job packs this repository
 
 **A third-party Matrix client decrypts what this library encrypts.** [`matrix-nio`](https://github.com/matrix-nio/matrix-nio) is a Matrix client written in Python by people who have never seen this code. It decrypts an event this library encrypted, this library decrypts an event it encrypted, and each test flips a single character of each ciphertext to watch both refusals happen. Both run over a real homeserver, and anyone can run them: one drives the Rust core, one drives the published TypeScript API on an emulator with a second Matrix user as the counterparty. Two of our own crypto machines agreeing would prove only that the implementation is self consistent, because a consistent misreading of the protocol passes that cleanly on both sides. See [running the proofs](#running-the-proofs), and read the floor under [limits](#limits-you-must-design-around) before you weigh it.
 
-**Every build gate has been watched rejecting a real violation**, not merely passing. There are thirteen, they all run in CI, and a gate nobody has watched fail is not known to work. This sentence said ten while the table below listed eleven and `package.json` declared eleven. `gate:readme` held the rows, the scripts and the workflow to each other and counted nothing, so nothing failed; it counts now, and reads this sentence to do it.
+**Every build gate has been watched rejecting a real violation**, not merely passing. There are fifteen, they all run in CI, and a gate nobody has watched fail is not known to work. This sentence said ten while the table below listed eleven and `package.json` declared eleven. `gate:readme` held the rows, the scripts and the workflow to each other and counted nothing, so nothing failed; it counts now, and reads this sentence to do it.
 
 **There is a working application to start from.** `packages/example-app` is a neutral React Native app that drives the encryption chain live on a device: it creates a machine, drains the outbound queue, encrypts and decrypts a real event, reads identity keys, and shows for each step the exact TypeScript a consumer would write next to what it got back. It imports from `react-native-matrix-crypto` and from nothing else, so what you read there is what you can write, with no private entry point doing the interesting part off screen. Copying from it is a reasonable way to start. It does not cover device verification, by either method, and `packages/example-app/README.md` says what else only a person holding a phone reaches.
 
@@ -76,37 +76,37 @@ import {
   encryptEvent,
   decryptEvent,
   asCryptoScopeId,
-} from "react-native-matrix-crypto";
+} from 'react-native-matrix-crypto'
 
 await createCryptoMachine({
-  userId: "@alice:example.org",
-  deviceId: "DEVICE1",
+  userId: '@alice:example.org',
+  deviceId: 'DEVICE1',
   storePath: `${documentsDir}/crypto`,
   storePassphrase: secret, // null is allowed, and means unencrypted at rest
-});
+})
 
-const scope = asCryptoScopeId("!s:example.org");
+const scope = asCryptoScopeId('!s:example.org')
 
 // Drain and send after every call that changes crypto state. Send in the
 // order given, one at a time, and never overlap two drains: see The pump.
 async function pump() {
   for (const request of await takeOutgoingRequests()) {
-    const { ok, status, body } = await yourHomeserverClient.send(request); // your transport
-    if (ok) await markRequestSent(request.id, body);
-    else await markRequestFailed(request.id, status);
+    const { ok, status, body } = await yourHomeserverClient.send(request) // your transport
+    if (ok) await markRequestSent(request.id, body)
+    else await markRequestFailed(request.id, status)
   }
 }
 
-await pump(); // publishes this device's keys
-await shareScopeKey(scope, ["@bob:example.org"]);
-await pump(); // asks the server about Bob's devices
-await shareScopeKey(scope, ["@bob:example.org"]);
-await pump(); // now the key actually travels
+await pump() // publishes this device's keys
+await shareScopeKey(scope, ['@bob:example.org'])
+await pump() // asks the server about Bob's devices
+await shareScopeKey(scope, ['@bob:example.org'])
+await pump() // now the key actually travels
 
-const envelope = await encryptEvent(scope, "m.room.message", { body: "hi" });
+const envelope = await encryptEvent(scope, 'm.room.message', { body: 'hi' })
 // send envelope.ciphertext as the content of an m.room.encrypted event
 
-const recovered = await decryptEvent(scope, incomingEvent);
+const recovered = await decryptEvent(scope, incomingEvent)
 // recovered.ciphertext is the PLAINTEXT. See Limits.
 ```
 
@@ -169,23 +169,23 @@ import {
   bootstrapCrossSigning,
   createCrossSigningIdentity,
   getIdentityStatus,
-} from "react-native-matrix-crypto";
+} from 'react-native-matrix-crypto'
 
 try {
-  await bootstrapCrossSigning();
+  await bootstrapCrossSigning()
 } catch (e) {
   // The first call in a process is normally refused with
   // 'account_keys_not_fetched'. The key query that lifts it has already been
   // queued by the refusal, so: pump, then call this again.
-  if (e.kind !== "account_keys_not_fetched") throw e;
-  await pump();
-  const { accountKeysAnswerUnsettled } = await getIdentityStatus();
+  if (e.kind !== 'account_keys_not_fetched') throw e
+  await pump()
+  const { accountKeysAnswerUnsettled } = await getIdentityStatus()
   // The server answered and the answer settled nothing, so calling again
   // does exactly this again. Check the user id you passed to createCryptoMachine
   // against the canonical user_id your login returned. See below.
   if (accountKeysAnswerUnsettled)
-    throw new Error("the homeserver said nothing about this account");
-  await bootstrapCrossSigning();
+    throw new Error('the homeserver said nothing about this account')
+  await bootstrapCrossSigning()
 }
 // 'identity_not_known' from either call means the server was asked and this
 // account has no identity. Do NOT handle it by calling
@@ -196,9 +196,9 @@ for (const request of await takeOutgoingRequests()) {
   // In the order you were handed them: device keys, then signing_keys_upload,
   // then signature_upload. A signature may reference a key that is not
   // published yet.
-  const res = await send(request);
-  if (res.ok) await markRequestSent(request.id, await res.text());
-  else await markRequestFailed(request.id, res.status);
+  const res = await send(request)
+  if (res.ok) await markRequestSent(request.id, await res.text())
+  else await markRequestFailed(request.id, res.status)
 }
 ```
 
@@ -240,66 +240,66 @@ Here is the whole loop, both branches. It is the code `rust/matrix-crypto-core/t
 
 ```ts
 for (const request of await takeOutgoingRequests()) {
-  if (request.kind !== "signing_keys_upload") {
-    const res = await send(request);
-    if (res.ok) await markRequestSent(request.id, await res.text());
-    else await markRequestFailed(request.id, res.status);
-    continue;
+  if (request.kind !== 'signing_keys_upload') {
+    const res = await send(request)
+    if (res.ok) await markRequestSent(request.id, await res.text())
+    else await markRequestFailed(request.id, res.status)
+    continue
   }
 
   // uia-step: send
   let res = await post(
-    "/_matrix/client/v3/keys/device_signing/upload",
+    '/_matrix/client/v3/keys/device_signing/upload',
     request.body,
-  );
+  )
 
   // uia-step: accepted
   // The ordinary answer on an account that has no identity yet. Nothing to
   // ask your user, nothing to retry.
   if (res.ok) {
-    await markRequestSent(request.id, await res.text());
-    continue;
+    await markRequestSent(request.id, await res.text())
+    continue
   }
 
   // uia-step: refusal
   if (res.status !== 401)
-    throw new Error(`signing keys refused with ${res.status}`);
-  await markRequestFailed(request.id, res.status);
+    throw new Error(`signing keys refused with ${res.status}`)
+  await markRequestFailed(request.id, res.status)
 
   // uia-step: challenge
   // The session is the homeserver's, and knowable only from here. That is
   // why bootstrapCrossSigning has no auth parameter to pass one in through.
-  const challenge = await res.json();
-  const flows = challenge.flows ?? [];
-  if (!flows.some((flow) => flow.stages?.includes("m.login.password"))) {
-    throw new Error("this homeserver asked for a flow this code cannot answer");
+  const challenge = await res.json()
+  const flows = challenge.flows ?? []
+  if (!flows.some(flow => flow.stages?.includes('m.login.password'))) {
+    throw new Error('this homeserver asked for a flow this code cannot answer')
   }
-  const password = await askYourUserForTheirPassword();
+  const password = await askYourUserForTheirPassword()
 
   // uia-step: merge
   // request.body is opaque. Parse it, add one member, serialise it back. Do
   // not rebuild it: the keys in it are the ones already minted, and a body
   // you construct yourself is a different identity.
-  const body = JSON.parse(request.body);
+  const body = JSON.parse(request.body)
   body.auth = {
-    type: "m.login.password",
-    identifier: { type: "m.id.user", user: myUserId },
+    type: 'm.login.password',
+    identifier: { type: 'm.id.user', user: myUserId },
     password,
     session: challenge.session,
-  };
+  }
 
   // uia-step: resend
   // The same id and the same keys. markRequestFailed left the request
   // pending, so this is a second send of it rather than a new request.
   res = await post(
-    "/_matrix/client/v3/keys/device_signing/upload",
+    '/_matrix/client/v3/keys/device_signing/upload',
     JSON.stringify(body),
-  );
+  )
   if (!res.ok)
-    throw new Error(`challenge answered and still refused: ${res.status}`);
+    throw new Error(`challenge answered and still refused: ${res.status}`)
 
   // uia-step: sent
-  await markRequestSent(request.id, await res.text());
+  await markRequestSent(request.id, await res.text())
 }
 ```
 
@@ -328,15 +328,15 @@ import {
   getIdentityStatus,
   onCryptoSignal,
   requestSelfVerification,
-} from "react-native-matrix-crypto";
+} from 'react-native-matrix-crypto'
 
-onCryptoSignal(async (signal) => {
-  if (signal.kind !== "trust_changed" || signal.user !== myUserId) return;
-  const { privateKeysHeld } = await getIdentityStatus();
-  if (privateKeysHeld) thisDeviceCanNowSign();
-});
+onCryptoSignal(async signal => {
+  if (signal.kind !== 'trust_changed' || signal.user !== myUserId) return
+  const { privateKeysHeld } = await getIdentityStatus()
+  if (privateKeysHeld) thisDeviceCanNowSign()
+})
 
-const id = await requestSelfVerification();
+const id = await requestSelfVerification()
 // From here it is the flow in the next section, unchanged: pump, wait for
 // 'ready', startVerificationComparison, read the string, show it, confirm.
 ```
@@ -357,24 +357,24 @@ Two people compare a seven-symbol string, read off their two screens, over a cha
 
 ```ts
 // The side that asks.
-const id = await requestVerification("@bob:example.org", "BOBDEVICE");
+const id = await requestVerification('@bob:example.org', 'BOBDEVICE')
 // pump, then wait for their answer to arrive in a later /sync you feed to
 // receiveSyncChanges; getVerificationStage(id) then reads 'ready'.
-await startVerificationComparison(id); // either side may; pump again
-const material = await getVerificationMaterial(id);
+await startVerificationComparison(id) // either side may; pump again
+const material = await getVerificationMaterial(id)
 // Show material.emoji (or material.decimals) to a person and ask.
-await confirmVerification(id, material); // or cancelVerification(id)
+await confirmVerification(id, material) // or cancelVerification(id)
 // Pump once more. The stage reaches 'done', and only then:
-await getDeviceStatuses("@bob:example.org"); // BOBDEVICE reads 'verified'
+await getDeviceStatuses('@bob:example.org') // BOBDEVICE reads 'verified'
 
 // The side that is asked is a different application, in a different process,
 // and the signal channel is what hands it an id.
-onCryptoSignal((signal) => {
-  if (signal.kind !== "verification_requested") return;
-  acceptVerification(signal.verificationId); // or cancelVerification to refuse
+onCryptoSignal(signal => {
+  if (signal.kind !== 'verification_requested') return
+  acceptVerification(signal.verificationId) // or cancelVerification to refuse
   // pump, and carry on from startVerificationComparison above.
-});
-await receiveSyncChanges(encryptionSlice(sync));
+})
+await receiveSyncChanges(encryptionSlice(sync))
 ```
 
 - **Subscribe before your first sync, and keep the subscription.** Every producer runs inside `receiveSyncChanges`, and nothing is consumed while nobody is subscribed, so an invitation that arrives while you are away is announced on the first sync after you come back and the ordinary `useEffect(() => onCryptoSignal(h), [])` does not lose invitations. A `trust_changed` is not re-offered that way; `getDeviceStatuses`, and `getIdentityStatus` for the private-keys one, are the durable answers to those questions.
@@ -396,11 +396,11 @@ A person points one phone's camera at a code on the other's screen, and nobody r
 #### Say what your product can do, because nothing happens until you do
 
 ```ts
-import { offerScannableCodes } from "react-native-matrix-crypto";
+import { offerScannableCodes } from 'react-native-matrix-crypto'
 
 // Once at start-up, next to createCryptoMachine. Most products have a
 // screen and no scanner, and this is what that says.
-offerScannableCodes({ canShow: true, canScan: false });
+offerScannableCodes({ canShow: true, canScan: false })
 ```
 
 **Two questions and not one, and neither has a default.** `canShow` is true if you can draw the grid this library hands you; `canScan` is true if you have a scanner, have the camera permission, and can hand the raw bytes it reads to `submitScannedCode`. Both start false, both stay false until you answer, and leaving a field out is a type error rather than a yes you never said.
@@ -420,12 +420,12 @@ It applies to the whole process rather than to one flow, because it describes yo
 #### Showing a code
 
 ```ts
-import { getVerificationCode, confirmScan } from "react-native-matrix-crypto";
+import { getVerificationCode, confirmScan } from 'react-native-matrix-crypto'
 
-const code = await getVerificationCode(id);
+const code = await getVerificationCode(id)
 // Draw code.modules: width rows of width squares, row-major, true is dark.
 // Leave the usual quiet margin. Then ask a person whether it was scanned.
-await confirmScan(id); // or cancelVerification(id)
+await confirmScan(id) // or cancelVerification(id)
 // Pump once more. The stage reaches 'done'.
 ```
 
@@ -436,9 +436,9 @@ await confirmScan(id); // or cancelVerification(id)
 #### Reading one
 
 ```ts
-import { submitScannedCode } from "react-native-matrix-crypto";
+import { submitScannedCode } from 'react-native-matrix-crypto'
 
-await submitScannedCode(id, rawBytesFromYourScanner);
+await submitScannedCode(id, rawBytesFromYourScanner)
 // Pump. Nothing is verified when this resolves: the other side has still
 // to confirm, and messages have to cross.
 ```
@@ -615,6 +615,8 @@ Every one of these runs in CI. Each has been observed rejecting a real violation
 | `gate:logger`              | the bridge contains no logger, in every language it ships: Rust, TypeScript, C/C++/Objective-C, Kotlin, Swift and the podspec |
 | `gate:agility`             | no Megolm, Olm, room or Matrix specific identifier reaches the public API                                                     |
 | `gate:stubs`               | the committed turbo module is really wired up, not an empty shell                                                             |
+| `gate:ignores`             | every generated path is ignored by Prettier and by ESLint, so formatting cannot turn `gate:drift` red                         |
+| `gate:lint-coverage`       | every tracked file ESLint should lint is one it actually opened, so `yarn lint` cannot go green on a set it never read        |
 | `gate:surface`             | every name a public module exports reaches `src/index.ts`, so nothing ships unreachable                                       |
 | `gate:doc-links`           | every doc link, in Rust and in TypeScript, points at something that exists                                                    |
 | `gate:readme`              | the README npm shows is the README GitHub shows, and every gate here runs in CI                                               |
@@ -622,6 +624,8 @@ Every one of these runs in CI. Each has been observed rejecting a real violation
 | `gate:measure-guards`      | the B2 measurement harness still refuses the runs it documents refusing                                                       |
 | `gate:measure-guards-ios`  | the same, for the iOS harness, including its refusal to launch into a log stream it cannot show was already attached          |
 | `gate:artifact-provenance` | an artifact size is only ever recorded from a binary this tree built                                                          |
+
+`yarn lint` and `yarn format:check` run in the same job and are deliberately not `gate:*` scripts: they assert nothing about this library, they hold its source to one shape. ESLint is `@react-native/eslint-config` applied to the whole workspace, which is new -- the configuration it replaces lived in `packages/example-app` and linted the example app alone, so the published library, the interop suite and the scripts under `scripts/` had no linter at all. Prettier owns formatting. Both exclude the generated bindings, and `.prettierignore` also excludes `src/types.type-test.ts`, with the reason written next to each: a formatter that rewrites a generated file turns `gate:drift` red, and one that breaks a single-line literal across lines moves the error a `@ts-expect-error` was aimed at and turns `tsc` red. `yarn lint` carries `--max-warnings 0`, so warnings nobody triages cannot pile up into a wall nobody reads.
 
 `gate:stubs` exists because of a specific near miss: `ubrn build --and-generate` can emit a turbo module that exports nothing, with exit code zero and no warning, when it reads an Android shared library whose symbol table was stripped. Nothing downstream noticed and the build went green. `gate:drift` cannot catch that either, because two equally empty generations agree with each other perfectly. If you add a gate, add the step that proves it fails on a real violation.
 

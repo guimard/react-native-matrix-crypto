@@ -1,0 +1,143 @@
+// ESLint for the whole workspace, in one flat config.
+//
+// It replaces packages/example-app/.eslintrc.js, which was the only lint
+// configuration this repository had: the published library, the interop suite
+// and the Node scripts under scripts/ were linted by nothing at all.
+//
+// The rules come from @react-native/eslint-config -- the same shareable config
+// the example app already extended -- through its `./flat` entry point, which
+// 0.87.1 ships and which is what makes ESLint 9 usable here. Everything in this
+// repository is React Native code or tooling around it, so one config for the
+// workspace is the honest shape; two configs would drift apart with nothing
+// checking that they had not, which is a failure mode this repository has
+// already paid for elsewhere.
+import reactNative from '@react-native/eslint-config/flat'
+import prettier from 'eslint-config-prettier'
+
+// @react-native/eslint-config parses `**/*.js` with @babel/eslint-parser and
+// runs eslint-plugin-ft-flow over the result, because the React Native
+// template's .js files are Flow. This repository has no Flow: it is TypeScript
+// throughout, and its four .js files are CommonJS tool configs.
+//
+// That entry has to go rather than merely be quietened, for two reasons that
+// each stand alone. eslint-plugin-ft-flow 2.0.3 declares a peer of eslint
+// ^8.1.0 and means it -- under ESLint 9 it crashes on the first .js file with
+// `TypeError: context.getAllComments is not a function`, a hard stop rather
+// than a finding. And @babel/eslint-parser refuses to run without a Babel
+// config it can find, which from the repository root it cannot: `yarn lint`
+// runs here, Babel resolves a root config against the working directory, and
+// packages/example-app/babel.config.js is invisible from this one. Dropping
+// the entry answers both: the .js files are then parsed by ESLint's own
+// parser, which is all a CommonJS config file has ever needed.
+//
+// Matched on the plugin rather than on an array index, so that a React Native
+// upgrade reordering its config does not silently reinstate this.
+//
+// Nothing else is needed for the .js and .mjs files after this. Two overrides
+// were written here for them -- `requireConfigFile: false`, and a `globals`
+// block for `console`/`process`/`URL` in scripts/*.mjs -- and BOTH were dead:
+// the first is a @babel/eslint-parser option and there is no Babel parser left
+// to read it, and the second names globals the shareable config already
+// provides. Each was removed after watching lint produce byte-identical output
+// with and without it, and after checking with a deliberately broken file that
+// `no-undef` and `no-unused-vars` really do fire on both extensions -- a
+// silently unlinted file and a correctly linted one look the same from here.
+const withoutFlow = reactNative.filter(entry => !entry.plugins?.['ft-flow'])
+
+// `.mts` and `.cts`, which nothing else here covers.
+//
+// @react-native/eslint-config selects its TypeScript parser and rules on
+// `**/*.ts` and `**/*.tsx` only, and ESLint's own discovery adds just `.js`,
+// `.cjs` and `.mjs` -- so `eslint .` walked straight past
+// packages/example-app/vitest.config.mts and said nothing. Not "linted and
+// clean": never opened. Asked directly it is explicit about it, which is the
+// only reason this is legible at all:
+//
+//   $ eslint packages/example-app/vitest.config.mts
+//   0:0  warning  File ignored because no matching configuration was supplied
+//
+// Extending `files` fixes both halves at once, because a flat config's `files`
+// patterns are also what ESLint adds to its discovery set when it is handed a
+// directory. Every entry that already claims `**/*.ts` claims these too, so a
+// React Native upgrade that changes those rules changes them here as well.
+const withModuleTs = withoutFlow.map(entry =>
+  entry.files?.includes('**/*.ts')
+    ? { ...entry, files: [...entry.files, '**/*.mts', '**/*.cts'] }
+    : entry,
+)
+
+export default [
+  {
+    // A config object carrying `ignores` and nothing else sets the global
+    // ignore list. Anything else in the object would make it an ordinary
+    // per-file override instead, and the paths below would still be linted.
+    ignores: [
+      'node_modules/',
+      '**/node_modules/',
+
+      // GENERATED BINDINGS -- every entry in scripts/generated-paths.txt,
+      // mirrored whole. That file is this repository's single definition of
+      // "generated", and gate:drift regenerates each entry and requires a
+      // byte-for-byte empty diff against what is committed. So a `--fix`
+      // landing in one of them is not a lint improvement: it is a red gate on
+      // the next run, whose only remedy is to revert the file.
+      //
+      // Mirrored by hand because ESLint loads this config before anything here
+      // could read that list, and a config that reads a file at load time
+      // fails as a config error rather than as the missing file it is. Whole
+      // rather than the parseable subset it held first: a subset needs an
+      // argument for every path it leaves out, the same subset in
+      // .prettierignore got one of those arguments wrong, and `gate:ignores`
+      // can check a mirror but not a judgement call. See .prettierignore.
+      'packages/react-native-matrix-crypto/src/generated/',
+      'packages/react-native-matrix-crypto/cpp/generated/',
+      'packages/react-native-matrix-crypto/src/index.tsx',
+      'packages/react-native-matrix-crypto/src/NativeMatrixCrypto.ts',
+      'packages/react-native-matrix-crypto/cpp/react-native-matrix-crypto.cpp',
+      'packages/react-native-matrix-crypto/cpp/react-native-matrix-crypto.h',
+      'packages/react-native-matrix-crypto/android/',
+      'packages/react-native-matrix-crypto/ios/',
+      'packages/react-native-matrix-crypto/MatrixCrypto.podspec',
+
+      // The React Native template's native projects, plus build outputs and
+      // vendored trees -- all already in .gitignore. Naming them keeps
+      // `yarn lint` off a working copy that has actually built something.
+      'packages/example-app/ios/',
+      'packages/example-app/android/',
+      'rust/target/',
+      '**/build/',
+      '**/Pods/',
+      'api-docs/',
+    ],
+  },
+
+  ...withModuleTs,
+
+  {
+    // Two of the shareable config's rules describe a React Native app rather
+    // than this library, and both fire on code that is doing exactly what it
+    // means to. Left on, they are roughly eighty warnings that a reader learns
+    // to scroll past -- which is how the ones worth reading get missed.
+    rules: {
+      // This is a cryptography binding. Bitwise operators here are QR-code
+      // payload packing (interop/crypto-suite.ts), varint decoding
+      // (example-app/src/levelTwoSuite.ts) and byte assembly -- the operation
+      // meant, spelled the only way it is spelled.
+      'no-bitwise': 'off',
+
+      // `void somePromise()` is this codebase's marker for a deliberately
+      // unawaited call, in React effect bodies and event handlers that cannot
+      // be async. The rule reads it as a stylistic accident; here it is the
+      // signal, and removing it would leave a floating promise looking like an
+      // oversight.
+      'no-void': 'off',
+    },
+  },
+
+  // eslint-config-prettier last, deliberately. @react-native/eslint-config
+  // applies it too -- but as the FIRST element of its array, so any stylistic
+  // rule its own later entries switch back on is live again. Repeating it here
+  // is what actually guarantees ESLint never reports on something `yarn format`
+  // is about to rewrite, and that the two tools cannot disagree.
+  prettier,
+]

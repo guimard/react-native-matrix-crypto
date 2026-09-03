@@ -22,15 +22,22 @@
  * @format
  */
 
-import React from 'react';
-import { SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, useColorScheme } from 'react-native';
-import { CameraProofHarness } from './src/CameraProofHarness';
-import { FoldWatch } from './src/FoldWatch';
-import { GuidedFlow } from './src/GuidedFlow';
-import { LevelTwoHarness } from './src/LevelTwoHarness';
-import { ProbeHarness } from './src/ProbeHarness';
-import { ScannedCodeWalkthrough } from './src/ScannedCodeWalkthrough';
-import { fetchLevelTwoPlan, type LevelTwoPlan } from './src/levelTwoTransport';
+import React from 'react'
+import {
+  SafeAreaView,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  useColorScheme,
+} from 'react-native'
+import { CameraProofHarness } from './src/CameraProofHarness'
+import { FoldWatch } from './src/FoldWatch'
+import { GuidedFlow } from './src/GuidedFlow'
+import { LevelTwoHarness } from './src/LevelTwoHarness'
+import { ProbeHarness } from './src/ProbeHarness'
+import { ScannedCodeWalkthrough } from './src/ScannedCodeWalkthrough'
+import { fetchLevelTwoPlan, type LevelTwoPlan } from './src/levelTwoTransport'
 
 // FoldWatch is rendered outside the conditional below, and before the answer
 // about a conductor has arrived, because what it reports is how many times
@@ -64,22 +71,24 @@ import { fetchLevelTwoPlan, type LevelTwoPlan } from './src/levelTwoTransport';
 // host-side runner asserts it found one, the same way
 // scripts/run-probe-on-emulator.sh does for PROBE_SUMMARY.
 function App({ storeDir = '' }: { storeDir?: string }) {
-  const isDarkMode = useColorScheme() === 'dark';
+  const isDarkMode = useColorScheme() === 'dark'
   // `undefined` while the question is still open; `null` once it is settled
   // as "no conductor". Rendering nothing in between is deliberate: starting
   // the probe and then discovering a plan would leave two machines racing
   // for a process that only has room for one.
-  const [plan, setPlan] = React.useState<LevelTwoPlan | null | undefined>(undefined);
+  const [plan, setPlan] = React.useState<LevelTwoPlan | null | undefined>(
+    undefined,
+  )
 
   React.useEffect(() => {
-    let cancelled = false;
+    let cancelled = false
     void fetchLevelTwoPlan().then(found => {
-      if (!cancelled) setPlan(found);
-    });
+      if (!cancelled) setPlan(found)
+    })
     return () => {
-      cancelled = true;
-    };
-  }, []);
+      cancelled = true
+    }
+  }, [])
 
   return (
     <SafeAreaView style={styles.container}>
@@ -93,41 +102,47 @@ function App({ storeDir = '' }: { storeDir?: string }) {
         // only because a conductor handed out this plan.
         <CameraProofHarness plan={plan} storeDir={storeDir} />
       ) : (
-      <ScrollView contentInsetAdjustmentBehavior="automatic" style={styles.container}>
-        <Text style={styles.heading}>react-native-matrix-crypto</Text>
-        <FoldWatch />
-        {plan === undefined ? null : plan === null ? (
-          <>
-            <GuidedFlow storeDir={storeDir} />
-            <Text style={styles.heading}>Diagnostics</Text>
-            <Text style={styles.subheading}>
-              Two interop suites, run automatically on every app start and logged for CI: the probe suite the flow
-              above exercises by hand, and a real encryption round trip -- create a machine, publish its keys, share a
-              scope key, encrypt, decrypt -- driven entirely through the public API.
-            </Text>
-            <ProbeHarness storeDir={storeDir} />
-          </>
-        ) : plan.mode === 'scanned-code' ? (
-          // A run for a person rather than for CI. The conductor that hands
-          // out this plan starts a homeserver, logs this device in and then
-          // waits: the whole point is that a human holds a second client's
-          // camera up to this screen, which nothing automated can do.
-          <ScannedCodeWalkthrough plan={plan} storeDir={storeDir} />
-        ) : (
-          <>
-            <Text style={styles.heading}>Level 2 interoperability</Text>
-            <Text style={styles.subheading}>
-              A conductor answered on the host, so this launch is a level 2 run: a real homeserver, a matrix-nio
-              counterparty, and both directions of the exchange driven entirely through the published TypeScript
-              surface.
-            </Text>
-            <LevelTwoHarness plan={plan} storeDir={storeDir} />
-          </>
-        )}
-      </ScrollView>
+        <ScrollView
+          contentInsetAdjustmentBehavior="automatic"
+          style={styles.container}
+        >
+          <Text style={styles.heading}>react-native-matrix-crypto</Text>
+          <FoldWatch />
+          {plan === undefined ? null : plan === null ? (
+            <>
+              <GuidedFlow storeDir={storeDir} />
+              <Text style={styles.heading}>Diagnostics</Text>
+              <Text style={styles.subheading}>
+                Two interop suites, run automatically on every app start and
+                logged for CI: the probe suite the flow above exercises by hand,
+                and a real encryption round trip -- create a machine, publish
+                its keys, share a scope key, encrypt, decrypt -- driven entirely
+                through the public API.
+              </Text>
+              <ProbeHarness storeDir={storeDir} />
+            </>
+          ) : plan.mode === 'scanned-code' ? (
+            // A run for a person rather than for CI. The conductor that hands
+            // out this plan starts a homeserver, logs this device in and then
+            // waits: the whole point is that a human holds a second client's
+            // camera up to this screen, which nothing automated can do.
+            <ScannedCodeWalkthrough plan={plan} storeDir={storeDir} />
+          ) : (
+            <>
+              <Text style={styles.heading}>Level 2 interoperability</Text>
+              <Text style={styles.subheading}>
+                A conductor answered on the host, so this launch is a level 2
+                run: a real homeserver, a matrix-nio counterparty, and both
+                directions of the exchange driven entirely through the published
+                TypeScript surface.
+              </Text>
+              <LevelTwoHarness plan={plan} storeDir={storeDir} />
+            </>
+          )}
+        </ScrollView>
       )}
     </SafeAreaView>
-  );
+  )
 }
 
 const styles = StyleSheet.create({
@@ -145,6 +160,6 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     opacity: 0.7,
   },
-});
+})
 
-export default App;
+export default App

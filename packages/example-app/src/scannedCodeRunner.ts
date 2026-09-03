@@ -127,9 +127,15 @@ export function endpointFor(kind: string): { method: string; path: string } {
     case 'keys_claim':
       return { method: 'POST', path: '/_matrix/client/v3/keys/claim' }
     case 'signature_upload':
-      return { method: 'POST', path: '/_matrix/client/v3/keys/signatures/upload' }
+      return {
+        method: 'POST',
+        path: '/_matrix/client/v3/keys/signatures/upload',
+      }
     case 'signing_keys_upload':
-      return { method: 'POST', path: '/_matrix/client/v3/keys/device_signing/upload' }
+      return {
+        method: 'POST',
+        path: '/_matrix/client/v3/keys/device_signing/upload',
+      }
     // `to_device` is deliberately absent: its path carries the event type and
     // the transaction id, both of which live in the request the library
     // handed over, so `pump` builds it there rather than passing them in
@@ -146,7 +152,10 @@ export function endpointFor(kind: string): { method: string; path: string } {
  * handed out and never heard about again parks the flow it belongs to, which
  * is the failure this call exists to prevent.
  */
-export async function pump(plan: ScannedCodePlan, http: HttpJson): Promise<number> {
+export async function pump(
+  plan: ScannedCodePlan,
+  http: HttpJson,
+): Promise<number> {
   const requests = await takeOutgoingRequests()
   for (const request of requests) {
     let path: string
@@ -182,12 +191,20 @@ export async function syncOnce(
   http: HttpJson,
   since: string,
 ): Promise<string> {
-  const query = since === '' ? `timeout=${SYNC_TIMEOUT_MS}` : `timeout=${SYNC_TIMEOUT_MS}&since=${encodeURIComponent(since)}`
-  const response = await http('GET', `${plan.homeserver}/_matrix/client/v3/sync?${query}`, {
-    token: plan.accessToken,
-    timeoutMs: SYNC_TIMEOUT_MS + 10_000,
-  })
-  if (response.status !== 200) throw new Error(`sync returned HTTP ${response.status}`)
+  const query =
+    since === ''
+      ? `timeout=${SYNC_TIMEOUT_MS}`
+      : `timeout=${SYNC_TIMEOUT_MS}&since=${encodeURIComponent(since)}`
+  const response = await http(
+    'GET',
+    `${plan.homeserver}/_matrix/client/v3/sync?${query}`,
+    {
+      token: plan.accessToken,
+      timeoutMs: SYNC_TIMEOUT_MS + 10_000,
+    },
+  )
+  if (response.status !== 200)
+    throw new Error(`sync returned HTTP ${response.status}`)
   const body = JSON.parse(response.text) as Record<string, unknown>
   await receiveSyncChanges(encryptionSlice(body))
   await pump(plan, http)
@@ -228,7 +245,9 @@ export function startScannedCodeRun(
   publish: Publish,
   options: { sleep?: (ms: number) => Promise<void> } = {},
 ): ScannedCodeRun {
-  const sleep = options.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
+  const sleep =
+    options.sleep ??
+    ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
 
   let state: ScannedCodeState = {
     headline: 'Starting…',
@@ -308,7 +327,8 @@ export function startScannedCodeRun(
           await pump(plan, http)
           update({
             headline: 'Asked your other devices to verify.',
-            detail: 'Accept it there; this screen will show the code once it does.',
+            detail:
+              'Accept it there; this screen will show the code once it does.',
           })
           break
         }
@@ -391,7 +411,8 @@ export function startScannedCodeRun(
           update({
             awaitingConfirmation: true,
             headline: 'The other device says it scanned this code.',
-            detail: 'Was that really your other device? Confirm only if it was.',
+            detail:
+              'Was that really your other device? Confirm only if it was.',
           })
           if (confirmRequested) {
             confirmRequested = false
@@ -407,7 +428,8 @@ export function startScannedCodeRun(
         if (stage === 'done') {
           update({
             headline: 'Verified.',
-            detail: 'A camera read what this library drew and the flow completed.',
+            detail:
+              'A camera read what this library drew and the flow completed.',
             awaitingConfirmation: false,
             finished: true,
             failed: false,

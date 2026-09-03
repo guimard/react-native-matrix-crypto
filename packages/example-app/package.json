@@ -25,13 +25,10 @@
     "@react-native-community/cli-platform-android": "20.2.0",
     "@react-native-community/cli-platform-ios": "20.2.0",
     "@react-native/babel-preset": "0.87.1",
-    "@react-native/eslint-config": "0.87.1",
     "@react-native/metro-config": "0.87.1",
     "@react-native/typescript-config": "0.87.1",
     "@types/react": "^19.2.0",
-    "eslint": "^8.19.0",
     "jsqr": "^1.4.0",
-    "prettier": "2.8.8",
     "qrcode-generator": "^2.0.4",
     "typescript": "^6.0.3",
     "vitest": "^2.1.0"

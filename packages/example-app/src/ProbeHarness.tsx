@@ -22,7 +22,12 @@ import {
   runCryptoSuite,
   type CryptoBinding,
 } from 'react-native-matrix-crypto/interop/crypto-suite'
-import { DEMO_DEVICE_ID, DEMO_SCOPE, DEMO_USER_ID, demoMachineConfig } from './cryptoConfig'
+import {
+  DEMO_DEVICE_ID,
+  DEMO_SCOPE,
+  DEMO_USER_ID,
+  demoMachineConfig,
+} from './cryptoConfig'
 import { nthSignal } from './signalOrder'
 
 /**
@@ -119,7 +124,7 @@ function jsiBinding(): BridgeBinding {
         input,
         payload,
         onSignal &&
-          ((signal) => {
+          (signal => {
             console.log(`PROBE_SIGNAL_MS ${Date.now() - calledAt}`)
             console.log(`PROBE_SIGNAL_NTH ${nthSignal()}`)
             onSignal(signal.kind)
@@ -136,7 +141,7 @@ function jsiBinding(): BridgeBinding {
       // a branch that exists only to print diagnostics.
       if (onSignal) {
         void call.then(
-          (report) => {
+          report => {
             console.log(`PROBE_PROMISE_MS ${Date.now() - calledAt}`)
             console.log(`PROBE_EMIT_BUILD ${report.coreVersion}`)
           },
@@ -146,7 +151,7 @@ function jsiBinding(): BridgeBinding {
       return call
     },
     isCryptoError,
-    errorKind: (e) => (isCryptoError(e) ? e.kind : undefined),
+    errorKind: e => (isCryptoError(e) ? e.kind : undefined),
   }
 }
 
@@ -162,11 +167,13 @@ function jsiCryptoBinding(): CryptoBinding {
     createCryptoMachine,
     takeOutgoingRequests,
     markRequestSent,
-    shareScopeKey: (scope, userIds) => shareScopeKey(asCryptoScopeId(scope), userIds),
+    shareScopeKey: (scope, userIds) =>
+      shareScopeKey(asCryptoScopeId(scope), userIds),
     encryptEvent: (scope, eventType, payload) =>
       encryptEvent(asCryptoScopeId(scope), eventType, payload),
-    decryptEvent: (scope, rawEvent) => decryptEvent(asCryptoScopeId(scope), rawEvent),
-    errorKind: (e) => (isCryptoError(e) ? e.kind : undefined),
+    decryptEvent: (scope, rawEvent) =>
+      decryptEvent(asCryptoScopeId(scope), rawEvent),
+    errorKind: e => (isCryptoError(e) ? e.kind : undefined),
   }
 }
 
@@ -215,7 +222,10 @@ async function timeASecondSignal(): Promise<void> {
  * to a single 'fatal' check when the binding itself is unusable, so there
  * is no fixed set of names to reconcile against for that half.
  */
-const HARNESS_OWNED_CHECKS: readonly string[] = [...CRYPTO_SUITE_STEPS, 'real_crypto']
+const HARNESS_OWNED_CHECKS: readonly string[] = [
+  ...CRYPTO_SUITE_STEPS,
+  'real_crypto',
+]
 
 /**
  * The one genuine cryptographic value M1b proved crossed the chain, kept as
@@ -245,7 +255,9 @@ async function realCryptoCheck(): Promise<InteropCheck> {
     return {
       name: 'real_crypto',
       ok: false,
-      detail: kind ? `rejected with kind "${kind}"` : 'failed with a non-typed error',
+      detail: kind
+        ? `rejected with kind "${kind}"`
+        : 'failed with a non-typed error',
     }
   }
 }
@@ -312,8 +324,12 @@ export function ProbeHarness({ storeDir }: { storeDir: string }) {
       }
 
       for (const name of HARNESS_OWNED_CHECKS) {
-        if (!results.some((c) => c.name === name)) {
-          results.push({ name, ok: false, detail: 'not reported: the harness failed before this step' })
+        if (!results.some(c => c.name === name)) {
+          results.push({
+            name,
+            ok: false,
+            detail: 'not reported: the harness failed before this step',
+          })
         }
       }
 
@@ -325,14 +341,18 @@ export function ProbeHarness({ storeDir }: { storeDir: string }) {
         // bridge, so it may log; the bridge itself never does. Names and
         // outcomes only -- no plaintext, no key material, no passphrase
         // and no identifier reaches this line.
-        console.log(`PROBE_CHECK ${c.name} ${c.ok ? 'PASS' : 'FAIL'} ${c.detail}`)
+        console.log(
+          `PROBE_CHECK ${c.name} ${c.ok ? 'PASS' : 'FAIL'} ${c.detail}`,
+        )
       }
-      console.log(`PROBE_SUMMARY ${results.filter((c) => c.ok).length}/${results.length}`)
+      console.log(
+        `PROBE_SUMMARY ${results.filter(c => c.ok).length}/${results.length}`,
+      )
       return results
     }
 
     if (probeRun === null) probeRun = run()
-    void probeRun.then((results) => {
+    void probeRun.then(results => {
       // Only the on-screen list is gated on the component still being
       // mounted: the lines CI scrapes were already emitted by the run
       // itself, so an unmount can never swallow them.
@@ -357,8 +377,10 @@ export function ProbeHarness({ storeDir }: { storeDir: string }) {
 
   return (
     <View>
-      {checks.map((c) => (
-        <Text key={c.name}>{`${c.name}: ${c.ok ? 'PASS' : 'FAIL'} (${c.detail})`}</Text>
+      {checks.map(c => (
+        <Text
+          key={c.name}
+        >{`${c.name}: ${c.ok ? 'PASS' : 'FAIL'} (${c.detail})`}</Text>
       ))}
     </View>
   )

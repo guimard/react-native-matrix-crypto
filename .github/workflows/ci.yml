@@ -28,6 +28,30 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version-file: '.nvmrc', cache: yarn }
       - run: yarn install --frozen-lockfile
+      # Lint and formatting first. They take seconds, they need nothing built,
+      # and they are the two failures a contributor is most likely to arrive
+      # with -- there is no sense spending a Rust build to report them second.
+      #
+      # Neither is a `gate:*` script, so gate:readme does not require a row for
+      # them in the README's table; the paragraph under that table is what says
+      # they run, and this comment is the other half of that promise.
+      #
+      # `--max-warnings 0` lives in the `lint` script rather than on this line,
+      # so that `yarn lint` on a laptop and `yarn lint` here are the same
+      # command and cannot come to different answers.
+      - run: yarn lint
+      # `yarn lint` above blocks on findings -- it exits 1 on an error and,
+      # through --max-warnings 0, on a warning too. What it cannot do is tell
+      # anyone it linted the WRONG SET: `eslint .` exits 0 whether it found
+      # nothing wrong or opened nothing at all, and a file it never read is
+      # indistinguishable from a clean one.
+      #
+      # packages/example-app/vitest.config.mts sat unlinted through this
+      # milestone and through a green run of the step above, because `.mts`
+      # fell between the shareable config's `**/*.ts` and ESLint's own default
+      # extensions. A reviewer found it. This is the mechanism that would have.
+      - run: yarn gate:lint-coverage
+      - run: yarn format:check
       - run: yarn gate:workspaces
       - run: yarn gate:boundary
       - run: yarn gate:drift
@@ -36,6 +60,14 @@ jobs:
       # broken generations agree with each other. gate:stubs reads the
       # committed artifacts and asserts the turbo module is actually wired up.
       - run: yarn gate:stubs
+      # The two ignore lists this repository maintains by hand -- one in
+      # .prettierignore, one in eslint.config.mjs -- really do cover every path
+      # in scripts/generated-paths.txt, asked of Prettier and ESLint themselves
+      # rather than compared as strings. It runs next to gate:stubs because it
+      # guards the same thing from the other side: gate:drift is what makes a
+      # generated file's bytes load-bearing, and a formatter is the one tool
+      # here that rewrites files nobody asked it to.
+      - run: yarn gate:ignores
       - run: yarn gate:logger
       - run: yarn gate:agility
       # Wired in the same change that added it, because this repository has

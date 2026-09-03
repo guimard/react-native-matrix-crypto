@@ -61,10 +61,22 @@ import { toArrayBuffer } from './probe'
 // the terms `types.ts` states in full: `{@link}` resolves against what the
 // file has in scope. Type-only, so it is erased and adds no runtime edge,
 // and `signals.ts` imports nothing from here, so it adds no cycle.
+/* eslint-disable @typescript-eslint/no-unused-vars -- The import below is
+   the paragraph above put into effect: these names are in scope so that the
+   `{@link}`s resolve, and `scripts/assert-doc-links.mjs` fails the build if
+   one of them is missing. ESLint sees an unused binding and would have them
+   deleted; the gate that owns this question wants them kept, so the rule is
+   switched off for this statement and nothing else in the file. */
 import type { onCryptoSignal } from './signals'
+/* eslint-enable @typescript-eslint/no-unused-vars */
 
 function notImplemented(name: string): Promise<never> {
-  return Promise.reject(toCryptoError({ name: 'NotImplemented', reason: `${name} is not implemented yet` }))
+  return Promise.reject(
+    toCryptoError({
+      name: 'NotImplemented',
+      reason: `${name} is not implemented yet`,
+    }),
+  )
 }
 
 /**
@@ -179,7 +191,9 @@ export interface OutgoingRequest {
   body: string
 }
 
-export async function createCryptoMachine(config: CryptoMachineConfig): Promise<void> {
+export async function createCryptoMachine(
+  config: CryptoMachineConfig,
+): Promise<void> {
   try {
     await nativeCreateCryptoMachine({
       userId: config.userId,
@@ -196,7 +210,9 @@ export async function createCryptoMachine(config: CryptoMachineConfig): Promise<
   }
 }
 
-export async function openCryptoStore(config: CryptoMachineConfig): Promise<void> {
+export async function openCryptoStore(
+  config: CryptoMachineConfig,
+): Promise<void> {
   try {
     await nativeOpenCryptoStore({
       userId: config.userId,
@@ -243,7 +259,9 @@ const RECOGNISED_SYNC_FIELDS = [
 function syncDeltaNamesNoRecognisedField(syncDelta: unknown): boolean {
   if (typeof syncDelta !== 'object' || syncDelta === null) return false
   const keys = Object.keys(syncDelta)
-  return keys.length > 0 && !keys.some((key) => RECOGNISED_SYNC_FIELDS.includes(key))
+  return (
+    keys.length > 0 && !keys.some(key => RECOGNISED_SYNC_FIELDS.includes(key))
+  )
 }
 
 /**
@@ -263,15 +281,21 @@ function syncDeltaNamesNoRecognisedField(syncDelta: unknown): boolean {
 export function encryptionSlice(sync: Record<string, unknown>): SyncDelta {
   const slice: SyncDelta = {}
   const toDevice = sync.to_device as Record<string, unknown> | undefined
-  if (toDevice?.events !== undefined) slice.to_device_events = toDevice.events as unknown[]
+  if (toDevice?.events !== undefined)
+    slice.to_device_events = toDevice.events as unknown[]
   if (sync.device_lists !== undefined) slice.changed_devices = sync.device_lists
   if (sync.device_one_time_keys_count !== undefined) {
-    slice.one_time_keys_counts = sync.device_one_time_keys_count as Record<string, number>
+    slice.one_time_keys_counts = sync.device_one_time_keys_count as Record<
+      string,
+      number
+    >
   }
   if (sync.device_unused_fallback_key_types !== undefined) {
-    slice.unused_fallback_keys = sync.device_unused_fallback_key_types as string[]
+    slice.unused_fallback_keys =
+      sync.device_unused_fallback_key_types as string[]
   }
-  if (sync.next_batch !== undefined) slice.next_batch_token = sync.next_batch as string
+  if (sync.next_batch !== undefined)
+    slice.next_batch_token = sync.next_batch as string
   return slice
 }
 
@@ -380,7 +404,13 @@ export async function encryptEvent(
     // not something that leaks through this boundary unreviewed. See
     // Global Constraints and the M1 final review finding fixed below at
     // getDeviceIdentityKeys.
-    const { scope: encryptedScope, algorithm, eventType: encryptedEventType, ciphertext, sender } = encrypted
+    const {
+      scope: encryptedScope,
+      algorithm,
+      eventType: encryptedEventType,
+      ciphertext,
+      sender,
+    } = encrypted
     return {
       scope: asCryptoScopeId(encryptedScope),
       algorithm,
@@ -454,7 +484,10 @@ export async function encryptEvent(
  * should react to. It is a snapshot taken at decryption time, not a live
  * value; see the field.
  */
-export async function decryptEvent(scope: CryptoScopeId, rawEvent: unknown): Promise<EventEnvelope> {
+export async function decryptEvent(
+  scope: CryptoScopeId,
+  rawEvent: unknown,
+): Promise<EventEnvelope> {
   // `CryptoScopeId` performs no runtime validation (see types.ts) --
   // enforced by the type system for a caller that goes through it, but a
   // caller that bypasses it (plain JS, or `as any`) can still reach this
@@ -472,7 +505,14 @@ export async function decryptEvent(scope: CryptoScopeId, rawEvent: unknown): Pro
   try {
     const decrypted = await nativeDecryptEvent(scope, rawEventJson)
     // Destructured, not returned directly. See encryptEvent above.
-    const { scope: decryptedScope, algorithm, eventType, ciphertext, sender, senderVerification } = decrypted
+    const {
+      scope: decryptedScope,
+      algorithm,
+      eventType,
+      ciphertext,
+      sender,
+      senderVerification,
+    } = decrypted
     return {
       scope: asCryptoScopeId(decryptedScope),
       algorithm,
@@ -493,7 +533,9 @@ export async function decryptEvent(scope: CryptoScopeId, rawEvent: unknown): Pro
       // Native only omits this on the encrypt path, which does not reach
       // here, so in practice this reads `Some` every time.
       senderVerification:
-        senderVerification === undefined ? undefined : senderVerificationOf(senderVerification),
+        senderVerification === undefined
+          ? undefined
+          : senderVerificationOf(senderVerification),
     }
   } catch (e) {
     throw toCryptoError(e)
@@ -535,7 +577,10 @@ export async function decryptEvent(scope: CryptoScopeId, rawEvent: unknown): Pro
  * so this machine knows the device exists at all) and this function
  * together are what section 3ter's ordering describes.
  */
-export async function shareScopeKey(scope: CryptoScopeId, userIds: string[]): Promise<void> {
+export async function shareScopeKey(
+  scope: CryptoScopeId,
+  userIds: string[],
+): Promise<void> {
   try {
     await nativeShareScopeKey(scope, userIds)
   } catch (e) {
@@ -741,7 +786,10 @@ export async function takeOutgoingRequests(): Promise<OutgoingRequest[]> {
  * drain and not a second bootstrap. See {@link takeOutgoingRequests} for why
  * that is deliberate and what to do instead of retrying.
  */
-export async function markRequestSent(id: string, responseJson: string): Promise<void> {
+export async function markRequestSent(
+  id: string,
+  responseJson: string,
+): Promise<void> {
   try {
     await nativeMarkRequestSent(id, responseJson)
   } catch (e) {
@@ -820,7 +868,10 @@ export async function markRequestSent(id: string, responseJson: string): Promise
  * `unknown_request` means the same thing it does on {@link markRequestSent},
  * including the eviction case described there.
  */
-export async function markRequestFailed(id: string, status: number): Promise<void> {
+export async function markRequestFailed(
+  id: string,
+  status: number,
+): Promise<void> {
   try {
     await nativeMarkRequestFailed(id, status)
   } catch (e) {
@@ -1284,11 +1335,16 @@ export async function createCrossSigningIdentity(): Promise<void> {
  * read it in between. Verifying one of your **own** devices needs none of
  * that: it reads `'verified'` the moment the flow finishes.
  */
-export async function getDeviceStatuses(userId: string): Promise<DeviceStatus[]> {
+export async function getDeviceStatuses(
+  userId: string,
+): Promise<DeviceStatus[]> {
   try {
     const statuses = await nativeDeviceStatuses(userId)
     // Destructured per element, not returned directly. See encryptEvent above.
-    return statuses.map(({ deviceId, trust }) => ({ deviceId, trust: trustStateOf(trust) }))
+    return statuses.map(({ deviceId, trust }) => ({
+      deviceId,
+      trust: trustStateOf(trust),
+    }))
   } catch (e) {
     throw toCryptoError(e)
   }
@@ -1368,7 +1424,10 @@ export async function getDeviceStatuses(userId: string): Promise<DeviceStatus[]>
  * sync will do and it does not have to carry anything: an empty payload is
  * enough, because it is the sweep that matters and not the contents.
  */
-export async function requestVerification(userId: string, deviceId: string): Promise<string> {
+export async function requestVerification(
+  userId: string,
+  deviceId: string,
+): Promise<string> {
   try {
     return await nativeRequestVerification(userId, deviceId)
   } catch (e) {
@@ -1679,7 +1738,9 @@ export async function requestSelfVerification(): Promise<string> {
  * exists because the sending side carried these warnings and the receiving
  * side did not, and the receiving side reaches the identical write.
  */
-export async function acceptVerification(verificationId: string): Promise<void> {
+export async function acceptVerification(
+  verificationId: string,
+): Promise<void> {
   try {
     await nativeAcceptVerification(verificationId)
   } catch (e) {
@@ -1748,7 +1809,9 @@ export async function acceptVerification(verificationId: string): Promise<void> 
  * code` and `leaves the rejection as wrong_stage for a flow that became a
  * code somebody scanned`.
  */
-export async function startVerificationComparison(verificationId: string): Promise<void> {
+export async function startVerificationComparison(
+  verificationId: string,
+): Promise<void> {
   try {
     await nativeStartVerificationComparison(verificationId)
   } catch (e) {
@@ -1782,7 +1845,9 @@ export async function startVerificationComparison(verificationId: string): Promi
  * Nothing observable turns on the difference; it is stated because "started"
  * reads narrower than the rule is.
  */
-export async function getVerificationStage(verificationId: string): Promise<VerificationStage> {
+export async function getVerificationStage(
+  verificationId: string,
+): Promise<VerificationStage> {
   try {
     return verificationStageOf(await nativeVerificationStage(verificationId))
   } catch (e) {
@@ -1833,7 +1898,9 @@ export async function getVerificationStage(verificationId: string): Promise<Veri
  * as `'material_not_ready'` and a code flow arrives as `'wrong_stage'` at
  * every stage it passes through.
  */
-export async function getVerificationMaterial(verificationId: string): Promise<SasMaterial> {
+export async function getVerificationMaterial(
+  verificationId: string,
+): Promise<SasMaterial> {
   try {
     return sasMaterialOf(await nativeVerificationMaterial(verificationId))
   } catch (e) {
@@ -1897,7 +1964,10 @@ export async function getVerificationMaterial(verificationId: string): Promise<S
  * over or never became a comparison. Both come from the read above, before
  * anything is confirmed.
  */
-export async function confirmVerification(verificationId: string, data: SasMaterial): Promise<void> {
+export async function confirmVerification(
+  verificationId: string,
+  data: SasMaterial,
+): Promise<void> {
   // Read before confirming, not after: this is the check, and a check that
   // ran after the confirmation had already been queued would be reporting
   // on something it could no longer prevent. It also produces exactly the
@@ -1958,7 +2028,9 @@ export async function confirmVerification(verificationId: string, data: SasMater
  * screen rather than only a way forward, and call this when a person takes
  * it.
  */
-export async function cancelVerification(verificationId: string): Promise<void> {
+export async function cancelVerification(
+  verificationId: string,
+): Promise<void> {
   try {
     await nativeCancelVerification(verificationId)
   } catch (e) {
@@ -2132,7 +2204,9 @@ export function offerScannableCodes(capabilities: CodeCapabilities): void {
  * Calling it twice is legal and produces a code for the same flow. Draw the
  * newer one: it is the live one.
  */
-export async function getVerificationCode(verificationId: string): Promise<ScannableCode> {
+export async function getVerificationCode(
+  verificationId: string,
+): Promise<ScannableCode> {
   try {
     const code = await nativeVerificationCode(verificationId)
     // Destructured, not returned directly: a field added to the generated
@@ -2212,7 +2286,10 @@ export async function getVerificationCode(verificationId: string): Promise<Scann
  * the other side has finished. It never reads `'code-scanned'` on this side,
  * because that stage belongs to whoever held up a screen.
  */
-export async function submitScannedCode(verificationId: string, payload: Uint8Array): Promise<void> {
+export async function submitScannedCode(
+  verificationId: string,
+  payload: Uint8Array,
+): Promise<void> {
   try {
     await nativeSubmitScannedCode(verificationId, toArrayBuffer(payload))
   } catch (e) {
@@ -2272,7 +2349,9 @@ export async function confirmScan(verificationId: string): Promise<void> {
  * without a runtime test per variant. The `never` return is unreachable and
  * exists so the exhaustiveness is enforced rather than merely intended.
  */
-function verificationStageOf(stage: NativeVerificationStage): VerificationStage {
+function verificationStageOf(
+  stage: NativeVerificationStage,
+): VerificationStage {
   switch (stage) {
     case NativeVerificationStage.Requested:
       return 'requested'
@@ -2330,7 +2409,9 @@ function verificationStageOf(stage: NativeVerificationStage): VerificationStage 
  * arriving *as* `'verified'` is still the failure that hurts most, and a
  * `Verified` the chain earned being dropped here is the one M4 added.
  */
-function senderVerificationOf(verification: NativeSenderVerification): SenderVerification {
+function senderVerificationOf(
+  verification: NativeSenderVerification,
+): SenderVerification {
   switch (verification) {
     case NativeSenderVerification.Verified:
       return { state: 'verified' }
@@ -2343,7 +2424,11 @@ function senderVerificationOf(verification: NativeSenderVerification): SenderVer
     case NativeSenderVerification.NoDeviceMissing:
       return { state: 'unverified', reason: 'no_device', problem: 'missing' }
     case NativeSenderVerification.NoDeviceInsecureSource:
-      return { state: 'unverified', reason: 'no_device', problem: 'insecure_source' }
+      return {
+        state: 'unverified',
+        reason: 'no_device',
+        problem: 'insecure_source',
+      }
     case NativeSenderVerification.MismatchedSender:
       return { state: 'unverified', reason: 'mismatched_sender' }
   }
@@ -2371,9 +2456,14 @@ function trustStateOf(trust: NativeTrustState): TrustState {
 function sasMaterialOf(material: NativeSasMaterial): SasMaterial {
   // Destructured, not returned directly. See encryptEvent above.
   const { emoji, decimalOne, decimalTwo, decimalThree } = material
-  const rebuilt: SasMaterial = { decimals: [decimalOne, decimalTwo, decimalThree] }
+  const rebuilt: SasMaterial = {
+    decimals: [decimalOne, decimalTwo, decimalThree],
+  }
   if (emoji !== undefined) {
-    rebuilt.emoji = emoji.map(({ symbol, description }): SasEmoji => ({ symbol, description }))
+    rebuilt.emoji = emoji.map(({ symbol, description }): SasEmoji => ({
+      symbol,
+      description,
+    }))
   }
   return rebuilt
 }
@@ -2398,17 +2488,21 @@ function sameMaterial(current: SasMaterial, offered: SasMaterial): boolean {
   if (typeof raw !== 'object' || raw === null) return false
   const { decimals, emoji } = raw as { decimals?: unknown; emoji?: unknown }
 
-  if (!Array.isArray(decimals) || decimals.length !== current.decimals.length) return false
-  if (!current.decimals.every((digit, index) => digit === decimals[index])) return false
+  if (!Array.isArray(decimals) || decimals.length !== current.decimals.length)
+    return false
+  if (!current.decimals.every((digit, index) => digit === decimals[index]))
+    return false
 
   const currentSymbols = current.emoji?.map(({ symbol }) => symbol)
   // A flow with no symbols must be confirmed with a record that has none:
   // a caller offering symbols for a comparison that negotiated none is
   // describing a different screen from the one this flow produced.
   if (currentSymbols === undefined) return emoji === undefined
-  if (!Array.isArray(emoji) || emoji.length !== currentSymbols.length) return false
+  if (!Array.isArray(emoji) || emoji.length !== currentSymbols.length)
+    return false
   return currentSymbols.every(
-    (symbol, index) => symbol === (emoji[index] as SasEmoji | undefined)?.symbol,
+    (symbol, index) =>
+      symbol === (emoji[index] as SasEmoji | undefined)?.symbol,
   )
 }
 
@@ -2423,7 +2517,10 @@ function sameMaterial(current: SasMaterial, offered: SasMaterial): boolean {
  * calls, say -- the original rejection is what the caller gets, since an
  * error about the diagnosis would be worse than the one it replaced.
  */
-async function unfoldStartRejection(raw: unknown, verificationId: string): Promise<Error> {
+async function unfoldStartRejection(
+  raw: unknown,
+  verificationId: string,
+): Promise<Error> {
   const original = toCryptoError(raw)
   if (original.kind !== 'wrong_stage') return original
 
@@ -2697,7 +2794,7 @@ export async function createRecovery(
   passphrase: string,
   accountData: AccountDataEntry[],
 ): Promise<RecoverySetup> {
-  const existing = accountData.map((entry) => ({
+  const existing = accountData.map(entry => ({
     eventType: entry.eventType,
     content: stringifyOrMalformed(entry.content),
   }))
@@ -2717,7 +2814,7 @@ export async function createRecovery(
   const { recoveryKey, accountData: written } = setup
   return {
     recoveryKey,
-    accountData: written.map((entry) => ({
+    accountData: written.map(entry => ({
       eventType: entry.eventType,
       // Parsed here rather than handed over as a string, so a product
       // sends an object to an endpoint that takes an object.
@@ -2819,8 +2916,11 @@ export async function createRecovery(
  * refusal queues that query itself, so the remedy is the ordinary loop:
  * drain, send, report sent, call this again.
  */
-export async function recoverIdentity(secret: string, accountData: AccountDataEntry[]): Promise<void> {
-  const entries = accountData.map((entry) => ({
+export async function recoverIdentity(
+  secret: string,
+  accountData: AccountDataEntry[],
+): Promise<void> {
+  const entries = accountData.map(entry => ({
     eventType: entry.eventType,
     content: stringifyOrMalformed(entry.content),
   }))
@@ -2884,7 +2984,10 @@ export function exportSecrets(_passphrase: string): Promise<Uint8Array> {
  * `'not_implemented'`. The other half of {@link exportSecrets}; see that
  * function for why neither is coming, and for what to use instead.
  */
-export function importSecrets(_bundle: Uint8Array, _passphrase: string): Promise<void> {
+export function importSecrets(
+  _bundle: Uint8Array,
+  _passphrase: string,
+): Promise<void> {
   return notImplemented('importSecrets')
 }
 
@@ -2905,7 +3008,10 @@ export interface IdentityKeys {
   ed25519: string
 }
 
-export async function getDeviceIdentityKeys(userId: string, deviceId: string): Promise<IdentityKeys> {
+export async function getDeviceIdentityKeys(
+  userId: string,
+  deviceId: string,
+): Promise<IdentityKeys> {
   try {
     // Destructured, not returned directly: the M1 final review's deferred
     // item (`facade.ts:87`), applied here. A field added to the generated
@@ -2913,7 +3019,10 @@ export async function getDeviceIdentityKeys(userId: string, deviceId: string): P
     // boundary, not something that leaks through unreviewed because it
     // structurally satisfies this function's own `IdentityKeys` shape. See
     // Global Constraints.
-    const { curve25519, ed25519 } = await nativeDeviceIdentityKeys(userId, deviceId)
+    const { curve25519, ed25519 } = await nativeDeviceIdentityKeys(
+      userId,
+      deviceId,
+    )
     return { curve25519, ed25519 }
   } catch (e) {
     throw toCryptoError(e)
