@@ -747,7 +747,11 @@ describe('decryptEvent wiring to the native layer', () => {
       NativeSenderTrustRequirement.Any,
     )
 
-    await decryptEvent(scope, { type: 'm.room.encrypted' }, 'identity_signed_or_legacy')
+    await decryptEvent(
+      scope,
+      { type: 'm.room.encrypted' },
+      'identity_signed_or_legacy',
+    )
     expect(vi.mocked(nativeDecryptEvent).mock.calls.at(-1)?.[2]).toBe(
       NativeSenderTrustRequirement.IdentitySignedOrLegacy,
     )

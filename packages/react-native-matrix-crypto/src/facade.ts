@@ -542,8 +542,8 @@ export async function decryptEvent(
     throw toCryptoError({
       name: 'Rejected',
       reason:
-        'senderTrustRequirement must be one of \'any\', \'identity_signed_or_legacy\' ' +
-        'or \'identity_signed\'',
+        "senderTrustRequirement must be one of 'any', 'identity_signed_or_legacy' " +
+        "or 'identity_signed'",
     })
   }
   const rawEventJson = stringifyOrMalformed(rawEvent)
