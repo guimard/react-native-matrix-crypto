@@ -35,9 +35,9 @@ A foreign implementation has done the rest under test: `rust/matrix-crypto-core/
 
 Next, in order:
 
-* multi participant scenarios and federation neutral test coverage
-* cross implementation testing against both Synapse and Continuwuity
-* a stabilised API, published documentation and multi platform CI for 1.0
+- multi participant scenarios and federation neutral test coverage
+- cross implementation testing against both Synapse and Continuwuity
+- a stabilised API, published documentation and multi platform CI for 1.0
 
 ## Assembling a milestone from parallel branches
 

@@ -102,7 +102,9 @@ async function reportWhatSurvived(): Promise<void> {
   for (;;) {
     try {
       const keys = await getDeviceIdentityKeys(DEMO_USER_ID, DEMO_DEVICE_ID)
-      console.log(`FOLD_KEYS ${fingerprint(`${keys.ed25519}:${keys.curve25519}`)}`)
+      console.log(
+        `FOLD_KEYS ${fingerprint(`${keys.ed25519}:${keys.curve25519}`)}`,
+      )
       console.log('FOLD_MACHINE ok')
       break
     } catch (e) {

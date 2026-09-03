@@ -26,9 +26,18 @@ import { StyleSheet, View, useWindowDimensions } from 'react-native'
 import type { ScannableCode } from 'react-native-matrix-crypto'
 import { codeMatrixLayout } from './codeMatrixLayout'
 
-export function CodeMatrix({ code, maxSide = 360 }: { code: ScannableCode; maxSide?: number }) {
+export function CodeMatrix({
+  code,
+  maxSide = 360,
+}: {
+  code: ScannableCode
+  maxSide?: number
+}) {
   const { width: screenWidth } = useWindowDimensions()
-  const { squareSize, quietZone, rows } = codeMatrixLayout(code, Math.min(screenWidth - 32, maxSide))
+  const { squareSize, quietZone, rows } = codeMatrixLayout(
+    code,
+    Math.min(screenWidth - 32, maxSide),
+  )
 
   return (
     <View style={[styles.matrixFrame, { padding: quietZone }]}>
@@ -37,11 +46,14 @@ export function CodeMatrix({ code, maxSide = 360 }: { code: ScannableCode; maxSi
           {cells.map((dark, x) => (
             <View
               key={x}
-              style={{
-                width: squareSize,
-                height: squareSize,
-                backgroundColor: dark ? '#000000' : '#ffffff',
-              }}
+              // The size is computed and can only be inline. The two colours
+              // are not: they are registered below, so the module colour a
+              // reader has to trust sits with every other colour this file
+              // uses rather than in the middle of a nested map.
+              style={[
+                dark ? styles.moduleDark : styles.moduleLight,
+                { width: squareSize, height: squareSize },
+              ]}
             />
           ))}
         </View>
@@ -58,5 +70,11 @@ const styles = StyleSheet.create({
   },
   matrixRow: {
     flexDirection: 'row',
+  },
+  moduleDark: {
+    backgroundColor: '#000000',
+  },
+  moduleLight: {
+    backgroundColor: '#ffffff',
   },
 })

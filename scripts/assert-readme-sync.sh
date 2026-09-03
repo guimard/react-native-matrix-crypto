@@ -85,10 +85,10 @@ for gate in $GATES; do
   # pads every cell in a Markdown table out to the width of its column. Commit
   # 0e93565 ran Prettier over the READMEs and turned this gate red for all
   # thirteen gates at once, reporting that the table names none of them while
-  # the table sat there naming all of them. The repository has a Prettier
-  # configuration now, so the alignment is the committed shape rather than one
-  # contributor's editor, and a gate that reads a table has to read the table
-  # as it is written.
+  # the table sat there naming all of them. That padding is what is committed
+  # on main, so a gate that reads a table has to read the table as it is
+  # actually written; the whitespace between the pipes was never the thing
+  # being asserted.
   if ! grep -qE "^\|[[:space:]]*\`$gate\`[[:space:]]*\|" "$ROOT_README"; then
     UNLISTED="${UNLISTED:+$UNLISTED
 }$gate"

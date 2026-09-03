@@ -83,54 +83,69 @@ let signalFired = false
  */
 let bootstrapRefuses = true
 
-vi.mock('react-native-matrix-crypto/src/generated/matrix_crypto', async importOriginal => {
-  const actual =
-    await importOriginal<typeof import('react-native-matrix-crypto/src/generated/matrix_crypto')>()
-  return {
-    ...actual,
-    // The three facts the machine reports about the account, in the state
-    // this app is really in: it has no homeserver, so nothing has been
-    // asked and nothing is known.
-    identityStatus: vi.fn(async () => ({
-      accountKeysFetched: false,
-      identityKnown: false,
-      privateKeysHeld: false,
-    })),
-    bootstrapIdentity: vi.fn(async () => {
-      if (bootstrapRefuses) {
-        throw new actual.MachineFfiError.AccountKeysNotFetched()
-      }
-    }),
-    probeWithObserver: vi.fn(
-      async (input: string, payload: ArrayBuffer, observer: { onSignal(s: { kind: string; detail: string }): void }) => {
-        // The real core rejects empty input with `ProbeError::Rejected`
-        // (rust/matrix-crypto-core/src/probe.rs). Thrown here as the real
-        // generated error class, so the facade's own normalisation decides
-        // the kind rather than this file asserting one.
-        if (input === '') {
-          throw new actual.ProbeFfiError.Rejected({ reason: 'input was empty' })
+vi.mock(
+  'react-native-matrix-crypto/src/generated/matrix_crypto',
+  async importOriginal => {
+    const actual =
+      await importOriginal<
+        typeof import('react-native-matrix-crypto/src/generated/matrix_crypto')
+      >()
+    return {
+      ...actual,
+      // The three facts the machine reports about the account, in the state
+      // this app is really in: it has no homeserver, so nothing has been
+      // asked and nothing is known.
+      identityStatus: vi.fn(async () => ({
+        accountKeysFetched: false,
+        identityKnown: false,
+        privateKeysHeld: false,
+      })),
+      bootstrapIdentity: vi.fn(async () => {
+        if (bootstrapRefuses) {
+          throw new actual.MachineFfiError.AccountKeysNotFetched()
         }
-        // Scheduled, not called: this is the race the bounded wait in step 2
-        // exists to absorb. On Android release builds the observer loses it
-        // about half the time.
-        signalFired = false
-        setTimeout(() => {
-          signalFired = true
-          observer.onSignal({ kind: 'probe_started', detail: 'fake binding' })
-        }, SIGNAL_DELAY_MS)
-        signalDeliveredBeforeResolve = signalFired
-        return {
-          echoed: input,
-          payload: new Uint8Array(new Uint8Array(payload)).reverse().buffer,
-          coreVersion: '0.0.0-host-fake',
-        }
-      },
-    ),
-  }
-})
+      }),
+      probeWithObserver: vi.fn(
+        async (
+          input: string,
+          payload: ArrayBuffer,
+          observer: { onSignal(s: { kind: string; detail: string }): void },
+        ) => {
+          // The real core rejects empty input with `ProbeError::Rejected`
+          // (rust/matrix-crypto-core/src/probe.rs). Thrown here as the real
+          // generated error class, so the facade's own normalisation decides
+          // the kind rather than this file asserting one.
+          if (input === '') {
+            throw new actual.ProbeFfiError.Rejected({
+              reason: 'input was empty',
+            })
+          }
+          // Scheduled, not called: this is the race the bounded wait in step 2
+          // exists to absorb. On Android release builds the observer loses it
+          // about half the time.
+          signalFired = false
+          setTimeout(() => {
+            signalFired = true
+            observer.onSignal({ kind: 'probe_started', detail: 'fake binding' })
+          }, SIGNAL_DELAY_MS)
+          signalDeliveredBeforeResolve = signalFired
+          return {
+            echoed: input,
+            payload: new Uint8Array(new Uint8Array(payload)).reverse().buffer,
+            coreVersion: '0.0.0-host-fake',
+          }
+        },
+      ),
+    }
+  },
+)
 
 function freshContext(): RunContext {
-  return { unsubscribe: null, probeSignals: [], storeDir: '/tmp/example-app-host-test' }
+  return {
+    unsubscribe: null,
+    probeSignals: [],
+    storeDir: '/tmp/example-app-host-test',
+  }
 }
 
 function recorder() {
@@ -161,7 +176,10 @@ describe('step 3 reads a value step 2 has finished writing', () => {
     // testing anything.
     expect(signalDeliveredBeforeResolve).toBe(false)
     expect(outcomes.call?.status).toBe('ok')
-    expect(outcomes.signal).toEqual({ status: 'ok', headline: 'Received signal: probe_started' })
+    expect(outcomes.signal).toEqual({
+      status: 'ok',
+      headline: 'Received signal: probe_started',
+    })
   })
 
   it('reports no signal when there is genuinely none, and does so without waiting', async () => {
@@ -176,7 +194,10 @@ describe('step 3 reads a value step 2 has finished writing', () => {
 
     await runSignal(ctx, commit)
 
-    expect(outcomes.signal).toEqual({ status: 'unexpected', headline: 'Unexpected: no signal received' })
+    expect(outcomes.signal).toEqual({
+      status: 'unexpected',
+      headline: 'Unexpected: no signal received',
+    })
   })
 
   it('deduplicates a kind delivered twice into one row', async () => {
@@ -189,7 +210,10 @@ describe('step 3 reads a value step 2 has finished writing', () => {
 
     await runSignal(ctx, commit)
 
-    expect(outcomes.signal).toEqual({ status: 'ok', headline: 'Received signal: probe_started' })
+    expect(outcomes.signal).toEqual({
+      status: 'ok',
+      headline: 'Received signal: probe_started',
+    })
   })
 })
 
@@ -261,9 +285,14 @@ describe('the whole flow, in the order the screen runs it', () => {
 
     expect(signalDeliveredBeforeResolve).toBe(false)
     for (const step of FLOW_STEPS) {
-      const expected = UNREACHABLE_IN_NODE.includes(step.id) ? 'unexpected' : 'ok'
+      const expected = UNREACHABLE_IN_NODE.includes(step.id)
+        ? 'unexpected'
+        : 'ok'
       expect(outcomes[step.id], `step "${step.id}"`).toBeDefined()
-      expect(outcomes[step.id]?.status, `step "${step.id}": ${outcomes[step.id]?.headline}`).toBe(expected)
+      expect(
+        outcomes[step.id]?.status,
+        `step "${step.id}": ${outcomes[step.id]?.headline}`,
+      ).toBe(expected)
     }
   })
 
@@ -283,12 +312,19 @@ describe('step 6 reports the signing-identity gate refusing', () => {
 
     await runSigningIdentity(freshContext(), commit)
 
-    expect(outcomes.signingIdentity?.status, outcomes.signingIdentity?.headline).toBe('ok')
-    expect(outcomes.signingIdentity?.headline).toContain('"account_keys_not_fetched"')
+    expect(
+      outcomes.signingIdentity?.status,
+      outcomes.signingIdentity?.headline,
+    ).toBe('ok')
+    expect(outcomes.signingIdentity?.headline).toContain(
+      '"account_keys_not_fetched"',
+    )
     // With `accountKeysFetched` false, `identityKnown` false means "nobody
     // has asked", not "the account has none". A card that printed only the
     // second would be printing the one reading that authorises minting.
-    expect(outcomes.signingIdentity?.detail).toContain('accountKeysFetched: false')
+    expect(outcomes.signingIdentity?.detail).toContain(
+      'accountKeysFetched: false',
+    )
     expect(outcomes.signingIdentity?.detail).toContain('identityKnown: false')
     expect(outcomes.signingIdentity?.detail).toContain('privateKeysHeld: false')
   })

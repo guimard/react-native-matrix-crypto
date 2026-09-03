@@ -66,7 +66,11 @@ export interface CryptoBinding {
   takeOutgoingRequests(): Promise<CryptoBindingRequest[]>
   markRequestSent(id: string, responseJson: string): Promise<void>
   shareScopeKey(scope: string, userIds: string[]): Promise<void>
-  encryptEvent(scope: string, eventType: string, payload: unknown): Promise<CryptoBindingEnvelope>
+  encryptEvent(
+    scope: string,
+    eventType: string,
+    payload: unknown,
+  ): Promise<CryptoBindingEnvelope>
   decryptEvent(scope: string, rawEvent: unknown): Promise<CryptoBindingEnvelope>
   /**
    * The `kind` of a typed error, or undefined for anything else. The only
@@ -140,7 +144,10 @@ const UNKNOWN_KIND_RESPONSE = '{}'
  * common word could plausibly occur inside base64 by chance, which would
  * make that step fail for a reason that is not a defect.
  */
-const PROBE_PAYLOAD = { body: 'probe-plaintext-marker', msgtype: 'm.text' } as const
+const PROBE_PAYLOAD = {
+  body: 'probe-plaintext-marker',
+  msgtype: 'm.text',
+} as const
 
 const PROBE_EVENT_TYPE = 'm.room.message'
 
@@ -164,7 +171,11 @@ function utf8Encode(text: string): Uint8Array {
     } else if (code < 0x800) {
       out.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f))
     } else if (code < 0x10000) {
-      out.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f))
+      out.push(
+        0xe0 | (code >> 12),
+        0x80 | ((code >> 6) & 0x3f),
+        0x80 | (code & 0x3f),
+      )
     } else {
       out.push(
         0xf0 | (code >> 18),
@@ -179,7 +190,7 @@ function utf8Encode(text: string): Uint8Array {
 
 function utf8Decode(bytes: Uint8Array): string {
   let out = ''
-  for (let i = 0; i < bytes.length; ) {
+  for (let i = 0; i < bytes.length;) {
     const first = bytes[i]
     let code: number
     let width: number
@@ -315,7 +326,10 @@ export async function runCryptoSuite(
           }
         }
         await binding.createCryptoMachine(machine)
-        return { ok: true, detail: 'a store was created under the path the host supplied' }
+        return {
+          ok: true,
+          detail: 'a store was created under the path the host supplied',
+        }
       },
     },
     {
@@ -335,7 +349,7 @@ export async function runCryptoSuite(
         // second run against the same live machine; the failure detail says
         // so rather than leaving a reader to guess.
         pending = await binding.takeOutgoingRequests()
-        const ok = pending.some((request) => request.kind === 'keys_upload')
+        const ok = pending.some(request => request.kind === 'keys_upload')
         return {
           ok,
           detail: ok
@@ -349,8 +363,12 @@ export async function runCryptoSuite(
       run: async () => {
         await binding.shareScopeKey(scope, [machine.userId])
         pending = await binding.takeOutgoingRequests()
-        const toDevice = pending.filter((request) => request.kind === 'to_device').length
-        const queries = pending.filter((request) => request.kind === 'keys_query').length
+        const toDevice = pending.filter(
+          request => request.kind === 'to_device',
+        ).length
+        const queries = pending.filter(
+          request => request.kind === 'keys_query',
+        ).length
         const ok = toDevice === 0 && queries > 0
         return {
           ok,
@@ -384,7 +402,11 @@ export async function runCryptoSuite(
     {
       name: 'round_trip',
       run: async () => {
-        encrypted = await binding.encryptEvent(scope, PROBE_EVENT_TYPE, PROBE_PAYLOAD)
+        encrypted = await binding.encryptEvent(
+          scope,
+          PROBE_EVENT_TYPE,
+          PROBE_PAYLOAD,
+        )
 
         // `encryptEvent`'s ciphertext is the encrypted content as JSON. The
         // event around it is what a homeserver would have delivered:
@@ -454,7 +476,11 @@ export async function runCryptoSuite(
       checks.push({ name: step.name, ok: result.ok, detail: result.detail })
       if (!result.ok) stopped = true
     } catch (e) {
-      checks.push({ name: step.name, ok: false, detail: describeFailure(binding, e) })
+      checks.push({
+        name: step.name,
+        ok: false,
+        detail: describeFailure(binding, e),
+      })
       stopped = true
     }
   }

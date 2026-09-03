@@ -236,7 +236,7 @@ export async function awaitSignalDelivery(
     // directly is rejected under the example app's settings even though the
     // library's own typecheck accepts it: the two use different `lib` and
     // `types`. Wrapping keeps both happy.
-    await new Promise<void>((resolve) => {
+    await new Promise<void>(resolve => {
       setTimeout(() => resolve(), SIGNAL_POLL_MS)
     })
   }
@@ -278,11 +278,19 @@ export async function runInteropSuite(
   const signals: string[] = []
 
   try {
-    const report = await binding.runProbe('hello', new Uint8Array([1, 2, 3]), (kind) => {
-      signals.push(kind)
-    })
+    const report = await binding.runProbe(
+      'hello',
+      new Uint8Array([1, 2, 3]),
+      kind => {
+        signals.push(kind)
+      },
+    )
 
-    checks.push({ name: 'record', ok: report.echoed === 'hello', detail: report.echoed })
+    checks.push({
+      name: 'record',
+      ok: report.echoed === 'hello',
+      detail: report.echoed,
+    })
 
     checks.push({
       name: 'bytes',
@@ -296,7 +304,8 @@ export async function runInteropSuite(
 
     checks.push({
       name: 'async',
-      ok: typeof report.coreVersion === 'string' && report.coreVersion.length > 0,
+      ok:
+        typeof report.coreVersion === 'string' && report.coreVersion.length > 0,
       detail: report.coreVersion,
     })
 

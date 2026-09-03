@@ -59,7 +59,13 @@ const MUTATED_SUMMARY_PREFIX = 'LEVEL2_MUTATED_SUMMARY'
  */
 let levelTwoRun: Promise<InteropCheck[]> | null = null
 
-export function LevelTwoHarness({ plan, storeDir }: { plan: LevelTwoPlan; storeDir: string }) {
+export function LevelTwoHarness({
+  plan,
+  storeDir,
+}: {
+  plan: LevelTwoPlan
+  storeDir: string
+}) {
   const [checks, setChecks] = useState<InteropCheck[]>([])
 
   useEffect(() => {
@@ -88,7 +94,7 @@ export function LevelTwoHarness({ plan, storeDir }: { plan: LevelTwoPlan; storeD
 
       // Reconciled against what was promised, not against what came back.
       for (const name of LEVEL_TWO_STEPS) {
-        if (!results.some((check) => check.name === name)) {
+        if (!results.some(check => check.name === name)) {
           results.push({
             name,
             ok: false,
@@ -98,9 +104,11 @@ export function LevelTwoHarness({ plan, storeDir }: { plan: LevelTwoPlan; storeD
       }
 
       for (const check of results) {
-        console.log(`LEVEL2_CHECK ${check.name} ${check.ok ? 'PASS' : 'FAIL'} ${check.detail}`)
+        console.log(
+          `LEVEL2_CHECK ${check.name} ${check.ok ? 'PASS' : 'FAIL'} ${check.detail}`,
+        )
       }
-      const passed = results.filter((check) => check.ok).length
+      const passed = results.filter(check => check.ok).length
       if (plan.mutation === 'none') {
         console.log(`${SUMMARY_PREFIX} ${passed}/${results.length}`)
       } else {
@@ -112,7 +120,7 @@ export function LevelTwoHarness({ plan, storeDir }: { plan: LevelTwoPlan; storeD
     }
 
     if (levelTwoRun === null) levelTwoRun = run()
-    void levelTwoRun.then((results) => {
+    void levelTwoRun.then(results => {
       // Only the on-screen list is gated on this component still being
       // mounted: the lines the runner scrapes were emitted by the run
       // itself, so an unmount can never swallow them.
@@ -131,8 +139,10 @@ export function LevelTwoHarness({ plan, storeDir }: { plan: LevelTwoPlan; storeD
 
   return (
     <View>
-      {checks.map((check) => (
-        <Text key={check.name}>{`${check.name}: ${check.ok ? 'PASS' : 'FAIL'} (${check.detail})`}</Text>
+      {checks.map(check => (
+        <Text
+          key={check.name}
+        >{`${check.name}: ${check.ok ? 'PASS' : 'FAIL'} (${check.detail})`}</Text>
       ))}
     </View>
   )

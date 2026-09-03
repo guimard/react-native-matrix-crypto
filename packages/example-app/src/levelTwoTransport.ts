@@ -140,14 +140,18 @@ export function httpJson(
     request.open(method, url)
     request.timeout = timeoutMs
     request.setRequestHeader('Content-Type', 'application/json')
-    if (token !== undefined) request.setRequestHeader('Authorization', `Bearer ${token}`)
+    if (token !== undefined)
+      request.setRequestHeader('Authorization', `Bearer ${token}`)
     // `redactPath` rather than `url`: a `/sendToDevice/{type}/{txn}` URL
     // carries a transaction id, and a homeserver base URL is not something
     // this run's output has any business repeating either.
     const where = `${method} ${redactPath(url)}`
-    request.onload = () => resolve({ status: request.status, text: request.responseText })
-    request.onerror = () => reject(new Error(`${where} failed to reach the homeserver`))
-    request.ontimeout = () => reject(new Error(`${where} timed out after ${timeoutMs}ms`))
+    request.onload = () =>
+      resolve({ status: request.status, text: request.responseText })
+    request.onerror = () =>
+      reject(new Error(`${where} failed to reach the homeserver`))
+    request.ontimeout = () =>
+      reject(new Error(`${where} timed out after ${timeoutMs}ms`))
     request.onabort = () => reject(new Error(`${where} was aborted`))
     request.send(body)
   })
@@ -162,7 +166,9 @@ export function httpJson(
  * no room id, no transaction id and no user id.
  */
 function redactPath(url: string): string {
-  const withoutOrigin = url.replace(/^https?:\/\/[^/]+/, '').replace(/\?.*$/, '')
+  const withoutOrigin = url
+    .replace(/^https?:\/\/[^/]+/, '')
+    .replace(/\?.*$/, '')
   const match = withoutOrigin.match(/^\/_matrix\/client\/v3\/[a-zA-Z_]+/)
   if (match === null) return '<a path>'
   return match[0] === withoutOrigin ? match[0] : `${match[0]}/*`
@@ -181,10 +187,16 @@ function redactPath(url: string): string {
 export async function fetchLevelTwoPlan(): Promise<LevelTwoPlan | null> {
   for (const url of PLAN_URLS) {
     try {
-      const { status, text } = await httpJson('GET', url, { timeoutMs: PLAN_TIMEOUT_MS })
+      const { status, text } = await httpJson('GET', url, {
+        timeoutMs: PLAN_TIMEOUT_MS,
+      })
       if (status !== 200) continue
       const plan = JSON.parse(text) as LevelTwoPlan
-      if (typeof plan.homeserver !== 'string' || typeof plan.accessToken !== 'string') continue
+      if (
+        typeof plan.homeserver !== 'string' ||
+        typeof plan.accessToken !== 'string'
+      )
+        continue
       return plan
     } catch {
       // Refused, timed out, or answered something that is not a plan. Try
@@ -216,7 +228,9 @@ export async function counterpartyOp(
     timeoutMs,
   })
   if (status !== 200) {
-    throw new Error(`the counterparty returned HTTP ${status} for op "${String(op.op)}"`)
+    throw new Error(
+      `the counterparty returned HTTP ${status} for op "${String(op.op)}"`,
+    )
   }
   const reply = JSON.parse(text) as Record<string, unknown>
   if (reply.ok !== true) {
@@ -281,7 +295,9 @@ export async function sendOutgoing(
       const eventType = parsed.event_type
       const txnId = parsed.txn_id
       if (typeof eventType !== 'string' || typeof txnId !== 'string') {
-        throw new Error('a to-device request must name its event type and transaction id')
+        throw new Error(
+          'a to-device request must name its event type and transaction id',
+        )
       }
       method = 'PUT'
       path =
@@ -319,12 +335,20 @@ export async function syncOnce(
   since: string | null,
   timeoutMs: number,
 ): Promise<Record<string, unknown>> {
-  const query = since === null ? `timeout=${timeoutMs}` : `timeout=${timeoutMs}&since=${encodeURIComponent(since)}`
-  const { status, text } = await httpJson('GET', `${plan.homeserver}/_matrix/client/v3/sync?${query}`, {
-    token: plan.accessToken,
-    timeoutMs: timeoutMs + 30_000,
-  })
-  if (status !== 200) throw new Error(`GET /_matrix/client/v3/sync returned HTTP ${status}`)
+  const query =
+    since === null
+      ? `timeout=${timeoutMs}`
+      : `timeout=${timeoutMs}&since=${encodeURIComponent(since)}`
+  const { status, text } = await httpJson(
+    'GET',
+    `${plan.homeserver}/_matrix/client/v3/sync?${query}`,
+    {
+      token: plan.accessToken,
+      timeoutMs: timeoutMs + 30_000,
+    },
+  )
+  if (status !== 200)
+    throw new Error(`GET /_matrix/client/v3/sync returned HTTP ${status}`)
   return JSON.parse(text) as Record<string, unknown>
 }
 
@@ -343,7 +367,9 @@ export async function syncOnce(
  */
 export function corruptOneCharacter(text: string): string {
   if (text.length <= 8) {
-    throw new Error('a megolm ciphertext is never this short; refusing to corrupt it')
+    throw new Error(
+      'a megolm ciphertext is never this short; refusing to corrupt it',
+    )
   }
   const index = Math.floor(text.length / 2)
   const replacement = text[index] === 'A' ? 'B' : 'A'

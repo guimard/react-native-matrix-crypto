@@ -24,7 +24,11 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as generated from 'react-native-matrix-crypto/src/generated/matrix_crypto'
-import { startScannedCodeRun, type HttpResult, type ScannedCodeState } from './scannedCodeRunner'
+import {
+  startScannedCodeRun,
+  type HttpResult,
+  type ScannedCodeState,
+} from './scannedCodeRunner'
 
 /** The mode byte a self-verification from an established device carries. */
 const MODE_SELF_TRUSTED = 0x01
@@ -44,7 +48,8 @@ function samplePayload(flowId: string): ArrayBuffer {
   bytes[8] = (id.length >> 8) & 0xff
   bytes[9] = id.length & 0xff
   bytes.set(id, 10)
-  for (let at = 10 + id.length; at < bytes.length; at += 1) bytes[at] = at & 0xff
+  for (let at = 10 + id.length; at < bytes.length; at += 1)
+    bytes[at] = at & 0xff
   return bytes.buffer
 }
 
@@ -83,102 +88,122 @@ const native = {
   observer: null as { onSignal: (signal: unknown) => void } | null,
 }
 
-vi.mock('react-native-matrix-crypto/src/generated/matrix_crypto', async importOriginal => {
-  const original =
-    await importOriginal<typeof import('react-native-matrix-crypto/src/generated/matrix_crypto')>()
-  return {
-    ...original,
-    createCryptoMachine: vi.fn(async () => undefined),
-    offerCodes: vi.fn((capabilities: { canShow: boolean; canScan: boolean }) => {
-      native.capabilitiesOffered = capabilities
-    }),
-    requestSelfVerification: vi.fn(async () => FLOW),
-    acceptVerification: vi.fn(async (id: string) => {
-      // The real library refuses a flow this side opened: it is already
-      // agreed to, and the call would end the run. Model that refusal so
-      // the runner's `!openedHere` guard cannot be dropped without a test
-      // failing; any other id is a peer's flow, accepted as the real
-      // library accepts it.
-      if (id === FLOW) throw new original.MachineFfiError.WrongStage()
-      native.accepted.push(id)
-    }),
-    cancelVerification: vi.fn(async (id: string) => {
-      native.cancelCalls += 1
-      // The real library refuses to cancel a flow whose stage has moved on
-      // from `requested`: by the time a deadline cancel lands, the peer may
-      // already have answered. Model that refusal so the runner's
-      // `wrong_stage` re-read cannot be dropped without a test failing; a
-      // flow genuinely still waiting at `requested` is cancelled, as the
-      // real library cancels it.
-      if (native.stages[0] !== 'Requested') throw new original.MachineFfiError.WrongStage()
-      native.cancelled.push(id)
-      // The real library queues the cancel to-device: the pump is what
-      // delivers it. Model that half too, so the deadline branch's delivery
-      // loop has a request to drain.
-      native.requests.push({
-        id: 'cancel-request',
-        kind: 'to_device',
-        body: JSON.stringify({ event_type: 'm.key.verification.cancel' }),
-      })
-    }),
-    verificationStage: vi.fn(async () => {
-      // A test that needs the wall clock to have moved before this read
-      // returns parks a real delay here (see `native.readDelayMs`); the
-      // suite runs on real timers, and the deadline it underpins is the
-      // same one a real 180 s budget drives.
-      if (native.readDelayMs > 0) {
-        await new Promise<void>(resolve => setTimeout(resolve, native.readDelayMs))
-      }
-      // The last stage repeats once the list runs out, which is what a flow
-      // parked at `done` or `cancelled` really does.
-      const next = native.stages.length > 1 ? native.stages.shift() : native.stages[0]
-      // The REAL generated enum member, never the string the surface
-      // publishes. Returning the string looks right and is not: the facade
-      // maps the enum to the union, an unmapped value comes back
-      // `undefined`, and the walkthrough then waits for a stage it can
-      // never see. That is what the first version of this file did, and it
-      // exhausted the heap rather than failing an assertion.
-      return original.VerificationStage[
-        next as keyof typeof original.VerificationStage
-      ] as never
-    }),
-    verificationCode: vi.fn(async (id: string) => {
-      if (native.codeThrows) throw native.codeThrows
-      return { payload: samplePayload(id), width: CODE_WIDTH, modules: sampleModules(CODE_WIDTH) }
-    }),
-    confirmScan: vi.fn(async () => {
-      native.confirmed = true
-    }),
-    takeOutgoingRequests: vi.fn(async () => {
-      const batch = native.requests
-      native.requests = []
-      native.lastHanded = batch
-      return batch
-    }),
-    markRequestSent: vi.fn(async () => undefined),
-    markRequestFailed: vi.fn(async (id: string, status: number) => {
-      native.failedStatuses.push(status)
-      // The real machine keeps a refused request outstanding, so the next
-      // drain hands it over again -- the retry is an ordinary second send.
-      const refused = native.lastHanded.find(request => request.id === id)
-      if (refused) native.requests.push(refused)
-    }),
-    receiveSyncChanges: vi.fn(async () => {
-      native.syncsReceived += 1
-    }),
-    setCryptoObserver: vi.fn((installed: { onSignal: (signal: unknown) => void }) => {
-      native.observer = installed
-    }),
-    clearCryptoObserver: vi.fn(() => {
-      native.observer = null
-    }),
-  }
-})
+vi.mock(
+  'react-native-matrix-crypto/src/generated/matrix_crypto',
+  async importOriginal => {
+    const original =
+      await importOriginal<
+        typeof import('react-native-matrix-crypto/src/generated/matrix_crypto')
+      >()
+    return {
+      ...original,
+      createCryptoMachine: vi.fn(async () => undefined),
+      offerCodes: vi.fn(
+        (capabilities: { canShow: boolean; canScan: boolean }) => {
+          native.capabilitiesOffered = capabilities
+        },
+      ),
+      requestSelfVerification: vi.fn(async () => FLOW),
+      acceptVerification: vi.fn(async (id: string) => {
+        // The real library refuses a flow this side opened: it is already
+        // agreed to, and the call would end the run. Model that refusal so
+        // the runner's `!openedHere` guard cannot be dropped without a test
+        // failing; any other id is a peer's flow, accepted as the real
+        // library accepts it.
+        if (id === FLOW) throw new original.MachineFfiError.WrongStage()
+        native.accepted.push(id)
+      }),
+      cancelVerification: vi.fn(async (id: string) => {
+        native.cancelCalls += 1
+        // The real library refuses to cancel a flow whose stage has moved on
+        // from `requested`: by the time a deadline cancel lands, the peer may
+        // already have answered. Model that refusal so the runner's
+        // `wrong_stage` re-read cannot be dropped without a test failing; a
+        // flow genuinely still waiting at `requested` is cancelled, as the
+        // real library cancels it.
+        if (native.stages[0] !== 'Requested')
+          throw new original.MachineFfiError.WrongStage()
+        native.cancelled.push(id)
+        // The real library queues the cancel to-device: the pump is what
+        // delivers it. Model that half too, so the deadline branch's delivery
+        // loop has a request to drain.
+        native.requests.push({
+          id: 'cancel-request',
+          kind: 'to_device',
+          body: JSON.stringify({ event_type: 'm.key.verification.cancel' }),
+        })
+      }),
+      verificationStage: vi.fn(async () => {
+        // A test that needs the wall clock to have moved before this read
+        // returns parks a real delay here (see `native.readDelayMs`); the
+        // suite runs on real timers, and the deadline it underpins is the
+        // same one a real 180 s budget drives.
+        if (native.readDelayMs > 0) {
+          await new Promise<void>(resolve =>
+            setTimeout(resolve, native.readDelayMs),
+          )
+        }
+        // The last stage repeats once the list runs out, which is what a flow
+        // parked at `done` or `cancelled` really does.
+        const next =
+          native.stages.length > 1 ? native.stages.shift() : native.stages[0]
+        // The REAL generated enum member, never the string the surface
+        // publishes. Returning the string looks right and is not: the facade
+        // maps the enum to the union, an unmapped value comes back
+        // `undefined`, and the walkthrough then waits for a stage it can
+        // never see. That is what the first version of this file did, and it
+        // exhausted the heap rather than failing an assertion.
+        return original.VerificationStage[
+          next as keyof typeof original.VerificationStage
+        ] as never
+      }),
+      verificationCode: vi.fn(async (id: string) => {
+        if (native.codeThrows) throw native.codeThrows
+        return {
+          payload: samplePayload(id),
+          width: CODE_WIDTH,
+          modules: sampleModules(CODE_WIDTH),
+        }
+      }),
+      confirmScan: vi.fn(async () => {
+        native.confirmed = true
+      }),
+      takeOutgoingRequests: vi.fn(async () => {
+        const batch = native.requests
+        native.requests = []
+        native.lastHanded = batch
+        return batch
+      }),
+      markRequestSent: vi.fn(async () => undefined),
+      markRequestFailed: vi.fn(async (id: string, status: number) => {
+        native.failedStatuses.push(status)
+        // The real machine keeps a refused request outstanding, so the next
+        // drain hands it over again -- the retry is an ordinary second send.
+        const refused = native.lastHanded.find(request => request.id === id)
+        if (refused) native.requests.push(refused)
+      }),
+      receiveSyncChanges: vi.fn(async () => {
+        native.syncsReceived += 1
+      }),
+      setCryptoObserver: vi.fn(
+        (installed: { onSignal: (signal: unknown) => void }) => {
+          native.observer = installed
+        },
+      ),
+      clearCryptoObserver: vi.fn(() => {
+        native.observer = null
+      }),
+    }
+  },
+)
 
 /** A homeserver that answers a sync and accepts anything posted to it. */
 const http = vi.fn(async (method: string, url: string): Promise<HttpResult> => {
   if (method === 'GET' && url.includes('/sync')) {
-    return { status: 200, text: JSON.stringify({ next_batch: 's1', to_device: { events: [] } }) }
+    return {
+      status: 200,
+      text: JSON.stringify({ next_batch: 's1', to_device: { events: [] } }),
+    }
   }
   return { status: 200, text: '{}' }
 })
@@ -199,9 +224,15 @@ async function drive(stages: string[]): Promise<{
 }> {
   native.stages = [...stages]
   const states: ScannedCodeState[] = []
-  const run = startScannedCodeRun(plan, '/tmp/store', http, state => states.push({ ...state }), {
-    sleep: noSleep,
-  })
+  const run = startScannedCodeRun(
+    plan,
+    '/tmp/store',
+    http,
+    state => states.push({ ...state }),
+    {
+      sleep: noSleep,
+    },
+  )
   // The person's two decisions, made immediately: nothing here is testing
   // how long a human takes.
   run.askOtherDevices()
@@ -253,11 +284,19 @@ describe('the camera walkthrough', () => {
   // pass on that.
   it('announces that it can show a code and cannot scan one', async () => {
     await drive(['Requested', 'Ready', 'CodeScanned', 'Done'])
-    expect(native.capabilitiesOffered).toEqual({ canShow: true, canScan: false })
+    expect(native.capabilitiesOffered).toEqual({
+      canShow: true,
+      canScan: false,
+    })
   })
 
   it('draws the grid the published surface handed it, not a re-encoding', async () => {
-    const { states } = await drive(['Requested', 'Ready', 'CodeScanned', 'Done'])
+    const { states } = await drive([
+      'Requested',
+      'Ready',
+      'CodeScanned',
+      'Done',
+    ])
     const withCode = states.find(state => state.code !== undefined)
     expect(withCode).toBeDefined()
     const code = withCode!.code!
@@ -274,12 +313,25 @@ describe('the camera walkthrough', () => {
     // `true` is dark, and the finder pattern is where the protocol puts it.
     // A screen that drew the negative of this would hand a camera a symbol
     // no scanner reads, which is the defect the core's own tests caught.
-    expect(code.modules.slice(0, 7)).toEqual([true, true, true, true, true, true, true])
+    expect(code.modules.slice(0, 7)).toEqual([
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+    ])
     expect(code.modules[7]).toBe(false)
   })
 
   it('asks the person only at the moment the protocol asks, and then confirms', async () => {
-    const { states, final } = await drive(['Requested', 'Ready', 'CodeScanned', 'Done'])
+    const { states, final } = await drive([
+      'Requested',
+      'Ready',
+      'CodeScanned',
+      'Done',
+    ])
     // Asked for at that stage and at no other. Written this way round on
     // purpose: an earlier version asked only whether the states at `ready`
     // were free of it, which a screen that offered the button at every
@@ -298,7 +350,12 @@ describe('the camera walkthrough', () => {
   })
 
   it('reports a refused flow as a refusal rather than as a success', async () => {
-    const { final } = await drive(['Requested', 'Ready', 'CodeScanned', 'Cancelled'])
+    const { final } = await drive([
+      'Requested',
+      'Ready',
+      'CodeScanned',
+      'Cancelled',
+    ])
     expect(final.finished).toBe(true)
     expect(final.failed).toBe(true)
     expect(final.headline).toContain('called off')
@@ -308,7 +365,9 @@ describe('the camera walkthrough', () => {
   it('names the refusal when this device cannot show a code at all', async () => {
     // The kind a product actually meets first: an account with no published
     // signing identity has nothing to put in a code.
-    const refusal = Object.assign(new Error('identity not known'), { name: 'IdentityNotKnown' })
+    const refusal = Object.assign(new Error('identity not known'), {
+      name: 'IdentityNotKnown',
+    })
     native.codeThrows = refusal
     const { final } = await drive(['Requested', 'Ready', 'Ready', 'Ready'])
     expect(final.failed).toBe(true)
@@ -318,13 +377,23 @@ describe('the camera walkthrough', () => {
   it('drives the pump, so nothing the library handed over is dropped', async () => {
     native.requests = [
       { id: 'r1', kind: 'keys_upload', body: '{}' },
-      { id: 'r2', kind: 'to_device', body: JSON.stringify({ event_type: 'm.key.verification.ready' }) },
+      {
+        id: 'r2',
+        kind: 'to_device',
+        body: JSON.stringify({ event_type: 'm.key.verification.ready' }),
+      },
     ]
     await drive(['Requested', 'Ready', 'CodeScanned', 'Done'])
-    const posted = http.mock.calls.filter(call => call[0] !== 'GET').map(call => String(call[1]))
-    expect(posted.some(url => url.endsWith('/_matrix/client/v3/keys/upload'))).toBe(true)
+    const posted = http.mock.calls
+      .filter(call => call[0] !== 'GET')
+      .map(call => String(call[1]))
     expect(
-      posted.some(url => url.includes('/sendToDevice/m.key.verification.ready/r2')),
+      posted.some(url => url.endsWith('/_matrix/client/v3/keys/upload')),
+    ).toBe(true)
+    expect(
+      posted.some(url =>
+        url.includes('/sendToDevice/m.key.verification.ready/r2'),
+      ),
     ).toBe(true)
   })
 
@@ -339,15 +408,23 @@ describe('the camera walkthrough', () => {
   it('accepts a verification the peer opened, with no ask from this side', async () => {
     native.stages = ['Requested', 'Ready', 'CodeScanned', 'Done']
     const states: ScannedCodeState[] = []
-    const run = startScannedCodeRun(plan, '/tmp/store', http, state => states.push({ ...state }), {
-      sleep: noSleep,
-    })
+    const run = startScannedCodeRun(
+      plan,
+      '/tmp/store',
+      http,
+      state => states.push({ ...state }),
+      {
+        sleep: noSleep,
+      },
+    )
     await firePeerRequest(PEER_FLOW)
     await run.finished
     // Accepted with the peer's own flow id, and only the peer's.
     expect(native.accepted).toEqual([PEER_FLOW])
     // The run then reaches the code/ready stage per the existing fake.
-    const withCode = states.find(state => state.stage === 'ready' && state.code !== undefined)
+    const withCode = states.find(
+      state => state.stage === 'ready' && state.code !== undefined,
+    )
     expect(withCode).toBeDefined()
     const final = states[states.length - 1]
     expect(final.finished).toBe(true)
@@ -357,13 +434,19 @@ describe('the camera walkthrough', () => {
   it('fails the run on a deadline rather than wait on an unanswered ask forever', async () => {
     native.stages = ['Requested']
     const states: ScannedCodeState[] = []
-    const run = startScannedCodeRun(plan, '/tmp/store', http, state => states.push({ ...state }), {
-      sleep: noSleep,
-      // A budget nobody could answer in, injected rather than faked: the
-      // suite runs on real timers, and the check this proves is the same
-      // one a real 180 s budget drives.
-      unansweredRequestMs: 10,
-    })
+    const run = startScannedCodeRun(
+      plan,
+      '/tmp/store',
+      http,
+      state => states.push({ ...state }),
+      {
+        sleep: noSleep,
+        // A budget nobody could answer in, injected rather than faked: the
+        // suite runs on real timers, and the check this proves is the same
+        // one a real 180 s budget drives.
+        unansweredRequestMs: 10,
+      },
+    )
     run.askOtherDevices()
     await run.finished
     const final = states[states.length - 1]
@@ -382,20 +465,33 @@ describe('the camera walkthrough', () => {
   // the loop's first read; the script then moves to `ready`, exactly as the
   // flow does once the peer accepts.
   it('rides out the peer answering in the gap the deadline cancel targets', async () => {
-    native.stages = ['Requested', 'Requested', 'Ready', 'Ready', 'CodeScanned', 'Done']
+    native.stages = [
+      'Requested',
+      'Requested',
+      'Ready',
+      'Ready',
+      'CodeScanned',
+      'Done',
+    ]
     // The accept takes real time to arrive, as a sync would: park each
     // stage read so the deadline has certainly passed by the loop's first
     // read, and the race lands on that read rather than on whichever later
     // one the wall clock happens to reach.
     native.readDelayMs = 20
     const states: ScannedCodeState[] = []
-    const run = startScannedCodeRun(plan, '/tmp/store', http, state => states.push({ ...state }), {
-      sleep: noSleep,
-      // A budget nobody could answer in, injected rather than faked: the
-      // suite runs on real timers, and the check this proves is the same
-      // one a real 180 s budget drives.
-      unansweredRequestMs: 10,
-    })
+    const run = startScannedCodeRun(
+      plan,
+      '/tmp/store',
+      http,
+      state => states.push({ ...state }),
+      {
+        sleep: noSleep,
+        // A budget nobody could answer in, injected rather than faked: the
+        // suite runs on real timers, and the check this proves is the same
+        // one a real 180 s budget drives.
+        unansweredRequestMs: 10,
+      },
+    )
     run.askOtherDevices()
     await run.finished
     const final = states[states.length - 1]
@@ -406,8 +502,12 @@ describe('the camera walkthrough', () => {
     // The runner took the refusal as the race it is: no unanswered failure
     // was published, and the loop's ordinary stage handling carried the run
     // to `ready` with a code and on to a success.
-    expect(states.some(state => state.headline.includes('unanswered'))).toBe(false)
-    expect(states.some(state => state.stage === 'ready' && state.code !== undefined)).toBe(true)
+    expect(states.some(state => state.headline.includes('unanswered'))).toBe(
+      false,
+    )
+    expect(
+      states.some(state => state.stage === 'ready' && state.code !== undefined),
+    ).toBe(true)
     expect(final.finished).toBe(true)
     expect(final.failed).toBe(false)
     expect(final.headline).toBe('Verified.')
@@ -423,16 +523,27 @@ describe('the camera walkthrough', () => {
     let posts = 0
     http.mockImplementation(async (method: string) => {
       if (method === 'GET') {
-        return { status: 200, text: JSON.stringify({ next_batch: 's1', to_device: { events: [] } }) }
+        return {
+          status: 200,
+          text: JSON.stringify({ next_batch: 's1', to_device: { events: [] } }),
+        }
       }
       posts += 1
-      return posts <= 1 ? { status: 500, text: '{}' } : { status: 200, text: '{}' }
+      return posts <= 1
+        ? { status: 500, text: '{}' }
+        : { status: 200, text: '{}' }
     })
     const states: ScannedCodeState[] = []
-    const run = startScannedCodeRun(plan, '/tmp/store', http, state => states.push({ ...state }), {
-      sleep: noSleep,
-      unansweredRequestMs: 10,
-    })
+    const run = startScannedCodeRun(
+      plan,
+      '/tmp/store',
+      http,
+      state => states.push({ ...state }),
+      {
+        sleep: noSleep,
+        unansweredRequestMs: 10,
+      },
+    )
     run.askOtherDevices()
     await run.finished
     const final = states[states.length - 1]
@@ -453,15 +564,24 @@ describe('the camera walkthrough', () => {
     native.readDelayMs = 20
     http.mockImplementation(async (method: string) => {
       if (method === 'GET') {
-        return { status: 200, text: JSON.stringify({ next_batch: 's1', to_device: { events: [] } }) }
+        return {
+          status: 200,
+          text: JSON.stringify({ next_batch: 's1', to_device: { events: [] } }),
+        }
       }
       return { status: 502, text: '{}' }
     })
     const states: ScannedCodeState[] = []
-    const run = startScannedCodeRun(plan, '/tmp/store', http, state => states.push({ ...state }), {
-      sleep: noSleep,
-      unansweredRequestMs: 10,
-    })
+    const run = startScannedCodeRun(
+      plan,
+      '/tmp/store',
+      http,
+      state => states.push({ ...state }),
+      {
+        sleep: noSleep,
+        unansweredRequestMs: 10,
+      },
+    )
     run.askOtherDevices()
     await run.finished
     const final = states[states.length - 1]

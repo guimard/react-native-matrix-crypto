@@ -28,6 +28,30 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version-file: '.nvmrc', cache: yarn }
       - run: yarn install --frozen-lockfile
+      # Lint and formatting first. They take seconds, they need nothing built,
+      # and they are the two failures a contributor is most likely to arrive
+      # with -- there is no sense spending a Rust build to report them second.
+      #
+      # Neither is a `gate:*` script, so gate:readme does not require a row for
+      # them in the README's table; the paragraph under that table is what says
+      # they run, and this comment is the other half of that promise.
+      #
+      # `--max-warnings 0` lives in the `lint` script rather than on this line,
+      # so that `yarn lint` on a laptop and `yarn lint` here are the same
+      # command and cannot come to different answers.
+      - run: yarn lint
+      # `yarn lint` above blocks on findings -- it exits 1 on an error and,
+      # through --max-warnings 0, on a warning too. What it cannot do is tell
+      # anyone it linted the WRONG SET: `eslint .` exits 0 whether it found
+      # nothing wrong or opened nothing at all, and a file it never read is
+      # indistinguishable from a clean one.
+      #
+      # packages/example-app/vitest.config.mts sat unlinted through this
+      # milestone and through a green run of the step above, because `.mts`
+      # fell between the shareable config's `**/*.ts` and ESLint's own default
+      # extensions. A reviewer found it. This is the mechanism that would have.
+      - run: yarn gate:lint-coverage
+      - run: yarn format:check
       - run: yarn gate:workspaces
       - run: yarn gate:boundary
       - run: yarn gate:drift
@@ -36,6 +60,14 @@ jobs:
       # broken generations agree with each other. gate:stubs reads the
       # committed artifacts and asserts the turbo module is actually wired up.
       - run: yarn gate:stubs
+      # The two ignore lists this repository maintains by hand -- one in
+      # .prettierignore, one in eslint.config.mjs -- really do cover every path
+      # in scripts/generated-paths.txt, asked of Prettier and ESLint themselves
+      # rather than compared as strings. It runs next to gate:stubs because it
+      # guards the same thing from the other side: gate:drift is what makes a
+      # generated file's bytes load-bearing, and a formatter is the one tool
+      # here that rewrites files nobody asked it to.
+      - run: yarn gate:ignores
       - run: yarn gate:logger
       - run: yarn gate:agility
       # Wired in the same change that added it, because this repository has
@@ -274,6 +306,34 @@ jobs:
             console.log("Installed with no Rust toolchain reachable, no install-time");
             console.log("script, no binding.gyp; entry point resolves to " + resolved);
           '
+
+  audit:
+    # `npm audit` over what installing this package actually pulls onto a
+    # consumer's machine. scripts/audit-dependencies.sh carries the reasoning:
+    # which tree it reads and why it reads the packed tarball rather than the
+    # checkout, why npm cannot read this workspace at all, and why its two
+    # thresholds differ.
+    #
+    # Its own job, for two reasons. It needs no `yarn install`, no Rust and no
+    # build, so it starts immediately and finishes in about a minute rather
+    # than queueing behind `gates`. And it is the only check in this workflow
+    # that can turn red on a commit that passed yesterday, with nothing in the
+    # repository having moved -- a new advisory should read as a new advisory
+    # and not as the gates job failing.
+    #
+    # The script is invoked by path rather than through `yarn audit:deps`,
+    # which is the same script: this job installs no dependencies, and there is
+    # no sense making an audit depend on a package manager it does not use.
+    # `yarn audit:deps` is for running it on a laptop.
+    #
+    # `needs:` is deliberately absent. A dependency advisory is worth hearing
+    # about on a pull request whose formatting is wrong.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: '.nvmrc' }
+      - run: ./scripts/audit-dependencies.sh
 
   build-ios:
     # On pull requests this leg builds only the simulator slice, because

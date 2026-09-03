@@ -12,14 +12,16 @@ import type { CryptoSignal } from './signals'
  * `vi.hoisted` because `vi.mock`'s factory is hoisted above the imports and
  * cannot close over an ordinary module-level `const`.
  */
-const { installed, cleared, failNextInstall, failNextClear } = vi.hoisted(() => ({
-  installed: [] as Array<{ onSignal: (signal: NativeCryptoSignal) => void }>,
-  cleared: { count: 0 },
-  // Armed by a test, disarmed by the call it fires on, so a test that arms
-  // one is describing a single failing call rather than a broken module.
-  failNextInstall: { pending: false },
-  failNextClear: { pending: false },
-}))
+const { installed, cleared, failNextInstall, failNextClear } = vi.hoisted(
+  () => ({
+    installed: [] as Array<{ onSignal: (signal: NativeCryptoSignal) => void }>,
+    cleared: { count: 0 },
+    // Armed by a test, disarmed by the call it fires on, so a test that arms
+    // one is describing a single failing call rather than a broken module.
+    failNextInstall: { pending: false },
+    failNextClear: { pending: false },
+  }),
+)
 
 /**
  * What the generated wrapper actually throws when the bootstrap has not run.
@@ -44,23 +46,30 @@ function nativeModuleMissing(symbol: string): TypeError {
 // with the real generated constructors, so a reader that only works against
 // a hand-typed `{ tag, inner }` fixture fails here rather than in
 // production.
-vi.mock('./generated/matrix_crypto', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./generated/matrix_crypto')>()
+vi.mock('./generated/matrix_crypto', async importOriginal => {
+  const actual =
+    await importOriginal<typeof import('./generated/matrix_crypto')>()
   return {
     ...actual,
-    setCryptoObserver: vi.fn((observer: { onSignal: (signal: NativeCryptoSignal) => void }) => {
-      if (failNextInstall.pending) {
-        failNextInstall.pending = false
-        throw nativeModuleMissing('ubrn_uniffi_matrix_crypto_ffi_fn_func_set_crypto_observer')
-      }
-      // Recorded only on the way out, so `installed` counts registrations
-      // the native side actually took, not attempts.
-      installed.push(observer)
-    }),
+    setCryptoObserver: vi.fn(
+      (observer: { onSignal: (signal: NativeCryptoSignal) => void }) => {
+        if (failNextInstall.pending) {
+          failNextInstall.pending = false
+          throw nativeModuleMissing(
+            'ubrn_uniffi_matrix_crypto_ffi_fn_func_set_crypto_observer',
+          )
+        }
+        // Recorded only on the way out, so `installed` counts registrations
+        // the native side actually took, not attempts.
+        installed.push(observer)
+      },
+    ),
     clearCryptoObserver: vi.fn(() => {
       if (failNextClear.pending) {
         failNextClear.pending = false
-        throw nativeModuleMissing('ubrn_uniffi_matrix_crypto_ffi_fn_func_clear_crypto_observer')
+        throw nativeModuleMissing(
+          'ubrn_uniffi_matrix_crypto_ffi_fn_func_clear_crypto_observer',
+        )
       }
       cleared.count += 1
     }),
@@ -149,7 +158,7 @@ describe('onCryptoSignal', () => {
     onCryptoSignal(() => {})()
 
     const received: CryptoSignal[] = []
-    onCryptoSignal((s) => received.push(s))
+    onCryptoSignal(s => received.push(s))
 
     // A second registration, not the first one reused: the resubscribe has
     // to reach the native side, or the Rust observer stays cleared and the
@@ -174,7 +183,7 @@ describe('the native producer', () => {
   it('delivers a trust change as the public signal', async () => {
     const { onCryptoSignal } = await freshSignals()
     const received: CryptoSignal[] = []
-    onCryptoSignal((s) => received.push(s))
+    onCryptoSignal(s => received.push(s))
 
     installed[0].onSignal(
       new NativeCryptoSignal.TrustChanged({
@@ -189,7 +198,7 @@ describe('the native producer', () => {
   it('delivers an inbound announcement with the identifier that accepts it', async () => {
     const { onCryptoSignal } = await freshSignals()
     const received: CryptoSignal[] = []
-    onCryptoSignal((s) => received.push(s))
+    onCryptoSignal(s => received.push(s))
 
     installed[0].onSignal(
       new NativeCryptoSignal.VerificationRequested({
@@ -218,7 +227,7 @@ describe('the native producer', () => {
   it('delivers a completed code verification, naming the flow and nothing else', async () => {
     const { onCryptoSignal } = await freshSignals()
     const received: CryptoSignal[] = []
-    onCryptoSignal((s) => received.push(s))
+    onCryptoSignal(s => received.push(s))
 
     installed[0].onSignal(
       new NativeCryptoSignal.VerificationCompleted({
@@ -242,7 +251,11 @@ describe('the native producer', () => {
   // one reach these tests, and a producer suite that silently covers less
   // than the enum it stands for is the shape this repository keeps finding.
   it('has a test above for every variant the native producer can deliver', () => {
-    expect(Object.keys(NativeCryptoSignalTag).filter((key) => Number.isNaN(Number(key)))).toEqual([
+    expect(
+      Object.keys(NativeCryptoSignalTag).filter(key =>
+        Number.isNaN(Number(key)),
+      ),
+    ).toEqual([
       'TrustChanged',
       'VerificationRequested',
       'VerificationCompleted',
@@ -255,7 +268,7 @@ describe('the native producer', () => {
       throw new Error('boom')
     })
     const received: CryptoSignal[] = []
-    onCryptoSignal((s) => received.push(s))
+    onCryptoSignal(s => received.push(s))
 
     // Driven through the installed observer rather than through
     // `emitCryptoSignal`, which is what this test used to do. The
@@ -285,8 +298,8 @@ describe('the native producer', () => {
     const { onCryptoSignal } = await freshSignals()
     const a: CryptoSignal[] = []
     const b: CryptoSignal[] = []
-    const unsubscribeA = onCryptoSignal((s) => a.push(s))
-    onCryptoSignal((s) => b.push(s))
+    const unsubscribeA = onCryptoSignal(s => a.push(s))
+    onCryptoSignal(s => b.push(s))
 
     unsubscribeA()
     installed[0].onSignal(
@@ -309,9 +322,9 @@ describe('the native producer', () => {
     // for the wrong reason. Its sibling above has the same shape for the
     // same reason.
     const outerReceived: CryptoSignal[] = []
-    onCryptoSignal((s) => {
+    onCryptoSignal(s => {
       outerReceived.push(s)
-      onCryptoSignal((late) => lateReceived.push(late))
+      onCryptoSignal(late => lateReceived.push(late))
     })
 
     installed[0].onSignal(
@@ -372,7 +385,7 @@ describe('an install that throws', () => {
     // recorded the failure permanently would be this same defect with the
     // sign reversed, and just as quiet.
     const received: CryptoSignal[] = []
-    onCryptoSignal((s) => received.push(s))
+    onCryptoSignal(s => received.push(s))
 
     expect(installed).toHaveLength(1)
     installed[0].onSignal(
@@ -388,10 +401,10 @@ describe('an install that throws', () => {
     const { onCryptoSignal } = await freshSignals()
     failNextInstall.pending = true
     const orphan: CryptoSignal[] = []
-    expect(() => onCryptoSignal((s) => orphan.push(s))).toThrow()
+    expect(() => onCryptoSignal(s => orphan.push(s))).toThrow()
 
     const received: CryptoSignal[] = []
-    const unsubscribe = onCryptoSignal((s) => received.push(s))
+    const unsubscribe = onCryptoSignal(s => received.push(s))
     installed[0].onSignal(
       new NativeCryptoSignal.TrustChanged({
         user: '@alice:example.org',
@@ -440,7 +453,7 @@ describe('an uninstall that throws', () => {
     // and would make the next empty set skip the clear rather than retry
     // it.
     const received: CryptoSignal[] = []
-    const second = onCryptoSignal((s) => received.push(s))
+    const second = onCryptoSignal(s => received.push(s))
     expect(installed).toHaveLength(1)
 
     installed[0].onSignal(

@@ -53,7 +53,10 @@ export interface CodeMatrixLayout {
  * at it, the camera-proof harness passes the smaller screen dimension
  * because a mount holds the scanner at it).
  */
-export function codeMatrixLayout(code: ScannableCode, available: number): CodeMatrixLayout {
+export function codeMatrixLayout(
+  code: ScannableCode,
+  available: number,
+): CodeMatrixLayout {
   // Refused rather than drawn wrong. A `modules` array that does not match
   // `width` would index past its end, and JavaScript answers `undefined`
   // there, which is falsy, which is white -- so the symbol would come out
