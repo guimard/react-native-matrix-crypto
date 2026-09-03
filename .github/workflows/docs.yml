@@ -8,6 +8,26 @@ on:
 # same sources gate:doc-links already holds to every {@link} resolving. A
 # published page that can drift from the source silently is worth less than
 # none, so this builds on every merge to main rather than on a schedule.
+#
+# THIS WORKFLOW DEPENDS ON A REPOSITORY SETTING, and nothing here used to say
+# so. Pages has to be enabled with its build source set to GitHub Actions.
+# `actions/configure-pages` reads that site, it does not create one, and
+# without it the build job stops there with `Get Pages site failed. Please
+# verify that the repository has Pages enabled ... Not Found`.
+#
+# It was not enabled, and this never once published a page. From ab25460, the
+# commit that added this file, to the day it was switched on: 23 runs, 17 of
+# them stopping at that step and 6 cancelled by the `pages` concurrency group
+# before reaching it, and not one success. None of that showed up on a pull
+# request either, because this workflow runs on push to main alone, so the
+# only place the failure was visible is the one place nobody gets a red
+# check. Enabled 2026-09-03, one call:
+#
+#   gh api -X POST repos/linagora/react-native-matrix-crypto/pages \
+#     -f build_type=workflow
+#
+# The page is https://linagora.github.io/react-native-matrix-crypto/. If that
+# URL ever 404s, check the setting before reading the build log.
 
 permissions:
   contents: read
