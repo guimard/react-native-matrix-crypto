@@ -68,6 +68,7 @@ import {
   recoverIdentity as nativeRecoverIdentity,
   requestSelfVerification as nativeRequestSelfVerification,
   requestVerification as nativeRequestVerification,
+  SenderTrustRequirement as NativeSenderTrustRequirement,
   SenderVerification as NativeSenderVerification,
   SessionFfiError,
   shareScopeKey as nativeShareScopeKey,
@@ -725,6 +726,34 @@ describe('decryptEvent wiring to the native layer', () => {
     expect(envelope.ciphertext).toBeInstanceOf(Uint8Array)
     expect(new TextDecoder().decode(envelope.ciphertext)).toBe(
       'native-plaintext',
+    )
+  })
+
+  /**
+   * The requirement is a parameter of the call, and the mapping from the
+   * closed union to the native enum is exhaustive by compile error. Every
+   * member is held here, in both directions that matter: each union value
+   * reaches the one native variant that means it, and a caller that passes
+   * nothing reaches the permissive default rather than `undefined` -- the
+   * one failure mode that must never be silent, since it would hand a
+   * product plaintext it asked to be refused.
+   */
+  it('forwards the sender trust requirement, and defaults to the permissive tier', async () => {
+    vi.mocked(nativeDecryptEvent).mockClear()
+
+    await decryptEvent(scope, { type: 'm.room.encrypted' })
+    expect(vi.mocked(nativeDecryptEvent).mock.calls.at(-1)?.[2]).toBe(
+      NativeSenderTrustRequirement.Any,
+    )
+
+    await decryptEvent(scope, { type: 'm.room.encrypted' }, 'identity_signed_or_legacy')
+    expect(vi.mocked(nativeDecryptEvent).mock.calls.at(-1)?.[2]).toBe(
+      NativeSenderTrustRequirement.IdentitySignedOrLegacy,
+    )
+
+    await decryptEvent(scope, { type: 'm.room.encrypted' }, 'identity_signed')
+    expect(vi.mocked(nativeDecryptEvent).mock.calls.at(-1)?.[2]).toBe(
+      NativeSenderTrustRequirement.IdentitySigned,
     )
   })
 

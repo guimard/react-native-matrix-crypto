@@ -60,7 +60,7 @@
 use matrix_crypto_core::{
     create_machine, decrypt_event, device_statuses, in_runtime, mark_request_sent,
     receive_sync_changes, share_scope_key, take_outgoing_requests, with_machine, MachineConfig,
-    SenderVerification, TrustState,
+    SenderTrustRequirement, SenderVerification, SessionError, TrustState,
 };
 use matrix_sdk_common::ruma::api::client::keys::claim_keys::v3::Response as KeysClaimResponse;
 use matrix_sdk_common::ruma::api::client::keys::get_keys::v3::Response as KeysQueryResponse;
@@ -266,10 +266,11 @@ async fn verification_of_event_from(
     device_id: &str,
     payload: &str,
     bootstrap: bool,
+    requirements: &[SenderTrustRequirement],
     alice_device_keys: &serde_json::Value,
     alice_key_id: &str,
     alice_key: &serde_json::Value,
-) -> Option<SenderVerification> {
+) -> Vec<(SenderTrustRequirement, Result<Option<SenderVerification>, SessionError>)> {
     let peer_user: OwnedUserId = user_id.parse().expect("a literal user id parses");
     let peer_device: OwnedDeviceId = device_id.into();
     let alice_user: OwnedUserId = ALICE_USER.parse().expect("a literal user id parses");
@@ -464,22 +465,41 @@ async fn verification_of_event_from(
         &format!("$from-{device_id}:example.org"),
         encrypted.content.json().get(),
     );
-    let envelope = decrypt_event(SCOPE, &event)
-        .await
-        .expect("the library must decrypt what the bare machine encrypted");
 
-    // The control on every authenticity assertion below. If decryption
-    // itself broke, the value under test would be meaningless rather than
-    // wrong, and this says which of the two happened.
-    assert!(
-        envelope.ciphertext == payload.as_bytes(),
-        "the library must recover the peer's payload byte for byte \
-         (recovered {} bytes, sent {} bytes)",
-        envelope.ciphertext.len(),
-        payload.len()
-    );
-
-    envelope.sender_verification
+    // ---- The same ciphertext, once per requirement --------------------
+    //
+    // The decryption matrix: what each requirement does with this exact
+    // sender, on a machine where nothing else changes. One event,
+    // decrypted several times, because the requirement is a parameter of
+    // the call and not a property of the machine -- and because a refused
+    // decryption must not consume the session, which the repeated
+    // successes here also hold.
+    let mut matrix = Vec::new();
+    for requirement in requirements {
+        let decrypted = decrypt_event(SCOPE, &event, *requirement).await;
+        match &decrypted {
+            Ok(envelope) => {
+                // The control on every authenticity assertion below. If
+                // decryption itself broke, the value under test would be
+                // meaningless rather than wrong, and this says which of
+                // the two happened.
+                assert!(
+                    envelope.ciphertext == payload.as_bytes(),
+                    "the library must recover the peer's payload byte for byte \
+                     (recovered {} bytes, sent {} bytes)",
+                    envelope.ciphertext.len(),
+                    payload.len()
+                );
+            }
+            // A refusal under a tightened requirement is the finding this
+            // matrix exists to make: it says nothing about the ciphertext,
+            // so there is no payload to check -- the caller is expected
+            // to assert on the error kind instead.
+            Err(_) => {}
+        }
+        matrix.push((*requirement, decrypted.map(|envelope| envelope.sender_verification)));
+    }
+    matrix
 }
 
 /// One `#[test]` fn, for the reason `tests/two_parties.rs` gives: the
@@ -565,12 +585,25 @@ fn a_cross_signed_peer_produces_unverified_identity_against_a_library_with_no_id
         );
 
         // ---- The cross-signed peer -------------------------------------
+        //
+        // Decrypted under all three requirements: the default because the
+        // value under test must arrive through the surface a product
+        // actually calls, the two tightened tiers because the point of
+        // them is to refuse *unsigned* senders and they must not refuse
+        // this one -- a device vouched for by its owner's identity, on a
+        // machine with no identity of its own. The machine's own state
+        // matters for the outbound share strategy, not for decryption.
         let (bob_key_id, bob_key) = alice_keys[0].clone();
-        let bob_verification = verification_of_event_from(
+        let bob_matrix = verification_of_event_from(
             BOB_USER,
             BOB_DEVICE,
             BOB_PAYLOAD,
             true,
+            &[
+                SenderTrustRequirement::Any,
+                SenderTrustRequirement::IdentitySignedOrLegacy,
+                SenderTrustRequirement::IdentitySigned,
+            ],
             &alice_device_keys,
             &bob_key_id,
             &bob_key,
@@ -578,12 +611,20 @@ fn a_cross_signed_peer_produces_unverified_identity_against_a_library_with_no_id
         .await;
 
         // ---- The control -----------------------------------------------
+        // Same matrix, one difference: no self-signature on the device.
+        // The tightened tiers must refuse it, and refuse it as its own
+        // kind: a policy gap, not a broken event.
         let (carol_key_id, carol_key) = alice_keys[1].clone();
-        let carol_verification = verification_of_event_from(
+        let carol_matrix = verification_of_event_from(
             CAROL_USER,
             CAROL_DEVICE,
             CAROL_PAYLOAD,
             false,
+            &[
+                SenderTrustRequirement::Any,
+                SenderTrustRequirement::IdentitySignedOrLegacy,
+                SenderTrustRequirement::IdentitySigned,
+            ],
             &alice_device_keys,
             &carol_key_id,
             &carol_key,
@@ -595,31 +636,47 @@ fn a_cross_signed_peer_produces_unverified_identity_against_a_library_with_no_id
         // (1) The finding. A peer who has set cross-signing up produces
         //     this against a library that has none, because upstream's
         //     first gate reads the sender's identity and not ours.
-        assert_eq!(
-            bob_verification,
-            Some(SenderVerification::UnverifiedIdentity),
-            "an event from a device its owner cross-signed reads \
-             `UnverifiedIdentity` in this build. `UnsignedDevice` here would \
-             mean the cross-signature was not seen; anything else would mean \
-             the mapping moved"
-        );
+        for (requirement, outcome) in &bob_matrix {
+            assert_eq!(
+                outcome,
+                &Ok(Some(SenderVerification::UnverifiedIdentity)),
+                "an event from a device its owner cross-signed reads \
+                 `UnverifiedIdentity` under {requirement:?} in this build. \
+                 `UnsignedDevice` here would mean the cross-signature was not \
+                 seen; a refusal would mean the tightened tier refuses the \
+                 senders it exists to admit"
+            );
+        }
 
         // (2) The control. Same code path, same relay, same payload shape,
         //     one difference: no self-signature on the device.
-        assert_eq!(
-            carol_verification,
-            Some(SenderVerification::UnsignedDevice),
-            "a peer with no cross-signing identity still reads \
-             `UnsignedDevice`; if this has become `UnverifiedIdentity` too, \
-             the library is not reading the signature, it is answering the \
-             same thing for everyone"
-        );
+        for (requirement, outcome) in &carol_matrix {
+            match requirement {
+                SenderTrustRequirement::Any => assert_eq!(
+                    outcome,
+                    &Ok(Some(SenderVerification::UnsignedDevice)),
+                    "a peer with no cross-signing identity reads `UnsignedDevice` \
+                     under the default requirement; if this has become \
+                     `UnverifiedIdentity`, the library is not reading the \
+                     signature, it is answering the same thing for everyone"
+                ),
+                _ => assert_eq!(
+                    outcome,
+                    &Err(SessionError::SenderNotTrusted),
+                    "a peer with no cross-signing identity must be refused under \
+                     {requirement:?}, and refused as `SenderNotTrusted` -- a \
+                     policy gap, not a broken event. `UnknownDevice` would tell \
+                     a product its event's provenance is broken, which is the \
+                     opposite of the truth here"
+                ),
+            }
+        }
 
         // (3) The two are different, stated on its own. Assertions (1) and
         //     (2) could both be rewritten to one constant by a defect that
         //     also rewrote the expected values; this one cannot.
         assert_ne!(
-            bob_verification, carol_verification,
+            bob_matrix[0].1, carol_matrix[0].1,
             "the only difference between these two peers is a signature on a \
              device, and it must be the difference between two reported values"
         );
